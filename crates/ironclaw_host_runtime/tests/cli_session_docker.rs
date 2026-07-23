@@ -24,6 +24,29 @@ use ironclaw_triggers::InMemoryTriggerRepository;
 use ironclaw_trust::{AdminConfig, AdminEntry, HostTrustAssignment, HostTrustPolicy};
 use serde_json::{Value, json};
 
+/// `builtin.cli_session` declares the `Network` effect (same as `builtin.shell`)
+/// even though tmux dispatch never calls out over HTTP, so
+/// `LocalInvocationServicesResolver::resolve` requires *some*
+/// `RuntimeHttpEgress` to be wired before it will resolve `requires_network`
+/// plans — mirrors `first_party_builtin_tools.rs`'s
+/// `RecordingRuntimeHttpEgress` stub (this test never exercises it, so a
+/// bare unreachable-on-call stub is enough).
+#[derive(Debug, Default)]
+struct UnusedRuntimeHttpEgress;
+
+#[async_trait::async_trait]
+impl RuntimeHttpEgress for UnusedRuntimeHttpEgress {
+    async fn execute(
+        &self,
+        _request: RuntimeHttpEgressRequest,
+    ) -> Result<RuntimeHttpEgressResponse, RuntimeHttpEgressError> {
+        unreachable!(
+            "cli_session_docker tests never perform HTTP egress; this stub only satisfies \
+             the resolver's requires_network wiring check"
+        )
+    }
+}
+
 fn test_scope(user: &str) -> ResourceScope {
     ResourceScope {
         tenant_id: TenantId::new("cli-session-docker-tenant").unwrap(),
@@ -118,7 +141,17 @@ fn execution_context_for_scope(scope: &ResourceScope, capability: &str) -> Execu
         project_id: scope.project_id.clone(),
         mission_id: scope.mission_id.clone(),
         thread_id: scope.thread_id.clone(),
-        run_id: None,
+        // The capability kernel's `seal_authorization` (§5.2.1) requires a
+        // resolvable origin to mint the sealed dispatch witness that
+        // `invoke_json`/inline dispatch demands; `resolved_origin()` falls
+        // back to `InvocationOrigin::LoopRun(run_id)` when `origin` itself is
+        // unstamped. Every other full-`invoke_capability` test in this crate
+        // (e.g. `first_party_builtin_tools.rs`'s `execution_context_with_network`)
+        // stamps `run_id` for exactly this reason; leaving both `None` here
+        // starved every call in this file of a witness with `PolicyDenied
+        // "no sealed dispatch authorization"` regardless of which capability
+        // was invoked — a test-harness gap, not a `builtin.cli_session` bug.
+        run_id: Some(RunId::new()),
         origin: None,
         extension_id: ExtensionId::new("caller").unwrap(),
         runtime: RuntimeKind::FirstParty,
@@ -173,14 +206,30 @@ async fn runtime_for_scope(_scope: &ResourceScope) -> impl HostRuntime {
     .with_first_party_capabilities(Arc::new(
         builtin_first_party_handlers(Arc::new(InMemoryTriggerRepository::default())).unwrap(),
     ))
-    .with_runtime_process_port(process_port)
+    // The runtime policy below declares `process_backend: TenantSandbox`, so
+    // `InvocationServices` resolves the process port from the dedicated
+    // tenant-sandbox slot (`with_tenant_sandbox_process_port`), not the
+    // generic/local-host slot `with_runtime_process_port` populates — using
+    // the latter left the resolver's `tenant_sandbox_process` unset and every
+    // dispatch failed `Backend("process backend TenantSandbox is not
+    // supported by this invocation services resolver")`.
+    .with_tenant_sandbox_process_port(process_port)
+    .with_runtime_http_egress(Arc::new(UnusedRuntimeHttpEgress))
     .with_runtime_policy(EffectiveRuntimePolicy {
         deployment: DeploymentMode::HostedMultiTenant,
         requested_profile: RuntimeProfile::SecureDefault,
         resolved_profile: RuntimeProfile::SecureDefault,
         filesystem_backend: FilesystemBackendKind::ScopedVirtual,
         process_backend: ProcessBackendKind::TenantSandbox,
-        network_mode: NetworkMode::DirectLogged,
+        // `LocalInvocationServicesResolver::validate_network_plan` only
+        // accepts `DirectLogged`/`Direct` under `DeploymentMode::LocalSingleUser`
+        // — under `HostedMultiTenant` (this test) it requires `Brokered` or
+        // `Allowlist`, matching the `HostedSafe`/`HostedDev` production
+        // profile→backend mapping for `ProcessBackendKind::TenantSandbox`
+        // (`ironclaw_runtime_policy::resolver::backends_for`). `Brokered`
+        // pairs with `TenantSandbox` under `HostedSafe`, the tightest match
+        // for this test's `SecureDefault`-flavored policy.
+        network_mode: NetworkMode::Brokered,
         secret_mode: SecretMode::BrokeredHandles,
         approval_policy: ApprovalPolicy::AskAlways,
         audit_mode: AuditMode::Standard,
