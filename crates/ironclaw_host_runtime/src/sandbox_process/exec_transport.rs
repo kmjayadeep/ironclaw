@@ -333,6 +333,21 @@ pub(super) async fn user_container_launch_config(
         auto_remove: Some(false),
         network_mode: config.container_network_mode(),
         cap_drop: Some(vec!["ALL".to_string()]),
+        // The image ENTRYPOINT (docker/process-sandbox-entrypoint.sh) execs
+        // `capsh --drop=all --user=sandbox`, which itself needs
+        // CAP_SETPCAP/CAP_SETUID/CAP_SETGID to drop its own remaining
+        // capabilities and switch to the unprivileged `sandbox` user before
+        // handing off to the workload. `cap_drop: ALL` above strips those
+        // too, so without re-adding exactly these three the container
+        // crashes on start. The workload still ends up with an empty
+        // effective/bounding capability set (uid 1000) once capsh finishes —
+        // these three are consumed by capsh itself, never inherited by the
+        // command it execs.
+        cap_add: Some(vec![
+            "SETPCAP".to_string(),
+            "SETUID".to_string(),
+            "SETGID".to_string(),
+        ]),
         security_opt: Some(vec!["no-new-privileges:true".to_string()]),
         readonly_rootfs: Some(true),
         tmpfs: Some(
@@ -364,6 +379,16 @@ fn wrap_command_for_pgid_isolation(command: &str) -> String {
     format!("exec setsid sh -c {}", shell_single_quote(command))
 }
 
+/// The unprivileged user (baked into the image by
+/// `docker/process-sandbox-entrypoint.sh`, uid 1000) every dispatched
+/// command must run as. The container's own init process stays root (see
+/// [`user_container_launch_config`] — the image ENTRYPOINT itself needs root
+/// to `capsh --drop=all --user=sandbox` before handing off), but nothing
+/// reaching the sandbox through `docker exec` should ever run as root:
+/// every `CreateExecOptions` built in this module must set `user` to this
+/// value.
+const SANDBOX_EXEC_USER: &str = "sandbox";
+
 pub(super) async fn exec_in_container(
     docker: &Docker,
     container_id: &str,
@@ -383,6 +408,7 @@ pub(super) async fn exec_in_container(
                 attach_stderr: Some(true),
                 working_dir: Some(workdir.into_string()),
                 env: Some(env),
+                user: Some(SANDBOX_EXEC_USER.to_string()),
                 ..Default::default()
             },
         )
@@ -502,6 +528,7 @@ pub(super) async fn exec_background_in_container(
                 attach_stderr: Some(true),
                 working_dir: Some(workdir.into_string()),
                 env: Some(env),
+                user: Some(SANDBOX_EXEC_USER.to_string()),
                 ..Default::default()
             },
         )
@@ -603,6 +630,7 @@ async fn kill_exec_process_group(docker: &Docker, container_id: &str, exec_id: &
                 cmd: Some(vec!["sh".to_string(), "-c".to_string(), kill_cmd]),
                 attach_stdout: Some(false),
                 attach_stderr: Some(false),
+                user: Some(SANDBOX_EXEC_USER.to_string()),
                 ..Default::default()
             },
         )
@@ -1004,6 +1032,24 @@ mod docker_tests {
         assert!(
             cap_drop.iter().any(|cap| cap == "ALL"),
             "applied container must drop ALL capabilities: {cap_drop:?}"
+        );
+        let mut cap_add = host_config.cap_add.unwrap_or_default();
+        cap_add.sort();
+        assert_eq!(
+            cap_add,
+            vec![
+                "SETGID".to_string(),
+                "SETPCAP".to_string(),
+                "SETUID".to_string()
+            ],
+            "applied container must re-add exactly the three caps the image entrypoint's \
+             `capsh --drop=all --user=sandbox` needs to drop its own remaining capabilities \
+             and switch to the sandbox user — no more, no less: {cap_add:?}"
+        );
+        assert!(
+            !cap_add.iter().any(|cap| cap == "NET_ADMIN"),
+            "must never add NET_ADMIN — egress enforcement here is the topological internal \
+             network + proxy, not iptables inside the container: {cap_add:?}"
         );
         let security_opt = host_config.security_opt.unwrap_or_default();
         assert!(

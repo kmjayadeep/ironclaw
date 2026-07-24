@@ -345,9 +345,13 @@ async fn fat_image_provides_git_node_python_rust_gh_tmux_under_non_root_home() {
         .await
         .expect("sandbox transport connects");
 
+    // The image's `/bin/sh` is dash, whose `command -v` builtin (unlike
+    // bash's) only checks its FIRST operand and silently ignores the rest —
+    // `command -v git node python3 ...` therefore only ever probed `git`.
+    // Loop over each binary individually so every one is actually checked.
     let mut probe_request = request(
         user_scope,
-        "command -v git node python3 cargo gh tmux npm && whoami && echo $HOME",
+        "for b in git node python3 cargo gh tmux npm; do command -v \"$b\"; done && whoami && echo $HOME",
     );
     probe_request.timeout_secs = Some(20);
     let probe = port
@@ -378,6 +382,53 @@ async fn fat_image_provides_git_node_python_rust_gh_tmux_under_non_root_home() {
 
     if let Some(container_id) =
         find_labeled_container(&docker, "fat-image-tenant", "fat-image-user").await
+    {
+        best_effort_remove(&docker, &container_id).await;
+    }
+}
+
+/// Every command dispatched into the sandbox must run as the unprivileged
+/// `sandbox` user (uid 1000), never root — `exec_in_container`'s
+/// `CreateExecOptions` used to omit `user` entirely, so `docker exec`
+/// defaulted to the container's own configured user, which for this
+/// persistent container is root (the image ENTRYPOINT itself needs root to
+/// `capsh --drop=all --user=sandbox` before handing off; see
+/// `user_container_launch_config`). This asserts the exec identity directly
+/// via `id -u`/`id -g`, independent of the broader
+/// `fat_image_provides_git_node_python_rust_gh_tmux_under_non_root_home`
+/// probe above.
+#[tokio::test]
+async fn dispatched_command_runs_as_the_non_root_sandbox_user() {
+    let image = skip_unless_docker_ready!("dispatched_command_runs_as_the_non_root_sandbox_user");
+
+    let docker = Docker::connect_with_local_defaults().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let user_scope = scope("exec-identity-tenant", "exec-identity-user");
+    let workspace = RebornSandboxUserKey::from_scope(&user_scope).workspace_path(temp.path());
+    std::fs::create_dir_all(&workspace).unwrap();
+    let port = sandbox_transport::connect_for_test(&workspace, &image)
+        .await
+        .expect("sandbox transport connects");
+
+    let identity = port
+        .run_command(request(user_scope, "id -u; id -g; whoami"))
+        .await
+        .expect("identity probe command succeeds");
+    assert!(
+        identity.output.contains("1000"),
+        "dispatched command must run as uid/gid 1000 (sandbox), not root: {identity:?}"
+    );
+    assert!(
+        !identity.output.contains("\n0\n") && !identity.output.starts_with("0\n"),
+        "dispatched command must not report uid/gid 0: {identity:?}"
+    );
+    assert!(
+        identity.output.contains("sandbox"),
+        "whoami must report the sandbox user: {identity:?}"
+    );
+
+    if let Some(container_id) =
+        find_labeled_container(&docker, "exec-identity-tenant", "exec-identity-user").await
     {
         best_effort_remove(&docker, &container_id).await;
     }
