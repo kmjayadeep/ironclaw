@@ -387,7 +387,11 @@ impl AuthEngine {
         }))
     }
 
-    async fn delete_flow_client_snapshot(&self, scope: &ResourceScope, flow_id: AuthFlowId) {
+    /// Remove the client snapshot created by [`Self::prepare_oauth_flow`].
+    ///
+    /// Callers use this idempotent rollback when durable flow creation fails
+    /// after preparation has already persisted the encrypted client pair.
+    pub async fn cleanup_prepared_oauth_flow(&self, scope: &ResourceScope, flow_id: AuthFlowId) {
         let handle = match flow_client_snapshot_handle(flow_id) {
             Ok(handle) => handle,
             // The helper logs the original construction error before mapping it
@@ -395,7 +399,7 @@ impl AuthEngine {
             Err(_) => return,
         };
         if let Err(error) = self.secret_store.delete(scope, &handle).await {
-            tracing::warn!(%error, "OAuth flow client snapshot cleanup failed");
+            tracing::warn!(%error, "prepared OAuth flow client snapshot cleanup failed");
         }
     }
 

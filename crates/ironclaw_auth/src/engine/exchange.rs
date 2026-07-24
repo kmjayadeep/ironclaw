@@ -127,7 +127,7 @@ impl AuthEngine {
             .store_token_pair(scope, access_secret, refresh_secret, &extracted)
             .await?;
         if recipe.client_credentials.is_some() {
-            self.delete_flow_client_snapshot(&context.scope.resource, context.flow_id)
+            self.cleanup_prepared_oauth_flow(&context.scope.resource, context.flow_id)
                 .await;
         }
 

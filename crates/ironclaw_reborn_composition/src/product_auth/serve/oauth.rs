@@ -190,6 +190,10 @@ pub(super) async fn extension_oauth_start_handler(
         Some(&requester_extension),
     )
     .await?;
+    let continuation = AuthContinuationRef::LifecycleActivation {
+        package_ref: ironclaw_auth::LifecyclePackageRef::new(requester_extension.as_str())
+            .map_err(|_| ProductAuthRouteFailure::invalid_request())?,
+    };
     let prepared = run_with_backend_timeout(engine.prepare_oauth_flow(
         ironclaw_auth::PrepareOAuthFlowRequest {
             vendor: provider.as_str().to_string(),
@@ -202,31 +206,48 @@ pub(super) async fn extension_oauth_start_handler(
     ))
     .await?;
 
-    let flow = run_with_backend_timeout(
-        state
-            .product_auth
-            .start_setup_oauth_flow(RebornOAuthStartFlowRequest {
-                flow_id: Some(flow_id),
-                scope: scope.clone(),
-                provider: provider.clone(),
-                authorization_url: prepared.authorization_url.clone(),
-                opaque_state_hash: prepared.opaque_state_hash.clone(),
-                pkce_verifier_hash: prepared.pkce_verifier_hash.clone(),
-                pkce_verifier: prepared.pkce_verifier.clone(),
-                update_binding,
-                continuation: AuthContinuationRef::LifecycleActivation {
-                    package_ref: ironclaw_auth::LifecyclePackageRef::new(
-                        requester_extension.as_str(),
-                    )
-                    .map_err(|_| ProductAuthRouteFailure::invalid_request())?,
-                },
-                expires_at: request.expires_at,
-            }),
-    )
-    .await?;
+    let flow = match run_with_backend_timeout(state.product_auth.start_setup_oauth_flow(
+        RebornOAuthStartFlowRequest {
+            flow_id: Some(flow_id),
+            scope: scope.clone(),
+            provider: provider.clone(),
+            authorization_url: prepared.authorization_url.clone(),
+            opaque_state_hash: prepared.opaque_state_hash.clone(),
+            pkce_verifier_hash: prepared.pkce_verifier_hash.clone(),
+            pkce_verifier: prepared.pkce_verifier.clone(),
+            update_binding,
+            continuation,
+            expires_at: request.expires_at,
+        },
+    ))
+    .await
+    {
+        Ok(flow) => flow,
+        Err(error) => {
+            engine
+                .cleanup_prepared_oauth_flow(&scope.resource, flow_id)
+                .await;
+            return Err(error);
+        }
+    };
     // Same-process fast path only; the durable per-flow copy written by
     // `start_setup_oauth_flow` is the source of truth across restarts.
-    state.store_pkce_verifier(flow.id, prepared.pkce_verifier.clone(), flow.expires_at)?;
+    if let Err(error) =
+        state.store_pkce_verifier(flow.id, prepared.pkce_verifier.clone(), flow.expires_at)
+    {
+        let cancel_result = run_with_backend_timeout(
+            state
+                .product_auth
+                .flow_manager()
+                .cancel_flow(&scope, flow.id),
+        )
+        .await;
+        engine
+            .cleanup_prepared_oauth_flow(&scope.resource, flow.id)
+            .await;
+        cancel_result?;
+        return Err(error);
+    }
 
     let response = ProductOAuthStartResponse {
         flow_id: flow.id,
@@ -246,16 +267,20 @@ pub(super) async fn extension_oauth_start_handler(
         .require_installed_extension(&caller, &requester_extension)
         .await
     {
-        run_with_backend_timeout(
+        let cancel_result = run_with_backend_timeout(
             state
                 .product_auth
                 .flow_manager()
                 .cancel_flow(&scope, response.flow_id),
         )
-        .await?;
+        .await;
+        engine
+            .cleanup_prepared_oauth_flow(&scope.resource, response.flow_id)
+            .await;
         state
             .forget_pkce_verifier_everywhere(&scope, response.flow_id)
             .await;
+        cancel_result?;
         return Err(error);
     }
     Ok(Json(response))

@@ -113,6 +113,7 @@ impl OAuthGateFlowDriver {
 
         let flow_id = AuthFlowId::new();
         let vendor = requirement.provider.as_str();
+        let provider = AuthProviderId::new(vendor)?;
         let expires_at = Utc::now() + ChronoDuration::seconds(GATE_FLOW_TTL_SECONDS);
         let prepared = self
             .engine
@@ -125,19 +126,25 @@ impl OAuthGateFlowDriver {
                 expires_at,
             })
             .await?;
-        self.store_pkce_verifier(
-            &auth_scope.resource,
-            flow_id,
-            prepared.pkce_verifier.clone(),
-        )
-        .await?;
+        if let Err(error) = self
+            .store_pkce_verifier(
+                &auth_scope.resource,
+                flow_id,
+                prepared.pkce_verifier.clone(),
+            )
+            .await
+        {
+            self.cleanup_prepared_flow(&auth_scope.resource, flow_id)
+                .await;
+            return Err(error);
+        }
         let flow = match request
             .flow_manager
             .create_flow(NewAuthFlow {
                 id: Some(flow_id),
                 scope: auth_scope.clone(),
                 kind: AuthFlowKind::IntegrationCredential,
-                provider: AuthProviderId::new(vendor)?,
+                provider,
                 challenge: AuthChallenge::OAuthUrl {
                     authorization_url: prepared.authorization_url,
                     expires_at,
@@ -155,14 +162,14 @@ impl OAuthGateFlowDriver {
         {
             Ok(flow) => flow,
             Err(AuthProductError::BackendConflict) => {
-                self.cleanup_pkce_verifier(&auth_scope.resource, flow_id)
+                self.cleanup_prepared_flow(&auth_scope.resource, flow_id)
                     .await;
                 self.reusable_flow_for_query(request.flow_manager, request.flow_source, query)
                     .await?
                     .ok_or(AuthProductError::BackendConflict)?
             }
             Err(error) => {
-                self.cleanup_pkce_verifier(&auth_scope.resource, flow_id)
+                self.cleanup_prepared_flow(&auth_scope.resource, flow_id)
                     .await;
                 return Err(error);
             }
@@ -183,9 +190,9 @@ impl OAuthGateFlowDriver {
         if existing.expires_at > Utc::now() {
             return Ok(Some(existing));
         }
-        // The flow being replaced is expired and about to be canceled; drop its
-        // now-defunct PKCE verifier so it does not linger in the secret store.
-        self.cleanup_pkce_verifier(&existing.scope.resource, existing.id)
+        // The flow being replaced is expired and about to be canceled; drop
+        // its now-defunct PKCE verifier and client snapshot.
+        self.cleanup_prepared_flow(&existing.scope.resource, existing.id)
             .await;
         flow_manager
             .cancel_flow(&existing.scope, existing.id)
@@ -228,6 +235,13 @@ impl OAuthGateFlowDriver {
                 "failed to clean up OAuth gate PKCE verifier after flow creation failure"
             );
         }
+    }
+
+    async fn cleanup_prepared_flow(&self, scope: &ResourceScope, flow_id: AuthFlowId) {
+        self.cleanup_pkce_verifier(scope, flow_id).await;
+        self.engine
+            .cleanup_prepared_oauth_flow(scope, flow_id)
+            .await;
     }
 
     pub(crate) async fn pkce_verifier_for_flow(
@@ -346,9 +360,11 @@ mod tests {
         OAuthAuthorizationUrl, ResolvedVendorAuthRecipe, StaticAuthRecipeResolver,
     };
     use ironclaw_host_api::{
-        AgentId, ExtensionId, TenantId, ThreadId, UserId, VendorAuthRecipe, VendorId,
+        AgentId, ExtensionId, TenantId, ThreadId, Timestamp, UserId, VendorAuthRecipe, VendorId,
     };
-    use ironclaw_secrets::SecretStore;
+    use ironclaw_secrets::{
+        SecretLease, SecretLeaseId, SecretMetadata, SecretStore, SecretStoreError,
+    };
 
     fn acme_vendor_recipe() -> ResolvedVendorAuthRecipe {
         let recipe: VendorAuthRecipe = serde_json::from_value(serde_json::json!({
@@ -418,17 +434,97 @@ mod tests {
     fn engine_with_credentials(
         credentials: Arc<dyn ironclaw_auth::EngineClientCredentialsSource>,
     ) -> Arc<AuthEngine> {
+        engine_with_credentials_and_store(credentials, Arc::new(SecretStore::ephemeral()))
+    }
+
+    fn engine_with_credentials_and_store(
+        credentials: Arc<dyn ironclaw_auth::EngineClientCredentialsSource>,
+        secret_store: Arc<dyn SecretStorePort>,
+    ) -> Arc<AuthEngine> {
         Arc::new(AuthEngine::new(AuthEngineDeps {
             recipes: Arc::new(StaticAuthRecipeResolver::new(vec![acme_vendor_recipe()])),
             client_credentials: credentials,
             egress: Arc::new(PanicEgress),
-            secret_store: Arc::new(SecretStore::ephemeral()),
+            secret_store,
             callback_base: EngineCallbackBase::new(
                 "https://host.example/api/reborn/product-auth/oauth",
             )
             .expect("callback base"),
             dcr_client_name: "IronClaw test".to_string(),
         }))
+    }
+
+    struct FailingPutSecretStore {
+        inner: Arc<dyn SecretStorePort>,
+    }
+
+    #[async_trait::async_trait]
+    impl SecretStorePort for FailingPutSecretStore {
+        async fn put(
+            &self,
+            _scope: ResourceScope,
+            _handle: SecretHandle,
+            _material: SecretMaterial,
+            _expires_at: Option<Timestamp>,
+        ) -> Result<SecretMetadata, SecretStoreError> {
+            Err(SecretStoreError::StoreUnavailable {
+                reason: "scripted PKCE write failure".to_string(),
+            })
+        }
+
+        async fn metadata(
+            &self,
+            scope: &ResourceScope,
+            handle: &SecretHandle,
+        ) -> Result<Option<SecretMetadata>, SecretStoreError> {
+            self.inner.metadata(scope, handle).await
+        }
+
+        async fn metadata_for_scope(
+            &self,
+            scope: &ResourceScope,
+        ) -> Result<Vec<SecretMetadata>, SecretStoreError> {
+            self.inner.metadata_for_scope(scope).await
+        }
+
+        async fn delete(
+            &self,
+            scope: &ResourceScope,
+            handle: &SecretHandle,
+        ) -> Result<bool, SecretStoreError> {
+            self.inner.delete(scope, handle).await
+        }
+
+        async fn lease_once(
+            &self,
+            scope: &ResourceScope,
+            handle: &SecretHandle,
+        ) -> Result<SecretLease, SecretStoreError> {
+            self.inner.lease_once(scope, handle).await
+        }
+
+        async fn consume(
+            &self,
+            scope: &ResourceScope,
+            lease_id: SecretLeaseId,
+        ) -> Result<SecretMaterial, SecretStoreError> {
+            self.inner.consume(scope, lease_id).await
+        }
+
+        async fn revoke(
+            &self,
+            scope: &ResourceScope,
+            lease_id: SecretLeaseId,
+        ) -> Result<SecretLease, SecretStoreError> {
+            self.inner.revoke(scope, lease_id).await
+        }
+
+        async fn leases_for_scope(
+            &self,
+            scope: &ResourceScope,
+        ) -> Result<Vec<SecretLease>, SecretStoreError> {
+            self.inner.leases_for_scope(scope).await
+        }
     }
 
     struct GateFixture {
@@ -588,6 +684,45 @@ mod tests {
 
         assert_eq!(left, right);
         assert_eq!(fixture.active_gate_flows().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn gate_pkce_write_failure_rolls_back_prepared_client_snapshot() {
+        let mut fixture = GateFixture::new();
+        let engine_secrets: Arc<dyn SecretStorePort> = Arc::new(SecretStore::ephemeral());
+        fixture.driver = OAuthGateFlowDriver::new(
+            engine_with_credentials_and_store(
+                Arc::new(StaticCredentials),
+                Arc::clone(&engine_secrets),
+            ),
+            Arc::new(FailingPutSecretStore {
+                inner: Arc::new(SecretStore::ephemeral()),
+            }),
+        );
+
+        let result = fixture
+            .driver
+            .challenge_for_blocked_gate(OAuthGateChallengeRequest {
+                flow_manager: &fixture.flow_manager,
+                flow_source: &fixture.flow_source,
+                requirements: std::slice::from_ref(&fixture.requirement),
+                scope: &fixture.scope,
+                owner_user_id: &fixture.owner_user_id,
+                run_id: fixture.run_id,
+                gate_ref: &fixture.gate_ref,
+            })
+            .await
+            .expect("unavailable vendor falls through");
+
+        assert!(result.is_none());
+        assert!(
+            engine_secrets
+                .metadata_for_scope(&fixture.auth_scope().resource)
+                .await
+                .expect("engine snapshot metadata remains readable")
+                .is_empty(),
+            "failed flow creation must not leave an ownerless client snapshot"
+        );
     }
 
     /// A resolvable-but-unconfigured vendor (operator has not saved OAuth
