@@ -7680,6 +7680,17 @@ fn map_attested_continuation_rejection(
             RebornServicesErrorKind::Validation,
             400,
         ),
+        // A context mismatch is an ownership/tenant divergence (the caller's
+        // turn scope / run / gate_ref did not match the authoritative binding
+        // recorded at raise), not a malformed request. Surface it as 403
+        // Forbidden so the classification matches how this crate already maps an
+        // unauthorized turn (`TurnErrorCategory::Unauthorized`), rather than
+        // collapsing it into the generic proof-validation 400.
+        AttestedContinuationRejection::ContextMismatch => (
+            RebornServicesErrorCode::Forbidden,
+            RebornServicesErrorKind::ParticipantDenied,
+            403,
+        ),
         AttestedContinuationRejection::LedgerGuard => (
             RebornServicesErrorCode::Conflict,
             RebornServicesErrorKind::Conflict,

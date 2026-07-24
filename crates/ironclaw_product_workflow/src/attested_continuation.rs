@@ -114,12 +114,22 @@ pub enum AttestedContinuationRejection {
     LedgerGuard,
     /// The proof payload was malformed and could not be decoded.
     MalformedProof,
-    /// The continuation port is not wired on this deployment.
+    /// A post-verification, server-side (recoverable) failure: the proof was
+    /// already verified and the one-shot grant claimed, but the broadcast tail
+    /// failed (e.g. RPC timeout). The broadcast is ledger-idempotent, so this is
+    /// retryable for the broadcast tail only — it must NOT be surfaced as a
+    /// proof-validation error.
     Unavailable,
     /// An infrastructure/runtime backend failed (chain-signing backend error,
     /// broadcast/RPC outage). This is a service-health failure, not a client
     /// input failure, so it must surface as a retryable 503 rather than a 400.
     BackendUnavailable,
+    /// The caller-supplied turn scope / run / gate_ref did not match the
+    /// authoritative binding context recorded when the gate was raised
+    /// (tenant or gate-ref divergence). Defense-in-depth against driving a
+    /// binding raised for one tenant/gate with a continuation request bearing
+    /// another's identity. Fail closed.
+    ContextMismatch,
 }
 
 impl AttestedContinuationRejection {
@@ -133,6 +143,7 @@ impl AttestedContinuationRejection {
             Self::MalformedProof => "attested_malformed_proof",
             Self::Unavailable => "attested_unavailable",
             Self::BackendUnavailable => "attested_backend_unavailable",
+            Self::ContextMismatch => "attested_context_mismatch",
         }
     }
 
@@ -180,6 +191,7 @@ impl AttestedContinuationRejection {
             | Self::ProofRejected
             | Self::LedgerGuard
             | Self::MalformedProof
+            | Self::ContextMismatch
             | Self::Unavailable => false,
         }
     }
