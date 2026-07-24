@@ -105,9 +105,13 @@ pub const UNGATED_LOOP_RUN_CAPABILITIES: &[&str] = &[
     "builtin.trace_commons.credits",
     "builtin.trace_commons.onboard",
     "builtin.profile_set",
-    "builtin.memory_search",
-    "builtin.memory_read",
-    "builtin.memory_tree",
+    // The memory tools moved from the builtin package (`builtin.memory_*`) to
+    // the always-on `ironclaw.memory` package (#3537); same tools, same
+    // reviewed read-only posture, renamed ids. `ironclaw.memory.write` stays
+    // off this list (gated, arbitrary-path write).
+    "ironclaw.memory.search",
+    "ironclaw.memory.read",
+    "ironclaw.memory.tree",
     "builtin.read_file",
     "builtin.list_dir",
     "builtin.glob",
@@ -123,7 +127,7 @@ impl OriginGateMatrix {
     /// an omitted field is [`OriginGatePolicy::Forbidden`] by default.
     pub fn policy_for(&self, origin: &InvocationOrigin) -> OriginGatePolicy {
         match origin {
-            InvocationOrigin::LoopRun(_) => self.loop_run,
+            InvocationOrigin::LoopRun(_) | InvocationOrigin::ScheduledLoopRun(_) => self.loop_run,
             InvocationOrigin::Product(_) => self.product,
             InvocationOrigin::Automation(_) => self.automation,
         }

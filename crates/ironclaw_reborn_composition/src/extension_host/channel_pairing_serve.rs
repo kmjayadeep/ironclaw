@@ -28,13 +28,13 @@ use ironclaw_host_api::ingress::{
     RateLimitPolicy, RateLimitScope, StreamingMode, WebSocketOriginPolicy,
 };
 use ironclaw_host_api::{NetworkMethod, ProductSurfaceCaller};
-use serde::Serialize;
-
-use crate::extension_host::channel_pairing::{
+use ironclaw_product::{
     ChannelPairingError, ChannelPairingIssue, ChannelPairingRegistry, ChannelPairingService,
     ChannelPairingStatus,
 };
-use crate::webui::route_mounts::ProtectedRouteMount;
+use serde::Serialize;
+
+use ironclaw_host_ingress::ProtectedRouteMount;
 
 const MINT_PATH: &str = "/api/webchat/v2/extensions/{extension_id}/pairing/mint";
 const STATUS_PATH: &str = "/api/webchat/v2/extensions/{extension_id}/pairing/status";

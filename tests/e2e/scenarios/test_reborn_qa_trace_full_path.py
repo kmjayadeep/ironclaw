@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
+
 from emulate_provider import (
     github_headers,
     github_json,
@@ -24,6 +25,7 @@ from emulate_provider import (
     slack_post,
 )
 from helpers import EMULATE_GITHUB_BEARER, EMULATE_SLACK_BEARER
+from journey_cases import PROVIDER_JOURNEY_RUN_IDS, PROVIDER_JOURNEY_RUNS
 from provider_capability_inventory import (
     EMULATE_SUPPORTED_TOOLS,
     capability_id_to_wire_name,
@@ -39,6 +41,7 @@ from reborn_webui_harness import (
     close_reborn_server,
     create_thread,
     enable_reborn_global_auto_approve,
+    fetch_extension_oauth_requirement,
     reborn_bearer_headers,
     send_message,
     start_reborn_webui_v2_server,
@@ -109,62 +112,6 @@ GOOGLE_TOOL_PREFIXES = (
 PROVIDER_TOOL_NAMES = EMULATE_SUPPORTED_TOOLS
 ALL_EXTENSIONS = (*GOOGLE_EXTENSIONS, "github", "slack")
 TRACE_BOOTSTRAP_TOOLS = {"builtin__extension_search"}
-MUTATING_PROVIDER_TOOLS = {
-    "gmail__send_message": "google",
-    "google-docs__create_document": "google",
-    "google-sheets__create_spreadsheet": "google",
-    "google-sheets__append_values": "google",
-    "slack__send_message": "slack",
-}
-
-
-def _provider_journey_cases() -> tuple[str, ...]:
-    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-    no_model = set(manifest["no_model_cases"])
-    cases = []
-    for case in manifest["selected_cases"]:
-        if case in no_model:
-            continue
-        trace = json.loads((TRACE_DIR / f"{case}.json").read_text(encoding="utf-8"))
-        if any(
-            call["name"] in PROVIDER_TOOL_NAMES
-            for step in trace["steps"]
-            for call in step["response"].get("tool_calls", [])
-        ):
-            cases.append(case)
-    return tuple(cases)
-
-
-def _mutating_provider_services(case: str) -> set[str]:
-    trace = json.loads((TRACE_DIR / f"{case}.json").read_text(encoding="utf-8"))
-    return {
-        service
-        for step in trace["steps"]
-        for call in step["response"].get("tool_calls", [])
-        if (service := MUTATING_PROVIDER_TOOLS.get(call["name"])) is not None
-    }
-
-
-PROVIDER_JOURNEY_CASES = _provider_journey_cases()
-ISOLATION_REPEAT_CASES = (
-    "qa_5d_slack_strategy_doc_answer",
-    "qa_10f_slack_mention_encoding",
-)
-
-
-def _provider_journey_runs() -> tuple[tuple[str, ...], tuple[str, ...]]:
-    runs = []
-    ids = []
-    for case in PROVIDER_JOURNEY_CASES:
-        runs.append(case)
-        ids.append(case)
-        if case in ISOLATION_REPEAT_CASES:
-            runs.append(case)
-            ids.append(f"{case}-isolated-repeat")
-    return tuple(runs), tuple(ids)
-
-
-PROVIDER_JOURNEY_RUNS, PROVIDER_JOURNEY_RUN_IDS = _provider_journey_runs()
 
 
 @pytest.fixture(scope="module")
@@ -235,22 +182,17 @@ async def reborn_qa_emulate_runtime(
             "IRONCLAW_REBORN_GOOGLE_OAUTH_REDIRECT_URI": (
                 "http://127.0.0.1/api/reborn/product-auth/oauth/google/callback"
             ),
-            "IRONCLAW_REBORN_SLACK_PERSONAL_OAUTH_REDIRECT_URI": (
-                "http://127.0.0.1/api/reborn/product-auth/oauth/slack/callback"
-            ),
         },
     )
     await enable_reborn_global_auto_approve(base_url)
     slack_state = await _seed_slack_workspace(emulate_slack_server["url"])
     await _configure_slack(base_url, slack_state)
     await _install_extensions(base_url, ALL_EXTENSIONS)
-    for extension_id, scopes in GOOGLE_EXTENSION_SCOPES.items():
-        await _seed_google_account(base_url, extension_id, scopes)
-        await _activate_extensions(base_url, (extension_id,))
+    for extension_id in GOOGLE_EXTENSION_SCOPES:
+        await _seed_google_account(base_url, extension_id)
     await _seed_github_account(base_url)
-    await _activate_extensions(base_url, ("github",))
     await _seed_slack_account(base_url, emulate_slack_server["url"], slack_state)
-    await _activate_extensions(base_url, ("slack",))
+    await _assert_extensions_active(base_url, ALL_EXTENSIONS)
     try:
         yield {
             "base_url": base_url,
@@ -268,10 +210,10 @@ async def reborn_qa_emulate_runtime(
 async def reborn_qa_emulate_provider_server(
     reborn_qa_emulate_runtime,
     resettable_emulate_provider_world,
-    case,
+    journey_case,
 ):
     """Reset mutated providers while reusing the built binary and Reborn."""
-    services = _mutating_provider_services(case)
+    services = {str(world) for world in journey_case.mutable_provider_worlds}
     reset_services = services - {"slack"}
     try:
         yield reborn_qa_emulate_runtime
@@ -280,7 +222,7 @@ async def reborn_qa_emulate_provider_server(
             await _cleanup_slack_provider_mutations(
                 reborn_qa_emulate_runtime["emulate_slack_url"],
                 reborn_qa_emulate_runtime["slack_state"],
-                case,
+                journey_case.case_id,
             )
         if reset_services:
             await resettable_emulate_provider_world.reset(reset_services)
@@ -322,18 +264,20 @@ async def reborn_provider_fault_server(
 async def _seed_google_account(
     base_url: str,
     extension_id: str,
-    scopes: tuple[str, ...],
 ) -> None:
     expires_at = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
     async with httpx.AsyncClient(headers=reborn_bearer_headers()) as client:
+        requirement = await fetch_extension_oauth_requirement(
+            client,
+            base_url,
+            extension_id,
+        )
         started = await client.post(
             f"{base_url}/api/webchat/v2/extensions/{extension_id}/setup/oauth/start",
             json={
-                "provider": "google",
-                "account_label": f"Emulate Google account for {extension_id}",
-                "scopes": list(scopes),
+                "requirement": requirement["name"],
                 "expires_at": expires_at,
-                "invocation_id": str(uuid.uuid4()),
+                "invocation_id": requirement["setup"].get("invocation_id"),
             },
             timeout=15,
         )
@@ -521,18 +465,21 @@ async def _seed_slack_account(
 ) -> None:
     expires_at = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
     async with httpx.AsyncClient(headers=reborn_bearer_headers()) as client:
+        requirement = await fetch_extension_oauth_requirement(
+            client,
+            base_url,
+            "slack",
+        )
         started = await client.post(
             f"{base_url}/api/webchat/v2/extensions/slack/setup/oauth/start",
             json={
-                "provider": "slack",
-                "account_label": "Emulate Slack account",
-                "scopes": [],
+                "requirement": requirement["name"],
                 "expires_at": expires_at,
-                "invocation_id": str(uuid.uuid4()),
+                "invocation_id": requirement["setup"].get("invocation_id"),
             },
             timeout=30,
         )
-        started.raise_for_status()
+        assert started.is_success, started.text
         body = started.json()
         query = parse_qs(urlparse(body["authorization_url"]).query)
         consent = await client.post(
@@ -580,17 +527,25 @@ async def _install_extensions(base_url: str, extension_ids: tuple[str, ...]) -> 
             installed.raise_for_status()
 
 
-async def _activate_extensions(base_url: str, extension_ids: tuple[str, ...]) -> None:
+async def _assert_extensions_active(
+    base_url: str, extension_ids: tuple[str, ...]
+) -> None:
     async with httpx.AsyncClient(headers=reborn_bearer_headers()) as client:
+        listed = await client.get(
+            f"{base_url}/api/webchat/v2/extensions",
+            timeout=30,
+        )
+        listed.raise_for_status()
+        by_id = {
+            extension["package_ref"]["id"]: extension
+            for extension in listed.json()["extensions"]
+        }
         for extension_id in extension_ids:
-            activated = await client.post(
-                f"{base_url}/api/webchat/v2/extensions/{extension_id}/activate",
-                json={"client_action_id": client_action_id()},
-                timeout=30,
+            extension = by_id.get(extension_id)
+            assert extension is not None, (
+                f"{extension_id} disappeared after completing its manifest-declared setup"
             )
-            activated.raise_for_status()
-            body = activated.json()
-            assert body.get("activated") is True, body
+            assert extension["installation_state"] == "active", extension
 
 
 def _provider_leg(trace: dict, provider_tools: frozenset[str]) -> dict:
@@ -1322,16 +1277,17 @@ async def test_slack_mutation_cleanup_covers_thread_replies(
 
 
 @pytest.mark.parametrize(
-    "case", PROVIDER_JOURNEY_RUNS, ids=PROVIDER_JOURNEY_RUN_IDS
+    "journey_case", PROVIDER_JOURNEY_RUNS, ids=PROVIDER_JOURNEY_RUN_IDS
 )
 async def test_qa_journey_provider_leg_replays_through_emulate(
     reborn_qa_emulate_provider_server,
     mock_llm_server,
-    case,
+    journey_case,
 ):
     """Every harvested provider journey executes through standalone Reborn."""
+    case = journey_case.case_id
     server = reborn_qa_emulate_provider_server["base_url"]
-    trace_path = TRACE_DIR / f"{case}.json"
+    trace_path = ROOT / journey_case.trace
     if _raw_trace_uses_tool_prefix(
         trace_path, "google-sheets__"
     ):

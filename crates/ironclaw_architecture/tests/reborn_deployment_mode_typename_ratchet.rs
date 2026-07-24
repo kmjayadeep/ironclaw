@@ -99,6 +99,9 @@ const FROZEN_OTHER_MODE_TYPES: &[&str] = &[
     "HostedMcpDiscoveredToolAnnotations",
     "HostedMcpDiscoveryEgress",
     "HostedMcpDiscoveryError",
+    // Activation-transaction outcome of a hosted-MCP discovery run — the same
+    // Bucket-3 domain-name class as its `HostedMcpDiscovery*` siblings.
+    "HostedMcpDiscoveryOutcome",
     "HostedMcpEndpoint",
     // --- Local* (non-LocalDev): the `local_trigger_access` module has been
     //     folded to a config value — fire-time trigger access is now the
@@ -110,7 +113,7 @@ const FROZEN_OTHER_MODE_TYPES: &[&str] = &[
     //   JUSTIFIED (Bucket-3 by meaning): "hook-local id" — an identifier local to
     //     one hook, a genuine domain concept, not a deployment tier.
     "HookLocalId",
-    //   Former RebornLocal* / LocalInvocationServicesResolver entries: cleared
+    //   Former RebornLocal* / ConfiguredInvocationServicesResolver entries: cleared
     //     by deployment-neutral renames after their implementations became
     //     policy-data-driven rather than local-only.
     //   mid-name LocalDev entries: none — cleared by the DeploymentConfig

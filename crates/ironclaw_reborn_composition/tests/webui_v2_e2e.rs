@@ -5,7 +5,7 @@
 //! stub `ProductSurface`, this test stands up a real local-dev
 //! `RebornRuntime`, overrides its LLM gateway with a scripted
 //! tool-calling fake, composes the v2 router through
-//! [`build_webui_services`] + [`webui_v2_app`], and exercises it from
+//! [`runtime.product_surface`] + [`webui_v2_app`], and exercises it from
 //! the browser side over HTTP (`tower::ServiceExt::oneshot`).
 //!
 //! The point is to prove the full chain — bearer auth → caller scope →
@@ -43,7 +43,7 @@ use ironclaw_loop_host::{
 };
 use ironclaw_reborn_composition::{
     OAuthClientConfig, PollSettings, RebornRuntime, RebornRuntimeIdentity, RebornRuntimeInput,
-    build_reborn_runtime, build_webui_services,
+    build_reborn_runtime,
 };
 use ironclaw_turns::run_profile::{
     CapabilityCallCandidate, LoopCapabilityPort, ProviderToolCall, RegisterProviderToolCallRequest,
@@ -517,7 +517,7 @@ impl HostManagedModelGateway for MemoryWriteGateway {
         }
 
         let memory_write_id =
-            CapabilityId::new("builtin.memory_write").expect("memory_write capability id");
+            CapabilityId::new("ironclaw.memory.write").expect("memory_write capability id");
         let memory_write_tool = capabilities
             .tool_definitions()
             .map_err(|err| {
@@ -528,7 +528,7 @@ impl HostManagedModelGateway for MemoryWriteGateway {
             })?
             .into_iter()
             .find(|def| def.capability_id == memory_write_id)
-            .expect("builtin.memory_write must be visible in local-dev capability surface");
+            .expect("ironclaw.memory.write must be visible in local-dev capability surface");
         let write = capabilities
             .register_provider_tool_call(RegisterProviderToolCallRequest::new(ProviderToolCall {
                 provider_id: "e2e-provider".to_string(),
@@ -700,7 +700,7 @@ async fn build_harness_at_with_runtime_owner_auth_user_and_google_oauth_backend(
         })
         .await
         .expect("enable global auto-approve for e2e dispatch");
-    let bundle = build_webui_services(&runtime, None).expect("webui bundle");
+    let bundle = runtime.product_surface(None).expect("product surface");
     let config = WebuiServeConfig::new(
         TenantId::new(TENANT).expect("tenant"),
         Arc::new(ValidTokenForUser::new(authenticated_user_id)),
@@ -712,7 +712,7 @@ async fn build_harness_at_with_runtime_owner_auth_user_and_google_oauth_backend(
         vec![HeaderValue::from_static("http://localhost:0")],
     )
     .with_default_agent_id(AgentId::new(AGENT).expect("agent"));
-    let router = webui_v2_app(bundle, config).expect("webui v2 app");
+    let router = webui_v2_app(bundle.clone(), config).expect("webui v2 app");
 
     Harness {
         runtime,
@@ -763,14 +763,14 @@ async fn build_two_user_harness(
         })
         .await
         .expect("enable global auto-approve for user A");
-    let bundle = build_webui_services(&runtime, None).expect("webui bundle");
+    let bundle = runtime.product_surface(None).expect("product surface");
     let config = WebuiServeConfig::new(
         TenantId::new(TENANT).expect("tenant"),
         Arc::new(TwoUserTokens),
         vec![HeaderValue::from_static("http://localhost:0")],
     )
     .with_default_agent_id(AgentId::new(AGENT).expect("agent"));
-    let router = webui_v2_app(bundle, config).expect("webui v2 app");
+    let router = webui_v2_app(bundle.clone(), config).expect("webui v2 app");
 
     Harness {
         runtime,
@@ -1573,26 +1573,29 @@ async fn webui_v2_gmail_oauth_setup_complete_allows_activation() {
         "setup should see the completed Google OAuth account so the UI can offer Activate: {setup_body}"
     );
 
-    let activate = harness
+    // #6520 removed the public activation endpoint: install is the only user
+    // action and host-owned readiness reconciliation derives the public
+    // phase. With the completed Google OAuth account present, the lifecycle
+    // projection reports gmail active — there is nothing left to call.
+    let list = harness
         .router
         .clone()
-        .oneshot(bearer_post(
-            "/api/webchat/v2/extensions/gmail/activate",
-            json!({
-                "client_action_id": "webui-v2-gmail-activate-after-setup"
-            }),
-        ))
+        .oneshot(bearer_get("/api/webchat/v2/extensions"))
         .await
-        .expect("activate Gmail oneshot");
-    let activate_status = activate.status();
-    let activate_body = read_json(activate).await;
+        .expect("list extensions oneshot");
+    assert_eq!(list.status(), StatusCode::OK);
+    let list_body = read_json(list).await;
+    let gmail = list_body["extensions"]
+        .as_array()
+        .expect("extensions array")
+        .iter()
+        .find(|extension| extension["package_ref"]["id"] == "gmail")
+        .cloned()
+        .expect("gmail listed after install");
     assert_eq!(
-        activate_status,
-        StatusCode::OK,
-        "activation should succeed after setup completion: {activate_body}"
+        gmail["installation_state"], "active",
+        "the completed OAuth account must reconcile gmail to active without an activate call: {gmail}"
     );
-    assert_eq!(activate_body["success"], true);
-    assert_eq!(activate_body["activated"], true);
 }
 
 #[tokio::test]
@@ -1608,10 +1611,11 @@ async fn webui_v2_google_docs_setup_projects_oauth_before_install() {
     assert_eq!(setup.status(), StatusCode::OK);
     let setup_body = read_json(setup).await;
     assert_eq!(setup_body["package_ref"]["id"], "google-docs");
-    // Option A retired the "discovered" wire phase: a catalog package that
-    // is not yet installed projects the neutral "installed"-vocabulary
-    // installation_state ("installed" here), never a transient phase string.
-    assert_eq!(setup_body["phase"], "installed");
+    // #6520 three-state lifecycle: a catalog package that is not yet
+    // installed projects the honest "uninstalled" public state (the
+    // "discovered"/"installed" wire literals are retired), never a
+    // transient phase string.
+    assert_eq!(setup_body["phase"], "uninstalled");
 
     let secrets = setup_body["secrets"]
         .as_array()
@@ -1670,10 +1674,11 @@ async fn webui_v2_github_api_key_setup_projects_manual_token_secret() {
     assert_eq!(setup.status(), StatusCode::OK);
     let setup_body = read_json(setup).await;
     assert_eq!(setup_body["package_ref"]["id"], "github");
-    // Option A retired the "discovered" wire phase: a catalog package that
-    // is not yet installed projects the neutral "installed"-vocabulary
-    // installation_state ("installed" here), never a transient phase string.
-    assert_eq!(setup_body["phase"], "installed");
+    // #6520 three-state lifecycle: a catalog package that is not yet
+    // installed projects the honest "uninstalled" public state (the
+    // "discovered"/"installed" wire literals are retired), never a
+    // transient phase string.
+    assert_eq!(setup_body["phase"], "uninstalled");
 
     let secrets = setup_body["secrets"]
         .as_array()
@@ -1839,7 +1844,7 @@ async fn untrusted_request_body_cannot_inject_system_scope() {
 // ─── operator LLM-config smoke (issue #4673) ──────────────────────────
 //
 // Stands up the same real local-dev runtime as the chat e2e, but with a boot
-// config (so the WebUI facade composes the operator LLM-config service) and an
+// config (so the product surface composes the operator LLM-config service) and an
 // operator-scoped authenticator (so the `/api/webchat/v2/llm/providers` routes
 // mount). Saving the built-in NEAR AI provider stores its API key under the
 // system scope; the regression was that the system-scoped secret serialized but
@@ -1900,14 +1905,14 @@ mod operator_llm_config {
         .with_boot_config(boot);
 
         let runtime = build_reborn_runtime(input).await.expect("runtime builds");
-        let bundle = build_webui_services(&runtime, None).expect("webui bundle");
+        let bundle = runtime.product_surface(None).expect("product surface");
         let config = WebuiServeConfig::new(
             TenantId::new(TENANT).expect("tenant"),
             Arc::new(OperatorToken),
             vec![HeaderValue::from_static("http://localhost:0")],
         )
         .with_default_agent_id(AgentId::new(AGENT).expect("agent"));
-        let router = webui_v2_app(bundle, config).expect("webui v2 app");
+        let router = webui_v2_app(bundle.clone(), config).expect("webui v2 app");
 
         Harness {
             runtime,

@@ -34,10 +34,14 @@ mod input;
 mod llm_admin;
 mod local_dev_authorization;
 mod local_dev_mounts;
+mod memory_binding;
+mod memory_provider_factory;
 mod observability;
 mod operator_tool_catalog;
 mod outbound;
 mod product_auth;
+mod product_capability;
+mod product_surface;
 mod production_runtime_policy;
 mod profile_approval_authorization;
 mod projection;
@@ -53,7 +57,6 @@ mod support;
 pub mod test_support;
 mod trigger_fire_access;
 mod turn_run_snapshot;
-mod webui;
 
 pub use admin_token::AdminApiTokenMinter;
 pub use automation::facade::RebornAutomationProductFacade;
@@ -66,7 +69,7 @@ pub use extension_host::channel_identity::{
 pub use extension_host::extension_ingress::{
     ChannelInboundSinkConfig, ChannelIngressDrain, ChannelIngressRegistration,
     ExtensionIngressParts, ExtensionIngressRegistry, GenericChannelInboundSink,
-    InboundPayloadClassifier, PostAdmissionObserver, StaticIngressSecrets, VerifiedEvidenceMint,
+    PostAdmissionObserver, StaticIngressSecrets, VerifiedEvidenceMint,
 };
 pub use extension_host::extension_ingress::{
     EXTENSION_INGRESS_ROUTE_PATTERN, extension_ingress_route_mount,
@@ -105,9 +108,8 @@ pub use input::{
 };
 /// OAuth redirect-URI newtype re-exported so the `ironclaw_reborn_cli` binary
 /// can name it without a direct `ironclaw_auth` dependency. Its
-/// `runtime/mod.rs` parses `IRONCLAW_REBORN_SLACK_PERSONAL_OAUTH_REDIRECT_URI`
-/// and the Google OAuth redirect URI from env into `OAuthRedirectUri` when
-/// building the runtime input / OAuth client config. The
+/// `runtime/mod.rs` parses the Google OAuth redirect URI from env into
+/// `OAuthRedirectUri` when building the runtime input / OAuth client config. The
 /// `reborn_cli_binary_crate_stays_separate_from_v1_root` boundary test (in
 /// `ironclaw_architecture`) pins the CLI's workspace dependencies to exactly
 /// the composition-facade set, so adding `ironclaw_auth` there would fail that
@@ -179,6 +181,11 @@ pub use llm_admin::nearai_mcp::{
     NearAiMcpBootstrapConfig, NearAiMcpBootstrapConfigError, nearai_mcp_bootstrap_config_from_env,
 };
 pub use llm_admin::openai_compat_serve::build_openai_compat_route_mount;
+pub use memory_binding::{memory_binding_diagnostics, resolve_memory_binding_policy};
+pub use memory_provider_factory::{
+    Mem0ConnectionConfig, MemoryProviderDeps, build_memory_service_resolver,
+    create_document_store_provider,
+};
 // Re-exported for the host-owned `ironclaw_webui::webui_v2_app`
 // (hoisted up from this crate): its bearer-auth middleware mints tenant-scoped
 // verified-bearer evidence for protected OpenAI-compatible mounts. Ingress must
@@ -225,9 +232,6 @@ pub use product_auth::api::auth::{
     RebornOAuthCallbackRequest, RebornOAuthCallbackResponse, RebornProductAuthServicePorts,
     RebornProductAuthServices,
 };
-// Product-auth WebUI route-mount builders, exposed so the host-owned
-// `ironclaw_webui::webui_v2_app` (moved up from this crate) can
-// compose the Reborn-native product-auth surface into the WebChat v2 router.
 pub use product_auth::serve::{
     ProductAuthRouteMount, ProductAuthRouteState, product_auth_route_mount,
 };
@@ -265,14 +269,6 @@ pub use runtime_input::{
     TurnRunnerSettings,
 };
 pub use runtime_input::{RebornProviderFactory, ResolvedRebornLlm};
-pub use webui::facade::{RebornWebuiBundle, build_webui_services};
-// Host-supplied route-mount vocabulary shared with composition's own route
-// builders (nearai login, OpenAI-compat) and the host-owned gateway assembly
-// in `ironclaw_webui`. The `WebuiServeConfig` / `webui_v2_app`
-// / `WebuiAuthenticator` surface moved up into that ingress crate.
-pub use webui::route_mounts::{
-    ProtectedRouteMount, PublicRouteDrain, PublicRouteDrains, PublicRouteMount,
-};
 
 /// Re-exported identity vocabulary host binaries need to construct
 /// public runtime/WebUI types whose signatures mention a host-api identity.
@@ -327,15 +323,13 @@ pub fn open_reborn_identity_resolver(
     let filesystem = std::sync::Arc::new(ironclaw_filesystem::ScopedFilesystem::with_fixed_view(
         root, view,
     ));
-    std::sync::Arc::new(
-        ironclaw_reborn_identity::FilesystemRebornIdentityStore::new(
-            filesystem,
-            tenant_id.clone(),
-            UserId::new("test-owner").expect("user"),
-            AgentId::new("test-agent").expect("agent"),
-            None,
-        ),
-    )
+    std::sync::Arc::new(ironclaw_reborn_identity::RebornIdentityStore::new(
+        filesystem,
+        tenant_id.clone(),
+        UserId::new("test-owner").expect("user"), // safety: test-support-only static valid ID
+        AgentId::new("test-agent").expect("agent"), // safety: test-support-only static valid ID
+        None,
+    ))
 }
 
 /// Reborn model purpose slot names exposed for diagnostic callers.
@@ -431,7 +425,7 @@ use ironclaw_host_api::{
     MountAlias, MountGrant, MountPermissions, MountView, ResourceScope, VirtualPath,
 };
 use ironclaw_host_runtime::{CapabilitySurfaceVersion, HostRuntimeServices};
-use ironclaw_processes::{FilesystemProcessResultStore, FilesystemProcessStore};
+use ironclaw_processes::{ProcessResultStore, ProcessStore};
 use ironclaw_reborn_event_store::RebornEventStoreConfig;
 use ironclaw_reborn_event_store::RebornEventStoreError;
 use ironclaw_resources::FilesystemResourceGovernor;
@@ -447,15 +441,15 @@ use thiserror::Error;
 pub type LibSqlProductionHostRuntimeServices = HostRuntimeServices<
     LibSqlRootFilesystem,
     FilesystemResourceGovernor<LibSqlRootFilesystem>,
-    FilesystemProcessStore<LibSqlRootFilesystem>,
-    FilesystemProcessResultStore<LibSqlRootFilesystem>,
+    ProcessStore<LibSqlRootFilesystem>,
+    ProcessResultStore<LibSqlRootFilesystem>,
 >;
 
 pub type PostgresProductionHostRuntimeServices = HostRuntimeServices<
     PostgresRootFilesystem,
     FilesystemResourceGovernor<PostgresRootFilesystem>,
-    FilesystemProcessStore<PostgresRootFilesystem>,
-    FilesystemProcessResultStore<PostgresRootFilesystem>,
+    ProcessStore<PostgresRootFilesystem>,
+    ProcessResultStore<PostgresRootFilesystem>,
 >;
 
 /// Consumer-store mount aliases that are tenant-rewritten by
@@ -922,7 +916,7 @@ mod two_tenant_isolation_tests {
     //! Regression test for the cross-tenant collision finding from the
     //! 2026-05-17 serrrfirat review.
     //!
-    //! Drives the public `SecretStore` surface from two distinct
+    //! Drives the public `SecretStorePort` surface from two distinct
     //! `(tenant, user)` scopes that share identical agent/project/handle,
     //! against the production-shape `wrap_scoped`/`invocation_mount_view`
     //! wiring over an `InMemoryBackend`. Without per-tenant path
@@ -937,7 +931,7 @@ mod two_tenant_isolation_tests {
     use super::*;
     use ironclaw_filesystem::InMemoryBackend;
     use ironclaw_host_api::{AgentId, InvocationId, ProjectId, SecretHandle, TenantId, UserId};
-    use ironclaw_secrets::{FilesystemSecretStore, SecretMaterial, SecretStore, SecretsCrypto};
+    use ironclaw_secrets::{SecretMaterial, SecretStore, SecretStorePort, SecretsCrypto};
     use secrecy::ExposeSecret;
 
     fn scope(tenant: &str, user: &str) -> ResourceScope {
@@ -965,7 +959,7 @@ mod two_tenant_isolation_tests {
     async fn two_tenants_with_same_agent_project_handle_do_not_collide_on_put() {
         let backend = Arc::new(InMemoryBackend::new());
         let scoped = wrap_scoped(Arc::clone(&backend));
-        let store = FilesystemSecretStore::new(Arc::clone(&scoped), test_crypto());
+        let store = SecretStore::new(Arc::clone(&scoped), test_crypto());
 
         let handle = SecretHandle::new("oauth_token").unwrap();
         let scope_a = scope("tenant_a", "alice");
@@ -1003,7 +997,7 @@ mod two_tenant_isolation_tests {
 #[cfg(test)]
 mod gate_record_production_mount_tests {
     //! Production-shape mount coverage for the `/gate-records` alias: drives the
-    //! `GateRecordStore` seam over the real `wrap_scoped`/`invocation_mount_view`
+    //! `GateRecordStorePort` seam over the real `wrap_scoped`/`invocation_mount_view`
     //! wiring. Pins two things: the alias is actually registered in
     //! [`PER_USER_ALIASES`] (an unregistered alias fails every save with
     //! `MountNotFound`, making the store unusable in production), and the
@@ -1014,7 +1008,7 @@ mod gate_record_production_mount_tests {
     use ironclaw_host_api::{
         GateRecord, GateRef, InvocationId, ProjectId, SafeSummary, TenantId, UserId,
     };
-    use ironclaw_run_state::{FilesystemGateRecordStore, GateRecordStore};
+    use ironclaw_run_state::{GateRecordStore, GateRecordStorePort};
 
     fn scope(tenant: &str, user: &str) -> ResourceScope {
         ResourceScope {
@@ -1031,7 +1025,7 @@ mod gate_record_production_mount_tests {
     #[tokio::test]
     async fn gate_records_save_and_load_through_the_production_mount_view() {
         let scoped = wrap_scoped(Arc::new(InMemoryBackend::new()));
-        let store = FilesystemGateRecordStore::new(scoped);
+        let store = GateRecordStore::new(scoped);
         let record = GateRecord::Approval {
             summary: SafeSummary::new("awaiting decision").unwrap(), // safety: fixed-valid test fixture
         };

@@ -23,6 +23,15 @@ path-guid = "9BB3F0DB-3513-45E6-A23B-CE5A5E5C1759"
 license = false
 eula = false
 
+[features]
+# Compile in the (off-by-default) mem0 third-party memory provider so an
+# `ironclaw-reborn` binary can bind `memory.document_store.v1` to a self-hosted
+# mem0 OSS server. Mirrors the same feature on `ironclaw_reborn_composition`;
+# without it a default binary carries no mem0 code or its reqwest/rustls
+# transport and a mem0 binding fails closed.
+memory-mem0 = [
+    "ironclaw_reborn_composition/memory-mem0",
+]
 [dependencies]
 anyhow = "1"
 async-trait = { version = "0.1" }
@@ -85,12 +94,12 @@ ironclaw_reborn_composition = { path = "../ironclaw_reborn_composition", version
 ironclaw_common = { path = "../ironclaw_common", version = "0.4.2" }
 # FaultInjecting decorator: test store fault paths through the real store.
 # `commands::onboard::llm_credentials`'s write-first-then-config-ordering test
-# builds the real `ironclaw_secrets::FilesystemSecretStore` over a
+# builds the real `ironclaw_secrets::SecretStore` over a
 # `FaultInjecting<InMemoryBackend>` armed to fail secret writes, so the failing
 # put exercises the production store's real error mapping.
 ironclaw_filesystem = { path = "../ironclaw_filesystem", version = "0.1.0", features = ["test-support"] }
 # `commands::onboard::llm_credentials`'s write-ordering test builds the real
-# `ironclaw_secrets::FilesystemSecretStore::ephemeral_over(..)` (plus
+# `ironclaw_secrets::SecretStore::ephemeral_over(..)` (plus
 # `keychain::generate_master_key_hex`); production onboarding code only ever
 # touches secrets through `ironclaw_reborn_composition::LlmKeyStore`'s facade
 # (`put_plaintext`), so this stays a dev-only dependency — see

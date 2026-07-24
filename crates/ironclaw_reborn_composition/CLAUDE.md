@@ -4,7 +4,7 @@
 - Expose facade-shaped handles only: `HostRuntime`, `TurnCoordinator`, product-auth `RebornProductAuthServices`, WebUI `ProductSurface`, readiness.
 - Keep lower substrate handles private to factories and owning crates.
 - Substrate handles MAY be exposed via `#[cfg(any(test, feature = "test-support"))]` pub accessors on `RebornRuntime` when downstream integration tests need to drive production-shape state the facade doesn't yet surface (e.g. seeding `TriggerRecord` rows, `pair_external_actor` calls). These seams ship zero bytes in production binaries. New test-support accessors must carry a doc-comment naming the production call site they mirror and an explicit note that the handle is for tests only.
-- Outbound state stores are composition-owned via `RebornRuntimeSubstrate`; do not construct `FilesystemOutboundStateStore` in consumer modules (lint-enforced via `clippy::disallowed-methods`).
+- Outbound state stores are composition-owned via `RebornRuntimeSubstrate`; do not construct `OutboundStateStore` in consumer modules (lint-enforced via `clippy::disallowed-methods`).
 - Do not depend on the root `ironclaw` crate or `src/` modules.
 - Do not add legacy bridge modes here until an accepted migration contract exists.
 - Do not route live v1/product traffic here; callers must opt in through explicit Reborn adapters.
@@ -74,12 +74,12 @@ middleware with v1's `src/channels/web/`.
 
 | Symbol | Role |
 |---|---|
-| `RebornWebuiBundle` (in [`src/webui/facade.rs`](src/webui/facade.rs)) | `{ product_surface: Arc<dyn ProductSurface>, product_auth: Option<Arc<RebornProductAuthServices>>, readiness }` — the v2 product surface, optional product-auth route service, plus readiness snapshot |
-| `build_webui_services(runtime, event_stream)` | Compose a `RebornWebuiBundle` from an already-built `RebornRuntime`; reuses the runtime's thread service / turn coordinator, product-auth services, and runtime-owned `EventStreamManager` projection stream unless a caller supplies a custom stream |
+| `RebornRuntime::product_surface(event_stream)` | Build the v2 `Arc<dyn ProductSurface>` from an already-built `RebornRuntime`; reuses the runtime's thread service / turn coordinator, product-auth services, and runtime-owned `EventStreamManager` projection stream unless a caller supplies a custom stream |
+| `RebornRuntime::product_auth_services()` / `RebornRuntime::readiness()` | Runtime-owned host handles consumed by the CLI/WebUI host when mounting auth routes and reporting readiness |
 | `RebornProjectionServices` (in `src/projection.rs`) | Runtime-owned projection/event-stream composition; owns the single local-dev `EventStreamManager` and creates product-specific `ProjectionStream` adapters over it |
 | `WebuiAuthenticator` trait | Host-supplied bearer-token verifier; returns `Option<WebuiAuthentication>` so identity and request-scoped WebUI capabilities travel together |
 | `WebuiServeConfig { tenant_id, authenticator, max_body_bytes, allowed_origins, csp_header }` | Required config for `webui_v2_app`; no defaults that silently disable security |
-| `webui_v2_app(bundle, config) -> Router` | Build the fully-composed axum `Router`. This is the seam between this product/API crate and host-owned HTTP ingress: tests drive it via `tower::ServiceExt::oneshot`; the `ironclaw serve` subcommand hands it to `axum::serve` from a host-owned listener |
+| `webui_v2_app(product_surface, config) -> Router` | Build the fully-composed axum `Router`. This is the seam between this product/API crate and host-owned HTTP ingress: tests drive it via `tower::ServiceExt::oneshot`; the `ironclaw serve` subcommand hands it to `axum::serve` from a host-owned listener |
 | `ProtectedRouteMount` | Host-supplied protected API route fragment merged inside the WebUI bearer-auth layer with descriptor-driven body/rate limits. Reborn OpenAI-compatible routes use this seam; do not use it for v1 gateway routers. |
 
 ### Middleware stack composed by `webui_v2_app`
@@ -171,6 +171,12 @@ Reborn-native product-auth surface:
   to the gateway-wide fallback cap. The browser cannot choose `AuthFlowKind` or
   `AuthContinuationRef`; this first route creates integration-credential
   setup flows with `AuthContinuationRef::SetupOnly`.
+- `POST /api/webchat/v2/extensions/{package_id}/setup/oauth/start` accepts only
+  the installed manifest credential requirement name plus expiry/invocation
+  context. Production resolves provider, account label, and OAuth scopes from
+  the lifecycle setup projection; raw browser provider/scope fields are not
+  accepted, and the global recipe registry is not extension authority. The
+  route emits a server-owned `LifecycleActivation` continuation.
 - `GET /api/reborn/product-auth/oauth/callback/{flow_id}` is a hosted
   callback route and is intentionally not behind WebUI bearer auth. It
   bounds the raw query string, reconstructs the scoped callback owner from
@@ -311,7 +317,7 @@ rows are inventoried here, not implemented in the current PR.
 | Resolve gate | `POST /api/chat/gate/resolve` | `POST /api/webchat/v2/threads/{tid}/runs/{run_id}/gates/{gate_ref}/resolve` | Mapped |
 | Approval shim | `POST /api/chat/approval` | (Subsumed by `resolve_gate`) | Mapped |
 | Auth-token / auth-cancel | `POST /api/chat/auth-{token,cancel}` | (Engine v1 compatibility shim; delete with v1) | v1-only (legacy) |
-| Extensions registry/list/install/activate/remove/setup | `GET\|POST /api/extensions/*` | `GET /api/webchat/v2/extensions`, `GET /api/webchat/v2/extensions/registry`, `POST /api/webchat/v2/extensions/install`, `POST /api/webchat/v2/extensions/{package_id}/{activate,remove,setup}` | Mapped to lifecycle package refs and registry projections; setup projects credential requirements and product-auth OAuth start is mounted under the extension setup surface |
+| Extensions registry/list/install/remove/setup | `GET\|POST /api/extensions/*` | `GET /api/webchat/v2/extensions`, `GET /api/webchat/v2/extensions/registry`, `POST /api/webchat/v2/extensions/install`, `POST /api/webchat/v2/extensions/{package_id}/{remove,setup}` | Mapped to lifecycle package refs and registry projections. Install establishes membership and host-owned reconciliation derives `setup_needed` or `active`; there is no public activation endpoint. Setup projects credential requirements and product-auth OAuth start is mounted under the extension setup surface. |
 | Extension import from zip (#5459) | (none — v2-only surface) | `POST /api/webchat/v2/extensions/import` | Admin-only (`operator_webui_config` capability on the matched bearer): uploads a standalone WASM tool bundle (zip with `manifest.toml` + `wasm/` + `schemas/` + `prompts/`). Validated as `ManifestSource::InstalledLocal` (never first-party/system trust or runtime, wasm runtime only, all manifest-declared assets required, duplicate zip entries rejected), then materialized under `/system/extensions/<id>/` and added to the catalog under the catalog-write + operation locks; duplicate installed/catalog ids are rejected. Restart-safe: startup filesystem discovery stamps everything it finds `InstalledLocal` (`HostBundled` is reserved for binary-compiled extensions), so a restart cannot relabel an upload into the first-party trust tier. 8 MiB body cap, mutation rate limit |
 | LLM provider config | v1 settings/provider config surface | `GET /api/webchat/v2/llm/providers`, `POST /api/webchat/v2/llm/providers`, `POST /api/webchat/v2/llm/providers/{provider_id}/delete`, `POST /api/webchat/v2/llm/active`, `POST /api/webchat/v2/llm/{test-connection,list-models}` | Mapped for trusted operator-token deployments; left unmounted for multi-user authenticators until an admin role boundary exists |
 | Operator status/readiness | v1 doctor/readiness surfaces | `GET /api/webchat/v2/operator/status` | Mapped to Reborn readiness projection through the product facade; left unmounted with other operator routes for multi-user authenticators |
@@ -380,16 +386,16 @@ Per Path A in `docs/reborn/how-to-port-channel-to-reborn.md`:
 ### How the standalone `ironclaw serve` consumes this
 
 The `serve` subcommand builds a full local-dev `RebornRuntime`, asks
-`build_webui_services(&runtime, None)` for the WebUI bundle, and hands
+`runtime.product_surface(None)` for the product surface, and hands
 the resulting router to the host-owned `ironclaw_webui`
-listener lifecycle. The bundle's default projection stream is backed by
+listener lifecycle. The default projection stream is backed by
 the runtime-owned durable event log plus `EventStreamManager`, so
 `/events` and `/ws` no longer advertise routes that only return
 `Unavailable`. In local-dev builds with `libsql` enabled, the log and
 runtime state stores sit behind the composed local-dev root filesystem
 (`reborn-local-dev.db` for durable records, `/projects` for workspace
 files). Production durable retention/live fanout still belongs in the
-host runtime/event-store follow-up rather than this composition facade.
+host runtime/event-store follow-up rather than WebUI ingress.
 
 Live cumulative assistant-text projections are producer-coalesced: the first
 update is published immediately, rapid replacements publish the latest value
@@ -410,13 +416,13 @@ interim updates. This is enforced by
 // `reborn_product_api_crates_do_not_bind_http_ingress` forbids
 // product/API crates from owning server lifecycle).
 let runtime = build_reborn_runtime(input).await?;
-let bundle = build_webui_services(&runtime, None)?;
+let product_surface = runtime.product_surface(None)?;
 let config = WebuiServeConfig::new(
     TenantId::new(host_installation_tenant)?,
     Arc::new(MyHostAuthenticator::new(...)),
     same_origin_allowlist(bound_addr),
 );
-let app = webui_v2_app(bundle, config)?;
+let app = webui_v2_app(product_surface, config)?;
 let listener = tokio::net::TcpListener::bind(addr).await?;
 axum::serve(listener, app).with_graceful_shutdown(shutdown).await?;
 ```
@@ -424,7 +430,7 @@ axum::serve(listener, app).with_graceful_shutdown(shutdown).await?;
 ### Tests
 
 - `src/runtime.rs::tests::local_dev_runtime_webui_bundle_reuses_thread_and_turn_facades`
-  — regression guard that the WebUI bundle reuses the runtime turn/thread
+  — regression guard that the product surface reuses the runtime turn/thread
   facades.
 - `src/projection.rs::tests::product_event_stream_drains_run_status_projection_from_event_stream_manager`
   — regression guard that the product event stream drains the current

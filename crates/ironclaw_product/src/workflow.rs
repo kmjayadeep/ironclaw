@@ -1,4 +1,4 @@
-// arch-exempt: large_file, §4.3 delete InMemoryDeliveredGateRouteStore (workflow default -> NoopDeliveredGateRouteStore; test doubles -> FilesystemOutboundStateStore helper), no logic change, plan #6168
+// arch-exempt: large_file, §4.3 delete InMemoryDeliveredGateRouteStore (workflow default -> NoopDeliveredGateRouteStore; test doubles -> OutboundStateStore helper), no logic change, plan #6168
 //! Host-side product surface implementation.
 //!
 //! This is the top-level product action orchestrator that dispatches inbound
@@ -478,7 +478,7 @@ async fn resolve_projection_subject(
     }
 }
 
-async fn lookup_interaction_binding(
+pub(crate) async fn lookup_interaction_binding(
     envelope: &ProductInboundEnvelope,
     binding_service: &dyn ConversationBindingService,
 ) -> Result<ResolvedBinding, ProductWorkflowError> {

@@ -140,7 +140,6 @@ async fn runtime_channel_identity_bind_uses_deployment_channel_before_user_activ
     .with_channel_extension_bindings(vec![crate::input::ChannelExtensionBinding {
         extension_id: "slack".to_string(),
         adapter: Arc::new(ironclaw_slack_extension::SlackChannelAdapter),
-        inbound_payload_classifier: None,
         preference_target_codec: None,
     }]);
     let input =
@@ -152,9 +151,9 @@ async fn runtime_channel_identity_bind_uses_deployment_channel_before_user_activ
         });
     let runtime = build_reborn_runtime(input).await.expect("runtime builds");
     let extension_management = &runtime.extension_management;
-    let operator = extension_management
-        .tenant_operator_user_id_for_test()
-        .clone();
+    // #6520 removed the port-side operator accessor: the tenant operator is
+    // the owner the runtime was constructed with.
+    let operator = UserId::new("runtime-channel-bind-race-owner").expect("valid lifecycle caller");
     let slack_ref = LifecyclePackageRef::new(LifecyclePackageKind::Extension, "slack")
         .expect("valid Slack ref");
     extension_management
@@ -162,11 +161,10 @@ async fn runtime_channel_identity_bind_uses_deployment_channel_before_user_activ
         .await
         .expect("install Slack before OAuth callback");
 
-    let slack_id = ironclaw_host_api::ExtensionId::new("slack").expect("Slack extension id");
     runtime
-        .channel_config
-        .save(
-            &slack_id,
+        .admin_configuration_resolver
+        .configure_admin_group_for_test(
+            "extension.slack",
             vec![
                 ("slack_bot_token".to_string(), "xoxb-test".to_string()),
                 (
@@ -175,6 +173,16 @@ async fn runtime_channel_identity_bind_uses_deployment_channel_before_user_activ
                 ),
                 ("slack_team_id".to_string(), "T-RUNTIME".to_string()),
                 ("slack_api_app_id".to_string(), "A-RUNTIME".to_string()),
+                ("slack_installation_id".to_string(), "I-RUNTIME".to_string()),
+                ("slack_bot_user_id".to_string(), "U-BOT-RUNTIME".to_string()),
+                (
+                    "slack_oauth_client_id".to_string(),
+                    "runtime-client-id".to_string(),
+                ),
+                (
+                    "slack_oauth_client_secret".to_string(),
+                    "runtime-client-secret".to_string(),
+                ),
             ],
         )
         .await
@@ -226,7 +234,11 @@ async fn runtime_channel_identity_bind_uses_deployment_channel_before_user_activ
     assert_eq!(network_egress.calls.load(Ordering::SeqCst), 1);
 
     extension_management
-        .activate_with_prechecked_credentials_for_test(slack_ref, ExtensionActivationMode::Static)
+        .activate_with_prechecked_credentials_for_test(
+            slack_ref,
+            ExtensionActivationMode::Static,
+            &operator,
+        )
         .await
         .expect("activate Slack and publish the generic host snapshot");
 
@@ -501,7 +513,6 @@ fn production_scheduler_wake_guard_passes_local_dev_with_absent_wiring() {
         .expect("local-dev is exempt from the scheduler wake wiring requirement");
 }
 
-use ironclaw_host_api::InstallationState;
 use ironclaw_host_api::ProjectId;
 use ironclaw_host_api::{
     ActivityId, AgentId, ApprovalRequestId, CapabilityId, InvocationId, Principal,
@@ -521,12 +532,13 @@ use ironclaw_loop_host::{
 };
 use ironclaw_product::{
     CREATE_THREAD_COMMAND, LifecyclePackageKind, LifecyclePackageRef, LifecycleProductPayload,
-    LifecycleReadinessBlocker, ProductCreateThreadRequest, ProductListAutomationsRequest,
-    ProductResolveGateRequest, ProductSetupExtensionRequest, ProductSubmitTurnRequest,
-    ProductSurfaceCommandDescriptor, RESOLVE_GATE_COMMAND, RebornExtensionCredentialSetup,
-    RebornOutboundPreferencesResponse, RebornSetupExtensionResponse, RebornSkillListResponse,
-    RebornStreamEventsRequest, RebornStreamEventsResponse, RebornSubmitTurnResponse,
-    RebornViewPage, RebornViewQuery, SUBMIT_TURN_COMMAND, approval_gate_ref,
+    LifecyclePublicState, LifecycleReadinessBlocker, ProductCreateThreadRequest,
+    ProductListAutomationsRequest, ProductResolveGateRequest, ProductSetupExtensionRequest,
+    ProductSubmitTurnRequest, ProductSurfaceCommandDescriptor, RESOLVE_GATE_COMMAND,
+    RebornExtensionCredentialSetup, RebornOutboundPreferencesResponse,
+    RebornSetupExtensionResponse, RebornSkillListResponse, RebornStreamEventsRequest,
+    RebornStreamEventsResponse, RebornSubmitTurnResponse, RebornViewPage, RebornViewQuery,
+    SUBMIT_TURN_COMMAND, approval_gate_ref,
 };
 use ironclaw_product::{ProductOutboundPayload, ProductProjectionItem};
 use ironclaw_skills::SkillTrust;
@@ -557,7 +569,6 @@ use crate::runtime_input::{
     TriggerFireAccessChecker, TriggerFireAccessDecision, TriggerFireAccessError,
     TriggerPollerSettings,
 };
-use crate::webui::facade::build_webui_services;
 use crate::{RebornCompositionProfile, RebornReadiness, RebornReadinessState, RebornRuntimeError};
 use ironclaw_reborn_config::{RebornBootConfig, RebornHome, RebornProfile};
 
@@ -568,6 +579,56 @@ const RUNTIME_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 
 async fn stop_turn_runner_worker_for_manual_state_test(runtime: &super::RebornRuntime) {
     runtime.turn_scheduler.stop_for_test().await;
+}
+
+/// The production-shaped credential gate for lifecycle projections: #6520's
+/// `project` takes the caller's credential gate so credential-bearing
+/// extensions can project `Active` (a `None` gate caps them at setup-needed).
+fn runtime_extension_credential_gate(
+    runtime: &super::RebornRuntime,
+    user_id: &UserId,
+) -> crate::extension_host::extension_activation_credentials::RuntimeExtensionActivationCredentialGate
+{
+    let mut scope = runtime.thread_scope.to_resource_scope();
+    scope.user_id = user_id.clone();
+    scope.mission_id = None;
+    scope.thread_id = None;
+    scope.invocation_id = InvocationId::new();
+    crate::extension_host::extension_activation_credentials::RuntimeExtensionActivationCredentialGate::new(
+        scope,
+        runtime
+            .product_auth
+            .runtime_credential_account_selection_service(),
+    )
+}
+
+/// Install an extension through the ProductSurface capability path the WebUI
+/// uses. Install joins membership and auto-drives readiness (#6520 — there is
+/// no separate Activate action); a credential-gated package parks on `auth`.
+async fn install_webui_extension(
+    api: &dyn ironclaw_host_api::ProductSurface,
+    caller: ProductSurfaceCaller,
+    package_ref: LifecyclePackageRef,
+) {
+    let response = api
+        .invoke(
+            caller,
+            ironclaw_host_api::ProductSurfaceInvokeRequest {
+                operation_id: CapabilityId::new(ironclaw_product::EXTENSION_INSTALL_CAPABILITY_ID)
+                    .expect("extension install capability id"),
+                input: serde_json::json!({ "extension_id": package_ref.id.as_str() }),
+                activity_id: ActivityId::new(),
+            },
+        )
+        .await
+        .expect("install extension through ProductSurface capability");
+    let resolution: Resolution =
+        serde_json::from_value(response.output).expect("install resolution decodes");
+    match resolution {
+        Resolution::Done(outcome) if outcome.verdict.is_success() => {}
+        Resolution::Blocked(blocked) if blocked.kind() == "auth" => {}
+        other => panic!("extension install did not succeed: {other:?}"),
+    }
 }
 
 fn local_dev_runtime_policy() -> EffectiveRuntimePolicy {
@@ -1848,14 +1909,13 @@ async fn runtime_nearai_mcp_bootstraps_from_nearai_session_token() {
     let extension_management = &runtime.extension_management;
     let nearai_ref =
         LifecyclePackageRef::new(LifecyclePackageKind::Extension, "nearai").expect("valid ref");
+    let operator = UserId::new("runtime-nearai-session-mcp-owner").expect("valid lifecycle caller");
+    let credential_gate = runtime_extension_credential_gate(&runtime, &operator);
     let projection = extension_management
-        .project(
-            nearai_ref,
-            extension_management.tenant_operator_user_id_for_test(),
-        )
+        .project(nearai_ref, &operator, Some(&credential_gate))
         .await
         .expect("NEAR AI MCP projected");
-    assert_eq!(projection.phase, InstallationState::Active);
+    assert_eq!(projection.phase, LifecyclePublicState::Active);
 
     let capabilities = extension_management
         .active_model_visible_capabilities()
@@ -1954,14 +2014,13 @@ async fn runtime_nearai_mcp_bootstraps_from_stored_nearai_api_key() {
     let extension_management = &runtime.extension_management;
     let nearai_ref =
         LifecyclePackageRef::new(LifecyclePackageKind::Extension, "nearai").expect("valid ref");
+    let operator = UserId::new("runtime-nearai-stored-mcp-owner").expect("valid lifecycle caller");
+    let credential_gate = runtime_extension_credential_gate(&runtime, &operator);
     let projection = extension_management
-        .project(
-            nearai_ref,
-            extension_management.tenant_operator_user_id_for_test(),
-        )
+        .project(nearai_ref, &operator, Some(&credential_gate))
         .await
         .expect("NEAR AI MCP projected");
-    assert_eq!(projection.phase, InstallationState::Active);
+    assert_eq!(projection.phase, LifecyclePublicState::Active);
 
     let capabilities = extension_management
         .active_model_visible_capabilities()
@@ -3547,11 +3606,11 @@ async fn send_user_message_until_gate_returns_blocked_on_auth_gate() {
     let extension_management = &runtime.extension_management;
     let notion_ref = LifecyclePackageRef::new(LifecyclePackageKind::Extension, "notion")
         .expect("valid notion ref");
+    // #6520 removed the port-side operator accessor: install as the runtime
+    // owner (the tenant operator this runtime was constructed with).
+    let operator = UserId::new("runtime-auth-gate-owner").expect("valid lifecycle caller");
     extension_management
-        .install(
-            notion_ref.clone(),
-            extension_management.tenant_operator_user_id_for_test(),
-        )
+        .install(notion_ref.clone(), &operator)
         .await
         .expect("install Notion MCP");
     // v3 hosted-MCP packages publish no model-visible tools on static
@@ -3561,18 +3620,53 @@ async fn send_user_message_until_gate_returns_blocked_on_auth_gate() {
         .activate_with_prechecked_credentials_for_test(
             notion_ref,
             ExtensionActivationMode::HostedMcpDiscovery {
-                scope: ResourceScope::local_default(
-                    UserId::new("runtime-auth-gate-owner").expect("valid user"),
-                    InvocationId::new(),
-                )
-                .expect("valid scope"),
+                scope: ResourceScope::local_default(operator.clone(), InvocationId::new())
+                    .expect("valid scope"),
                 runtime_http_egress: Arc::new(
                     crate::extension_host::extension_lifecycle::hosted_mcp_test_support::HostedMcpDiscoveryEgress::with_tool_name("notion-search"),
                 ),
             },
+            &operator,
         )
         .await
         .expect("activate Notion MCP with scripted discovery");
+
+    // #6520 caller-phase surface: notion tools are model-visible only when the
+    // caller's notion credential account resolves. Seed a Configured account
+    // whose secret handle has no stored material — the surface becomes
+    // visible while dispatch-time injection still raises the auth gate this
+    // test drives.
+    {
+        use ironclaw_auth::{
+            AuthProductScope, AuthProviderId, AuthSurface, CredentialAccountLabel,
+            CredentialAccountStatus, CredentialOwnership, NewCredentialAccount,
+        };
+        let mut scope = runtime.thread_scope.to_resource_scope();
+        scope.user_id = runtime.actor_user_id.clone();
+        scope.mission_id = None;
+        scope.thread_id = None;
+        scope.invocation_id = InvocationId::new();
+        runtime
+            .product_auth
+            .credential_account_service()
+            .create_account(NewCredentialAccount {
+                scope: AuthProductScope::credential_owner(&scope, AuthSurface::Api),
+                provider: AuthProviderId::new("notion").expect("provider"),
+                label: CredentialAccountLabel::new("notion").expect("label"),
+                status: CredentialAccountStatus::Configured,
+                ownership: CredentialOwnership::UserReusable,
+                owner_extension: None,
+                granted_extensions: Vec::new(),
+                access_secret: Some(
+                    ironclaw_host_api::SecretHandle::new("notion-test-token".to_string())
+                        .expect("secret handle"),
+                ),
+                refresh_secret: None,
+                scopes: Vec::new(),
+            })
+            .await
+            .expect("create configured notion account without secret material");
+    }
 
     let conversation = runtime.new_conversation().await.expect("conversation");
     runtime
@@ -4990,7 +5084,7 @@ async fn local_dev_runtime_webui_bundle_reuses_thread_and_turn_facades() {
 
     let runtime = build_reborn_runtime(input).await.expect("runtime builds");
     let runtime_turn_coordinator = runtime.product_turn_coordinator();
-    let bundle = build_webui_services(&runtime, None).expect("webui bundle");
+    let bundle = runtime.product_surface(None).expect("product surface");
     let caller = ProductSurfaceCaller::new(
         TenantId::new("runtime-webui-tenant").unwrap(),
         UserId::new("runtime-webui-owner").unwrap(),
@@ -4998,7 +5092,7 @@ async fn local_dev_runtime_webui_bundle_reuses_thread_and_turn_facades() {
         None,
     );
     let created = invoke_product_command(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller.clone(),
         CREATE_THREAD_COMMAND,
         ProductCreateThreadRequest {
@@ -5010,7 +5104,7 @@ async fn local_dev_runtime_webui_bundle_reuses_thread_and_turn_facades() {
     .await
     .expect("create webui thread");
     let submitted = invoke_product_command(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller.clone(),
         SUBMIT_TURN_COMMAND,
         ProductSubmitTurnRequest {
@@ -5029,7 +5123,7 @@ async fn local_dev_runtime_webui_bundle_reuses_thread_and_turn_facades() {
     let stream = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let stream = stream_product_events(
-                bundle.product_surface.as_ref(),
+                bundle.as_ref(),
                 caller.clone(),
                 RebornStreamEventsRequest {
                     thread_id: created.thread.thread_id.to_string(),
@@ -5062,7 +5156,7 @@ async fn local_dev_runtime_webui_bundle_reuses_thread_and_turn_facades() {
     .await
     .expect("completed webui projection should appear");
 
-    let _api = bundle.product_surface.clone();
+    let _api = bundle.clone();
     assert!(Arc::ptr_eq(
         &runtime_turn_coordinator,
         &runtime.product_turn_coordinator()
@@ -5075,17 +5169,16 @@ async fn local_dev_runtime_webui_bundle_reuses_thread_and_turn_facades() {
                 | ProductOutboundPayload::ProjectionSnapshot { .. }
                 | ProductOutboundPayload::ProjectionUpdate { .. }
         )),
-        "webui bundle should expose only projection stream events"
+        "product surface should expose only projection stream events"
     );
-    assert_eq!(bundle.readiness, runtime.readiness().clone());
-    assert_eq!(bundle.readiness.state, RebornReadinessState::DevOnly);
+    assert_eq!(runtime.readiness().state, RebornReadinessState::DevOnly);
 
     runtime.shutdown().await.expect("runtime shutdown");
 }
 
 /// Caller-level regression for the production attachment-landing path:
 /// drives `RebornRuntime::webui_workspace_filesystem()` — the exact method
-/// `build_webui_services`/`build_openai_compat_route_mount` call — through
+/// `runtime.product_surface`/`build_openai_compat_route_mount` call — through
 /// a real `ProjectScopedAttachmentLander`, then reads the landed bytes back
 /// through the same `ProjectScopedAttachmentReader` production wires
 /// `attachment_read_port` with. The C-ATTACH integration tests exercise the
@@ -5330,7 +5423,16 @@ async fn local_dev_webui_bundle_uses_local_lifecycle_facade_for_setup_extension(
             "runtime-webui-lifecycle-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(local_dev_runtime_policy())
+        .with_vendor_oauth_client(
+            ironclaw_auth::GOOGLE_PROVIDER_ID,
+            crate::OAuthClientConfig::new(
+                "runtime-webui-google-client.apps.googleusercontent.com",
+                "http://127.0.0.1/oauth/callback/google",
+                None,
+            )
+            .expect("valid test Google OAuth client config"),
+        ),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-webui-lifecycle-tenant".to_string(),
@@ -5345,7 +5447,7 @@ async fn local_dev_webui_bundle_uses_local_lifecycle_facade_for_setup_extension(
     .with_model_gateway_override(gateway);
 
     let runtime = build_reborn_runtime(input).await.expect("runtime builds");
-    let bundle = build_webui_services(&runtime, None).expect("webui bundle");
+    let bundle = runtime.product_surface(None).expect("product surface");
     let caller = ProductSurfaceCaller::new(
         TenantId::new("runtime-webui-lifecycle-tenant").unwrap(),
         UserId::new("runtime-webui-lifecycle-owner").unwrap(),
@@ -5353,12 +5455,16 @@ async fn local_dev_webui_bundle_uses_local_lifecycle_facade_for_setup_extension(
         None,
     );
 
-    let setup =
-        query_webui_extension_setup(bundle.product_surface.as_ref(), caller.clone(), "github")
-            .await;
+    let github_ref = LifecyclePackageRef::new(LifecyclePackageKind::Extension, "github")
+        .expect("valid package ref");
+    install_webui_extension(bundle.as_ref(), caller.clone(), github_ref.clone()).await;
+
+    let setup = query_webui_extension_setup(bundle.as_ref(), caller.clone(), "github").await;
 
     assert_eq!(setup.package_ref.id.as_str(), "github");
-    assert_eq!(setup.phase, InstallationState::Installed);
+    // #6520 3-state public lifecycle: installed with an unprovided credential
+    // projects as setup-needed (no Configured/Installed wire states remain).
+    assert_eq!(setup.phase, LifecyclePublicState::SetupNeeded);
     assert!(setup.blockers.is_empty());
     assert_eq!(setup.secrets.len(), 1);
     assert_eq!(setup.secrets[0].name, "github_runtime_token");
@@ -5369,12 +5475,11 @@ async fn local_dev_webui_bundle_uses_local_lifecycle_facade_for_setup_extension(
         setup.secrets[0].setup,
         RebornExtensionCredentialSetup::ManualToken
     ));
-    let google_setup = query_webui_extension_setup(
-        bundle.product_surface.as_ref(),
-        caller.clone(),
-        "google-calendar",
-    )
-    .await;
+    let google_ref = LifecyclePackageRef::new(LifecyclePackageKind::Extension, "google-calendar")
+        .expect("valid package ref");
+    install_webui_extension(bundle.as_ref(), caller.clone(), google_ref).await;
+    let google_setup =
+        query_webui_extension_setup(bundle.as_ref(), caller.clone(), "google-calendar").await;
     assert_eq!(google_setup.secrets.len(), 1);
     let google_secret = &google_setup.secrets[0];
     assert_eq!(google_secret.provider, "google");
@@ -5406,7 +5511,7 @@ async fn local_dev_webui_bundle_uses_local_lifecycle_facade_for_setup_extension(
                     && extensions[0].summary.package_ref.id.as_str() == "github"
                     && extensions[0].summary.credential_requirements.len() == 1
         ),
-        "local webui bundle should use the local lifecycle facade package projection"
+        "local product surface should use the local lifecycle facade package projection"
     );
     assert!(
         !setup.blockers.iter().any(|blocker| matches!(
@@ -5414,7 +5519,7 @@ async fn local_dev_webui_bundle_uses_local_lifecycle_facade_for_setup_extension(
             LifecycleReadinessBlocker::Runtime { ref_id: Some(ref_id) }
                 if ref_id.as_str() == "reborn_lifecycle_facade_unwired"
         )),
-        "local webui bundle must not fall back to the default unwired facade"
+        "local product surface must not fall back to the default unwired facade"
     );
 
     runtime.shutdown().await.expect("runtime shutdown");
@@ -5447,7 +5552,7 @@ async fn local_dev_webui_bundle_exposes_outbound_preferences_facade() {
     .with_model_gateway_override(gateway);
 
     let runtime = build_reborn_runtime(input).await.expect("runtime builds");
-    let bundle = build_webui_services(&runtime, None).expect("webui bundle");
+    let bundle = runtime.product_surface(None).expect("product surface");
     let caller = ProductSurfaceCaller::new(
         TenantId::new("runtime-webui-outbound-tenant").unwrap(),
         UserId::new("runtime-webui-outbound-owner").unwrap(),
@@ -5456,7 +5561,7 @@ async fn local_dev_webui_bundle_exposes_outbound_preferences_facade() {
     );
 
     let cleared = invoke_product_capability(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller.clone(),
         ironclaw_product::OUTBOUND_PREFERENCES_SET_CAPABILITY_ID,
         serde_json::json!({}),
@@ -5465,7 +5570,7 @@ async fn local_dev_webui_bundle_exposes_outbound_preferences_facade() {
     .expect("outbound preference clear uses composed facade");
     assert!(matches!(cleared, Resolution::Done(_)));
     let cleared_page = query_product_surface_page(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller.clone(),
         ironclaw_product::RebornViewQuery {
             view_id: ironclaw_product::OUTBOUND_PREFERENCES_VIEW.id.to_string(),
@@ -5480,7 +5585,7 @@ async fn local_dev_webui_bundle_exposes_outbound_preferences_facade() {
     assert!(cleared_preferences.final_reply_target.is_none());
 
     let targets_page = query_product_surface_page(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller,
         ironclaw_product::RebornViewQuery {
             view_id: ironclaw_product::OUTBOUND_DELIVERY_TARGETS_VIEW
@@ -5494,7 +5599,11 @@ async fn local_dev_webui_bundle_exposes_outbound_preferences_facade() {
     .expect("outbound target listing uses composed facade");
     let targets: ironclaw_product::RebornOutboundDeliveryTargetListResponse =
         serde_json::from_value(targets_page.payload).expect("outbound targets payload");
-    assert!(targets.targets.is_empty());
+    // #6520: the host-owned WebApp final-reply destination is always
+    // registered (host_owned_outbound_delivery_target_registry), so a runtime
+    // with zero active channels lists exactly that one target.
+    assert_eq!(targets.targets.len(), 1, "targets: {:?}", targets.targets);
+    assert_eq!(targets.targets[0].target.channel.as_str(), "web_app");
 
     runtime.shutdown().await.expect("runtime shutdown");
 }
@@ -5526,7 +5635,7 @@ async fn local_dev_webui_bundle_invokes_skill_install_with_scoped_mounts() {
     .with_model_gateway_override(gateway);
 
     let runtime = build_reborn_runtime(input).await.expect("runtime builds");
-    let bundle = build_webui_services(&runtime, None).expect("webui bundle");
+    let bundle = runtime.product_surface(None).expect("product surface");
     let caller = ProductSurfaceCaller::new(
         TenantId::new("runtime-webui-skill-tenant").unwrap(),
         UserId::new("runtime-webui-skill-owner").unwrap(),
@@ -5535,7 +5644,7 @@ async fn local_dev_webui_bundle_invokes_skill_install_with_scoped_mounts() {
     );
 
     let installed = invoke_product_capability(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller.clone(),
         ironclaw_product::SKILL_INSTALL_CAPABILITY_ID,
         serde_json::json!({
@@ -5550,7 +5659,7 @@ async fn local_dev_webui_bundle_invokes_skill_install_with_scoped_mounts() {
         other => panic!("skill install did not succeed: {other:?}"),
     }
     let skills_page = query_product_surface_page(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller,
         ironclaw_product::RebornViewQuery {
             view_id: ironclaw_product::SKILLS_VIEW.id.to_string(),
@@ -5606,7 +5715,7 @@ async fn webui_route_rejects_list_automations_without_agent_binding() {
     .with_model_gateway_override(gateway);
 
     let runtime = build_reborn_runtime(input).await.expect("runtime builds");
-    let bundle = build_webui_services(&runtime, None).expect("webui bundle");
+    let bundle = runtime.product_surface(None).expect("product surface");
     let caller_without_agent = ProductSurfaceCaller::new(
         TenantId::new("runtime-webui-no-agent-tenant").unwrap(),
         UserId::new("runtime-webui-no-agent-owner").unwrap(),
@@ -5614,7 +5723,7 @@ async fn webui_route_rejects_list_automations_without_agent_binding() {
         None,
     );
     let router = webui_v2_router(WebUiV2State::new(
-        bundle.product_surface,
+        bundle,
         DEFAULT_SSE_MAX_CONCURRENT_PER_CALLER,
     ))
     .layer(axum::Extension(caller_without_agent));
@@ -5668,7 +5777,7 @@ async fn webui_operator_diagnostics_route_exposes_composed_readiness_evidence() 
     .with_model_gateway_override(gateway);
 
     let runtime = build_reborn_runtime(input).await.expect("runtime builds");
-    let bundle = build_webui_services(&runtime, None).expect("webui bundle");
+    let bundle = runtime.product_surface(None).expect("product surface");
     let caller = ProductSurfaceCaller::new(
         TenantId::new("runtime-webui-diagnostics-tenant").unwrap(),
         UserId::new("runtime-webui-diagnostics-owner").unwrap(),
@@ -5677,7 +5786,7 @@ async fn webui_operator_diagnostics_route_exposes_composed_readiness_evidence() 
     )
     .with_operator_config(true);
     let router = webui_v2_router(WebUiV2State::new(
-        bundle.product_surface,
+        bundle,
         DEFAULT_SSE_MAX_CONCURRENT_PER_CALLER,
     ))
     .layer(axum::Extension(caller))
@@ -5728,7 +5837,7 @@ async fn webui_operator_diagnostics_route_exposes_composed_readiness_evidence() 
 }
 
 #[tokio::test]
-async fn build_webui_services_without_local_runtime_still_lists_automations_from_core_store() {
+async fn runtime_product_surface_without_local_runtime_still_lists_automations_from_core_store() {
     let root = tempfile::tempdir().expect("tempdir");
     let gateway = Arc::new(RecordingGateway {
         reply: "unused".to_string(),
@@ -5754,7 +5863,7 @@ async fn build_webui_services_without_local_runtime_still_lists_automations_from
     .with_model_gateway_override(gateway);
 
     let runtime = build_reborn_runtime(input).await.expect("runtime builds");
-    let bundle = build_webui_services(&runtime, None).expect("webui bundle");
+    let bundle = runtime.product_surface(None).expect("product surface");
     let caller = ProductSurfaceCaller::new(
         TenantId::new("runtime-webui-no-host-tenant").unwrap(),
         UserId::new("runtime-webui-no-host-owner").unwrap(),
@@ -5763,7 +5872,7 @@ async fn build_webui_services_without_local_runtime_still_lists_automations_from
     );
 
     let response = query_product_surface_page(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller,
         ironclaw_product::RebornViewQuery {
             view_id: ironclaw_product::AUTOMATIONS_VIEW.id.to_string(),
@@ -5809,7 +5918,7 @@ async fn local_dev_webui_setup_extension_stores_and_rotates_runtime_credentials(
     .with_model_gateway_override(gateway);
 
     let runtime = build_reborn_runtime(input).await.expect("runtime builds");
-    let bundle = build_webui_services(&runtime, None).expect("webui bundle");
+    let bundle = runtime.product_surface(None).expect("product surface");
     let caller = ProductSurfaceCaller::new(
         TenantId::new("runtime-webui-credential-tenant").unwrap(),
         UserId::new("runtime-webui-credential-owner").unwrap(),
@@ -5817,7 +5926,7 @@ async fn local_dev_webui_setup_extension_stores_and_rotates_runtime_credentials(
         None,
     );
     let first = submit_webui_extension_setup(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller.clone(),
         "github",
         ProductSetupExtensionRequest {
@@ -5840,7 +5949,7 @@ async fn local_dev_webui_setup_extension_stores_and_rotates_runtime_credentials(
         .expect("credential ref");
 
     let second = submit_webui_extension_setup(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller,
         "github",
         ProductSetupExtensionRequest {
@@ -5893,7 +6002,7 @@ async fn local_dev_webui_bundle_routes_approval_gates_into_interaction_service()
     .with_model_gateway_override(gateway);
 
     let runtime = build_reborn_runtime(input).await.expect("runtime builds");
-    let bundle = build_webui_services(&runtime, None).expect("webui bundle");
+    let bundle = runtime.product_surface(None).expect("product surface");
     let caller = ProductSurfaceCaller::new(
         TenantId::new("runtime-webui-approval-tenant").unwrap(),
         UserId::new("runtime-webui-approval-owner").unwrap(),
@@ -5901,7 +6010,7 @@ async fn local_dev_webui_bundle_routes_approval_gates_into_interaction_service()
         None,
     );
     let created = invoke_product_command(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller.clone(),
         CREATE_THREAD_COMMAND,
         ProductCreateThreadRequest {
@@ -5915,7 +6024,7 @@ async fn local_dev_webui_bundle_routes_approval_gates_into_interaction_service()
     let gate_ref = approval_gate_ref(ApprovalRequestId::new()).expect("approval gate");
 
     let err = invoke_product_command::<_, ironclaw_product::RebornResolveGateResponse>(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller,
         RESOLVE_GATE_COMMAND,
         ProductResolveGateRequest {
@@ -5964,7 +6073,7 @@ async fn local_dev_webui_bundle_routes_auth_gates_into_interaction_service() {
     .with_model_gateway_override(gateway);
 
     let runtime = build_reborn_runtime(input).await.expect("runtime builds");
-    let bundle = build_webui_services(&runtime, None).expect("webui bundle");
+    let bundle = runtime.product_surface(None).expect("product surface");
     let caller = ProductSurfaceCaller::new(
         TenantId::new("runtime-webui-auth-tenant").unwrap(),
         UserId::new("runtime-webui-auth-owner").unwrap(),
@@ -5972,7 +6081,7 @@ async fn local_dev_webui_bundle_routes_auth_gates_into_interaction_service() {
         None,
     );
     let created = invoke_product_command(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller.clone(),
         CREATE_THREAD_COMMAND,
         ProductCreateThreadRequest {
@@ -5985,7 +6094,7 @@ async fn local_dev_webui_bundle_routes_auth_gates_into_interaction_service() {
     .expect("create thread");
 
     let err = invoke_product_command::<_, ironclaw_product::RebornResolveGateResponse>(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller,
         RESOLVE_GATE_COMMAND,
         ProductResolveGateRequest {
@@ -6049,7 +6158,7 @@ async fn local_dev_webui_bundle_records_selectable_filesystem_skill_context() {
     .with_model_gateway_override(gateway);
 
     let runtime = build_reborn_runtime(input).await.expect("runtime builds");
-    let bundle = build_webui_services(&runtime, None).expect("webui bundle");
+    let bundle = runtime.product_surface(None).expect("product surface");
     let webui_user_id = UserId::new("runtime-webui-skill-user").unwrap();
     let caller = ProductSurfaceCaller::new(
         TenantId::new("runtime-webui-skill-tenant").unwrap(),
@@ -6058,7 +6167,7 @@ async fn local_dev_webui_bundle_records_selectable_filesystem_skill_context() {
         None,
     );
     let created = invoke_product_command(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller.clone(),
         CREATE_THREAD_COMMAND,
         ProductCreateThreadRequest {
@@ -6070,7 +6179,7 @@ async fn local_dev_webui_bundle_records_selectable_filesystem_skill_context() {
     .await
     .expect("create thread");
     let submitted = invoke_product_command(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller,
         SUBMIT_TURN_COMMAND,
         ProductSubmitTurnRequest {
@@ -6245,9 +6354,9 @@ async fn multi_tool_call_response_survives_surface_change_mid_register() {
                 .expect("lifecycle facade must be seeded before send_user_message");
             let package_ref = LifecyclePackageRef::new(LifecyclePackageKind::Extension, "github")
                 .expect("valid github ref");
-            // #5459 P1: act as the runtime owner (the tenant operator) so
-            // the install is tenant-shared and visible to the run's
-            // surface user — a non-operator install would now be private.
+            // Install for the exact run user. Operator role never creates a
+            // tenant-wide membership; install auto-reconciles readiness
+            // (#6520 — there is no separate Activate action).
             let ctx = LifecycleProductContext::Surface(LifecycleProductSurfaceContext {
                 tenant_id: TenantId::new("tenant-multi-tool-surface").expect("tenant id"),
                 user_id: UserId::new("runtime-multi-tool-surface-owner").expect("user id"),
@@ -6257,21 +6366,11 @@ async fn multi_tool_call_response_survives_surface_change_mid_register() {
             facade_handle
                 .facade
                 .execute(
-                    ctx.clone(),
-                    LifecycleProductAction::ExtensionInstall {
-                        package_ref: package_ref.clone(),
-                    },
+                    ctx,
+                    LifecycleProductAction::ExtensionInstall { package_ref },
                 )
                 .await
                 .expect("install github extension");
-            facade_handle
-                .facade
-                .execute(
-                    ctx,
-                    LifecycleProductAction::ExtensionActivate { package_ref },
-                )
-                .await
-                .expect("activate github extension");
 
             // Register call #2 — after surface change.
             // Post-fix: reuses current port, so both candidates carry the same surface version.
@@ -6364,7 +6463,7 @@ async fn multi_tool_call_response_survives_surface_change_mid_register() {
 /// Scenario:
 ///  A – submitted via `turn_coordinator.submit_turn`; worker is stopped so it stays
 ///      Queued and holds the active-lock.
-///  B – submitted via `bundle.product_surface.submit_turn` (WebUI path); thread is busy → stored
+///  B – submitted via `bundle.submit_turn` (WebUI path); thread is busy → stored
 ///      as `RejectedBusy`; response carries a non-empty `notice`.
 ///  Cancel A → B stays `RejectedBusy` (no auto-resubmission).
 ///  C – submitted after A is cancelled; thread is free → `Submitted`.
@@ -6399,7 +6498,7 @@ async fn rejected_busy_message_not_auto_resubmitted_after_run_cancellation() {
     // Stop the worker so run A stays Queued and holds the thread active-lock.
     stop_turn_runner_worker_for_manual_state_test(&runtime).await;
 
-    let bundle = build_webui_services(&runtime, None).expect("webui bundle");
+    let bundle = runtime.product_surface(None).expect("product surface");
     let caller = ProductSurfaceCaller::new(
         TenantId::new("runtime-rejected-busy-tenant").unwrap(),
         UserId::new("runtime-rejected-busy-owner").unwrap(),
@@ -6409,7 +6508,7 @@ async fn rejected_busy_message_not_auto_resubmitted_after_run_cancellation() {
 
     // Create the thread via WebUI so the thread record exists.
     let created = invoke_product_command(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller.clone(),
         CREATE_THREAD_COMMAND,
         ProductCreateThreadRequest {
@@ -6452,7 +6551,7 @@ async fn rejected_busy_message_not_auto_resubmitted_after_run_cancellation() {
 
     // Submit message B through the WebUI path — thread is busy, must get RejectedBusy.
     let response_b = invoke_product_command(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller.clone(),
         SUBMIT_TURN_COMMAND,
         ProductSubmitTurnRequest {
@@ -6563,7 +6662,7 @@ async fn rejected_busy_message_not_auto_resubmitted_after_run_cancellation() {
 
     // Submit message C — thread is free again, must be Submitted.
     let response_c = invoke_product_command(
-        bundle.product_surface.as_ref(),
+        bundle.as_ref(),
         caller.clone(),
         SUBMIT_TURN_COMMAND,
         ProductSubmitTurnRequest {

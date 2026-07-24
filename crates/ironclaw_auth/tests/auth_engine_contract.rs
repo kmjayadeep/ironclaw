@@ -27,7 +27,7 @@ use ironclaw_host_api::{
     RuntimeHttpEgressError, RuntimeHttpEgressRequest, RuntimeHttpEgressResponse, SecretHandle,
     UserId, VendorAuthRecipe,
 };
-use ironclaw_secrets::{FilesystemSecretStore, SecretStore};
+use ironclaw_secrets::{SecretStore, SecretStorePort};
 use secrecy::{ExposeSecret, SecretString};
 
 // ---------------------------------------------------------------------------
@@ -210,7 +210,7 @@ const CALLBACK_BASE: &str = "https://host.example/api/reborn/product-auth/oauth"
 struct Harness {
     engine: AuthEngine,
     server: Arc<ScriptedVendorServer>,
-    secrets: Arc<dyn SecretStore>,
+    secrets: Arc<dyn SecretStorePort>,
 }
 
 impl Harness {
@@ -233,7 +233,7 @@ impl Harness {
         client_credentials: Arc<dyn EngineClientCredentialsSource>,
     ) -> Self {
         let server = Arc::new(ScriptedVendorServer::default());
-        let secrets: Arc<dyn SecretStore> = Arc::new(FilesystemSecretStore::ephemeral());
+        let secrets: Arc<dyn SecretStorePort> = Arc::new(SecretStore::ephemeral());
         let engine = AuthEngine::new(AuthEngineDeps {
             recipes: Arc::new(StaticAuthRecipeResolver::new(recipes)),
             client_credentials,
@@ -1789,7 +1789,7 @@ impl KeepaliveLeaderLock for NeverLeaderLock {
 /// (`ProviderBackedCredentialAccountService` over `AuthEngine`).
 struct SweepFixture {
     server: Arc<ScriptedVendorServer>,
-    secrets: Arc<dyn SecretStore>,
+    secrets: Arc<dyn SecretStorePort>,
     services: Arc<InMemoryAuthProductServices>,
     source: Arc<ScriptedCandidateSource>,
     deps: KeepaliveSweepDeps,
@@ -1809,7 +1809,7 @@ impl SweepFixture {
             );
         }
         let server = Arc::new(ScriptedVendorServer::default());
-        let secrets: Arc<dyn SecretStore> = Arc::new(FilesystemSecretStore::ephemeral());
+        let secrets: Arc<dyn SecretStorePort> = Arc::new(SecretStore::ephemeral());
         let engine = Arc::new(AuthEngine::new(AuthEngineDeps {
             recipes: Arc::new(StaticAuthRecipeResolver::new(recipes.clone())),
             client_credentials: Arc::new(StaticClientCredentials { by_vendor }),

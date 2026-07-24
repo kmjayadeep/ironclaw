@@ -17,14 +17,16 @@ use ironclaw_auth::{
     EngineCallbackBase, EngineClientCredentialsSource, EngineOAuthClientMaterial, OAuthClientId,
     StaticAuthRecipeResolver,
 };
-use ironclaw_extension_host::{AdminConfigurationResolvedValues, AdminConfigurationServiceError};
-use ironclaw_host_api::{RecipeClientCredentials, ResourceScope, RuntimeHttpEgress, SecretHandle};
+use ironclaw_extension_host::{
+    AdminConfigurationResolvedValues, ExtensionAdminConfigurationResolverError,
+};
+use ironclaw_host_api::{RecipeClientCredentials, RuntimeHttpEgress, SecretHandle};
 use ironclaw_host_runtime::ProductAuthProviderRuntimePorts;
-use ironclaw_secrets::SecretStore;
+use ironclaw_secrets::SecretStorePort;
 use secrecy::SecretString;
 
 use crate::RebornBuildError;
-use crate::extension_host::admin_configuration::ComposedAdminConfigurationService;
+use crate::extension_host::admin_configuration::ComposedExtensionAdminConfigurationResolver;
 use crate::input::{OAuthDcrCallbackConfig, OAuthProviderBackendConfig};
 use crate::product_auth::oauth::oauth_gate::OAuthGateFlowDriver;
 use crate::product_auth::oauth::staged_egress::ObligationStagedAuthEgress;
@@ -49,70 +51,65 @@ pub(crate) enum ClientCredentialValue {
     Static(SecretString),
 }
 
-#[async_trait]
-trait AdminClientCredentialSource: Send + Sync + fmt::Debug {
-    async fn resolve(
-        &self,
-        handles: &[SecretHandle],
-    ) -> Result<Option<AdminConfigurationResolvedValues>, AdminConfigurationServiceError>;
-}
-
-struct ComposedAdminClientCredentialSource {
-    service: Arc<ComposedAdminConfigurationService>,
-    scope: ResourceScope,
-}
-
-impl fmt::Debug for ComposedAdminClientCredentialSource {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ComposedAdminClientCredentialSource")
-            .finish_non_exhaustive()
-    }
-}
-
-#[async_trait]
-impl AdminClientCredentialSource for ComposedAdminClientCredentialSource {
-    async fn resolve(
-        &self,
-        handles: &[SecretHandle],
-    ) -> Result<Option<AdminConfigurationResolvedValues>, AdminConfigurationServiceError> {
-        self.service
-            .resolve_values_for_handles(&self.scope, handles)
-            .await
-    }
-}
-
-/// Deferred manifest-admin credential source. The administrator service is
-/// built after the auth engine's durable dependencies, so composition fills
-/// this slot once and the engine resolves a complete revisioned value set at
-/// request time.
+/// Deferred handle source over administrator configuration
+/// (`[admin_configuration]`): the resolver is built after the auth
+/// engine (its durable stores land later in factory assembly), so the
+/// engine holds this slot and resolves handles through it at request time.
+/// Unfilled (startup window, or a composition path without the configure
+/// surface) it resolves nothing — the engine's existing not-configured
+/// path applies.
 #[derive(Clone, Default)]
 pub(crate) struct AdminConfigurationCredentialSlot {
-    inner: Arc<std::sync::OnceLock<Arc<dyn AdminClientCredentialSource>>>,
+    inner: Arc<std::sync::OnceLock<AdminConfigurationCredentialSource>>,
+}
+
+#[derive(Clone)]
+enum AdminConfigurationCredentialSource {
+    Resolver(Arc<ComposedExtensionAdminConfigurationResolver>),
+    #[cfg(test)]
+    Test(Arc<dyn TestAdminConfigurationCredentialSource>),
 }
 
 impl AdminConfigurationCredentialSlot {
-    pub(crate) fn fill(
-        &self,
-        service: Arc<ComposedAdminConfigurationService>,
-        scope: ResourceScope,
-    ) {
+    pub(crate) fn fill(&self, service: Arc<ComposedExtensionAdminConfigurationResolver>) {
         let _ = self
             .inner
-            .set(Arc::new(ComposedAdminClientCredentialSource {
-                service,
-                scope,
-            }));
+            .set(AdminConfigurationCredentialSource::Resolver(service));
     }
 
     #[cfg(test)]
-    fn fill_source(&self, source: Arc<dyn AdminClientCredentialSource>) {
-        let _ = self.inner.set(source);
+    fn fill_source(&self, source: Arc<dyn TestAdminConfigurationCredentialSource>) {
+        let _ = self
+            .inner
+            .set(AdminConfigurationCredentialSource::Test(source));
     }
 
-    fn get(&self) -> Option<Arc<dyn AdminClientCredentialSource>> {
+    fn get(&self) -> Option<AdminConfigurationCredentialSource> {
         self.inner.get().cloned()
     }
+}
+
+impl AdminConfigurationCredentialSource {
+    async fn resolve(
+        &self,
+        handles: &[SecretHandle],
+    ) -> Result<Option<AdminConfigurationResolvedValues>, ExtensionAdminConfigurationResolverError>
+    {
+        match self {
+            Self::Resolver(resolver) => resolver.credential_handle_values(handles).await,
+            #[cfg(test)]
+            Self::Test(source) => source.resolve(handles).await,
+        }
+    }
+}
+
+#[cfg(test)]
+#[async_trait]
+trait TestAdminConfigurationCredentialSource: Send + Sync + fmt::Debug {
+    async fn resolve(
+        &self,
+        handles: &[SecretHandle],
+    ) -> Result<Option<AdminConfigurationResolvedValues>, ExtensionAdminConfigurationResolverError>;
 }
 
 impl fmt::Debug for AdminConfigurationCredentialSlot {
@@ -141,10 +138,9 @@ impl CompositionClientCredentials {
             .insert(handle.into(), ClientCredentialValue::Static(value));
     }
 
-    pub(crate) fn with_admin_configuration_source(
-        &mut self,
-        slot: AdminConfigurationCredentialSlot,
-    ) {
+    /// Attach the administrator-configuration source used ahead of boot
+    /// fallbacks.
+    pub(crate) fn with_admin_configuration(&mut self, slot: AdminConfigurationCredentialSlot) {
         self.admin_configuration = Some(slot);
     }
 
@@ -246,7 +242,7 @@ impl EngineClientCredentialsSource for CompositionClientCredentials {
 pub(crate) fn compose_provider_client(
     configs: Vec<OAuthProviderBackendConfig>,
     dcr_callback: Option<OAuthDcrCallbackConfig>,
-    secret_store: Arc<dyn SecretStore>,
+    secret_store: Arc<dyn SecretStorePort>,
     runtime_ports: ProductAuthProviderRuntimePorts,
     admin_configuration_credentials: AdminConfigurationCredentialSlot,
     first_party_bundles: &[crate::extension_host::first_party::FirstPartyPackageBundle],
@@ -264,7 +260,7 @@ pub(crate) fn compose_provider_client(
     for config in &configs {
         register_vendor_client_config(&mut client_credentials, recipes.as_ref(), config);
     }
-    client_credentials.with_admin_configuration_source(admin_configuration_credentials);
+    client_credentials.with_admin_configuration(admin_configuration_credentials);
     let callback_base = dcr_callback
         .map(|dcr| {
             EngineCallbackBase::new(format!(
@@ -351,7 +347,7 @@ pub(crate) fn compose_auth_engine(
     recipes: Arc<dyn AuthRecipeResolver>,
     client_credentials: CompositionClientCredentials,
     callback_base: Option<EngineCallbackBase>,
-    secret_store: Arc<dyn SecretStore>,
+    secret_store: Arc<dyn SecretStorePort>,
     runtime_ports: ProductAuthProviderRuntimePorts,
 ) -> Result<OAuthProviderComposition, RebornBuildError> {
     let Some(callback_base) = callback_base else {
@@ -397,7 +393,10 @@ mod tests {
 
     #[derive(Debug)]
     struct StubAdminSource {
-        result: Result<Option<AdminConfigurationResolvedValues>, AdminConfigurationServiceError>,
+        result: Result<
+            Option<AdminConfigurationResolvedValues>,
+            ExtensionAdminConfigurationResolverError,
+        >,
         calls: AtomicUsize,
     }
 
@@ -405,7 +404,7 @@ mod tests {
         fn new(
             result: Result<
                 Option<AdminConfigurationResolvedValues>,
-                AdminConfigurationServiceError,
+                ExtensionAdminConfigurationResolverError,
             >,
         ) -> Self {
             Self {
@@ -416,12 +415,14 @@ mod tests {
     }
 
     #[async_trait]
-    impl AdminClientCredentialSource for StubAdminSource {
+    impl TestAdminConfigurationCredentialSource for StubAdminSource {
         async fn resolve(
             &self,
             _handles: &[SecretHandle],
-        ) -> Result<Option<AdminConfigurationResolvedValues>, AdminConfigurationServiceError>
-        {
+        ) -> Result<
+            Option<AdminConfigurationResolvedValues>,
+            ExtensionAdminConfigurationResolverError,
+        > {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.result.clone()
         }
@@ -468,9 +469,9 @@ mod tests {
             &[("client_id", "admin-id"), ("client_secret", "admin-secret")],
         )))));
         let slot = AdminConfigurationCredentialSlot::default();
-        slot.fill_source(Arc::clone(&source) as Arc<dyn AdminClientCredentialSource>);
+        slot.fill_source(Arc::clone(&source) as Arc<dyn TestAdminConfigurationCredentialSource>);
         let mut credentials = boot_credentials();
-        credentials.with_admin_configuration_source(slot);
+        credentials.with_admin_configuration(slot);
 
         let resolved = credentials
             .resolve("example", &recipe_credentials())
@@ -492,9 +493,9 @@ mod tests {
     async fn empty_admin_configuration_falls_back_to_complete_boot_pair() {
         let source = Arc::new(StubAdminSource::new(Ok(Some(admin_snapshot(0, &[])))));
         let slot = AdminConfigurationCredentialSlot::default();
-        slot.fill_source(source as Arc<dyn AdminClientCredentialSource>);
+        slot.fill_source(source as Arc<dyn TestAdminConfigurationCredentialSource>);
         let mut credentials = boot_credentials();
-        credentials.with_admin_configuration_source(slot);
+        credentials.with_admin_configuration(slot);
 
         let resolved = credentials
             .resolve("example", &recipe_credentials())
@@ -518,9 +519,9 @@ mod tests {
             &[("client_id", "admin-id")],
         )))));
         let slot = AdminConfigurationCredentialSlot::default();
-        slot.fill_source(source as Arc<dyn AdminClientCredentialSource>);
+        slot.fill_source(source as Arc<dyn TestAdminConfigurationCredentialSource>);
         let mut credentials = boot_credentials();
-        credentials.with_admin_configuration_source(slot);
+        credentials.with_admin_configuration(slot);
 
         let error = credentials
             .resolve("example", &recipe_credentials())
@@ -533,12 +534,12 @@ mod tests {
     #[tokio::test]
     async fn admin_configuration_failure_never_falls_back_to_boot_values() {
         let source = Arc::new(StubAdminSource::new(Err(
-            AdminConfigurationServiceError::Unavailable,
+            ExtensionAdminConfigurationResolverError::Unavailable,
         )));
         let slot = AdminConfigurationCredentialSlot::default();
-        slot.fill_source(source as Arc<dyn AdminClientCredentialSource>);
+        slot.fill_source(source as Arc<dyn TestAdminConfigurationCredentialSource>);
         let mut credentials = boot_credentials();
-        credentials.with_admin_configuration_source(slot);
+        credentials.with_admin_configuration(slot);
 
         let error = credentials
             .resolve("example", &recipe_credentials())

@@ -21,10 +21,10 @@ use std::collections::BTreeMap;
 
 use ironclaw_host_api::{
     ChannelDescriptor, ChannelDescriptorError, EffectKind, ExtensionId,
-    HOST_RUNTIME_HTTP_EGRESS_PORT_ID, HostApiError, HostPortCatalog, NetworkScheme,
-    NetworkTargetPattern, OriginGateMatrix, PermissionMode, RecipeValidationError,
-    RequestedTrustClass, RuntimeCredentialAccountSetup, RuntimeCredentialRequirementSource,
-    RuntimeCredentialTarget, VendorAuthRecipe, VendorId,
+    HOST_RUNTIME_HTTP_EGRESS_PORT_ID, HostApiError, HostPortCatalog, MemoryDescriptor,
+    MemoryOperationKind, NetworkScheme, NetworkTargetPattern, OriginGateMatrix, PermissionMode,
+    RecipeValidationError, RequestedTrustClass, RuntimeCredentialAccountSetup,
+    RuntimeCredentialRequirementSource, RuntimeCredentialTarget, VendorAuthRecipe, VendorId,
 };
 use serde::Deserialize;
 use thiserror::Error;
@@ -60,6 +60,8 @@ pub enum ManifestV3Error {
     },
     #[error("[channel] is invalid: {error}")]
     InvalidChannel { error: ChannelDescriptorError },
+    #[error("[memory] is invalid: {reason}")]
+    InvalidMemory { reason: String },
     #[error(
         "credential vendor `{vendor}` has no [auth.{vendor}] recipe; v3 manifests must declare \
          one for every referenced vendor"
@@ -101,6 +103,8 @@ struct RawManifestV3 {
     tools: Vec<RawToolV3>,
     #[serde(default)]
     channel: Option<ChannelDescriptor>,
+    #[serde(default)]
+    memory: Option<MemoryDescriptor>,
     #[serde(default)]
     auth: BTreeMap<String, VendorAuthRecipe>,
     #[serde(default)]
@@ -307,6 +311,27 @@ pub(crate) fn parse_v3(
             reason: "first_party runtime requires a host-bundled manifest source".to_string(),
         });
     }
+    // A `[memory]` surface declares the extension a backend for the host memory
+    // adapter. It is host-bundled + first_party only (the host owns the memory
+    // tool surface and the compose-time provider binding), and must back the
+    // mandatory document-store family.
+    if let Some(memory) = &raw.memory {
+        if !matches!(runtime, ExtensionRuntimeV2::FirstParty { .. }) {
+            return Err(ManifestV3Error::InvalidMemory {
+                reason: "[memory] requires a first_party runtime".to_string(),
+            });
+        }
+        if memory.operations.is_empty() {
+            return Err(ManifestV3Error::InvalidMemory {
+                reason: "[memory].operations must not be empty".to_string(),
+            });
+        }
+        if !memory.backs(MemoryOperationKind::DocumentStore) {
+            return Err(ManifestV3Error::InvalidMemory {
+                reason: "[memory].operations must include \"document_store\"".to_string(),
+            });
+        }
+    }
     let sandboxed_runtime = matches!(
         runtime,
         ExtensionRuntimeV2::Wasm { .. } | ExtensionRuntimeV2::Mcp { .. }
@@ -331,26 +356,31 @@ pub(crate) fn parse_v3(
             .map_err(|error| ManifestV3Error::InvalidChannel { error })?;
     }
     if let Some(descriptor) = &raw.admin_configuration {
+        // Trust gate: an `[admin_configuration]` group declares deployment-owned,
+        // operator-managed secrets and routing. Only a host-bundled (first-party)
+        // manifest — one compiled into the host binary — may declare one. An
+        // untrusted, filesystem-discovered, or registry-installed manifest must
+        // not: otherwise it could collide with a first-party group id (aborting
+        // boot via a descriptor conflict) or register itself as a consumer of a
+        // first-party group's non-secret routing (a confused-deputy read). This
+        // is the earliest fail-closed point; composition's fold applies the same
+        // source gate as defense in depth.
+        if !source.allows_first_party() {
+            return Err(ManifestV3Error::Invalid {
+                reason:
+                    "[admin_configuration] declares a deployment-owned administrator group, which \
+                     is reserved for host-bundled (first-party) manifests"
+                        .to_string(),
+            });
+        }
         descriptor
             .validate()
             .map_err(|error| ManifestV3Error::Invalid {
                 reason: format!("[admin_configuration] is invalid: {error}"),
             })?;
-        if let Some(channel) = &raw.channel {
-            let aligned = descriptor.fields.len() == channel.config.fields.len()
-                && descriptor.fields.iter().zip(&channel.config.fields).all(
-                    |(admin_field, channel_field)| {
-                        admin_field.handle == channel_field.handle
-                            && admin_field.label == channel_field.label
-                            && admin_field.secret == channel_field.secret
-                    },
-                );
-            if !aligned {
-                return Err(ManifestV3Error::Invalid {
-                    reason: "[admin_configuration].fields must exactly match [channel.config].fields by order, handle, label, and secret flag".to_string(),
-                });
-            }
-        }
+    }
+    if let Some(channel) = &raw.channel {
+        validate_channel_admin_configuration(channel, raw.admin_configuration.as_ref())?;
     }
 
     // Normalize tools (or the synthesized MCP connection template) into the
@@ -383,7 +413,6 @@ pub(crate) fn parse_v3(
             id: format!("{id}.mcp_server"),
             network_targets: Vec::new(),
             max_egress_bytes: None,
-            implements: Vec::new(),
             description: format!(
                 "Hosted MCP server connection for {} (discovery template; never model-visible)",
                 raw.name
@@ -439,7 +468,6 @@ pub(crate) fn parse_v3(
                     id: tool.id,
                     network_targets: Vec::new(),
                     max_egress_bytes: None,
-                    implements: Vec::new(),
                     description: tool.description,
                     effects: with_dispatch_effect(mcp.effects.clone()),
                     default_permission: tool.default_permission,
@@ -457,7 +485,6 @@ pub(crate) fn parse_v3(
                 id: tool.id,
                 network_targets: tool.network_targets,
                 max_egress_bytes: tool.max_egress_bytes,
-                implements: Vec::new(),
                 description: tool.description,
                 effects: with_dispatch_effect(tool.effects.clone()),
                 default_permission: tool.default_permission,
@@ -572,6 +599,7 @@ pub(crate) fn parse_v3(
         }),
         tools: manifest.capabilities.clone(),
         channel: raw.channel,
+        memory: raw.memory,
         admin_configuration: raw.admin_configuration.into_iter().collect(),
         auth,
         host_apis: Vec::new(),
@@ -580,6 +608,87 @@ pub(crate) fn parse_v3(
     };
 
     Ok((manifest, resolved))
+}
+
+/// Validate every channel runtime reference against the one manifest-owned
+/// deployment configuration schema. The neutral channel contract validates
+/// channel structure; the extension-manifest layer owns this cross-section
+/// relationship because only it can see `[admin_configuration]`.
+fn validate_channel_admin_configuration(
+    channel: &ChannelDescriptor,
+    descriptor: Option<&ExtensionAdminConfigurationDescriptor>,
+) -> Result<(), ManifestV3Error> {
+    let require_field = |handle: &ironclaw_host_api::SecretHandle,
+                         secret: bool,
+                         usage: &str|
+     -> Result<(), ManifestV3Error> {
+        let field = descriptor
+            .and_then(|descriptor| {
+                descriptor
+                    .fields
+                    .iter()
+                    .find(|field| field.handle == *handle)
+            })
+            .ok_or_else(|| ManifestV3Error::Invalid {
+                reason: format!(
+                    "{usage} handle `{}` must be declared in [admin_configuration].fields",
+                    handle.as_str()
+                ),
+            })?;
+        if field.secret != secret {
+            return Err(ManifestV3Error::Invalid {
+                reason: format!(
+                    "{usage} handle `{}` must be declared as secret = {secret} in [admin_configuration].fields",
+                    handle.as_str()
+                ),
+            });
+        }
+        Ok(())
+    };
+
+    if let Some(handle) = channel
+        .ingress
+        .as_ref()
+        .and_then(|ingress| ingress.verification.secret_handle())
+    {
+        require_field(handle, true, "channel ingress verification")?;
+    }
+    for egress in &channel.egress {
+        if let Some(handle) = &egress.credential_handle {
+            require_field(handle, true, "channel egress credential")?;
+        }
+        for body_credential in &egress.body_credentials {
+            require_field(
+                &body_credential.handle,
+                true,
+                "channel egress body credential",
+            )?;
+        }
+    }
+    if let Some(template) = channel
+        .connection
+        .as_ref()
+        .and_then(|connection| connection.deep_link_template.as_deref())
+    {
+        let mut remainder = template;
+        while let Some((_, after_open)) = remainder.split_once('{') {
+            let Some((placeholder, after_close)) = after_open.split_once('}') else {
+                break;
+            };
+            if placeholder != "code" {
+                let handle = ironclaw_host_api::SecretHandle::new(placeholder).map_err(
+                    |error| ManifestV3Error::Invalid {
+                        reason: format!(
+                            "channel connection placeholder `{{{placeholder}}}` is invalid: {error}"
+                        ),
+                    },
+                )?;
+                require_field(&handle, false, "channel connection placeholder")?;
+            }
+            remainder = after_close;
+        }
+    }
+    Ok(())
 }
 
 fn runtime_from_raw(raw: RawRuntimeV3) -> ExtensionRuntimeV2 {

@@ -6,13 +6,12 @@ use std::sync::Arc;
 use anyhow::{Context, anyhow};
 use clap::Args;
 use ironclaw_reborn_composition::build_openai_compat_route_mount;
-use ironclaw_reborn_composition::build_webui_services;
 use ironclaw_reborn_composition::host_api::{
     AgentId, InvocationId, ProjectId, ResourceScope, SecretHandle, TenantId, UserId,
 };
 use ironclaw_reborn_composition::{
     RebornHostBindings, RebornReadiness, RebornRuntimeIdentity, RebornRuntimeInput,
-    RebornWebuiBundle, TriggerFireAccessPolicy, build_reborn_runtime,
+    TriggerFireAccessPolicy, build_reborn_runtime,
 };
 use ironclaw_reborn_config::{IdentitySection, seed_default_config_file_if_missing};
 use ironclaw_webui::{
@@ -302,20 +301,20 @@ impl ServeCommand {
         let listen_addr = SocketAddr::new(host, port);
         reject_non_loopback_privileged_local_runtime(host, &runtime_input)?;
         let callback_origin =
-            webui_notion_dcr_callback_origin(listen_addr, canonical_host.as_deref())?;
+            webui_product_auth_callback_origin(listen_addr, canonical_host.as_deref())?;
         if let Some(callback_origin) = callback_origin {
             let services = runtime_input.services.take().ok_or_else(|| {
                 anyhow!("WebChat v2 serve requires Reborn runtime services before OAuth wiring")
             })?;
             runtime_input.services = Some(
-                with_notion_dcr_oauth_backend(services, &callback_origin)
-                    .context("failed to configure Notion DCR OAuth for WebChat v2")?,
+                with_product_auth_callback_origin(services, &callback_origin)
+                    .context("failed to configure product-auth OAuth for WebChat v2")?,
             );
         } else {
             tracing::warn!(
                 target = "ironclaw::reborn::cli::serve",
                 %listen_addr,
-                "Notion DCR OAuth is not configured because the WebChat v2 listener origin is not a stable loopback HTTP origin"
+                "product-auth OAuth is not configured because the WebChat v2 listener origin is not a stable loopback HTTP origin"
             );
         }
 
@@ -419,7 +418,6 @@ impl ServeCommand {
             runtime_input =
                 runtime_input.with_trigger_fire_access_policy(trigger_fire_access_policy(
                     trigger_poller_enabled,
-                    sso_enabled,
                     &user_id,
                     &default_agent_id,
                     default_project_id.as_ref(),
@@ -456,7 +454,7 @@ impl ServeCommand {
                 );
             }
 
-            let bundle: RebornWebuiBundle = build_webui_services(&runtime, None)?;
+            let product_surface = runtime.product_surface(None)?;
             let openai_compat_mount = build_openai_compat_route_mount(
                 &runtime,
                 tenant_id.clone(),
@@ -536,11 +534,12 @@ impl ServeCommand {
                 env_token_var,
                 env_user_id_var,
                 &allowed_origins_raw,
-                &bundle.readiness,
+                runtime.readiness(),
             );
 
-            let mut serve_config = WebuiServeConfig::new(tenant_id, authenticator, allowed_origins)
-                .with_default_agent_id(default_agent_id.clone());
+            let mut serve_config =
+                WebuiServeConfig::new(tenant_id.clone(), authenticator, allowed_origins)
+                    .with_default_agent_id(default_agent_id.clone());
             if let Some(project_id) = default_project_id.clone() {
                 serve_config = serve_config.with_default_project_id(project_id);
             }
@@ -562,6 +561,25 @@ impl ServeCommand {
             if let Some(host) = canonical_host {
                 serve_config = serve_config.with_canonical_host(host);
             }
+            {
+                let mut state = ironclaw_reborn_composition::ProductAuthRouteState::new(
+                    runtime.product_auth_services(),
+                    tenant_id.clone(),
+                    Some(default_agent_id.clone()),
+                    default_project_id.clone(),
+                )
+                .with_product_surface(product_surface.clone());
+                if let Some(channel_identity_binding) = runtime.channel_identity_binding_config() {
+                    state = state.with_provider_identity_hook(
+                        ironclaw_reborn_composition::channel_identity_binding_hook_factory(
+                            channel_identity_binding,
+                        ),
+                    );
+                }
+                serve_config = serve_config.with_split_route_mount(
+                    ironclaw_reborn_composition::product_auth_route_mount(state),
+                );
+            }
             // Generic extension channel ingress (extension-runtime P4): one
             // mount serves `/webhooks/extensions/{extension_id}/{route_suffix}`
             // for every active extension; the route table follows the active
@@ -571,13 +589,6 @@ impl ServeCommand {
                     ironclaw_reborn_composition::extension_ingress_route_mount(&ingress_parts)
                         .context("failed to compose the extension ingress route mount")?;
                 serve_config = serve_config.with_public_route_mount(ingress_mount);
-            }
-            // The generic post-OAuth channel identity binding: installed
-            // channel extensions bind through generic discovery over the
-            // durable installation store; bindings land in the generic
-            // channel-identity store.
-            if let Some(channel_identity_binding) = runtime.channel_identity_binding_config() {
-                serve_config = serve_config.with_channel_identity_binding(channel_identity_binding);
             }
             // Generic WebGeneratedCode pairing routes (mint/status/unpair per
             // extension), riding the shared protected-route seam.
@@ -595,7 +606,7 @@ impl ServeCommand {
             if let Some(cli_login_mount) = cli_login_mount {
                 serve_config = serve_config.with_public_route_mount(cli_login_mount);
             }
-            let webui_app = webui_v2_app_with_lifecycle(bundle, serve_config)
+            let webui_app = webui_v2_app_with_lifecycle(product_surface, serve_config)
                 .context("failed to compose v2 Router")?;
             let (router, public_route_drains) = webui_app.into_parts();
 
@@ -738,7 +749,7 @@ fn reject_non_loopback_privileged_local_runtime(
     );
 }
 
-fn with_notion_dcr_oauth_backend(
+fn with_product_auth_callback_origin(
     services: RebornHostBindings,
     callback_origin: &str,
 ) -> anyhow::Result<RebornHostBindings> {
@@ -747,7 +758,7 @@ fn with_notion_dcr_oauth_backend(
         .map_err(|error| anyhow!("OAuth callback origin rejected: {error}"))
 }
 
-fn webui_notion_dcr_callback_origin(
+fn webui_product_auth_callback_origin(
     listen_addr: SocketAddr,
     canonical_host: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
@@ -841,11 +852,24 @@ fn canonical_host_name(host: &str) -> &str {
 
 /// Resolve the fire-time trigger access policy for `serve` from the enabled
 /// surfaces (arch-simplification §4.4). Poller off → no authorizer. Poller on →
-/// the configured operator owner may fire; with SSO also on, any active tenant
-/// member may too (the union the former single trigger-access store expressed).
+/// the configured operator owner may fire, and any active canonical tenant
+/// member may fire.
+///
+/// Intentional access model — the auth method is not the gate; active canonical
+/// membership is. The `TenantMembership` grant is wired unconditionally whenever
+/// the poller is on (there is deliberately no `sso_enabled` condition): a
+/// member's signed session is equally valid whether it originated from SSO or
+/// the administrator user API, so gating on the auth method would wrongly lock
+/// out admin-API-authenticated members from firing their own routines. Safety
+/// does not rest on the auth method because the grant is enforced by active
+/// membership at fire time: `build_reborn_runtime` turns this `TenantMembership`
+/// grant into an `IdentityMembershipTriggerFireChecker` that resolves the
+/// creator against the canonical identity directory and denies a suspended,
+/// wrong-tenant, or unknown creator (see `crate::trigger_fire_access` in
+/// `ironclaw_reborn_composition`). A merely-authenticated non-member therefore
+/// cannot fire; only an active member can.
 fn trigger_fire_access_policy(
     trigger_poller_enabled: bool,
-    sso_enabled: bool,
     user_id: &UserId,
     default_agent_id: &AgentId,
     default_project_id: Option<&ProjectId>,
@@ -853,16 +877,13 @@ fn trigger_fire_access_policy(
     if !trigger_poller_enabled {
         return TriggerFireAccessPolicy::disabled();
     }
-    let mut policy = TriggerFireAccessPolicy::disabled().with_static_owner(
-        user_id.clone(),
-        default_agent_id.clone(),
-        default_project_id.cloned(),
-    );
-    if sso_enabled {
-        policy =
-            policy.with_tenant_membership(default_agent_id.clone(), default_project_id.cloned());
-    }
-    policy
+    TriggerFireAccessPolicy::disabled()
+        .with_static_owner(
+            user_id.clone(),
+            default_agent_id.clone(),
+            default_project_id.cloned(),
+        )
+        .with_tenant_membership(default_agent_id.clone(), default_project_id.cloned())
 }
 
 /// The legacy `[slack]` setup fields are a retired configuration surface:
@@ -1414,50 +1435,33 @@ slack_user_id = "U123"
     fn trigger_poller_disabled_yields_empty_access_policy() {
         let user_id = UserId::new("serve-trigger-disabled-user").expect("user id");
         let agent_id = AgentId::new("serve-trigger-disabled-agent").expect("agent id");
-        // Poller off: no fire-time authorizer, regardless of SSO.
+        // Poller off: no fire-time authorizer.
         assert_eq!(
-            trigger_fire_access_policy(false, false, &user_id, &agent_id, None),
-            TriggerFireAccessPolicy::disabled()
-        );
-        assert_eq!(
-            trigger_fire_access_policy(false, true, &user_id, &agent_id, None),
+            trigger_fire_access_policy(false, &user_id, &agent_id, None),
             TriggerFireAccessPolicy::disabled()
         );
     }
 
     #[test]
-    fn trigger_poller_without_sso_grants_only_static_owner() {
+    fn trigger_poller_without_sso_grants_static_owner_and_tenant_membership() {
         let user_id = UserId::new("serve-trigger-user").expect("user id");
         let agent_id = AgentId::new("serve-trigger-agent").expect("agent id");
         let project_id = ProjectId::new("serve-trigger-project").expect("project id");
-        // Poller on, SSO off: the operator owner is the sole grant.
+        // Poller on, SSO off: admin-created signed-session users are still
+        // active canonical tenant members and must be able to fire their own
+        // routines. Authentication method does not change membership.
         assert_eq!(
-            trigger_fire_access_policy(true, false, &user_id, &agent_id, Some(&project_id)),
-            TriggerFireAccessPolicy::disabled().with_static_owner(
-                user_id.clone(),
-                agent_id.clone(),
-                Some(project_id.clone()),
-            )
+            trigger_fire_access_policy(true, &user_id, &agent_id, Some(&project_id)),
+            TriggerFireAccessPolicy::disabled()
+                .with_static_owner(user_id.clone(), agent_id.clone(), Some(project_id.clone()),)
+                .with_tenant_membership(agent_id.clone(), Some(project_id.clone()))
         );
         // No project scope is carried through exactly (not a wildcard).
         assert_eq!(
-            trigger_fire_access_policy(true, false, &user_id, &agent_id, None),
-            TriggerFireAccessPolicy::disabled().with_static_owner(user_id, agent_id, None)
-        );
-    }
-
-    #[test]
-    fn trigger_poller_with_sso_grants_static_owner_and_tenant_membership() {
-        let user_id = UserId::new("serve-trigger-user").expect("user id");
-        let agent_id = AgentId::new("serve-trigger-agent").expect("agent id");
-        let project_id = ProjectId::new("serve-trigger-project").expect("project id");
-        // Poller on, SSO on: the union of the operator owner and any active
-        // tenant member (the users SSO login persists in the identity store).
-        assert_eq!(
-            trigger_fire_access_policy(true, true, &user_id, &agent_id, Some(&project_id)),
+            trigger_fire_access_policy(true, &user_id, &agent_id, None),
             TriggerFireAccessPolicy::disabled()
-                .with_static_owner(user_id, agent_id.clone(), Some(project_id.clone()))
-                .with_tenant_membership(agent_id, Some(project_id))
+                .with_static_owner(user_id, agent_id.clone(), None)
+                .with_tenant_membership(agent_id, None)
         );
     }
 
@@ -1575,16 +1579,16 @@ slack_user_id = "U123"
     }
 
     #[tokio::test]
-    async fn webui_serve_wires_notion_dcr_into_runtime_services() {
+    async fn webui_serve_wires_product_auth_callback_into_runtime_services() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let services_input = with_notion_dcr_oauth_backend(
+        let services_input = with_product_auth_callback_origin(
             ironclaw_reborn_composition::local_dev_build_input(
-                "notion-dcr-owner",
+                "oauth-owner",
                 dir.path().join("local-dev"),
             ),
             "http://127.0.0.1:3000",
         )
-        .expect("notion dcr wiring");
+        .expect("product-auth callback wiring");
         let runtime = ironclaw_reborn_composition::build_reborn_runtime(
             ironclaw_reborn_composition::RebornRuntimeInput::from_build_input(services_input),
         )
@@ -1602,11 +1606,11 @@ slack_user_id = "U123"
     }
 
     #[tokio::test]
-    async fn webui_serve_wires_notion_dcr_with_canonical_host_origin() {
+    async fn webui_serve_wires_product_auth_callback_with_canonical_host_origin() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let services_input = with_notion_dcr_oauth_backend(
+        let services_input = with_product_auth_callback_origin(
             ironclaw_reborn_composition::local_dev_build_input(
-                "notion-dcr-owner",
+                "oauth-owner",
                 dir.path().join("local-dev"),
             ),
             webui_oauth_callback_origin(
@@ -1617,7 +1621,7 @@ slack_user_id = "U123"
             .as_deref()
             .expect("canonical callback origin"),
         )
-        .expect("notion dcr wiring");
+        .expect("product-auth callback wiring");
         let runtime = ironclaw_reborn_composition::build_reborn_runtime(
             ironclaw_reborn_composition::RebornRuntimeInput::from_build_input(services_input),
         )
@@ -1635,7 +1639,7 @@ slack_user_id = "U123"
     }
 
     #[tokio::test]
-    async fn webui_serve_wires_notion_dcr_with_public_base_url_env_origin() {
+    async fn webui_serve_wires_product_auth_callback_with_public_base_url_env_origin() {
         let callback_origin = {
             let _guard = crate::runtime::test_env::lock_runtime_env();
             clear_webui_env();
@@ -1645,7 +1649,7 @@ slack_user_id = "U123"
             }
 
             let callback_origin =
-                webui_notion_dcr_callback_origin(SocketAddr::from(([0, 0, 0, 0], 8080)), None)
+                webui_product_auth_callback_origin(SocketAddr::from(([0, 0, 0, 0], 8080)), None)
                     .expect("resolve callback origin from env")
                     .expect("public base url env should enable DCR wiring");
             assert_eq!(callback_origin, "https://configured.example");
@@ -1654,14 +1658,14 @@ slack_user_id = "U123"
         };
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let services_input = with_notion_dcr_oauth_backend(
+        let services_input = with_product_auth_callback_origin(
             ironclaw_reborn_composition::local_dev_build_input(
-                "notion-dcr-owner",
+                "oauth-owner",
                 dir.path().join("local-dev"),
             ),
             &callback_origin,
         )
-        .expect("notion dcr wiring");
+        .expect("product-auth callback wiring");
         let runtime = ironclaw_reborn_composition::build_reborn_runtime(
             ironclaw_reborn_composition::RebornRuntimeInput::from_build_input(services_input),
         )
@@ -1679,7 +1683,7 @@ slack_user_id = "U123"
     }
 
     #[test]
-    fn webui_notion_dcr_callback_origin_rejects_slash_only_public_base_url_env() {
+    fn webui_product_auth_callback_origin_rejects_slash_only_public_base_url_env() {
         let _guard = crate::runtime::test_env::lock_runtime_env();
         clear_webui_env();
         // SAFETY: serialized by the shared crate process-env lock; cleaned up before the guard drops.
@@ -1687,8 +1691,9 @@ slack_user_id = "U123"
             std::env::set_var(WEBUI_BASE_URL_ENV, "/");
         }
 
-        let error = webui_notion_dcr_callback_origin(SocketAddr::from(([0, 0, 0, 0], 8080)), None)
-            .expect_err("slash-only base URL must fail closed");
+        let error =
+            webui_product_auth_callback_origin(SocketAddr::from(([0, 0, 0, 0], 8080)), None)
+                .expect_err("slash-only base URL must fail closed");
         assert!(
             error.to_string().contains(WEBUI_BASE_URL_ENV),
             "error should name the invalid env var, got: {error}"
@@ -1698,7 +1703,7 @@ slack_user_id = "U123"
     }
 
     #[test]
-    fn webui_notion_dcr_callback_origin_rejects_public_cleartext_base_url_env() {
+    fn webui_product_auth_callback_origin_rejects_public_cleartext_base_url_env() {
         let _guard = crate::runtime::test_env::lock_runtime_env();
         clear_webui_env();
         // SAFETY: serialized by the shared crate process-env lock; cleaned up before the guard drops.
@@ -1706,8 +1711,9 @@ slack_user_id = "U123"
             std::env::set_var(WEBUI_BASE_URL_ENV, "http://configured.example");
         }
 
-        let error = webui_notion_dcr_callback_origin(SocketAddr::from(([0, 0, 0, 0], 8080)), None)
-            .expect_err("public cleartext base URL must fail closed");
+        let error =
+            webui_product_auth_callback_origin(SocketAddr::from(([0, 0, 0, 0], 8080)), None)
+                .expect_err("public cleartext base URL must fail closed");
         let message = error.to_string();
         assert!(
             message.contains(WEBUI_BASE_URL_ENV),

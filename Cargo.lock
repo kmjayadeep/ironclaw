@@ -3759,6 +3759,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironclaw_host_ingress"
+version = "0.1.0"
+dependencies = [
+ "axum 0.8.9",
+ "ironclaw_host_api",
+]
+
+[[package]]
 name = "ironclaw_host_runtime"
 version = "0.1.0"
 dependencies = [
@@ -3788,6 +3796,7 @@ dependencies = [
  "ironclaw_memory_native",
  "ironclaw_network",
  "ironclaw_observability",
+ "ironclaw_outbound",
  "ironclaw_process_sandbox",
  "ironclaw_processes",
  "ironclaw_prompt_envelope",
@@ -3920,6 +3929,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
+ "tracing-test",
 ]
 
 [[package]]
@@ -3930,9 +3941,27 @@ dependencies = [
  "chrono-tz",
  "hex",
  "ironclaw_host_api",
+ "ironclaw_prompt_envelope",
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "ironclaw_memory_mem0"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "ironclaw_host_api",
+ "ironclaw_memory",
+ "ironclaw_memory_mem0",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 
@@ -4069,9 +4098,11 @@ dependencies = [
  "ironclaw_runner",
  "ironclaw_telegram_extension",
  "ironclaw_threads",
+ "ironclaw_triggers",
  "ironclaw_trust",
  "ironclaw_turns",
  "libsql",
+ "rand 0.10.1",
  "secrecy",
  "serde",
  "serde_json",
@@ -4143,11 +4174,14 @@ dependencies = [
  "ironclaw_first_party_extensions",
  "ironclaw_hooks",
  "ironclaw_host_api",
+ "ironclaw_host_ingress",
  "ironclaw_host_runtime",
  "ironclaw_llm",
  "ironclaw_loop_host",
  "ironclaw_mcp",
  "ironclaw_memory",
+ "ironclaw_memory_mem0",
+ "ironclaw_memory_native",
  "ironclaw_network",
  "ironclaw_observability",
  "ironclaw_outbound",
@@ -4168,6 +4202,7 @@ dependencies = [
  "ironclaw_secrets",
  "ironclaw_skills",
  "ironclaw_slack_extension",
+ "ironclaw_telegram_extension",
  "ironclaw_threads",
  "ironclaw_triggers",
  "ironclaw_trust",
@@ -4288,6 +4323,7 @@ dependencies = [
  "ironclaw_first_party_extensions",
  "ironclaw_hooks",
  "ironclaw_host_api",
+ "ironclaw_host_ingress",
  "ironclaw_host_runtime",
  "ironclaw_llm",
  "ironclaw_loop_host",
@@ -4461,6 +4497,8 @@ dependencies = [
  "ironclaw_host_runtime",
  "ironclaw_llm",
  "ironclaw_loop_host",
+ "ironclaw_memory",
+ "ironclaw_memory_native",
  "ironclaw_observability",
  "ironclaw_processes",
  "ironclaw_reborn_event_store",
@@ -4627,7 +4665,9 @@ dependencies = [
  "async-trait",
  "chrono",
  "ironclaw_host_api",
+ "ironclaw_product",
  "ironclaw_telegram_v2_adapter",
+ "ironclaw_turns",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -4717,6 +4757,7 @@ dependencies = [
  "blake3",
  "chrono",
  "chrono-tz",
+ "deadpool-postgres",
  "futures-util",
  "hex",
  "ironclaw_filesystem",
@@ -4733,6 +4774,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-postgres",
  "tracing",
  "uuid",
 ]
@@ -4784,9 +4826,9 @@ dependencies = [
  "http 1.4.2",
  "http-body-util",
  "ironclaw_host_api",
+ "ironclaw_host_ingress",
  "ironclaw_loop_host",
  "ironclaw_product",
- "ironclaw_reborn_composition",
  "ironclaw_reborn_openai_compat",
  "ironclaw_threads",
  "ironclaw_turns",
