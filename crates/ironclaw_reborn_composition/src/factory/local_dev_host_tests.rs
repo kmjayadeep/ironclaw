@@ -328,10 +328,8 @@ async fn sandboxed_profile_workspace_mount_is_per_user_and_shares_bytes_with_hos
     // translation here means writing/reading through the digest-prefixed
     // path directly, matching exactly what the capability dispatch path
     // resolves `/workspace/f.txt` to for this owner.
-    let path = ironclaw_host_api::VirtualPath::new(&format!(
-        "/workspace/{workspace_digest}/f.txt"
-    ))
-    .expect("virtual path");
+    let path = ironclaw_host_api::VirtualPath::new(format!("/workspace/{workspace_digest}/f.txt"))
+        .expect("virtual path");
     local_runtime
         .extension_filesystem
         .write_file(&path, b"from-fs-tools")
@@ -357,7 +355,7 @@ async fn sandboxed_profile_workspace_mount_is_per_user_and_shares_bytes_with_hos
     let bytes = local_runtime
         .extension_filesystem
         .read_file(
-            &ironclaw_host_api::VirtualPath::new(&format!("/workspace/{workspace_digest}/g.txt"))
+            &ironclaw_host_api::VirtualPath::new(format!("/workspace/{workspace_digest}/g.txt"))
                 .expect("virtual path"),
         )
         .await
