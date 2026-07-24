@@ -109,6 +109,21 @@ pub(super) fn capability_wiring(
     let runtime = services.host_runtime.clone()?;
     let local_runtime = services.local_runtime.as_ref()?;
     let workspace_mounts = local_runtime.workspace_mounts.clone();
+    // `HostedSingleTenantVolumeSandboxed` only: the local-dev storage root
+    // whose `users` subtree `WorkspaceRootMode::SandboxUser` mounts at
+    // `/workspace` (`factory.rs`). When set, `create_capability_port` below
+    // re-resolves `/workspace` fresh for every invocation from the CALLING
+    // scope via `RebornSandboxUserKey`/`sandbox_user_workspace_mount_view`
+    // instead of reusing the boot owner's static `workspace_mounts` above —
+    // the fix for the cross-user `/workspace` leak (a non-owner's
+    // `read_file`/`write_file` used to resolve into the boot owner's
+    // directory).
+    let sandbox_workspace_local_dev_root =
+        local_runtime.runtime_policy.as_ref().and_then(|policy| {
+            (policy.process_backend
+                == ironclaw_host_api::runtime_policy::ProcessBackendKind::TenantSandbox)
+                .then(|| local_runtime.local_dev_storage_root.clone())
+        });
     let memory_mounts = local_runtime.memory_mounts.clone();
     let system_extensions_lifecycle_mounts =
         local_runtime.system_extensions_lifecycle_mounts.clone();
@@ -174,6 +189,7 @@ pub(super) fn capability_wiring(
             fallback_user_id,
             policy,
             workspace_mounts,
+            sandbox_workspace_local_dev_root,
             memory_mounts,
             system_extensions_lifecycle_mounts,
             extension_surface_source,
@@ -207,7 +223,20 @@ struct RefreshingLoopCapabilityPortFactory {
     runtime: Arc<dyn HostRuntime>,
     fallback_user_id: UserId,
     policy: Arc<BuiltinCapabilityPolicy>,
+    /// Boot-owner-scoped `/workspace` grant. Used as-is for non-sandboxed
+    /// profiles; for `HostedSingleTenantVolumeSandboxed` (when
+    /// `sandbox_workspace_local_dev_root` is `Some`) `create_capability_port`
+    /// ignores this and resolves a fresh, per-invocation grant instead — see
+    /// that field's doc comment.
     workspace_mounts: MountView,
+    /// `Some(local_dev_storage_root)` only for `HostedSingleTenantVolumeSandboxed`.
+    /// When set, `create_capability_port` re-resolves `/workspace` per
+    /// invocation from the CALLING scope (`RebornSandboxUserKey` +
+    /// `sandbox_user_workspace_mount_view`) instead of reusing
+    /// `workspace_mounts`, closing the cross-user `/workspace` leak where a
+    /// non-owner's `read_file`/`write_file` resolved into the boot owner's
+    /// directory.
+    sandbox_workspace_local_dev_root: Option<std::path::PathBuf>,
     memory_mounts: MountView,
     system_extensions_lifecycle_mounts: MountView,
     extension_surface_source: ExtensionCapabilitySurfaceSource,
@@ -241,17 +270,39 @@ impl LoopCapabilityPortFactory for RefreshingLoopCapabilityPortFactory {
         &self,
         run_context: &LoopRunContext,
     ) -> Result<Arc<dyn LoopCapabilityPort>, AgentLoopHostError> {
-        let skill_mounts = scoped_skill_management_mount_view(&local_dev_resource_scope_for_run(
-            run_context,
-            &self.fallback_user_id,
-        ))
-        .map_err(host_api_agent_loop_error)?;
+        let scope = local_dev_resource_scope_for_run(run_context, &self.fallback_user_id);
+        let skill_mounts =
+            scoped_skill_management_mount_view(&scope).map_err(host_api_agent_loop_error)?;
+        // `HostedSingleTenantVolumeSandboxed` only: resolve `/workspace`
+        // fresh for THIS invocation's own caller scope, mirroring
+        // `skill_mounts` above, instead of the boot owner's static
+        // `self.workspace_mounts`. This is the fix for the cross-user
+        // `/workspace` leak — pre-fix, every non-owner's
+        // `read_file`/`write_file` resolved into the boot owner's directory
+        // because `workspace_mounts` was computed once at boot from the
+        // owner's scope and never varied per caller.
+        let workspace_mounts = match &self.sandbox_workspace_local_dev_root {
+            Some(local_dev_root) => {
+                let workspace_path =
+                    ironclaw_host_runtime::RebornSandboxUserKey::from_scope(&scope)
+                        .workspace_path(local_dev_root);
+                tokio::fs::create_dir_all(&workspace_path)
+                    .await
+                    .map_err(host_api_agent_loop_error)?;
+                crate::local_dev_mounts::sandbox_user_workspace_mount_view(
+                    &scope,
+                    ironclaw_host_api::MountPermissions::read_write(),
+                )
+                .map_err(host_api_agent_loop_error)?
+            }
+            None => self.workspace_mounts.clone(),
+        };
         create_refreshing_capability_port(RefreshingCapabilityPortConfig {
             runtime: Arc::clone(&self.runtime),
             run_context: run_context.clone(),
             fallback_user_id: self.fallback_user_id.clone(),
             policy: Arc::clone(&self.policy),
-            workspace_mounts: self.workspace_mounts.clone(),
+            workspace_mounts,
             skill_mounts,
             memory_mounts: self.memory_mounts.clone(),
             system_extensions_lifecycle_mounts: self.system_extensions_lifecycle_mounts.clone(),

@@ -199,9 +199,20 @@ enum WorkspaceRootMode {
     /// optional host-home ambient view (local-dev, local-dev-yolo,
     /// hosted-single-tenant).
     Ambient,
-    /// `HostedSingleTenantVolumeSandboxed`: the boot owner's per-user
-    /// sandbox workspace directory, mounted directly at `/workspace`.
-    SandboxUser(PathBuf),
+    /// `HostedSingleTenantVolumeSandboxed`: `/workspace` is mounted ONCE at
+    /// `users_root` (the shared parent of every user's leaf sandbox
+    /// workspace directory) and narrowed per invocation via
+    /// `sandbox_user_workspace_mount_view` — see
+    /// `runtime/local_dev.rs::create_capability_port`, the actual
+    /// per-invocation resolution seam for `builtin.read_file`/`write_file`.
+    /// `owner_scope` is used only by the STATIC, boot-time consumers that
+    /// have no per-invocation caller scope available (approval-lease-terms
+    /// display, the WebUI attachment-landing filesystem) — those
+    /// deliberately keep resolving to the boot owner's own directory.
+    SandboxUser {
+        users_root: PathBuf,
+        owner_scope: ResourceScope,
+    },
 }
 
 const LOCAL_DEV_DEFAULT_SYSTEM_PROMPT_PATH: &str = "system/prompts/default-system.md";
@@ -1926,12 +1937,17 @@ async fn build_local_runtime(input: RebornBuildInput) -> Result<RebornServices, 
     })?;
     crate::extension_host::bundled_skills::ensure_bundled_reborn_skills_installed(&root).await?;
     // Which host directory the runtime `/workspace` grant resolves against.
-    // Sandboxed-profile builds redirect it onto the boot owner's per-user
-    // sandbox workspace directory (Task A1's `RebornSandboxUserKey`) instead
-    // of the ambient `/projects/workspace` mount, so `read_file`/`write_file`
-    // and the sandbox container's own `/workspace` bind (Task A3) resolve the
-    // same host directory. Computed once, before `owner_user_id` and
-    // `local_runtime_identity` move into `RebornStoreGraphInput` below.
+    // Sandboxed-profile builds mount the PARENT of every user's per-user
+    // sandbox workspace directory (Task A1's `RebornSandboxUserKey`) at
+    // `/workspace` ONCE here, instead of the ambient `/projects/workspace`
+    // mount; `builtin.read_file`/`write_file` then narrow `/workspace` down
+    // to the CALLING invocation's own subtree per request
+    // (`runtime/local_dev.rs::create_capability_port`), using the same
+    // `RebornSandboxUserKey` the sandbox container's own `/workspace` bind
+    // (Task A3) uses — so abstract-FS and the shell container resolve the
+    // same host directory PER USER, not just for the boot owner. Computed
+    // once, before `owner_user_id` and `local_runtime_identity` move into
+    // `RebornStoreGraphInput` below.
     let workspace_root_mode = if is_sandboxed_profile {
         let owner_scope = match &local_runtime_identity {
             Some(identity) => configured_runtime_owner_scope(owner_user_id.clone(), identity),
@@ -1941,12 +1957,14 @@ async fn build_local_runtime(input: RebornBuildInput) -> Result<RebornServices, 
                 }
             })?,
         };
-        let path = ironclaw_host_runtime::RebornSandboxUserKey::from_scope(&owner_scope)
-            .workspace_path(&root);
-        std::fs::create_dir_all(&path).map_err(|_| RebornBuildError::InvalidConfig {
+        let users_root = root.join("users");
+        std::fs::create_dir_all(&users_root).map_err(|_| RebornBuildError::InvalidConfig {
             reason: "sandbox user workspace root could not be initialized".to_string(),
         })?;
-        WorkspaceRootMode::SandboxUser(path)
+        WorkspaceRootMode::SandboxUser {
+            users_root,
+            owner_scope,
+        }
     } else {
         WorkspaceRootMode::Ambient
     };
@@ -3435,8 +3453,8 @@ async fn build_local_runtime_root_filesystem(
         }
     };
     mount_local_dev_project_roots(&mut composite, local)?;
-    if let WorkspaceRootMode::SandboxUser(sandbox_workspace_root) = workspace_root_mode {
-        mount_sandbox_user_workspace_root(&mut composite, sandbox_workspace_root)?;
+    if let WorkspaceRootMode::SandboxUser { users_root, .. } = workspace_root_mode {
+        mount_sandbox_user_workspace_root(&mut composite, users_root)?;
     }
     Ok(RootFilesystemBundle {
         filesystem: Arc::new(composite),
@@ -3811,19 +3829,23 @@ fn mount_local_dev_project_roots(
     Ok(())
 }
 
-/// Registers the per-user sandbox workspace directory as an abstract-FS mount
-/// at virtual root `/workspace`, so `read_file`/`write_file` (via the
-/// `Workspace`-profile `MountView`) and the sandbox container's `/workspace`
-/// bind (Task A3, `RebornSandboxMountSources::add_local_source`) resolve to
-/// the identical host directory. Sandboxed-profile builds only.
+/// Registers the sandbox workspace users ROOT (the shared PARENT of every
+/// user's leaf sandbox workspace directory, `<root>/users`) as an abstract-FS
+/// mount at virtual root `/workspace`, ONCE. Every user's leaf directory
+/// lives under this single mount; `sandbox_user_workspace_mount_view`
+/// narrows `/workspace` down to the CALLING invocation's own subtree per
+/// request, so `read_file`/`write_file` and the sandbox container's own
+/// `/workspace` bind (Task A3, `RebornSandboxMountSources::add_local_source`)
+/// resolve to the identical host directory for the SAME caller. Sandboxed-
+/// profile builds only.
 fn mount_sandbox_user_workspace_root(
     root: &mut CompositeRootFilesystem,
-    workspace_root: &Path,
+    sandbox_workspace_users_root: &Path,
 ) -> Result<(), RebornBuildError> {
     let mut disk = DiskFilesystem::new();
     disk.mount_local(
         VirtualPath::new("/workspace")?,
-        HostPath::from_path_buf(workspace_root.to_path_buf()),
+        HostPath::from_path_buf(sandbox_workspace_users_root.to_path_buf()),
     )?;
     root.mount(
         local_dev_mount_descriptor(
@@ -4335,12 +4357,18 @@ fn build_workspace_filesystems(
             reason: error.to_string(),
         })?;
     let runtime_workspace_mounts = match workspace_root_mode {
-        WorkspaceRootMode::SandboxUser(_) => {
-            sandbox_user_workspace_mount_view(MountPermissions::read_write()).map_err(|error| {
-                RebornBuildError::InvalidConfig {
+        // Boot-time-only value: backs the STATIC consumers that have no
+        // per-invocation caller scope (approval-lease-terms display, the
+        // WebUI attachment-landing filesystem — see `WorkspaceRootMode`'s
+        // doc comment). The actual `builtin.read_file`/`write_file`
+        // dispatch path re-resolves this per invocation in
+        // `runtime/local_dev.rs::create_capability_port`, not here.
+        WorkspaceRootMode::SandboxUser { owner_scope, .. } => {
+            sandbox_user_workspace_mount_view(owner_scope, MountPermissions::read_write()).map_err(
+                |error| RebornBuildError::InvalidConfig {
                     reason: error.to_string(),
-                }
-            })?
+                },
+            )?
         }
         WorkspaceRootMode::Ambient => {
             let host_home_aliases = host_home_root

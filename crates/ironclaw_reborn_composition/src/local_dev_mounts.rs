@@ -54,25 +54,50 @@ pub(crate) fn ambient_workspace_mount_view(
     MountView::new(mounts)
 }
 
-/// Virtual target for the `HostedSingleTenantVolumeSandboxed` profile's
-/// `/workspace` grant. Alias and target coincide at `/workspace` because the
-/// abstract-FS mount registered by `mount_sandbox_user_workspace_root` in
-/// `factory.rs` IS the per-user sandbox workspace directory — unlike
-/// `ambient_workspace_mount_view`, there is no intermediate
-/// `/projects/workspace` indirection here, by design.
-const SANDBOX_WORKSPACE_TARGET: &str = "/workspace";
+/// Virtual root the `HostedSingleTenantVolumeSandboxed` profile's per-user
+/// sandbox-workspace disk mount is registered at
+/// (`mount_sandbox_user_workspace_root` in `factory.rs` mounts the shared
+/// PARENT directory — every user's leaf workspace directory — here, ONCE, at
+/// boot). Grants built by [`sandbox_user_workspace_mount_view`] narrow
+/// `/workspace` down to the calling scope's own child directory under this
+/// root, so the disk mount itself never needs to change per user.
+const SANDBOX_WORKSPACE_ROOT: &str = "/workspace";
 
-/// Workspace `MountView` for the `HostedSingleTenantVolumeSandboxed` profile:
-/// redirects the runtime `/workspace` grant onto the per-user sandbox
-/// workspace mount instead of `/projects/workspace`, so `read_file`/
-/// `write_file` resolve the same host directory the sandbox container's own
-/// `/workspace` bind (Task A3) uses.
+/// Per-invocation workspace `MountView` for the `HostedSingleTenantVolumeSandboxed`
+/// profile: resolves `/workspace` to the CALLING scope's own subtree under the
+/// shared sandbox-workspace-users disk mount, using the SAME canonical
+/// `RebornSandboxUserKey::from_scope` key the sandbox container bind uses
+/// (`sandbox_process.rs`'s `prepare_workspace`) — so abstract-FS
+/// `read_file`/`write_file` and the shell container agree on the identical
+/// host directory PER USER. Mirrors [`scoped_skill_context_mount_view`]'s
+/// per-scope resolver shape: unlike the old fixed view (baked once from the
+/// boot owner), this must be re-resolved for every invocation — never cached
+/// or reused across scopes.
 pub(crate) fn sandbox_user_workspace_mount_view(
+    scope: &ResourceScope,
     permissions: MountPermissions,
 ) -> Result<MountView, HostApiError> {
+    let workspace_path = ironclaw_host_runtime::RebornSandboxUserKey::from_scope(scope)
+        .workspace_path(Path::new(""));
+    // `RebornSandboxUserKey::workspace_path` always yields `"users/<digest>"`
+    // relative to whatever root it is given; the disk mount registered by
+    // `mount_sandbox_user_workspace_root` is rooted at that same "users"
+    // parent, so strip the (structurally constant) "users" prefix to get the
+    // segment relative to the mount.
+    let digest = workspace_path
+        .strip_prefix("users")
+        .map_err(|_| HostApiError::InvalidMount {
+            value: WORKSPACE_ALIAS.to_string(),
+            reason: "sandbox workspace key produced an unexpected path shape".to_string(),
+        })?
+        .to_str()
+        .ok_or_else(|| HostApiError::InvalidMount {
+            value: WORKSPACE_ALIAS.to_string(),
+            reason: "sandbox workspace path is not valid UTF-8".to_string(),
+        })?;
     MountView::new(vec![grant(
         WORKSPACE_ALIAS,
-        SANDBOX_WORKSPACE_TARGET,
+        &format!("{SANDBOX_WORKSPACE_ROOT}/{digest}"),
         permissions,
     )?])
 }

@@ -290,11 +290,48 @@ async fn sandboxed_profile_workspace_mount_is_per_user_and_shares_bytes_with_hos
         .iter()
         .find(|mount| mount.alias.as_str() == "/workspace")
         .expect("/workspace grant exists for the sandboxed profile");
-    assert_eq!(workspace_grant.target.as_str(), "/workspace");
+    // `sandbox_user_workspace_mount_view` deliberately narrows the alias
+    // down to the calling scope's own child directory under the shared
+    // `/workspace` disk mount `mount_sandbox_user_workspace_root` registers
+    // once at boot — not a bare "/workspace" passthrough — so distinct
+    // owners' per-invocation grants can never resolve to the same target
+    // even though they share one underlying disk mount. The digest-write
+    // and digest-read round trip below is exactly what depends on this
+    // narrowing actually happening.
+    let owner_scope_for_grant = default_runtime_owner_scope(
+        ironclaw_host_api::UserId::new("sandbox-owner").expect("owner id"),
+    )
+    .expect("owner scope resolves");
+    let workspace_digest =
+        ironclaw_host_runtime::RebornSandboxUserKey::from_scope(&owner_scope_for_grant)
+            .workspace_path(std::path::Path::new(""))
+            .strip_prefix("users")
+            .expect("workspace_path is always users/<digest>")
+            .to_str()
+            .expect("digest is valid UTF-8")
+            .to_string();
+    assert_eq!(
+        workspace_grant.target.as_str(),
+        format!("/workspace/{workspace_digest}")
+    );
     assert_eq!(workspace_grant.permissions, MountPermissions::read_write());
 
-    // write_file (abstract FS) -> assert on the real per-user host dir.
-    let path = ironclaw_host_api::VirtualPath::new("/workspace/f.txt").expect("virtual path");
+    // `local_runtime.extension_filesystem` is the raw composite root
+    // filesystem — the SAME one `mount_sandbox_user_workspace_root` mounts
+    // at `/workspace` -> the shared `users` parent, unnarrowed. The
+    // per-invocation narrowing down to the caller's own digest subtree
+    // happens one layer up, in the `MountView` alias translation
+    // `sandbox_user_workspace_mount_view` returns (exercised by the
+    // `workspace_grant.target` assertion above and by
+    // `hosted_single_tenant_volume_sandboxed_workspace_resolves_per_invocation_scope`
+    // in `runtime/local_dev/tests.rs`). Exercising the same alias
+    // translation here means writing/reading through the digest-prefixed
+    // path directly, matching exactly what the capability dispatch path
+    // resolves `/workspace/f.txt` to for this owner.
+    let path = ironclaw_host_api::VirtualPath::new(&format!(
+        "/workspace/{workspace_digest}/f.txt"
+    ))
+    .expect("virtual path");
     local_runtime
         .extension_filesystem
         .write_file(&path, b"from-fs-tools")
@@ -314,11 +351,15 @@ async fn sandboxed_profile_workspace_mount_is_per_user_and_shares_bytes_with_hos
     );
 
     // reverse: write directly on the host dir (what a shell `echo` inside the
-    // container does), read back through the abstract FS /workspace mount.
+    // container does), read back through the abstract FS /workspace mount
+    // via the same digest-prefixed virtual path.
     std::fs::write(host_workspace_dir.join("g.txt"), b"from-shell").expect("host write");
     let bytes = local_runtime
         .extension_filesystem
-        .read_file(&ironclaw_host_api::VirtualPath::new("/workspace/g.txt").expect("virtual path"))
+        .read_file(
+            &ironclaw_host_api::VirtualPath::new(&format!("/workspace/{workspace_digest}/g.txt"))
+                .expect("virtual path"),
+        )
         .await
         .expect("read through composite /workspace mount");
     assert_eq!(bytes, b"from-shell");

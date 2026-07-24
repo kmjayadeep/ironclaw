@@ -93,6 +93,7 @@ async fn local_dev_yolo_shell_translates_workspace_workdir_without_scoped_mounts
         fallback_user_id: UserId::new("local-dev-shell-user").expect("user id"),
         policy,
         workspace_mounts,
+        sandbox_workspace_local_dev_root: None,
         memory_mounts,
         system_extensions_lifecycle_mounts: local_runtime
             .system_extensions_lifecycle_mounts

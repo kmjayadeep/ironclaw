@@ -1476,6 +1476,7 @@ mod tests {
             fallback_user_id: fallback_user_id.clone(),
             policy: Arc::clone(&local_runtime.capability_policy),
             workspace_mounts: local_runtime.workspace_mounts.clone(),
+            sandbox_workspace_local_dev_root: None,
             memory_mounts: local_runtime.memory_mounts.clone(),
             system_extensions_lifecycle_mounts: local_runtime
                 .system_extensions_lifecycle_mounts
@@ -1788,6 +1789,7 @@ mod tests {
             fallback_user_id: fallback_user_id.clone(),
             policy: Arc::clone(&local_runtime.capability_policy),
             workspace_mounts: local_runtime.workspace_mounts.clone(),
+            sandbox_workspace_local_dev_root: None,
             memory_mounts: local_runtime.memory_mounts.clone(),
             system_extensions_lifecycle_mounts: local_runtime
                 .system_extensions_lifecycle_mounts
@@ -2301,6 +2303,7 @@ mod tests {
             fallback_user_id: UserId::new("skill-activate-user").expect("user id"),
             policy,
             workspace_mounts: local_runtime.workspace_mounts.clone(),
+            sandbox_workspace_local_dev_root: None,
             memory_mounts: local_runtime.memory_mounts.clone(),
             system_extensions_lifecycle_mounts: local_runtime
                 .system_extensions_lifecycle_mounts
@@ -2516,6 +2519,7 @@ mod tests {
             fallback_user_id: UserId::new("external-tool-provider-name-user").expect("user id"),
             policy,
             workspace_mounts: local_runtime.workspace_mounts.clone(),
+            sandbox_workspace_local_dev_root: None,
             memory_mounts: local_runtime.memory_mounts.clone(),
             system_extensions_lifecycle_mounts: local_runtime
                 .system_extensions_lifecycle_mounts
@@ -2602,6 +2606,7 @@ mod tests {
             fallback_user_id: UserId::new("project-create-fallback-user").expect("user id"),
             policy: Arc::clone(&local_runtime.capability_policy),
             workspace_mounts: local_runtime.workspace_mounts.clone(),
+            sandbox_workspace_local_dev_root: None,
             memory_mounts: local_runtime.memory_mounts.clone(),
             system_extensions_lifecycle_mounts: local_runtime
                 .system_extensions_lifecycle_mounts
@@ -2806,6 +2811,7 @@ mod tests {
             fallback_user_id,
             policy: Arc::clone(&local_runtime.capability_policy),
             workspace_mounts: local_runtime.workspace_mounts.clone(),
+            sandbox_workspace_local_dev_root: None,
             memory_mounts: local_runtime.memory_mounts.clone(),
             system_extensions_lifecycle_mounts: local_runtime
                 .system_extensions_lifecycle_mounts
@@ -3145,6 +3151,7 @@ mod tests {
             fallback_user_id,
             policy: Arc::clone(&local_runtime.capability_policy),
             workspace_mounts: local_runtime.workspace_mounts.clone(),
+            sandbox_workspace_local_dev_root: None,
             memory_mounts: local_runtime.memory_mounts.clone(),
             system_extensions_lifecycle_mounts: local_runtime
                 .system_extensions_lifecycle_mounts
@@ -3577,6 +3584,7 @@ mod tests {
             fallback_user_id,
             policy: Arc::clone(&local_runtime.capability_policy),
             workspace_mounts: local_runtime.workspace_mounts.clone(),
+            sandbox_workspace_local_dev_root: None,
             memory_mounts: local_runtime.memory_mounts.clone(),
             system_extensions_lifecycle_mounts: local_runtime
                 .system_extensions_lifecycle_mounts
@@ -3727,6 +3735,7 @@ mod tests {
             fallback_user_id: fallback_user_id.clone(),
             policy,
             workspace_mounts: local_runtime.workspace_mounts.clone(),
+            sandbox_workspace_local_dev_root: None,
             memory_mounts: local_runtime.memory_mounts.clone(),
             system_extensions_lifecycle_mounts: local_runtime
                 .system_extensions_lifecycle_mounts
@@ -4582,6 +4591,7 @@ mod tests {
             fallback_user_id: UserId::new("outbound-delivery-fallback-user").expect("user id"),
             policy,
             workspace_mounts: local_runtime.workspace_mounts.clone(),
+            sandbox_workspace_local_dev_root: None,
             memory_mounts: local_runtime.memory_mounts.clone(),
             system_extensions_lifecycle_mounts: local_runtime
                 .system_extensions_lifecycle_mounts
@@ -4701,6 +4711,7 @@ mod tests {
             fallback_user_id: UserId::new("local-yolo-host-user").expect("user id"), // safety: literal test id is valid.
             policy,
             workspace_mounts,
+            sandbox_workspace_local_dev_root: None,
             memory_mounts: local_runtime.memory_mounts.clone(),
             system_extensions_lifecycle_mounts: local_runtime
                 .system_extensions_lifecycle_mounts
@@ -4923,6 +4934,239 @@ mod tests {
         );
     }
 
+    /// Regression for the cross-user `/workspace` leak: pre-fix,
+    /// `RefreshingLoopCapabilityPortFactory` resolved the sandboxed profile's
+    /// `/workspace` grant ONCE at boot from the owner scope, so EVERY
+    /// caller's `builtin.read_file`/`builtin.write_file` — not just the
+    /// owner's — landed in the boot owner's own sandbox workspace directory
+    /// (a cross-user read leak and write collision). Neither user below is
+    /// the boot owner, so this also proves non-owner isolation, not merely
+    /// "owner vs. one other user".
+    #[tokio::test]
+    async fn hosted_single_tenant_volume_sandboxed_workspace_resolves_per_invocation_scope() {
+        struct PanicsIfCalledSandboxTransport;
+        #[async_trait::async_trait]
+        impl ironclaw_host_runtime::SandboxCommandTransport for PanicsIfCalledSandboxTransport {
+            async fn run_command(
+                &self,
+                _request: ironclaw_host_runtime::CommandExecutionRequest,
+            ) -> Result<
+                ironclaw_host_runtime::CommandExecutionOutput,
+                ironclaw_host_runtime::RuntimeProcessError,
+            > {
+                panic!("this test never dispatches builtin.shell");
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir"); // safety: test-only setup in #[cfg(test)] module.
+        let mut policy = crate::hosted_single_tenant_volume_sandboxed_runtime_policy()
+            .expect("sandboxed profile policy resolves");
+        // Bypass the sandboxed profile's real `AskWrites` approval gate so
+        // read_file/write_file dispatch directly — approval gating is
+        // covered elsewhere; the thing under test is per-invocation
+        // `/workspace` mount resolution.
+        policy.approval_policy = ironclaw_host_api::runtime_policy::ApprovalPolicy::Minimal;
+        let process_port = Arc::new(ironclaw_host_runtime::TenantSandboxProcessPort::new(
+            Arc::new(PanicsIfCalledSandboxTransport),
+        ));
+        let services = crate::build_reborn_services(
+            crate::RebornBuildInput::local_dev_with_profile(
+                crate::RebornCompositionProfile::HostedSingleTenantVolumeSandboxed,
+                "sandbox-workspace-boot-owner",
+                dir.path().to_path_buf(),
+            )
+            .with_runtime_policy(policy)
+            .with_local_dev_secret_master_key(ironclaw_secrets::SecretMaterial::from(
+                "01234567890123456789012345678901".to_string(),
+            ))
+            .with_runtime_process_binding(
+                crate::RebornRuntimeProcessBinding::tenant_sandbox(process_port),
+            ),
+        )
+        .await
+        .expect("sandboxed profile services build"); // safety: test-only assertion in #[cfg(test)] module.
+        let runtime = services.host_runtime.clone().expect("host runtime"); // safety: test-only assertion in #[cfg(test)] module.
+        let local_runtime = services
+            .local_runtime
+            .as_ref()
+            .expect("local runtime substrate"); // safety: test-only assertion in #[cfg(test)] module.
+        let local_dev_root = local_runtime.local_dev_storage_root.clone();
+        let policy = Arc::new(
+            crate::builtin_capability_policy::builtin_capability_policy().expect("policy parses"),
+        );
+        let capability_io = Arc::new(StagedCapabilityIo::default());
+        let input_resolver: Arc<dyn LoopCapabilityInputResolver> = capability_io.clone();
+        let result_writer: Arc<dyn LoopCapabilityResultWriter> = capability_io.clone();
+        let factory = RefreshingLoopCapabilityPortFactory {
+            runtime,
+            fallback_user_id: UserId::new("sandbox-workspace-boot-owner").expect("user id"), // safety: literal test id is valid.
+            policy,
+            workspace_mounts: local_runtime.workspace_mounts.clone(),
+            sandbox_workspace_local_dev_root: Some(local_dev_root.clone()),
+            memory_mounts: local_runtime.memory_mounts.clone(),
+            system_extensions_lifecycle_mounts: local_runtime
+                .system_extensions_lifecycle_mounts
+                .clone(),
+            extension_surface_source: ExtensionCapabilitySurfaceSource::default(),
+            input_resolver,
+            result_writer,
+            milestone_sink: Arc::new(InMemoryLoopHostMilestoneSink::default()),
+            skill_activation_source: None,
+            project_service: Arc::clone(&local_runtime.project_service),
+            thread_service: Arc::new(InMemorySessionThreadService::default()),
+            trajectory_observer: None,
+            outbound_preferences_facade: None,
+            outbound_delivery_target_set_requires_approval: false,
+            approval_settings: Arc::new(
+                crate::profile_approval_authorization::EmptyApprovalSettingsProvider,
+            ),
+            approval_requests: local_runtime.approval_requests.clone(),
+            capability_leases: local_runtime.capability_leases.clone(),
+            gate_record_store: Arc::new(ironclaw_run_state::FilesystemGateRecordStore::new(
+                crate::wrap_scoped(Arc::clone(&local_runtime.extension_filesystem)),
+            )),
+            replay_payload_store: Arc::new(
+                ironclaw_capabilities::FilesystemReplayPayloadStore::new(crate::wrap_scoped(
+                    Arc::clone(&local_runtime.extension_filesystem),
+                )),
+            ),
+            external_tool_catalog: Arc::new(ironclaw_turns::InMemoryExternalToolCatalog::new()),
+        };
+
+        let tenant = TenantId::new("sandbox-workspace-tenant").expect("tenant id");
+        let user_a = UserId::new("sandbox-workspace-user-a").expect("user id");
+        let user_b = UserId::new("sandbox-workspace-user-b").expect("user id");
+        let run_context_a = run_context_with_scope(TurnScope::new_with_owner(
+            tenant.clone(),
+            None,
+            None,
+            ThreadId::new("sandbox-workspace-thread-a").expect("thread id"),
+            Some(user_a.clone()),
+        ))
+        .await;
+        let run_context_b = run_context_with_scope(TurnScope::new_with_owner(
+            tenant.clone(),
+            None,
+            None,
+            ThreadId::new("sandbox-workspace-thread-b").expect("thread id"),
+            Some(user_b.clone()),
+        ))
+        .await;
+
+        // User A writes a private file at the shared virtual path `/workspace/secret.txt`.
+        let port_a = factory
+            .create_capability_port(&run_context_a)
+            .await
+            .expect("capability port for user a"); // safety: test-only assertion in #[cfg(test)] module.
+        let surface_a = port_a
+            .visible_capabilities(VisibleCapabilityRequest {})
+            .await
+            .expect("visible surface for user a"); // safety: test-only assertion in #[cfg(test)] module.
+        let write_input_ref = capability_io
+            .register_provider_tool_call_input(
+                &run_context_a,
+                &provider_tool_call(
+                    serde_json::json!({"path": "/workspace/secret.txt", "content": "user-a-secret"}),
+                ),
+            )
+            .await
+            .expect("write input ref"); // safety: test-only assertion in #[cfg(test)] module.
+        let write_outcome = port_a
+            .invoke_capability(LoopRequest {
+                activity_id: ironclaw_turns::CapabilityActivityId::new(),
+                surface_version: surface_a.version,
+                capability_id: CapabilityId::new(WRITE_FILE_CAPABILITY_ID)
+                    .expect("write_file capability id"), // safety: built-in capability id is a valid literal.
+                input_ref: write_input_ref,
+                approval_resume: None,
+                auth_resume: None,
+            })
+            .await
+            .expect("user a write_file invocation"); // safety: test-only assertion in #[cfg(test)] module.
+        let Resolution::Done(write_completed) = write_outcome else {
+            panic!("expected completed write_file invocation for user a, got {write_outcome:?}");
+        };
+        assert!(
+            write_completed.verdict.is_success(),
+            "user a's write_file must succeed, got {:?}",
+            write_completed.verdict
+        );
+
+        // User B reads the SAME virtual path: pre-fix this returned user
+        // A's content (both users' `/workspace` resolved to the boot
+        // owner's directory); post-fix, user B's own directory has never
+        // been written to, so the read must fail closed as "not found" —
+        // never leak user A's content.
+        let port_b = factory
+            .create_capability_port(&run_context_b)
+            .await
+            .expect("capability port for user b"); // safety: test-only assertion in #[cfg(test)] module.
+        let surface_b = port_b
+            .visible_capabilities(VisibleCapabilityRequest {})
+            .await
+            .expect("visible surface for user b"); // safety: test-only assertion in #[cfg(test)] module.
+        let read_input_ref = capability_io
+            .register_provider_tool_call_input(
+                &run_context_b,
+                &provider_tool_call(serde_json::json!({"path": "/workspace/secret.txt"})),
+            )
+            .await
+            .expect("read input ref"); // safety: test-only assertion in #[cfg(test)] module.
+        let read_outcome = port_b
+            .invoke_capability(LoopRequest {
+                activity_id: ironclaw_turns::CapabilityActivityId::new(),
+                surface_version: surface_b.version,
+                capability_id: CapabilityId::new(READ_FILE_CAPABILITY_ID)
+                    .expect("read_file capability id"), // safety: built-in capability id is a valid literal.
+                input_ref: read_input_ref,
+                approval_resume: None,
+                auth_resume: None,
+            })
+            .await
+            .expect("user b read_file invocation"); // safety: test-only assertion in #[cfg(test)] module.
+        let Resolution::Done(read_failure) = read_outcome else {
+            panic!("expected a model-recoverable failure for user b's read_file invocation");
+        };
+        assert!(
+            !read_failure.verdict.is_success(),
+            "user b's read of user a's `/workspace/secret.txt` must not succeed \
+             (cross-user leak), got verdict: {:?}",
+            read_failure.verdict
+        );
+        assert!(
+            !read_failure.summary.as_str().contains("user-a-secret"),
+            "user a's content must never leak into user b's outcome summary, got: {}",
+            read_failure.summary.as_str()
+        );
+
+        // Prove it end to end against the host filesystem too: the two
+        // users' `/workspace` resolve to DIFFERENT host directories, and
+        // user a's file landed in user a's OWN directory — not the boot
+        // owner's, and not user b's.
+        let key_a = ironclaw_host_runtime::RebornSandboxUserKey::from_tenant_user(&tenant, &user_a);
+        let key_b = ironclaw_host_runtime::RebornSandboxUserKey::from_tenant_user(&tenant, &user_b);
+        let workspace_path_a = key_a.workspace_path(&local_dev_root);
+        let workspace_path_b = key_b.workspace_path(&local_dev_root);
+        assert_ne!(
+            workspace_path_a, workspace_path_b,
+            "two different users' sandbox workspace directories must not coincide"
+        );
+        let host_file_a = workspace_path_a.join("secret.txt");
+        assert!(
+            host_file_a.exists(),
+            "user a's write_file must land under user a's OWN per-user host directory: {}",
+            host_file_a.display()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&host_file_a).expect("read user a's on-disk file"), // safety: test-only assertion in #[cfg(test)] module.
+            "user-a-secret"
+        );
+        assert!(
+            !workspace_path_b.join("secret.txt").exists(),
+            "user b's own per-user host directory must never contain user a's file"
+        );
+    }
+
     #[tokio::test]
     async fn local_dev_capability_port_skill_install_writes_user_skill_root() {
         let dir = tempfile::tempdir().expect("tempdir"); // safety: test-only setup in #[cfg(test)] module.
@@ -4954,6 +5198,7 @@ mod tests {
             fallback_user_id: UserId::new("local-dev-skill-port-user").expect("user id"), // safety: literal test id is valid.
             policy,
             workspace_mounts,
+            sandbox_workspace_local_dev_root: None,
             memory_mounts: local_runtime.memory_mounts.clone(),
             system_extensions_lifecycle_mounts: local_runtime
                 .system_extensions_lifecycle_mounts
@@ -5076,6 +5321,7 @@ mod tests {
             fallback_user_id: UserId::new("local-dev-no-host-user").expect("user id"), // safety: literal test id is valid.
             policy,
             workspace_mounts,
+            sandbox_workspace_local_dev_root: None,
             memory_mounts: local_runtime.memory_mounts.clone(),
             system_extensions_lifecycle_mounts: local_runtime
                 .system_extensions_lifecycle_mounts

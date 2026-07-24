@@ -24,8 +24,7 @@ use ironclaw_host_api::{
 };
 use ironclaw_host_runtime::{
     CommandExecutionOutput, CommandExecutionRequest, RebornSandboxScopeKey, RuntimeProcessError,
-    SHELL_CAPABILITY_ID, SandboxCommandTransport, TenantSandboxProcessPort,
-    sandbox_network_policy,
+    SHELL_CAPABILITY_ID, SandboxCommandTransport, TenantSandboxProcessPort, sandbox_network_policy,
 };
 use ironclaw_reborn_composition::{
     RebornCompositionProfile, RebornRuntimeProcessBinding, build_reborn_services,
