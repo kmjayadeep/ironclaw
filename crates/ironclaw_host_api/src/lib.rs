@@ -80,6 +80,7 @@ mod credential_redaction;
 pub mod model_result_preview;
 pub mod product_adapter;
 pub mod product_adapter_error;
+pub mod product_commands;
 pub mod product_surface;
 
 // Flat re-exports are intentional: downstream Reborn service crates consume
@@ -115,6 +116,7 @@ pub use package_lifecycle::*;
 pub use path::*;
 pub use product_adapter::*;
 pub use product_adapter_error::*;
+pub use product_commands::*;
 pub use product_surface::*;
 pub use recipe::*;
 pub use resolution::*;

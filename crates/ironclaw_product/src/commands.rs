@@ -6,6 +6,9 @@
 
 use crate::{InboundCommandPayload, ProductRejection, ProductRejectionKind};
 use ironclaw_host_api::HostApiError;
+use ironclaw_host_api::product_commands::{
+    PRODUCT_COMMANDS, ProductCommandDescriptor, find_product_command,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -27,47 +30,29 @@ pub struct ProductModelCommandInput {
     pub action: ProductModelCommand,
 }
 
-/// Public command inventory metadata. Policy decisions based on actor,
-/// installation, trigger, or product surface belong to `ProductCommandAdmissionService`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ProductCommandDescriptor {
-    pub name: &'static str,
-    pub aliases: &'static [&'static str],
-}
-
+/// One behavior binding per canonical inventory descriptor. The metadata
+/// itself lives in `ironclaw_host_api::product_commands`; the contract test
+/// below pins the two tables 1:1.
 struct ProductCommandSpec {
-    descriptor: ProductCommandDescriptor,
+    name: &'static str,
     parse: fn(&InboundCommandPayload) -> ProductCommandParseResult,
 }
 
 const COMMAND_SPECS: &[ProductCommandSpec] = &[
     ProductCommandSpec {
-        descriptor: ProductCommandDescriptor {
-            name: "model",
-            aliases: &[],
-        },
+        name: "model",
         parse: parse_model_command,
     },
     ProductCommandSpec {
-        descriptor: ProductCommandDescriptor {
-            name: "status",
-            aliases: &["progress"],
-        },
+        name: "status",
         parse: parse_status_command,
     },
 ];
 
 type ProductCommandParseResult = Result<ProductCommand, ProductRejection>;
 
-pub fn product_command_descriptors() -> impl Iterator<Item = ProductCommandDescriptor> {
-    LifecycleCommandKind::ALL
-        .iter()
-        .copied()
-        .map(|kind| ProductCommandDescriptor {
-            name: kind.command_name(),
-            aliases: &[],
-        })
-        .chain(COMMAND_SPECS.iter().map(|spec| spec.descriptor.clone()))
+pub fn product_command_descriptors() -> impl Iterator<Item = &'static ProductCommandDescriptor> {
+    PRODUCT_COMMANDS.iter()
 }
 
 /// Typed command family produced from a normalized command payload.
@@ -116,17 +101,14 @@ impl ProductCommand {
         }
     }
 
-    pub fn descriptor(&self) -> Option<ProductCommandDescriptor> {
-        product_command_descriptors().find(|descriptor| {
-            descriptor.name == self.name() || descriptor.aliases.contains(&self.name())
-        })
+    pub fn descriptor(&self) -> Option<&'static ProductCommandDescriptor> {
+        find_product_command(self.name())
     }
 }
 
 fn command_spec_for_name(name: &str) -> Option<&'static ProductCommandSpec> {
-    COMMAND_SPECS
-        .iter()
-        .find(|spec| spec.descriptor.name == name || spec.descriptor.aliases.contains(&name))
+    let canonical = find_product_command(name)?.name;
+    COMMAND_SPECS.iter().find(|spec| spec.name == canonical)
 }
 
 fn parse_model_command(payload: &InboundCommandPayload) -> ProductCommandParseResult {
@@ -380,4 +362,48 @@ fn lifecycle_package_ref(
     id: impl Into<String>,
 ) -> Result<LifecyclePackageRef, HostApiError> {
     LifecyclePackageRef::new(kind, id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ironclaw_host_api::ProductTriggerReason;
+    use std::collections::BTreeSet;
+
+    /// The canonical metadata inventory (`host_api::PRODUCT_COMMANDS`) and the
+    /// behavior bindings in this crate must stay 1:1: every descriptor has
+    /// exactly one behavior (a lifecycle kind or a `COMMAND_SPECS` entry) and
+    /// every behavior has a descriptor.
+    #[test]
+    fn inventory_matches_behavior_table() {
+        let inventory: BTreeSet<&str> = PRODUCT_COMMANDS.iter().map(|d| d.name).collect();
+        let mut behaviors: BTreeSet<&str> = LifecycleCommandKind::ALL
+            .iter()
+            .map(|kind| kind.command_name())
+            .collect();
+        for spec in COMMAND_SPECS {
+            assert!(
+                behaviors.insert(spec.name),
+                "behavior declared twice: {}",
+                spec.name
+            );
+        }
+        assert_eq!(
+            inventory, behaviors,
+            "host_api PRODUCT_COMMANDS and product behavior tables diverged"
+        );
+    }
+
+    #[test]
+    fn alias_parses_to_the_canonical_command() {
+        let payload = InboundCommandPayload::new("progress", "", ProductTriggerReason::BotCommand)
+            .expect("valid payload");
+        let command = ProductCommand::from_payload(&payload).expect("parses");
+        assert_eq!(command, ProductCommand::Status);
+        assert_eq!(
+            command.descriptor().expect("descriptor").name,
+            "status",
+            "alias resolves to the canonical descriptor"
+        );
+    }
 }

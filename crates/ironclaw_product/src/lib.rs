@@ -109,8 +109,8 @@ pub use command_dispatch::{
 };
 pub use commands::{
     PRODUCT_LIFECYCLE_COMMAND_OPERATION_ID, PRODUCT_MODEL_COMMAND_OPERATION_ID, ProductCommand,
-    ProductCommandDescriptor, ProductLifecycleCommandInput, ProductModelCommand,
-    ProductModelCommandInput, product_command_descriptors,
+    ProductLifecycleCommandInput, ProductModelCommand, ProductModelCommandInput,
+    product_command_descriptors,
 };
 pub use conversation_binding::{
     ProductActorBindingPolicy, ProductActorUserResolutionRequest, ProductActorUserResolver,
