@@ -292,8 +292,8 @@ fn channel_connection_display_preview(
 }
 
 /// Structured channel connection requirements carry render chrome for WebUI.
-/// Strip it from model-visible lifecycle output so manifest-authored
-/// presentation strings and fallback copy stay on the WebUI display path.
+/// Keep model-useful connection guidance in search output, but strip static
+/// failure copy so it is not presented as live state.
 fn without_model_visible_connection_chrome(
     mut response: LifecycleProductResponse,
 ) -> LifecycleProductResponse {
@@ -304,7 +304,9 @@ fn without_model_visible_connection_chrome(
         }) => *connection_required = None,
         Some(LifecycleProductPayload::ExtensionSearch { extensions, .. }) => {
             for extension in extensions {
-                extension.summary.channel_connection = None;
+                if let Some(connection) = extension.summary.channel_connection.as_mut() {
+                    connection.error_message.clear();
+                }
             }
         }
         _ => {}
@@ -710,7 +712,7 @@ mod tests {
             "model-visible search must still identify Slack as a channel: {slack}"
         );
         assert!(
-            slack.get("channel_connection").is_none(),
+            slack["channel_connection"]["error_message"] == "",
             "model-visible search must not expose UI-only connection failure copy: {slack}"
         );
         assert!(
@@ -740,8 +742,14 @@ mod tests {
             "model-visible search must still identify Telegram as a channel: {telegram}"
         );
         assert!(
-            telegram.get("channel_connection").is_none(),
-            "generated-code connection chrome must stay out of model-visible lifecycle output: {telegram}"
+            telegram["channel_connection"]["instructions"]
+                .as_str()
+                .is_some_and(|instructions| instructions.contains("IronClaw pairing panel")),
+            "generated-code connection guidance must remain model-visible: {telegram}"
+        );
+        assert!(
+            telegram["channel_connection"]["error_message"] == "",
+            "generated-code connection failure copy must stay out of model-visible lifecycle output: {telegram}"
         );
     }
 
