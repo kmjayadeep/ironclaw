@@ -110,8 +110,56 @@ async fn ensure_running(docker: &Docker, container_id: &str) -> Result<(), Runti
                     "sandbox container restart failed: {error}"
                 ))
             })?;
+        wait_until_running(docker, container_id).await?;
     }
     Ok(())
+}
+
+/// Bound on how long [`wait_until_running`] polls before giving up.
+const CONTAINER_RUNNING_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Interval between [`wait_until_running`] poll attempts.
+const CONTAINER_RUNNING_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// `docker.start_container` returns as soon as Docker has *accepted* the
+/// start request — it does not wait for the container to actually transition
+/// to `State.Running`. An `exec` fired immediately after a bare
+/// `start_container` therefore races that transition and can hit a 409
+/// "container is not running" even though the start call itself reported
+/// success. Poll `inspect_container` until `state.running` flips true (or
+/// [`CONTAINER_RUNNING_WAIT_TIMEOUT`] elapses) so both call sites that start
+/// a container — [`create_and_start_user_container`] and the restart branch
+/// of [`ensure_running`] — hand back a container an immediate `exec` can
+/// actually reach.
+async fn wait_until_running(
+    docker: &Docker,
+    container_id: &str,
+) -> Result<(), RuntimeProcessError> {
+    let deadline = Instant::now() + CONTAINER_RUNNING_WAIT_TIMEOUT;
+    loop {
+        let inspected = docker
+            .inspect_container(container_id, None::<InspectContainerOptions>)
+            .await
+            .map_err(|error| {
+                RuntimeProcessError::ExecutionFailed(format!(
+                    "sandbox container inspect failed while waiting for running state: {error}"
+                ))
+            })?;
+        let running = inspected
+            .state
+            .as_ref()
+            .and_then(|state| state.running)
+            .unwrap_or(false);
+        if running {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(RuntimeProcessError::ExecutionFailed(format!(
+                "sandbox container did not reach running state within {CONTAINER_RUNNING_WAIT_TIMEOUT:?}"
+            )));
+        }
+        tokio::time::sleep(CONTAINER_RUNNING_POLL_INTERVAL).await;
+    }
 }
 
 /// Idempotently creates the pinned internal egress network (E1) before a
@@ -235,6 +283,7 @@ async fn create_and_start_user_container(
         .map_err(|error| {
             RuntimeProcessError::ExecutionFailed(format!("sandbox container start failed: {error}"))
         })?;
+    wait_until_running(docker, &created.id).await?;
     Ok(created.id)
 }
 
