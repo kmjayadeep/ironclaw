@@ -13,9 +13,9 @@ use ironclaw_filesystem::RootFilesystem;
 use ironclaw_host_api::{
     CapabilityGrant, CapabilityGrantId, CapabilityId, CapabilitySet, EffectKind, ExecutionContext,
     ExtensionId, GrantConstraints, InvocationId, MountAlias, MountGrant, MountPermissions,
-    NetworkPolicy, NetworkScheme, NetworkTargetPattern, Principal, ResourceEstimate, ResourceScope,
-    ResourceUsage, RunId, RuntimeKind, ScopedPath, SecretHandle, TenantId, TrustClass, UserId,
-    VirtualPath,
+    NetworkPolicy, NetworkScheme, NetworkTargetPattern, Principal, RecipeClientCredentials,
+    ResourceEstimate, ResourceScope, ResourceUsage, RunId, RuntimeKind, ScopedPath, SecretHandle,
+    TenantId, TrustClass, UserId, VirtualPath,
 };
 use ironclaw_host_api::{
     RuntimeCredentialAccountSetup, RuntimeCredentialRequirementSource, VendorId,
@@ -29,9 +29,10 @@ use ironclaw_host_runtime::{
 };
 use ironclaw_host_runtime::{RuntimeCredentialAccountRequest, RuntimeCredentialAccountResolver};
 use ironclaw_product::{LifecyclePackageKind, LifecyclePackageRef, LifecyclePublicState};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rust_decimal_macros::dec;
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::builtin_capability_policy::{BuiltinApprovalPolicyAction, BuiltinCapabilityPolicyError};
 use crate::extension_host::extension_lifecycle::ExtensionActivationMode;
@@ -676,7 +677,7 @@ async fn local_dev_default_product_auth_preserves_manual_token_across_rebuilds()
     scope.resource.thread_id = Some(ironclaw_host_api::ThreadId::new("auth-thread").unwrap());
 
     let challenge = product_auth
-        .request_manual_token_setup(crate::RebornManualTokenSetupRequest::new(
+        .request_manual_token_setup(ironclaw_auth::RebornManualTokenSetupRequest::new(
             scope.clone(),
             ironclaw_auth::AuthProviderId::new("github").unwrap(),
             CredentialAccountLabel::new("work github").unwrap(),
@@ -686,7 +687,7 @@ async fn local_dev_default_product_auth_preserves_manual_token_across_rebuilds()
         .await
         .unwrap();
     let submitted = product_auth
-        .submit_manual_token(crate::RebornManualTokenSubmitRequest::new(
+        .submit_manual_token(ironclaw_auth::RebornManualTokenSubmitRequest::new(
             scope.clone(),
             challenge.interaction_id,
             secrecy::SecretString::from("ghp_local_dev_pat"),
@@ -3155,14 +3156,14 @@ async fn completed_lifecycle_activation_continuation_installs_the_extension() {
     );
 }
 
-/// #6520 live-repro regression: a completed channel pairing must run the SAME
-/// lifecycle-wrapped continuation dispatcher product-auth uses — readiness
-/// reconciliation (runtime publication) before the blocked-run fan-out. When
-/// composition handed pairing a bare turn-resume dispatcher instead, a
-/// freshly paired channel extension (telegram: remove → install → pair) sat
-/// at setup_needed forever because nothing re-published it. Pinned by pointer
-/// identity at the composition seam: every pairing service's dispatcher IS
-/// product-auth's composed dispatcher.
+/// #6520 live-repro regression: a completed channel pairing must run the shared
+/// lifecycle-wrapped product continuation dispatcher — readiness reconciliation
+/// (runtime publication) before the blocked-run fan-out. When composition handed
+/// pairing a bare turn-resume dispatcher instead, a freshly paired channel
+/// extension (telegram: remove -> install -> pair) sat at setup_needed forever
+/// because nothing re-published it. Pinned by pointer identity at the
+/// composition seam: every pairing service's dispatcher is the same composed
+/// product dispatcher.
 #[tokio::test]
 async fn channel_pairing_completions_run_the_lifecycle_wrapped_continuation_dispatcher() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -3173,25 +3174,33 @@ async fn channel_pairing_completions_run_the_lifecycle_wrapped_continuation_disp
     .await
     .expect("local-dev services build");
 
-    let product_auth_dispatcher = services.product_auth.continuation_dispatcher_for_test();
     let channel_pairing = services
         .channel_pairing
         .as_ref()
         .expect("local-dev build composes the channel pairing registry");
     let mut pairing_services_checked = 0usize;
+    let canonical_dispatcher = Arc::clone(&services.product_auth_product_continuation_dispatcher);
+    let mut shared_dispatcher = None;
     for extension_id in ["telegram", "slack"] {
         let Some(pairing) = channel_pairing.get(extension_id) else {
             continue;
         };
         pairing_services_checked += 1;
+        let dispatcher = pairing.continuation_dispatcher_for_test();
         assert!(
-            Arc::ptr_eq(
-                &pairing.continuation_dispatcher_for_test(),
-                &product_auth_dispatcher,
-            ),
-            "{extension_id} pairing completions must dispatch through product-auth's \
-             lifecycle-wrapped continuation dispatcher, not a bare turn-resume one",
+            Arc::ptr_eq(&dispatcher, &canonical_dispatcher),
+            "{extension_id} pairing completions must dispatch through the authoritative \
+             lifecycle-wrapped continuation dispatcher",
         );
+        if let Some(shared_dispatcher) = &shared_dispatcher {
+            assert!(
+                Arc::ptr_eq(&dispatcher, shared_dispatcher),
+                "{extension_id} pairing completions must dispatch through the shared \
+                 lifecycle-wrapped continuation dispatcher, not a per-channel bare turn-resume one",
+            );
+        } else {
+            shared_dispatcher = Some(dispatcher);
+        }
     }
     assert!(
         pairing_services_checked > 0,
@@ -3248,4 +3257,168 @@ async fn telegram_remove_with_authenticated_actor_deletes_the_membership() {
         ironclaw_product::LifecyclePublicState::Uninstalled,
         "removed telegram must project uninstalled for its former member",
     );
+}
+
+#[derive(Debug)]
+struct StubAdminCredentialSource {
+    result: Result<
+        Option<ironclaw_extension_host::AdminConfigurationResolvedValues>,
+        ironclaw_extension_host::ExtensionAdminConfigurationResolverError,
+    >,
+    calls: AtomicUsize,
+}
+
+impl StubAdminCredentialSource {
+    fn new(
+        result: Result<
+            Option<ironclaw_extension_host::AdminConfigurationResolvedValues>,
+            ironclaw_extension_host::ExtensionAdminConfigurationResolverError,
+        >,
+    ) -> Self {
+        Self {
+            result,
+            calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl TestAdminConfigurationCredentialSource for StubAdminCredentialSource {
+    async fn resolve(
+        &self,
+        _handles: &[SecretHandle],
+    ) -> Result<
+        Option<ironclaw_extension_host::AdminConfigurationResolvedValues>,
+        ironclaw_extension_host::ExtensionAdminConfigurationResolverError,
+    > {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.result.clone()
+    }
+}
+
+fn recipe_client_credentials() -> RecipeClientCredentials {
+    RecipeClientCredentials {
+        client_id_handle: SecretHandle::new("client_id").expect("client-id handle"),
+        client_secret_handle: Some(
+            SecretHandle::new("client_secret").expect("client-secret handle"),
+        ),
+    }
+}
+
+fn boot_client_credentials() -> CompositionClientCredentials {
+    let mut credentials = CompositionClientCredentials::default();
+    credentials.register_static("client_id", SecretString::from("boot-id".to_string()));
+    credentials.register_static(
+        "client_secret",
+        SecretString::from("boot-secret".to_string()),
+    );
+    credentials
+}
+
+fn admin_credential_snapshot(
+    revision: u64,
+    values: &[(&str, &str)],
+) -> ironclaw_extension_host::AdminConfigurationResolvedValues {
+    ironclaw_extension_host::AdminConfigurationResolvedValues {
+        revision,
+        values: values
+            .iter()
+            .map(|(handle, value)| {
+                (
+                    SecretHandle::new(*handle).expect("admin handle"),
+                    ironclaw_secrets::SecretMaterial::from((*value).to_string()),
+                )
+            })
+            .collect(),
+    }
+}
+
+#[tokio::test]
+async fn admin_configuration_pair_overrides_boot_values_with_one_snapshot_read() {
+    let source = Arc::new(StubAdminCredentialSource::new(Ok(Some(
+        admin_credential_snapshot(
+            7,
+            &[("client_id", "admin-id"), ("client_secret", "admin-secret")],
+        ),
+    ))));
+    let slot = AdminConfigurationCredentialSlot::default();
+    slot.fill_source(Arc::clone(&source) as Arc<dyn TestAdminConfigurationCredentialSource>);
+    let mut credentials = boot_client_credentials();
+    credentials.with_admin_configuration(slot);
+
+    let resolved = credentials
+        .resolve("example", &recipe_client_credentials())
+        .await
+        .expect("admin pair resolves");
+
+    assert_eq!(resolved.client_id.as_str(), "admin-id");
+    assert_eq!(
+        resolved
+            .client_secret
+            .expect("admin client secret")
+            .expose_secret(),
+        "admin-secret"
+    );
+    assert_eq!(source.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn empty_admin_configuration_falls_back_to_complete_boot_pair() {
+    let source = Arc::new(StubAdminCredentialSource::new(Ok(Some(
+        admin_credential_snapshot(0, &[]),
+    ))));
+    let slot = AdminConfigurationCredentialSlot::default();
+    slot.fill_source(source as Arc<dyn TestAdminConfigurationCredentialSource>);
+    let mut credentials = boot_client_credentials();
+    credentials.with_admin_configuration(slot);
+
+    let resolved = credentials
+        .resolve("example", &recipe_client_credentials())
+        .await
+        .expect("boot pair resolves");
+
+    assert_eq!(resolved.client_id.as_str(), "boot-id");
+    assert_eq!(
+        resolved
+            .client_secret
+            .expect("boot client secret")
+            .expose_secret(),
+        "boot-secret"
+    );
+}
+
+#[tokio::test]
+async fn partial_admin_configuration_never_mixes_with_boot_values() {
+    let source = Arc::new(StubAdminCredentialSource::new(Ok(Some(
+        admin_credential_snapshot(3, &[("client_id", "admin-id")]),
+    ))));
+    let slot = AdminConfigurationCredentialSlot::default();
+    slot.fill_source(source as Arc<dyn TestAdminConfigurationCredentialSource>);
+    let mut credentials = boot_client_credentials();
+    credentials.with_admin_configuration(slot);
+
+    let error = credentials
+        .resolve("example", &recipe_client_credentials())
+        .await
+        .expect_err("partial administrator revision fails closed");
+
+    assert_eq!(error, AuthProductError::MalformedConfig);
+}
+
+#[tokio::test]
+async fn admin_configuration_failure_never_falls_back_to_boot_values() {
+    let source = Arc::new(StubAdminCredentialSource::new(Err(
+        ironclaw_extension_host::ExtensionAdminConfigurationResolverError::Unavailable,
+    )));
+    let slot = AdminConfigurationCredentialSlot::default();
+    slot.fill_source(source as Arc<dyn TestAdminConfigurationCredentialSource>);
+    let mut credentials = boot_client_credentials();
+    credentials.with_admin_configuration(slot);
+
+    let error = credentials
+        .resolve("example", &recipe_client_credentials())
+        .await
+        .expect_err("administrator read failure fails closed");
+
+    assert_eq!(error, AuthProductError::BackendUnavailable);
 }
