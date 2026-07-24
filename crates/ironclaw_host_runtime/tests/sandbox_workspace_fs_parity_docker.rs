@@ -61,7 +61,16 @@ async fn shell_write_and_abstract_fs_read_share_the_same_workspace_bytes() {
     .expect("mount /workspace");
 
     // Persistent sandbox transport (Task A3), workspace bind == workspace_dir.
-    let port = sandbox_transport::connect_for_test(&workspace_dir, &image)
+    // `connect_for_test` takes a workspace ROOT, not a pre-resolved per-user
+    // directory: `run_command`'s own `prepare_workspace` re-derives
+    // `RebornSandboxUserKey::from_scope(scope).workspace_path(root)`
+    // internally (the same formula `workspace_dir` above already applied),
+    // so passing `workspace_dir` itself here would apply that derivation
+    // TWICE and bind-mount a directory nested one level deeper than the one
+    // the abstract-FS mount above points at — defeating the very parity this
+    // test exists to prove. Pass the bare `root` so both sides resolve the
+    // identical host directory via the same formula, exactly once each.
+    let port = sandbox_transport::connect_for_test(&root, &image)
         .await
         .expect("sandbox transport connects");
 

@@ -93,13 +93,23 @@ pub(super) async fn dispatch(
         .await
         .map_err(process_error)?;
 
-    let (primary_output, active_sessions) = cli_session_core::split_session_footer(&output.output);
+    let (primary_output, primary_exit_code, active_sessions) =
+        cli_session_core::split_session_footer(&output.output);
+    // For start/read, the wrapped command's real exit status is the one
+    // `split_session_footer` extracted from the captured output — NOT
+    // `output.exit_code`, which (because `run_command` wraps every
+    // foreground exec in `setsid` for process-group isolation) reflects
+    // `setsid`'s own always-0 return, not the tmux command's. Send/kill
+    // build no footer at all (`split_session_footer` hands back `None`
+    // untouched for them), so they still fall back to `output.exit_code`
+    // unchanged.
+    let reported_exit_code = primary_exit_code.unwrap_or(output.exit_code);
     let mut value = json!({
         "action": action_str(action),
         "session": session_name,
         "output": primary_output,
-        "exit_code": output.exit_code,
-        "success": output.exit_code == 0,
+        "exit_code": reported_exit_code,
+        "success": reported_exit_code == 0,
     });
     if let Some(sessions) = active_sessions {
         value["active_sessions"] = json!(sessions);
@@ -189,7 +199,8 @@ mod tests {
         assert_eq!(
             requests[0].command,
             "tmux new-session -d -s 'ic-devserver' 'npm run dev'; \
-             printf '\\n---IRONCLAW-CLI-SESSIONS---\\n'; \
+             __ironclaw_cli_session_exit=$?; \
+             printf '\\n---IRONCLAW-CLI-SESSIONS---\\n%s\\n' \"$__ironclaw_cli_session_exit\"; \
              tmux list-sessions -F '#S' 2>/dev/null || true"
         );
     }

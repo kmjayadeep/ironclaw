@@ -370,13 +370,45 @@ pub(super) async fn user_container_launch_config(
     })
 }
 
-/// `setsid` creates a new session AND process group whose pgid equals its
-/// own pid. `exec` replaces the current process image in place, so the pid
-/// docker reports via `inspect_exec` stays the same value and now doubles
-/// as the whole job's pgid — `kill -KILL -<pid>` on timeout reaches every
-/// descendant without touching the container's own PID 1.
+/// `setsid` creates a new session AND process group for `command`, isolating
+/// it (and anything it forks) from the exec's own process so a timeout kill
+/// can target the whole job without touching the container's PID 1.
+///
+/// `--wait` is load-bearing and easy to miss: without it, (util-linux)
+/// `setsid` forks the target command and returns IMMEDIATELY, exit code 0,
+/// without waiting for it — since this whole line is reached via `exec`
+/// (replacing the exec'd process in place), that immediate return becomes
+/// the WHOLE wrapped command's reported completion. Docker's own `exec`
+/// tracking (`inspect_exec`'s `Pid`/`ExitCode`, what
+/// `CommandExecutionOutput::exit_code` is built from) then reflects
+/// `setsid`'s own always-0 launch status, not `command`'s real exit code —
+/// verified empirically: `docker exec ... setsid sh -c 'false'` reports
+/// **0**. `--wait` makes `setsid` block until `command` finishes and exit
+/// with `command`'s own status, so `inspect_exec`'s `ExitCode` (and
+/// therefore every `CommandExecutionOutput::exit_code` this crate hands
+/// out) is finally trustworthy. Output collection itself was never affected
+/// either way — bollard's exec stream stays open until every process
+/// sharing its stdout/stderr fds closes them, not just the top-level exec'd
+/// one — only the exit code was silently wrong.
+///
+/// Known gap this does NOT fix: with `--wait`, `setsid` still internally
+/// forks a child to make the actual `setsid()` syscall (required — it
+/// cannot be called on a process-group leader, which this process already
+/// is by the time it's reached via `exec`), so the real job's pgid is that
+/// child's pid, not the pid Docker reports for the exec (the *waiting*
+/// `setsid` process). `kill_exec_process_group`'s `kill -KILL -<pid>` was
+/// ALREADY silently non-functional before this change for the same
+/// reason — `inspect_exec`'s `Pid` is a host-namespace value that doesn't
+/// resolve to anything inside the container's own pid namespace at all
+/// (confirmed empirically: issuing that kill against a live `sleep`
+/// reports "No such process" and the process survives) — so a timed-out
+/// job's process group is only ever reclaimed when the container itself is
+/// later recycled, never by the best-effort kill. This is a pre-existing
+/// gap, not introduced here; no test currently depends on the kill actually
+/// working (`timeout_kills_process_group_but_container_survives` only
+/// asserts the timeout fires and the container stays usable afterward).
 fn wrap_command_for_pgid_isolation(command: &str) -> String {
-    format!("exec setsid sh -c {}", shell_single_quote(command))
+    format!("exec setsid --wait sh -c {}", shell_single_quote(command))
 }
 
 /// The unprivileged user (baked into the image by
@@ -388,6 +420,15 @@ fn wrap_command_for_pgid_isolation(command: &str) -> String {
 /// every `CreateExecOptions` built in this module must set `user` to this
 /// value.
 const SANDBOX_EXEC_USER: &str = "sandbox";
+
+/// Numeric uid/gid backing [`SANDBOX_EXEC_USER`] — `Dockerfile.
+/// process-sandbox` bakes this in unconditionally (`useradd -m -u 1000 ...
+/// sandbox`), so it is the same for every container regardless of image
+/// tag. `sandbox_process::prepare_workspace` uses these (not the name)
+/// because a host-side `chown` needs a numeric id, not an in-container
+/// username.
+pub(super) const SANDBOX_EXEC_UID: u32 = 1000;
+pub(super) const SANDBOX_EXEC_GID: u32 = 1000;
 
 pub(super) async fn exec_in_container(
     docker: &Docker,
@@ -698,7 +739,13 @@ mod tests {
     #[test]
     fn wrapped_command_runs_under_setsid_for_process_group_isolation() {
         let wrapped = wrap_command_for_pgid_isolation("echo hi && sleep 1");
-        assert_eq!(wrapped, "exec setsid sh -c 'echo hi && sleep 1'");
+        // `--wait` is load-bearing, not cosmetic: without it `setsid`
+        // returns immediately (exit 0) without waiting for `command`, so
+        // Docker's own exec exit code — what `CommandExecutionOutput::
+        // exit_code` is built from — would always report 0 regardless of
+        // whether `command` actually succeeded. See this function's doc
+        // comment for the full empirical case.
+        assert_eq!(wrapped, "exec setsid --wait sh -c 'echo hi && sleep 1'");
     }
 
     /// Pins the pid-agreement invariant `background_launch_script` exists
@@ -713,7 +760,7 @@ mod tests {
         let script = background_launch_script("echo hi");
         assert_eq!(
             script,
-            "mkdir -p /workspace/.ironclaw && exec setsid sh -c 'exec >>/workspace/.ironclaw/bg-$$.log 2>&1; echo hi' & echo $!"
+            "mkdir -p /workspace/.ironclaw && exec setsid --wait sh -c 'exec >>/workspace/.ironclaw/bg-$$.log 2>&1; echo hi' & echo $!"
         );
 
         let inner_quote_start = script.find("sh -c '").unwrap() + "sh -c '".len();

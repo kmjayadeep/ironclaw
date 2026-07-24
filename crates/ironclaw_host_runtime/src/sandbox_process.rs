@@ -334,37 +334,18 @@ impl RebornScopedSandboxCommandTransport {
                     "sandbox workspace could not be initialized: {error}"
                 ))
             })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            tokio::fs::set_permissions(
-                &workspace,
-                std::fs::Permissions::from_mode(self.config.container_identity.workspace_mode()),
-            )
-            .await
-            .map_err(|error| {
-                RuntimeProcessError::ExecutionFailed(format!(
-                    "sandbox workspace permissions could not be set: {error}"
-                ))
-            })?;
-        }
+        set_sandbox_writable_permissions(
+            workspace.clone(),
+            self.config.container_identity.workspace_mode(),
+        )
+        .await?;
         let home = workspace.join(".home");
         tokio::fs::create_dir_all(&home).await.map_err(|error| {
             RuntimeProcessError::ExecutionFailed(format!(
                 "sandbox workspace HOME could not be initialized: {error}"
             ))
         })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            tokio::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700))
-                .await
-                .map_err(|error| {
-                    RuntimeProcessError::ExecutionFailed(format!(
-                        "sandbox workspace HOME permissions could not be set: {error}"
-                    ))
-                })?;
-        }
+        set_sandbox_writable_permissions(home.clone(), 0o700).await?;
         // Pre-create npm's redirected global prefix (see
         // `exec_transport::user_container_launch_config`'s NPM_CONFIG_PREFIX)
         // so `npm install -g` never trips over a missing directory. It lives
@@ -410,6 +391,64 @@ impl RebornScopedSandboxCommandTransport {
             Ok(ContainerWorkdir::from_relative(requested))
         }
     }
+}
+
+/// Makes a host directory `prepare_workspace` just created reachable by
+/// the sandbox container's fixed non-root exec identity
+/// (`exec_transport::SANDBOX_EXEC_UID`/`GID`, uid 1000 —
+/// `exec_transport::SANDBOX_EXEC_USER` at the docker-exec layer).
+///
+/// Bind-mounting does not remap ownership: the directory keeps whatever uid
+/// *this host process* created it under, which will not generally be 1000.
+/// Under an owner-only `mode` (e.g. `0o700`), `docker exec -u sandbox`
+/// therefore cannot read/write it unless ownership is reassigned to match —
+/// so this `chown`s to the fixed sandbox uid/gid first, which makes `mode`'s
+/// *owner* bits the ones that actually govern sandbox access. That `chown`
+/// needs `CAP_CHOWN`/root on the host (expected of a production deployment
+/// that already manages the Docker socket directly); where it is
+/// unavailable — a local dev machine — this falls back to also granting the
+/// same access to `other`, so the sandbox identity (now neither the owner
+/// nor the group) can still reach the directory. That fallback trades
+/// host-level "only this uid" isolation for the directory still being
+/// usable at all, rather than silently leaving every sandboxed command
+/// unable to touch its own workspace.
+async fn set_sandbox_writable_permissions(
+    path: PathBuf,
+    mode: u32,
+) -> Result<(), RuntimeProcessError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let chown_target = path.clone();
+        let chowned = tokio::task::spawn_blocking(move || {
+            std::os::unix::fs::chown(
+                &chown_target,
+                Some(exec_transport::SANDBOX_EXEC_UID),
+                Some(exec_transport::SANDBOX_EXEC_GID),
+            )
+        })
+        .await
+        .map_err(|error| {
+            RuntimeProcessError::ExecutionFailed(format!(
+                "sandbox workspace chown task did not complete: {error}"
+            ))
+        })?
+        .is_ok();
+        let effective_mode = if chowned { mode } else { mode | 0o007 };
+        tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(effective_mode))
+            .await
+            .map_err(|error| {
+                RuntimeProcessError::ExecutionFailed(format!(
+                    "sandbox workspace permissions could not be set for {}: {error}",
+                    path.display()
+                ))
+            })?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode);
+    }
+    Ok(())
 }
 
 #[async_trait]

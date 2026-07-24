@@ -182,8 +182,24 @@ pub(super) fn build_tmux_command(request: &CliSessionRequest) -> String {
         }
     };
     if request.action.includes_session_footer() {
+        // The footer (marker + exit code + session list) must always run so
+        // `active_sessions` stays accurate even when `primary` itself
+        // failed (e.g. `read` against a session that doesn't exist). But
+        // `RuntimeProcessPort::run_command` wraps every foreground command
+        // in `setsid` for process-group isolation (see
+        // `exec_transport::wrap_command_for_pgid_isolation`) — `setsid`
+        // without `--wait` forks, and Docker's own reported exec exit code
+        // reflects `setsid`'s own (always-0) immediate return, NOT
+        // `primary`'s real exit status. So the wrapped chain's real exit
+        // code can never reach `dispatch` via `CommandExecutionOutput::
+        // exit_code` at all — it has to ride inside the captured output
+        // instead. Capture `primary`'s exit status immediately (before
+        // anything else can clobber `$?`) and print it as the first line
+        // after the marker, ahead of the `tmux list-sessions` output.
         format!(
-            "{primary}; printf '\\n{SESSION_MARKER}\\n'; tmux list-sessions -F '#S' 2>/dev/null || true"
+            "{primary}; __ironclaw_cli_session_exit=$?; \
+             printf '\\n{SESSION_MARKER}\\n%s\\n' \"$__ironclaw_cli_session_exit\"; \
+             tmux list-sessions -F '#S' 2>/dev/null || true"
         )
     } else {
         primary
@@ -191,22 +207,28 @@ pub(super) fn build_tmux_command(request: &CliSessionRequest) -> String {
 }
 
 /// Split a captured `RuntimeProcessPort` output into the primary action
-/// output and the `tmux list-sessions`-derived session list, when the built
-/// command included the footer. Returns `(output, None)` untouched when no
-/// marker is present (send/kill, or a start/read exec that failed before the
-/// footer ran).
-pub(super) fn split_session_footer(output: &str) -> (&str, Option<Vec<String>>) {
+/// output, `primary`'s real exit code, and the `tmux list-sessions`-derived
+/// session list, when the built command included the footer. Returns
+/// `(output, None, None)` untouched when no marker is present (send/kill, or
+/// a start/read exec that failed before the footer ran).
+///
+/// The exit code is carried as the FIRST line immediately after the marker
+/// (see `build_tmux_command`) rather than via `CommandExecutionOutput::
+/// exit_code`, which — because of the `setsid`-without-`--wait` wrapping
+/// every foreground command goes through — reflects the wrapper's own
+/// always-0 return, not `primary`'s.
+pub(super) fn split_session_footer(output: &str) -> (&str, Option<i64>, Option<Vec<String>>) {
     let Some((primary, footer)) = output.split_once(SESSION_MARKER) else {
-        return (output, None);
+        return (output, None, None);
     };
     let primary = primary.trim_end_matches('\n');
-    let sessions = footer
+    let mut footer_lines = footer
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty() && *line != SESSION_MARKER)
-        .map(str::to_string)
-        .collect();
-    (primary, Some(sessions))
+        .filter(|line| !line.is_empty() && *line != SESSION_MARKER);
+    let primary_exit_code = footer_lines.next().and_then(|line| line.parse().ok());
+    let sessions = footer_lines.map(str::to_string).collect();
+    (primary, primary_exit_code, Some(sessions))
 }
 
 #[cfg(test)]
@@ -269,7 +291,8 @@ mod tests {
         assert_eq!(
             build_tmux_command(&request),
             "tmux new-session -d -s 'ic-devserver' 'npm run dev'; \
-             printf '\\n---IRONCLAW-CLI-SESSIONS---\\n'; \
+             __ironclaw_cli_session_exit=$?; \
+             printf '\\n---IRONCLAW-CLI-SESSIONS---\\n%s\\n' \"$__ironclaw_cli_session_exit\"; \
              tmux list-sessions -F '#S' 2>/dev/null || true"
         );
     }
@@ -300,7 +323,8 @@ mod tests {
         assert_eq!(
             build_tmux_command(&request),
             "tmux capture-pane -t 'ic-devserver' -p; \
-             printf '\\n---IRONCLAW-CLI-SESSIONS---\\n'; \
+             __ironclaw_cli_session_exit=$?; \
+             printf '\\n---IRONCLAW-CLI-SESSIONS---\\n%s\\n' \"$__ironclaw_cli_session_exit\"; \
              tmux list-sessions -F '#S' 2>/dev/null || true"
         );
     }
@@ -350,10 +374,12 @@ mod tests {
     }
 
     #[test]
-    fn split_session_footer_extracts_sessions_and_trims_trailing_newline_from_primary() {
-        let raw = "line1\nline2\n---IRONCLAW-CLI-SESSIONS---\nic-devserver\nic-other\n";
-        let (primary, sessions) = split_session_footer(raw);
+    fn split_session_footer_extracts_exit_code_and_sessions_and_trims_trailing_newline_from_primary()
+     {
+        let raw = "line1\nline2\n---IRONCLAW-CLI-SESSIONS---\n0\nic-devserver\nic-other\n";
+        let (primary, exit_code, sessions) = split_session_footer(raw);
         assert_eq!(primary, "line1\nline2");
+        assert_eq!(exit_code, Some(0));
         assert_eq!(
             sessions,
             Some(vec!["ic-devserver".to_string(), "ic-other".to_string()])
@@ -361,9 +387,19 @@ mod tests {
     }
 
     #[test]
+    fn split_session_footer_extracts_a_nonzero_primary_exit_code() {
+        let raw = "\n---IRONCLAW-CLI-SESSIONS---\n1\n";
+        let (primary, exit_code, sessions) = split_session_footer(raw);
+        assert_eq!(primary, "");
+        assert_eq!(exit_code, Some(1));
+        assert_eq!(sessions, Some(vec![]));
+    }
+
+    #[test]
     fn split_session_footer_returns_none_when_marker_absent() {
-        let (primary, sessions) = split_session_footer("no marker here");
+        let (primary, exit_code, sessions) = split_session_footer("no marker here");
         assert_eq!(primary, "no marker here");
+        assert_eq!(exit_code, None);
         assert_eq!(sessions, None);
     }
 
@@ -377,16 +413,15 @@ mod tests {
         // treats that occurrence as the boundary, and everything after it —
         // including the real trailing `tmux list-sessions` footer — is
         // folded into `active_sessions` alongside whatever text followed the
-        // fake marker. Model-facing `output` is truncated at that point.
+        // fake marker. Model-facing `output` is truncated at that point, and
+        // the line immediately following the fake marker (not a real exit
+        // code) is consumed as if it WERE the exit-code line and fails to
+        // parse — so `exit_code` is `None` here too, another symptom of the
+        // same accepted risk.
         let raw = "real output\n---IRONCLAW-CLI-SESSIONS---\nnot a real session name\n---IRONCLAW-CLI-SESSIONS---\nic-real\n";
-        let (primary, sessions) = split_session_footer(raw);
+        let (primary, exit_code, sessions) = split_session_footer(raw);
         assert_eq!(primary, "real output");
-        assert_eq!(
-            sessions,
-            Some(vec![
-                "not a real session name".to_string(),
-                "ic-real".to_string(),
-            ])
-        );
+        assert_eq!(exit_code, None);
+        assert_eq!(sessions, Some(vec!["ic-real".to_string()]));
     }
 }
