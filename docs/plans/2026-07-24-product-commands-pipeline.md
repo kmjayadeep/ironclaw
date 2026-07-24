@@ -41,12 +41,16 @@ field; behavior lives in the crate that already owns the command contract.
 
 ## Design
 
-### 1. Central command table (`ironclaw_product/src/commands.rs`)
+### 1. Central command table (split by layering, each fact once)
 
-Extend `ProductCommandDescriptor` with `title`, `description`, and `usage`
-(static strs, same style as `name`/`aliases`). Each command's entry gains an
-execution binding so descriptor + parse + execute live side by side in one
-file. The handler receives the ports bundle and a resolved `CommandScope`
+The descriptor **metadata** inventory — name, aliases, title, description,
+usage (static strs) — lives in `ironclaw_host_api` (the shared vocabulary
+crate), because manifest validation in `ironclaw_extensions` depends only on
+`host_api` and must see the legal command names. The **behavior** table —
+parse + execute binding per descriptor — stays in
+`ironclaw_product/src/commands.rs`. A contract test pins the two 1:1 (every
+descriptor has exactly one behavior entry and vice versa), so each fact is
+still declared once. The handler receives the ports bundle and a resolved `CommandScope`
 (tenant/user/thread identity — the *only* context execution needs):
 
 - `model` → `LlmConfigService::snapshot` (no args) / `set_active` (set,
@@ -84,14 +88,15 @@ superseded (never wired).
 
 `ChannelDescriptor` (`ironclaw_host_api/src/channel.rs`) gains
 `commands: Vec<String>` (default empty = channel supports no commands).
-Parsing/validation in `ironclaw_extensions/src/v3.rs`: every listed name must
-match a descriptor in the central table (by name, not alias) — unknown names
+Validation in `ironclaw_extensions/src/v3.rs`: every listed name must match a
+descriptor in the `host_api` inventory (by name, not alias) — unknown names
 fail package validation, fail-closed. Slack and Telegram first-party manifests
 declare `commands = ["model", "status"]`.
 
 The channel host (`channel_host.rs build_generic_graph`) reads the declared
-set and supplies it to (a) the admission service, and (b) the adapter's parser
-policy. No adapter or host code ever names a specific command.
+set from the resolved manifest and supplies it to (a) the generic sink's
+classification step (§5) and (b) the admission service. No adapter or host
+code ever names a specific command.
 
 ### 4. Composition wiring (`ironclaw_reborn_composition`)
 
