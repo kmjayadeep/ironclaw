@@ -150,22 +150,17 @@ fn parse_timeout(params: &Value) -> Result<Option<u64>, ShellExecutionError> {
 
 /// Parse the optional `output_limit` (bytes). Range clamping to the operator
 /// floor/ceiling happens downstream in `sandbox_process::shell_limits`
-/// (over-cap and under-floor values are clamped, never rejected here) — this
-/// only rejects a malformed value.
+/// (over-cap AND under-floor values — including `0` — are clamped, never
+/// rejected here) — this only rejects a malformed (non-numeric) value.
 fn parse_output_limit(params: &Value) -> Result<Option<u64>, ShellExecutionError> {
     match params.get("output_limit") {
         None | Some(Value::Null) => Ok(None),
         Some(value) => {
             let value = value.as_u64().ok_or_else(|| {
                 ShellExecutionError::InvalidParameters(
-                    "output_limit must be a positive integer number of bytes".to_string(),
+                    "output_limit must be a non-negative integer number of bytes".to_string(),
                 )
             })?;
-            if value == 0 {
-                return Err(ShellExecutionError::InvalidParameters(
-                    "output_limit must be greater than 0".to_string(),
-                ));
-            }
             Ok(Some(value))
         }
     }
@@ -583,7 +578,6 @@ mod tests {
             json!({"command": "echo hi", "workdir": 123}),
             json!({"command": "echo hi", "timeout": 0}),
             json!({"command": "echo hi", "timeout": "1"}),
-            json!({"command": "echo hi", "output_limit": 0}),
             json!({"command": "echo hi", "output_limit": "1"}),
         ] {
             assert!(
@@ -625,6 +619,24 @@ mod tests {
         .expect("valid shell request");
 
         assert_eq!(parsed.output_limit_bytes, Some(10 * 1024 * 1024));
+    }
+
+    #[test]
+    fn parse_shell_request_accepts_output_limit_of_zero_for_downstream_clamping() {
+        // Consistent with every other out-of-range `output_limit`: `0` is
+        // accepted here (not rejected as malformed) and left for
+        // `sandbox_process::shell_limits::clamp_shell_output_limit_bytes` to
+        // clamp UP to `SHELL_OUTPUT_LIMIT_MIN_BYTES` — matching the manifest
+        // doc's "values outside these ranges are clamped, not rejected"
+        // (`shell.rs`). Only genuinely malformed (non-numeric) input is
+        // rejected here.
+        let parsed = parse_shell_request(&json!({
+            "command": "echo hi",
+            "output_limit": 0
+        }))
+        .expect("output_limit: 0 is accepted, not rejected");
+
+        assert_eq!(parsed.output_limit_bytes, Some(0));
     }
 
     #[test]

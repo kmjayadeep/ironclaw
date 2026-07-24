@@ -52,27 +52,43 @@ pub(crate) fn resolve_sandbox_max_concurrent_from_raw(raw: Option<String>) -> u3
         .unwrap_or(DEFAULT_SANDBOX_MAX_CONCURRENT)
 }
 
-/// Sets the per-user `max_concurrency_slots` ceiling on `governor` for
-/// `user_id` within `tenant_id`. Composition calls this once at boot, only
-/// for the `hosted-single-tenant-volume-sandboxed` profile — every other
-/// profile leaves the account unlimited, matching D3-1's "no-op until D3-2"
-/// note. Scoped per-user (not per-tenant) so one user cannot starve every
-/// other user in the tenant by exhausting the shared ceiling.
+/// Sets the tenant-wide `max_concurrency_slots` ceiling on `governor` for
+/// `tenant_id` — a shared pool across every user in the tenant, not a
+/// per-user ceiling. Composition calls this once at boot, only for the
+/// `hosted-single-tenant-volume-sandboxed` profile — every other profile
+/// leaves the account unlimited, matching D3-1's "no-op until D3-2" note.
+///
+/// Phase-A-scoped, deliberately: `ResourceAccount::cascade` only checks
+/// levels that carry an explicit `set_limit`, so setting the limit on
+/// `ResourceAccount::user(tenant_id, owner_user_id)` alone left every OTHER
+/// authenticated user in the tenant genuinely unbounded — a P2 gap, not
+/// "unfair but bounded". Applying it at `ResourceAccount::tenant(tenant_id)`
+/// instead closes that hole by reusing the existing cascade: it trades
+/// strict per-user fairness (one user CAN starve a sibling by exhausting the
+/// shared pool) for a real, tenant-wide bound on the sandboxed profile's
+/// container fan-out. Lazy per-user ceiling registration at the obligation
+/// dispatcher — so each authenticated user gets their OWN bounded account —
+/// is the deferred follow-up; it needs the governor + ceiling threaded into
+/// a profile-agnostic dispatcher and is out of scope here.
 ///
 /// This is what turns the D3-1 `ReserveResources` obligation from a no-op
 /// into an actual gate: `FilesystemResourceGovernor`/
 /// `InMemoryResourceGovernor::reserve_with_outcome` check `max_concurrency_slots`
 /// against the account's current outstanding reservations, so the
-/// `N+1`th concurrent `SpawnProcess` reservation for this user is denied as
-/// a model-visible outcome (never a host error) once this ceiling is set.
+/// `N+1`th concurrent `SpawnProcess` reservation anywhere in the tenant is
+/// denied as a model-visible outcome (never a host error) once this ceiling
+/// is set.
 pub(crate) fn apply_sandbox_user_ceiling(
     governor: &Arc<dyn ResourceGovernor>,
     tenant_id: TenantId,
-    user_id: UserId,
+    // Kept on the signature (unused in the body) so the sole call site
+    // (`sandbox_composition.rs`) does not need churn; retained for the
+    // lazy per-user follow-up described above, which will need it again.
+    _owner_user_id: UserId,
     max_concurrent: u32,
 ) -> Result<(), ResourceError> {
     governor.set_limit(
-        ResourceAccount::user(tenant_id, user_id),
+        ResourceAccount::tenant(tenant_id),
         ResourceLimits::default().set_max_concurrency_slots(max_concurrent),
     )
 }
@@ -146,47 +162,49 @@ mod tests {
         );
     }
 
-    /// D3-2's headline behavior, now scoped per-user (not per-tenant): once
-    /// a user's ceiling is applied, the `N+1`th concurrent reservation for
-    /// that same user is *denied* — a model-visible outcome from
-    /// `ResourceGovernor::reserve`, never a host panic/error — while a
-    /// sibling user in the same tenant is unaffected. This strictly
-    /// supersedes the old per-tenant test: the old behavior let one user
-    /// starve every other user in the tenant, which this change fixes.
+    /// D3-2's headline behavior, scoped per-TENANT (a shared pool across
+    /// every user in the tenant, not per-user): once the ceiling is applied
+    /// for the boot owner's tenant, the `N+1`th concurrent reservation is
+    /// *denied* — a model-visible outcome from `ResourceGovernor::reserve`,
+    /// never a host panic/error — REGARDLESS of which user in the tenant
+    /// makes it. This is deliberately a tenant-wide pool, not strict
+    /// per-user fairness: `ResourceAccount::cascade` only checks levels that
+    /// carry an explicit `set_limit`, and `apply_sandbox_user_ceiling` used
+    /// to call `set_limit` on `ResourceAccount::user(tenant, owner_user_id)`
+    /// only — so any authenticated user OTHER than the boot owner was
+    /// genuinely unbounded (the P2 gap this test now pins shut). A sibling
+    /// (non-owner) user sharing the tenant's pool is exactly the fix.
     #[test]
-    fn ceiling_denies_the_second_concurrent_reservation_for_the_same_user_but_not_a_sibling_user() {
+    fn ceiling_denies_the_second_concurrent_reservation_from_any_user_in_the_tenant() {
         let governor: Arc<dyn ResourceGovernor> = Arc::new(InMemoryResourceGovernor::new());
         let tenant_id = tenant("sandboxed-tenant");
-        let user_id = UserId::new("user-a").expect("valid user id");
+        let owner_user_id = UserId::new("owner-user").expect("valid user id");
 
-        apply_sandbox_user_ceiling(&governor, tenant_id.clone(), user_id.clone(), 1)
+        apply_sandbox_user_ceiling(&governor, tenant_id.clone(), owner_user_id.clone(), 1)
             .expect("setting a finite ceiling on an empty account succeeds");
 
         let first = governor
             .reserve(
-                scope_for(&tenant_id, &user_id),
+                scope_for(&tenant_id, &owner_user_id),
                 ResourceEstimate::default().set_concurrency_slots(1),
             )
             .expect("first reservation is within the ceiling");
+
+        // A NON-owner user in the SAME tenant must be bounded by the same
+        // shared ceiling — this is the fix: pre-fix, only the boot owner's
+        // own `ResourceAccount::user` account carried a limit, so any other
+        // authenticated user's reservation cascaded past every limited
+        // level and was never denied.
+        let non_owner_user = UserId::new("non-owner-user").expect("valid user id");
         let second = governor.reserve(
-            scope_for(&tenant_id, &user_id),
+            scope_for(&tenant_id, &non_owner_user),
             ResourceEstimate::default().set_concurrency_slots(1),
         );
         assert!(
             second.is_err(),
-            "second concurrent reservation for a capped user must be denied"
+            "a non-owner user's concurrent reservation must be bounded by the tenant's shared \
+             sandbox ceiling, not left unlimited"
         );
-
-        // A sibling user in the SAME tenant is unaffected — this is the
-        // headline behavior change from the old per-tenant ceiling, where one
-        // user could starve every other user in the tenant.
-        let sibling_user = UserId::new("user-b").expect("valid user id");
-        governor
-            .reserve(
-                scope_for(&tenant_id, &sibling_user),
-                ResourceEstimate::default().set_concurrency_slots(1),
-            )
-            .expect("a sibling user in the same tenant is unaffected by user-a's ceiling");
 
         drop(first);
     }
