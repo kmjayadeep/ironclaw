@@ -25,10 +25,6 @@ mod admin_token;
 mod admin_user_directory;
 #[cfg(test)]
 mod approval_test_support;
-mod automation;
-mod blocked_auth_resume;
-mod builtin_capability_policy;
-pub mod deployment;
 mod attested;
 mod attested_config;
 mod attested_continuation;
@@ -37,6 +33,11 @@ mod attested_continuation;
     any(feature = "libsql", feature = "postgres")
 ))]
 mod attested_durable;
+mod attested_raise;
+mod automation;
+mod blocked_auth_resume;
+mod builtin_capability_policy;
+pub mod deployment;
 mod error;
 mod extension_host;
 mod factory;
@@ -66,22 +67,20 @@ mod web_access;
 mod webui;
 
 pub use admin_token::AdminApiTokenMinter;
-pub use automation::facade::RebornAutomationProductFacade;
-pub use automation::trigger_poller::PostSubmitDeliveryHook;
-pub use attested::{
-    LocalDevAttestedComposition, NoopBroadcaster, RebornAttestedComposition,
-    RegisterAttestedGateError,
-};
-pub use attested_continuation::RebornAttestedContinuation;
 #[cfg(all(feature = "libsql", feature = "attested-broadcast"))]
 pub use attested::LibSqlAttestedComposition;
 #[cfg(all(feature = "postgres", feature = "attested-broadcast"))]
 pub use attested::PostgresAttestedComposition;
+pub use attested::{
+    InMemoryAttestedComposition, NoopBroadcaster, RebornAttestedComposition,
+    RegisterAttestedGateError,
+};
 pub use attested_config::{
     AttestedConfigError, AttestedProvidersConfig, MIN_STATE_SECRET_BYTES, NEAR_CALLBACK_URL_ENV,
     NEAR_STATE_SECRET_ENV, NEAR_WALLET_BASE_URL_ENV, NearRedirectConfig,
     WALLETCONNECT_PROJECT_ID_ENV, WalletConnectConfig,
 };
+pub use attested_continuation::RebornAttestedContinuation;
 #[cfg(all(feature = "attested-broadcast", feature = "libsql"))]
 pub use attested_durable::assemble_libsql;
 #[cfg(all(feature = "attested-broadcast", feature = "postgres"))]
@@ -94,6 +93,9 @@ pub use attested_durable::{
     DurableCustody, EVM_RPC_URL_ENV, NEAR_RPC_URL_ENV, SOLANA_RPC_URL_ENV,
     chain_rpc_endpoints_from_env,
 };
+pub use attested_raise::RebornAttestedRaiseHook;
+pub use automation::facade::RebornAutomationProductFacade;
+pub use automation::trigger_poller::PostSubmitDeliveryHook;
 pub use error::RebornBuildError;
 pub use extension_host::channel_host::{ChannelHostIdentity, GenericChannelHostAssembly};
 pub use extension_host::channel_identity::{

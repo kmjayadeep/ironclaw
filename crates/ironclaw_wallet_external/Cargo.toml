@@ -13,6 +13,10 @@ license = "MIT OR Apache-2.0"
 homepage = "https://github.com/nearai/ironclaw"
 repository = "https://github.com/nearai/ironclaw"
 
+[package.metadata.ironclaw]
+# External-wallet (WalletConnect) client over the signing-provider types.
+layer = "substrates"
+
 [package.metadata.dist]
 dist = false
 

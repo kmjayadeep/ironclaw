@@ -25,9 +25,9 @@ use std::sync::Arc;
 use alloy_consensus::TxEip1559;
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 
-use ironclaw_attestation::{LedgerKey, 
+use ironclaw_attestation::{
     AttestedSigningGrant, DecodedTransaction, GrantKey, InMemorySealedGrantStore,
-    InMemorySigningLedger, RenderingSchemaVersion, SealedGrantStore, SigningLedger,
+    InMemorySigningLedger, LedgerKey, RenderingSchemaVersion, SealedGrantStore, SigningLedger,
     SigningLedgerState,
 };
 use ironclaw_attested_runtime::{
@@ -399,7 +399,6 @@ async fn put_binding_res(
 }
 
 // ── Threat #18: ship-gate refuses custodial mainnet without KMS ───────────
-
 
 /// Ledger key for the tests' fixed tenant ("default").
 fn lk(gate: &SigningGateRef) -> LedgerKey {

@@ -12,6 +12,7 @@ mod json;
 mod memory;
 mod model_visible_output;
 mod profile_set;
+mod request_signature;
 mod schemas;
 mod shell;
 mod skill_management;
@@ -54,6 +55,7 @@ pub use memory::{
     MEMORY_WRITE_CAPABILITY_ID,
 };
 pub use profile_set::PROFILE_SET_CAPABILITY_ID;
+pub use request_signature::REQUEST_SIGNATURE_CAPABILITY_ID;
 pub use shell::SHELL_CAPABILITY_ID;
 pub use skill_management::{
     SKILL_INSTALL_CAPABILITY_ID, SKILL_LIST_CAPABILITY_ID, SKILL_REMOVE_CAPABILITY_ID,
@@ -188,6 +190,7 @@ pub fn builtin_first_party_package() -> Result<ExtensionPackage, ExtensionError>
                     http::manifest()?,
                     http::save_manifest()?,
                     shell::manifest()?,
+                    request_signature::manifest()?,
                     spawn_subagent::manifest()?,
                     trace_commons::onboard_manifest()?,
                     trace_commons::status_manifest()?,
@@ -414,7 +417,11 @@ fn builtin_first_party_base_registry() -> Result<FirstPartyCapabilityRegistry, H
             CapabilityId::new(MEMORY_TREE_CAPABILITY_ID)?,
             handler.clone(),
         )
-        .with_handler(CapabilityId::new(SHELL_CAPABILITY_ID)?, handler.clone());
+        .with_handler(CapabilityId::new(SHELL_CAPABILITY_ID)?, handler.clone())
+        .with_handler(
+            CapabilityId::new(REQUEST_SIGNATURE_CAPABILITY_ID)?,
+            handler.clone(),
+        );
     for metadata in CODING_CAPABILITIES {
         registry.insert_handler(CapabilityId::new(metadata.id)?, handler.clone());
     }
@@ -557,6 +564,7 @@ impl FirstPartyCapabilityHandler for BuiltinFirstPartyTools {
         let mut process_count = 0u32;
         let (output, display_preview) = match request.capability_id.as_str() {
             ECHO_CAPABILITY_ID => (echo::dispatch(&request.input)?, None),
+            REQUEST_SIGNATURE_CAPABILITY_ID => (request_signature::dispatch(&request.input)?, None),
             TIME_CAPABILITY_ID => (time::dispatch(&request.input)?, None),
             JSON_CAPABILITY_ID => (json::dispatch(&request.input)?, None),
             HTTP_CAPABILITY_ID | HTTP_SAVE_CAPABILITY_ID => {

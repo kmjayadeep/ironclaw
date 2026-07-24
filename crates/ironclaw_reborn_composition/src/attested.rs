@@ -15,8 +15,8 @@
 //! ## Backend selection (PR12)
 //!
 //! [`RebornAttestedComposition`] is generic over the grant store `G`, ledger
-//! `L`, and broadcaster `B`. Local-dev/tests use the in-memory stores and the
-//! [`NoopBroadcaster`] (the [`LocalDevAttestedComposition`] alias). Production
+//! `L`, and broadcaster `B`. In-memory stores + the
+//! [`NoopBroadcaster`] (the [`InMemoryAttestedComposition`] alias). Production
 //! selects the durable PG / libSQL grant store + ledger from
 //! `ironclaw_attested_store` and the real [`MultiChainBroadcaster`]; the
 //! ledger-guard behaviour (threats #6 / #7) is identical regardless of backend,
@@ -80,14 +80,14 @@ pub(crate) type ComposedCustodialSigner<G, L> = CustodialSigner<SecretsKeyStore,
 pub(crate) type ComposedContinuationDriver<B, G, L> =
     AttestedSignerContinuationDriver<B, L, ComposedCustodialSigner<G, L>>;
 
-/// The local-dev / test monomorphization of [`ComposedContinuationDriver`]
+/// The in-memory monomorphization of [`ComposedContinuationDriver`]
 /// (in-memory stores + no-op broadcaster). This is the concrete driver type the
 /// composition-layer continuation port ([`crate::RebornAttestedContinuation`])
-/// holds, matching the [`LocalDevAttestedComposition`] the runtime assembles.
-pub(crate) type LocalDevContinuationDriver =
+/// holds, matching the [`InMemoryAttestedComposition`] the runtime assembles.
+pub(crate) type InMemoryContinuationDriver =
     ComposedContinuationDriver<NoopBroadcaster, InMemorySealedGrantStore, InMemorySigningLedger>;
 
-pub type LocalDevAttestedComposition =
+pub type InMemoryAttestedComposition =
     RebornAttestedComposition<NoopBroadcaster, InMemorySealedGrantStore, InMemorySigningLedger>;
 
 /// A dry-run broadcaster that records intent but performs NO network I/O and,
@@ -239,11 +239,10 @@ where
         let grant_key = GrantKey::from_context(&binding.context, binding.approved_tx_hash);
         match self
             .grants
-            .seal(AttestedSigningGrant::new(
-                grant_key,
-                created_at_ms,
-                expiry_ms,
-            ).map_err(RegisterAttestedGateError::Grant)?)
+            .seal(
+                AttestedSigningGrant::new(grant_key, created_at_ms, expiry_ms)
+                    .map_err(RegisterAttestedGateError::Grant)?,
+            )
             .await
         {
             Ok(()) => {}

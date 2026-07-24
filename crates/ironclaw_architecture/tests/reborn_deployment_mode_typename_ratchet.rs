@@ -108,6 +108,14 @@ const FROZEN_OTHER_MODE_TYPES: &[&str] = &[
     // --- Local*: pending rename — its correct name is a design call (wires host
     //     OR sandbox process ports, so "Local…" understates it).
     "LocalInvocationServicesResolver",
+    // --- Local*: JUSTIFIED (Bucket-3 false positive) — the in-tree software-HSM
+    //     reference backend for the `KmsSigner` key-reference boundary
+    //     (attested signing). "Local" names where the KEY lives (in this
+    //     process, vs a cloud KMS/HSM), which is a custody property the
+    //     mainnet ship-gate reads off `is_secure_custody()`; it is not a
+    //     deployment tier and resolving it to config would erase the very
+    //     distinction the ship-gate enforces.
+    "LocalKmsSigner",
     // --- mid-name matches the boundary-aware contains predicate also inventories
     //     (§4.4's rule is "contains", not "starts with") ---
     //   JUSTIFIED (Bucket-3 by meaning): "hook-local id" — an identifier local to

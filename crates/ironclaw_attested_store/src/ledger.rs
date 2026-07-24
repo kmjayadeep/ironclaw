@@ -18,7 +18,7 @@
 #[cfg(any(feature = "postgres", feature = "libsql"))]
 use async_trait::async_trait;
 #[cfg(any(feature = "postgres", feature = "libsql"))]
-use ironclaw_attestation::{LedgerKey, LedgerError, SigningLedger, SigningLedgerState};
+use ironclaw_attestation::{LedgerError, LedgerKey, SigningLedger, SigningLedgerState};
 
 #[cfg(any(feature = "postgres", feature = "libsql"))]
 const SCHEMA: &str = "\

@@ -268,9 +268,8 @@ pub(crate) fn build_webui_services_with_channel_connection(
     // attested composition (production until the durable stores land) the port
     // stays unset and attested resolutions fail closed.
     if let Some(attested) = runtime.attested_signing() {
-        api = api.with_attested_continuation(Arc::new(
-            crate::RebornAttestedContinuation::new(attested),
-        ));
+        api = api
+            .with_attested_continuation(Arc::new(crate::RebornAttestedContinuation::new(attested)));
     }
     // Admin user-management surface: wired only when the identity directory,
     // the admin secret provisioner, and a token minter are all available.

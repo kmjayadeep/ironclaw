@@ -47,7 +47,7 @@ use ironclaw_wallet_external::{
 };
 use serde::Deserialize;
 
-use crate::attested::{LocalDevAttestedComposition, LocalDevContinuationDriver};
+use crate::attested::{InMemoryAttestedComposition, InMemoryContinuationDriver};
 
 /// Composition-layer [`AttestedGateContinuationPort`].
 ///
@@ -55,9 +55,9 @@ use crate::attested::{LocalDevAttestedComposition, LocalDevContinuationDriver};
 /// runtime (the same driver + binding store + ledger the resume port reads).
 ///
 /// Production-driver wiring (deferred): this port is constructed over the
-/// concrete [`LocalDevContinuationDriver`] monomorphization because
+/// concrete [`InMemoryContinuationDriver`] monomorphization because
 /// [`crate::RebornRuntime`] itself holds a concrete
-/// [`crate::attested::LocalDevAttestedComposition`] field — there is currently
+/// [`crate::attested::InMemoryAttestedComposition`] field — there is currently
 /// no type through which `build_webui_services` could hand it the durable
 /// (`Postgres*`/`LibSql*`) driver produced by
 /// [`crate::attested_durable::assemble_postgres`] / `assemble_libsql`. The
@@ -68,12 +68,12 @@ use crate::attested::{LocalDevAttestedComposition, LocalDevContinuationDriver};
 /// behind a trait/enum so it can hold a durable monomorphization — and wiring
 /// this port over it — is the dedicated follow-up slice.
 pub struct RebornAttestedContinuation {
-    driver: Arc<LocalDevContinuationDriver>,
+    driver: Arc<InMemoryContinuationDriver>,
 }
 
 impl RebornAttestedContinuation {
     /// Build the port over the runtime's attested-signing composition.
-    pub fn new(composition: &LocalDevAttestedComposition) -> Self {
+    pub fn new(composition: &InMemoryAttestedComposition) -> Self {
         Self {
             driver: Arc::clone(composition.driver()),
         }

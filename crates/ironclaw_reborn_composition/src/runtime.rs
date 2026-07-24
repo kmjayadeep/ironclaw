@@ -1217,9 +1217,7 @@ impl RebornRuntime {
     /// runtime composed one (local-dev does; production is `None` until the
     /// durable backends land in PR12). The gate/resolve ingress (PR11) reaches
     /// the assembled driver and the authoritative binding store through this.
-    pub fn attested_signing(
-        &self,
-    ) -> Option<&Arc<crate::attested::LocalDevAttestedComposition>> {
+    pub fn attested_signing(&self) -> Option<&Arc<crate::attested::InMemoryAttestedComposition>> {
         self.services.attested_signing.as_ref()
     }
 

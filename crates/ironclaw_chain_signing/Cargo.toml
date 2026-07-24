@@ -13,6 +13,10 @@ license = "MIT OR Apache-2.0"
 homepage = "https://github.com/nearai/ironclaw"
 repository = "https://github.com/nearai/ironclaw"
 
+[package.metadata.ironclaw]
+# Custodial keystore + per-chain decode/render/sign/broadcast over secrets.
+layer = "substrates"
+
 [package.metadata.dist]
 dist = false
 

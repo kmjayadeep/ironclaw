@@ -553,10 +553,16 @@ where
         self.create_ledger_row(&binding.context.tenant, gate_ref)
             .await?;
         self.ledger
-            .advance(&LedgerKey::new(binding.context.tenant.clone(), gate_ref.clone()), SigningLedgerState::Signing)
+            .advance(
+                &LedgerKey::new(binding.context.tenant.clone(), gate_ref.clone()),
+                SigningLedgerState::Signing,
+            )
             .await?;
         self.ledger
-            .advance(&LedgerKey::new(binding.context.tenant.clone(), gate_ref.clone()), SigningLedgerState::Signed)
+            .advance(
+                &LedgerKey::new(binding.context.tenant.clone(), gate_ref.clone()),
+                SigningLedgerState::Signed,
+            )
             .await?;
 
         let signer = binding.context.key_or_account_id.to_string();
@@ -689,7 +695,10 @@ where
             // (idempotency guard — a recovery re-entry now sees a broadcast row
             // and is refused a second signing), then submit under the guard.
             self.ledger
-                .advance(&LedgerKey::new(context.tenant.clone(), gate_ref.clone()), SigningLedgerState::BroadcastSubmitted)
+                .advance(
+                    &LedgerKey::new(context.tenant.clone(), gate_ref.clone()),
+                    SigningLedgerState::BroadcastSubmitted,
+                )
                 .await?;
             match self.broadcaster.broadcast(context, signed).await {
                 Ok(BroadcastOutcome::Submitted { tx_id }) => Ok(SignerContinuationOutcome {
@@ -753,10 +762,17 @@ where
     /// `BroadcastSubmitted` due to a concurrent finalize) must NOT mask it. We
     /// only need the row to NOT be stuck at a non-terminal state; if the
     /// transition is rejected the row was already at/heading to a terminal.
-    async fn recover_unknown(&self, tenant: &ironclaw_signing_provider::TenantId, gate_ref: &GateRef) {
+    async fn recover_unknown(
+        &self,
+        tenant: &ironclaw_signing_provider::TenantId,
+        gate_ref: &GateRef,
+    ) {
         if let Err(e) = self
             .ledger
-            .advance(&LedgerKey::new(tenant.clone(), gate_ref.clone()), SigningLedgerState::Unknown)
+            .advance(
+                &LedgerKey::new(tenant.clone(), gate_ref.clone()),
+                SigningLedgerState::Unknown,
+            )
             .await
         {
             // An `InvalidTransition` is expected and benign here: the row is

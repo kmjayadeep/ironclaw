@@ -40,7 +40,7 @@ use ironclaw_product_workflow::{
     WebUiResolveGateRequest,
 };
 use ironclaw_reborn_composition::{
-    LocalDevAttestedComposition, RebornAttestedContinuation, RegisterAttestedGateError,
+    InMemoryAttestedComposition, RebornAttestedContinuation, RegisterAttestedGateError,
 };
 use ironclaw_secrets::SecretsCrypto;
 use ironclaw_signing_provider::{
@@ -159,7 +159,7 @@ fn lower_hex(bytes: &[u8]) -> String {
 /// assembles), exposed here so the test can register a gate and read the driver.
 fn build_composition(
     bindings: Arc<InMemoryAttestedGateBindingStore>,
-) -> LocalDevAttestedComposition {
+) -> InMemoryAttestedComposition {
     use ironclaw_attestation::InMemorySealedGrantStore;
     use ironclaw_attested_runtime::{CustodialMainnetShipGate, ProviderRegistry};
     use ironclaw_wallet_external::InjectedSigningProvider;
@@ -176,7 +176,7 @@ fn build_composition(
             .with_provider(Arc::new(InjectedSigningProvider::new(
                 Arc::clone(&grants) as Arc<dyn ironclaw_attestation::SealedGrantStore>
             )));
-    LocalDevAttestedComposition::new_in_memory(bindings, keystore, ship_gate, grants, providers)
+    InMemoryAttestedComposition::new_in_memory(bindings, keystore, ship_gate, grants, providers)
 }
 
 /// Submit a turn and block it `BlockedAttested` on `GATE`.

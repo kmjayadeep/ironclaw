@@ -2042,6 +2042,11 @@ fn admin_configuration_blocked(blocked: Blocked) -> RebornServicesError {
         Blocked::Approval(_) => RebornServicesErrorKind::BlockedApproval,
         Blocked::Auth(_) => RebornServicesErrorKind::BlockedAuthentication,
         Blocked::Resource(_) => RebornServicesErrorKind::BlockedResource,
+        // Admin configuration capabilities never request a blockchain
+        // signature; an attested gate here is a wiring fault, not a state the
+        // caller can resolve, so it surfaces as internal rather than as a
+        // retryable 409 the operator would poll forever.
+        Blocked::Attested(_) => return RebornServicesError::internal(),
     };
     RebornServicesError {
         code: RebornServicesErrorCode::Conflict,

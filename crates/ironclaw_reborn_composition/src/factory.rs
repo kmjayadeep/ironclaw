@@ -58,6 +58,9 @@ use ironclaw_approvals::{
     FilesystemAutoApproveSettingStore, FilesystemPersistentApprovalPolicyStore,
     FilesystemToolPermissionOverrideStore,
 };
+use ironclaw_attested_runtime::{
+    InMemoryAttestedGateBindingStore, InMemoryResumeGuard, RuntimeAttestedResumePort,
+};
 use ironclaw_auth::AuthProviderClient;
 use ironclaw_auth::{AuthProductScope, AuthSurface};
 use ironclaw_authorization::FilesystemCapabilityLeaseStore;
@@ -138,11 +141,8 @@ use ironclaw_triggers::{
 use ironclaw_trust::{AdminConfig, AdminEntry, HostTrustAssignment, HostTrustPolicy};
 #[cfg(feature = "test-support")]
 use ironclaw_trust::{AuthorityCeiling, EffectiveTrustClass, TrustDecision, TrustProvenance};
-use ironclaw_attested_runtime::{
-    InMemoryAttestedGateBindingStore, InMemoryResumeGuard, RuntimeAttestedResumePort,
-};
-use ironclaw_turns::{AttestedResumePort, FilesystemTurnStateRowStore};
 use ironclaw_turns::InMemoryRunProfileResolver;
+use ironclaw_turns::{AttestedResumePort, FilesystemTurnStateRowStore};
 use ironclaw_turns::{
     CheckpointStateStore, DefaultTurnCoordinator, ExternalToolCatalog, InMemoryExternalToolCatalog,
     LoopCheckpointStore,
@@ -403,7 +403,7 @@ pub struct RebornServices {
     /// binding store + assembled driver, dispatched by the gate/resolve ingress
     /// (PR11) once a turn reaches `AttestedResolved`. `None` for production until
     /// the durable backends (PR12) are wired.
-    pub(crate) attested_signing: Option<Arc<crate::attested::LocalDevAttestedComposition>>,
+    pub(crate) attested_signing: Option<Arc<crate::attested::InMemoryAttestedComposition>>,
     pub host_runtime: Option<Arc<dyn ironclaw_host_runtime::HostRuntime>>,
     pub turn_coordinator: Option<Arc<dyn ironclaw_turns::TurnCoordinator>>,
     pub product_auth: Option<Arc<RebornProductAuthServices>>,
@@ -2675,16 +2675,27 @@ async fn build_local_runtime(input: RebornBuildInput) -> Result<RebornServices, 
     #[cfg(any(test, feature = "test-support"))]
     let local_dev_wasm_runtime_credential_provider_captured =
         services.wasm_runtime_credential_provider_captured_for_test();
-    let host_runtime: Arc<dyn ironclaw_host_runtime::HostRuntime> =
-        Arc::new(services.host_runtime_for_local_testing());
-
     // Attested-signing (PR10): build the signer-continuation composition from the
     // authoritative gate bindings shared with the resume port injected into the
     // turn store, so a raised `BlockedAttested` gate resolves through the port
     // and its continuation driver is reachable.
-    let attested_signing = Some(Arc::new(build_attested_composition(Arc::clone(
+    let attested_signing = Arc::new(build_attested_composition(Arc::clone(
         &store_graph.attested_gate_bindings,
-    ))?));
+    ))?);
+
+    // Attested-signing (PR14): route `request_signature` invocations to the
+    // composition-owned raise hook over that SAME composition, so the binding it
+    // persists at raise is the one the resume port reads back. Without the hook
+    // the capability's own handler refuses (fail-closed), so a runtime that does
+    // not compose the attested substrate can never half-raise a gate.
+    let host_runtime: Arc<dyn ironclaw_host_runtime::HostRuntime> = Arc::new(
+        services
+            .host_runtime_for_local_testing()
+            .with_attested_raise_hook(Arc::new(
+                crate::attested_raise::RebornAttestedRaiseHook::new(Arc::clone(&attested_signing)),
+            )),
+    );
+    let attested_signing = Some(attested_signing);
 
     Ok(RebornServices {
         attested_signing,
@@ -2824,7 +2835,7 @@ where
 /// turn store, so a raised gate's binding is visible to the continuation driver.
 fn build_attested_composition(
     bindings: Arc<InMemoryAttestedGateBindingStore>,
-) -> Result<crate::attested::LocalDevAttestedComposition, RebornBuildError> {
+) -> Result<crate::attested::InMemoryAttestedComposition, RebornBuildError> {
     use ironclaw_attestation::{InMemorySealedGrantStore, SealedGrantStore};
     use ironclaw_attested_runtime::CustodialMainnetShipGate;
     use ironclaw_chain_signing::SecretsKeyStore;
@@ -2844,7 +2855,7 @@ fn build_attested_composition(
             reason: format!("attested provider config: {error}"),
         })?
         .build_provider_registry(Arc::clone(&grants) as Arc<dyn SealedGrantStore>);
-    Ok(crate::attested::LocalDevAttestedComposition::new_in_memory(
+    Ok(crate::attested::InMemoryAttestedComposition::new_in_memory(
         bindings, keystore, ship_gate, grants, providers,
     ))
 }
@@ -2959,13 +2970,12 @@ async fn build_local_runtime_store_graph(
     // from these same bindings). Injecting the port makes attested resumes
     // resolvable; without it the store fails them closed.
     let attested_gate_bindings = Arc::new(InMemoryAttestedGateBindingStore::new());
-    let attested_resume_port: Arc<dyn AttestedResumePort> = Arc::new(
-        RuntimeAttestedResumePort::new(
+    let attested_resume_port: Arc<dyn AttestedResumePort> =
+        Arc::new(RuntimeAttestedResumePort::new(
             Arc::clone(&attested_gate_bindings)
                 as Arc<dyn ironclaw_attested_runtime::SyncBindingRead>,
             Arc::new(InMemoryResumeGuard::new()),
-        ),
-    );
+        ));
     let turn_state = Arc::new(production_turn_state_store(
         Arc::clone(&turn_state_filesystem),
         turn_state_store_limits,

@@ -26,7 +26,7 @@ use ironclaw_attested_runtime::{
 };
 use ironclaw_chain_signing::{ChainKeyId, SecretsKeyStore};
 use ironclaw_host_api::{AgentId, InvocationId, ProjectId, ResourceScope, TenantId, UserId};
-use ironclaw_reborn_composition::{AttestedProvidersConfig, LocalDevAttestedComposition};
+use ironclaw_reborn_composition::{AttestedProvidersConfig, InMemoryAttestedComposition};
 use ironclaw_secrets::SecretsCrypto;
 use ironclaw_signing_provider::{
     ActorId, ApprovedTxHash, ChainId, GateRef as SigningGateRef, KeyOrAccountId, ProviderId, RunId,
@@ -142,7 +142,7 @@ fn binding(
 fn composition(
     bindings: Arc<InMemoryAttestedGateBindingStore>,
     config: AttestedProvidersConfig,
-) -> LocalDevAttestedComposition {
+) -> InMemoryAttestedComposition {
     use ironclaw_attestation::InMemorySealedGrantStore;
 
     let crypto = SecretsCrypto::new(SecretString::from(
@@ -155,7 +155,7 @@ fn composition(
     let registry = config.build_provider_registry(
         Arc::clone(&grants) as Arc<dyn ironclaw_attestation::SealedGrantStore>
     );
-    LocalDevAttestedComposition::new_in_memory(bindings, keystore, ship_gate, grants, registry)
+    InMemoryAttestedComposition::new_in_memory(bindings, keystore, ship_gate, grants, registry)
 }
 
 /// A deliberately-invalid NEAR proof (empty signature / bogus state). Reaches
@@ -191,7 +191,7 @@ fn bad_wc_proof(hash: ApprovedTxHash, account: &str) -> SigningProof {
 }
 
 async fn register_and_continue(
-    composition: &LocalDevAttestedComposition,
+    composition: &InMemoryAttestedComposition,
     binding: AttestedGateBinding,
     proof: SigningProof,
 ) -> Result<(), ContinuationError> {
@@ -317,7 +317,7 @@ async fn register_attested_gate_seals_grant_and_persists_binding() {
     let registry = AttestedProvidersConfig::default().build_provider_registry(
         Arc::clone(&grants) as Arc<dyn ironclaw_attestation::SealedGrantStore>
     );
-    let composition = LocalDevAttestedComposition::new_in_memory(
+    let composition = InMemoryAttestedComposition::new_in_memory(
         Arc::clone(&bindings),
         keystore,
         ship_gate,
@@ -347,7 +347,7 @@ async fn register_attested_gate_seals_grant_and_persists_binding() {
     // Grant half: the one-shot slot is occupied, so re-sealing the same key is
     // rejected (the CAS slot for threat #1 is taken).
     let reseal = grants
-        .seal(AttestedSigningGrant::seal(grant_key, 0, None))
+        .seal(AttestedSigningGrant::new(grant_key, 0, None).expect("valid grant"))
         .await;
     assert!(
         reseal.is_err(),

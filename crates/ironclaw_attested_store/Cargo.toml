@@ -10,6 +10,10 @@ homepage = "https://github.com/nearai/ironclaw"
 repository = "https://github.com/nearai/ironclaw"
 publish = false
 
+[package.metadata.ironclaw]
+# Durable grant/ledger/binding stores for the attested runtime (kernel).
+layer = "kernel"
+
 [package.metadata.dist]
 dist = false
 

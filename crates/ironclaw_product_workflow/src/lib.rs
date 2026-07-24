@@ -27,11 +27,11 @@
 mod action;
 mod approval_interaction;
 mod approval_prompt;
+mod attested_continuation;
 mod auth_continuation;
 mod auth_interaction;
 mod auth_prompt;
 mod automation_thread_metadata;
-mod attested_continuation;
 mod binding;
 mod binding_ref;
 mod command_dispatch;
@@ -76,6 +76,10 @@ pub use approval_prompt::{
     ApprovalPromptLookup, ApprovalPromptLookupError, approval_prompt_context_view,
     approval_prompt_lookup,
 };
+pub use attested_continuation::{
+    AttestedContinuationOutcome, AttestedContinuationRejection, AttestedGateContinuationPort,
+    AttestedProofClaim, AttestedProofKind, VerifiedAttestedContinuation,
+};
 /// Concrete turn-gate resume dispatcher used by the Reborn composition crate to
 /// bridge product-auth continuations into the workflow-owned turn boundary.
 pub use auth_continuation::ProductAuthTurnGateResumeDispatcher;
@@ -94,10 +98,6 @@ pub use auth_prompt::{
 pub use automation_thread_metadata::{
     AUTOMATION_TRIGGER_THREAD_SOURCE_TAG, automation_trigger_thread_metadata_json,
     thread_metadata_is_automation_trigger,
-};
-pub use attested_continuation::{
-    AttestedContinuationOutcome, AttestedContinuationRejection, AttestedGateContinuationPort,
-    AttestedProofClaim, AttestedProofKind, VerifiedAttestedContinuation,
 };
 pub use binding::{
     ConversationBindingService, ProductConversationRouteKind, ResolveBindingRequest,
