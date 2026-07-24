@@ -5,14 +5,16 @@ use std::{
 use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::FutureExt;
+use ironclaw_host_api::ProcessId;
 use ironclaw_observability::live_latency_started_at;
+use ironclaw_processes::{
+    FailProcessRequest, ProcessLeaseRequest, ProcessLeaseToken, ProcessTransitionPort,
+    ProcessWorkerId, RecoverExpiredProcessLeasesRequest,
+};
 use ironclaw_turns::{
-    SanitizedFailure, TurnError, TurnLeaseToken, TurnRunId, TurnRunWake, TurnRunWakeNotifier,
-    TurnRunWakeNotifyError, TurnRunnerId, TurnScope,
-    runner::{
-        ClaimRunsRequest, ClaimedTurnRun, HeartbeatRequest, RecordRunnerFailureRequest,
-        RecoverExpiredLeasesRequest, RelinquishRunRequest, TurnRunTransitionPort,
-    },
+    AgentTurnProcessTransitionAdapter, SanitizedFailure, TurnError, TurnLeaseToken, TurnRunId,
+    TurnRunWake, TurnRunWakeNotifier, TurnRunWakeNotifyError, TurnRunnerId, TurnScope,
+    runner::{ClaimRunsRequest, ClaimedTurnRun, TurnRunTransitionPort},
 };
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore, mpsc},
@@ -208,6 +210,7 @@ pub trait TurnRunExecutor: Send + Sync {
 
 pub struct TurnRunScheduler {
     transitions: Arc<dyn TurnRunTransitionPort>,
+    process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     executor: Arc<dyn TurnRunExecutor>,
     config: TurnRunSchedulerConfig,
     runner_id: TurnRunnerId,
@@ -219,8 +222,21 @@ impl TurnRunScheduler {
         executor: Arc<dyn TurnRunExecutor>,
         config: TurnRunSchedulerConfig,
     ) -> Self {
+        let process_transitions = Arc::new(AgentTurnProcessTransitionAdapter::new(Arc::clone(
+            &transitions,
+        )));
+        Self::new_with_process_transition(transitions, process_transitions, executor, config)
+    }
+
+    pub fn new_with_process_transition(
+        transitions: Arc<dyn TurnRunTransitionPort>,
+        process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
+        executor: Arc<dyn TurnRunExecutor>,
+        config: TurnRunSchedulerConfig,
+    ) -> Self {
         Self {
             transitions,
+            process_transitions,
             executor,
             config,
             runner_id: TurnRunnerId::new(),
@@ -249,12 +265,15 @@ impl TurnRunScheduler {
         let shutdown_token = CancellationToken::new();
         let supervisor = tokio::spawn(run_scheduler_loop(
             command_rx,
-            command_tx.clone(),
-            self.transitions,
-            self.executor,
-            self.config,
-            self.runner_id,
-            shutdown_token.clone(),
+            SchedulerLoopInit {
+                command_tx: command_tx.clone(),
+                transitions: self.transitions,
+                process_transitions: self.process_transitions,
+                executor: self.executor,
+                config: self.config,
+                runner_id: self.runner_id,
+                shutdown_token: shutdown_token.clone(),
+            },
         ));
         TurnRunSchedulerHandle {
             notifier,
@@ -399,12 +418,30 @@ enum SchedulerCommand {
 /// Identity fields needed to relinquish a claimed run back to Queued.
 struct RelinquishIdentity {
     run_id: TurnRunId,
+    worker_id: ProcessWorkerId,
+    lease_token: ProcessLeaseToken,
+}
+
+struct ProcessClaimIdentity {
+    run_id: TurnRunId,
+    process_id: ProcessId,
+    worker_id: ProcessWorkerId,
+    lease_token: ProcessLeaseToken,
+}
+
+struct SchedulerLoopInit {
+    command_tx: mpsc::Sender<SchedulerCommand>,
+    transitions: Arc<dyn TurnRunTransitionPort>,
+    process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
+    executor: Arc<dyn TurnRunExecutor>,
+    config: TurnRunSchedulerConfig,
     runner_id: TurnRunnerId,
-    lease_token: TurnLeaseToken,
+    shutdown_token: CancellationToken,
 }
 
 struct SchedulerDrainContext {
     transitions: Arc<dyn TurnRunTransitionPort>,
+    process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     executor: Arc<dyn TurnRunExecutor>,
     semaphore: Arc<Semaphore>,
     command_tx: mpsc::Sender<SchedulerCommand>,
@@ -424,10 +461,10 @@ async fn shutdown_scheduler(
     // restart can pick it up instead of letting lease expiry mark it Failed.
     for (_run_id, identity) in active_runs {
         let result = context
-            .transitions
-            .relinquish_run(RelinquishRunRequest {
-                run_id: identity.run_id,
-                runner_id: identity.runner_id,
+            .process_transitions
+            .relinquish_process(ProcessLeaseRequest {
+                process_id: process_id_from_turn_run_id(identity.run_id),
+                worker_id: identity.worker_id,
                 lease_token: identity.lease_token,
             })
             .await;
@@ -443,13 +480,17 @@ async fn shutdown_scheduler(
 
 async fn run_scheduler_loop(
     mut command_rx: mpsc::Receiver<SchedulerCommand>,
-    command_tx: mpsc::Sender<SchedulerCommand>,
-    transitions: Arc<dyn TurnRunTransitionPort>,
-    executor: Arc<dyn TurnRunExecutor>,
-    config: TurnRunSchedulerConfig,
-    runner_id: TurnRunnerId,
-    shutdown_token: CancellationToken,
+    init: SchedulerLoopInit,
 ) {
+    let SchedulerLoopInit {
+        command_tx,
+        transitions,
+        process_transitions,
+        executor,
+        config,
+        runner_id,
+        shutdown_token,
+    } = init;
     let semaphore = Arc::new(Semaphore::new(config.max_concurrent_runs()));
     let mut executor_tasks: JoinSet<TurnRunId> = JoinSet::new();
     // Tracks every in-flight run so we can relinquish on shutdown.
@@ -460,6 +501,7 @@ async fn run_scheduler_loop(
     recovery_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let context = SchedulerDrainContext {
         transitions,
+        process_transitions,
         executor,
         semaphore,
         command_tx,
@@ -575,7 +617,7 @@ async fn run_scheduler_loop(
                 }
             }
             _ = recovery_tick.tick() => {
-                recover_expired_leases(Arc::clone(&context.transitions)).await;
+                recover_expired_leases(Arc::clone(&context.process_transitions)).await;
             }
         }
     }
@@ -638,11 +680,12 @@ async fn drain_queued_runs(
                         run_id,
                         RelinquishIdentity {
                             run_id,
-                            runner_id: claimed.runner_id,
-                            lease_token: claimed.lease_token,
+                            worker_id: process_worker_id_from_turn_runner_id(claimed.runner_id),
+                            lease_token: process_lease_token_from_turn(claimed.lease_token),
                         },
                     );
                     let task_config = ExecutorTaskConfig {
+                        process_transitions: Arc::clone(&context.process_transitions),
                         runner_heartbeat_interval: context.config.runner_heartbeat_interval(),
                         max_consecutive_heartbeat_failures: context
                             .config
@@ -685,8 +728,8 @@ fn acquire_claim_permits(semaphore: &Arc<Semaphore>) -> Vec<OwnedSemaphorePermit
     permits
 }
 
-#[derive(Clone, Copy)]
 struct ExecutorTaskConfig {
+    process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     runner_heartbeat_interval: Duration,
     max_consecutive_heartbeat_failures: usize,
     terminal_failure_record_attempts: usize,
@@ -724,6 +767,15 @@ fn spawn_executor_task(
             let recovery_run_id = claimed.state.run_id;
             let recovery_runner_id = claimed.runner_id;
             let recovery_lease_token = claimed.lease_token;
+            let recovery_process_id = process_id_from_turn_run_id(recovery_run_id);
+            let recovery_worker_id = process_worker_id_from_turn_runner_id(recovery_runner_id);
+            let recovery_process_lease_token = process_lease_token_from_turn(recovery_lease_token);
+            let recovery_process_claim = ProcessClaimIdentity {
+                run_id: recovery_run_id,
+                process_id: recovery_process_id,
+                worker_id: recovery_worker_id.clone(),
+                lease_token: recovery_process_lease_token.clone(),
+            };
             tracing::debug!(
                 thread_id = %recovery_scope.thread_id,
                 run_id = %recovery_run_id_for_start,
@@ -757,10 +809,10 @@ fn spawn_executor_task(
                     }
                     _ = heartbeat_tick.tick(), if heartbeats.is_idle() => {
                         heartbeats.spawn(
-                            Arc::clone(&transitions),
-                            recovery_run_id,
-                            recovery_runner_id,
-                            recovery_lease_token,
+                            Arc::clone(&task_config.process_transitions),
+                            recovery_process_id,
+                            recovery_worker_id.clone(),
+                            recovery_process_lease_token.clone(),
                             task_config.runner_heartbeat_interval,
                         );
                     }
@@ -804,10 +856,8 @@ fn spawn_executor_task(
                 ExecutorTaskOutcome::Completed => {}
                 ExecutorTaskOutcome::TerminalFailure(Some(failure)) => {
                     if let Err(error) = record_terminal_failure(
-                        Arc::clone(&transitions),
-                        recovery_run_id,
-                        recovery_runner_id,
-                        recovery_lease_token,
+                        Arc::clone(&task_config.process_transitions),
+                        &recovery_process_claim,
                         failure,
                         task_config.terminal_failure_record_attempts,
                         task_config.terminal_failure_record_backoff,
@@ -819,11 +869,12 @@ fn spawn_executor_task(
                             run_id = %recovery_run_id,
                             "turn run scheduler terminal failure recording exhausted; relinquishing claimed run"
                         );
-                        if let Err(relinquish_error) = transitions
-                            .relinquish_run(RelinquishRunRequest {
-                                run_id: recovery_run_id,
-                                runner_id: recovery_runner_id,
-                                lease_token: recovery_lease_token,
+                        if let Err(relinquish_error) = task_config
+                            .process_transitions
+                            .relinquish_process(ProcessLeaseRequest {
+                                process_id: recovery_process_claim.process_id,
+                                worker_id: recovery_process_claim.worker_id.clone(),
+                                lease_token: recovery_process_claim.lease_token.clone(),
                             })
                             .await
                         {
@@ -871,17 +922,24 @@ impl InFlightHeartbeat {
 
     fn spawn(
         &mut self,
-        transitions: Arc<dyn TurnRunTransitionPort>,
-        run_id: ironclaw_turns::TurnRunId,
-        runner_id: ironclaw_turns::TurnRunnerId,
-        lease_token: ironclaw_turns::TurnLeaseToken,
+        transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
+        process_id: ProcessId,
+        worker_id: ProcessWorkerId,
+        lease_token: ProcessLeaseToken,
         timeout_after: Duration,
     ) {
         debug_assert!(self.task.is_none());
         // Heartbeat transitions may wait on the same store lock currently held by
         // the executor. Run them in child tasks so the executor future keeps polling.
         self.task = Some(tokio::spawn(async move {
-            heartbeat_claimed_run(transitions, run_id, runner_id, lease_token, timeout_after).await
+            heartbeat_claimed_process(
+                transitions,
+                process_id,
+                worker_id,
+                lease_token,
+                timeout_after,
+            )
+            .await
         }));
     }
 
@@ -919,16 +977,16 @@ fn heartbeat_outcome(result: Result<HeartbeatOutcome, tokio::task::JoinError>) -
     }
 }
 
-async fn heartbeat_claimed_run(
-    transitions: Arc<dyn TurnRunTransitionPort>,
-    run_id: ironclaw_turns::TurnRunId,
-    runner_id: ironclaw_turns::TurnRunnerId,
-    lease_token: ironclaw_turns::TurnLeaseToken,
+async fn heartbeat_claimed_process(
+    transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
+    process_id: ProcessId,
+    worker_id: ProcessWorkerId,
+    lease_token: ProcessLeaseToken,
     timeout_after: Duration,
 ) -> HeartbeatOutcome {
-    let heartbeat = transitions.heartbeat(HeartbeatRequest {
-        run_id,
-        runner_id,
+    let heartbeat = transitions.heartbeat_process(ProcessLeaseRequest {
+        process_id,
+        worker_id,
         lease_token,
     });
     let result = tokio::time::timeout(timeout_after, heartbeat).await;
@@ -940,7 +998,7 @@ async fn heartbeat_claimed_run(
         }
         Err(_) => {
             debug!(
-                run_id = %run_id,
+                process_id = %process_id,
                 timeout_after = ?timeout_after,
                 "turn run scheduler heartbeat timed out"
             );
@@ -950,20 +1008,18 @@ async fn heartbeat_claimed_run(
 }
 
 async fn record_terminal_failure(
-    transitions: Arc<dyn TurnRunTransitionPort>,
-    run_id: ironclaw_turns::TurnRunId,
-    runner_id: ironclaw_turns::TurnRunnerId,
-    lease_token: ironclaw_turns::TurnLeaseToken,
+    process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
+    identity: &ProcessClaimIdentity,
     failure: SanitizedFailure,
     max_attempts: usize,
     retry_backoff: Duration,
 ) -> Result<(), TurnError> {
     for attempt in 1..=max_attempts {
-        let result = transitions
-            .record_runner_failure(RecordRunnerFailureRequest {
-                run_id,
-                runner_id,
-                lease_token,
+        let result = process_transitions
+            .fail_process(FailProcessRequest {
+                process_id: identity.process_id,
+                worker_id: identity.worker_id.clone(),
+                lease_token: identity.lease_token.clone(),
                 failure: failure.clone(),
             })
             .await;
@@ -973,6 +1029,8 @@ async fn record_terminal_failure(
                 let retryable = matches!(error, TurnError::Unavailable { .. });
                 debug!(
                     error = %error,
+                    run_id = %identity.run_id,
+                    process_id = %identity.process_id,
                     attempt,
                     max_attempts,
                     retryable,
@@ -1001,9 +1059,21 @@ fn scheduler_failure(category: &'static str) -> Option<SanitizedFailure> {
     }
 }
 
-async fn recover_expired_leases(transitions: Arc<dyn TurnRunTransitionPort>) {
+fn process_id_from_turn_run_id(run_id: TurnRunId) -> ProcessId {
+    ProcessId::from_uuid(run_id.as_uuid())
+}
+
+fn process_worker_id_from_turn_runner_id(runner_id: TurnRunnerId) -> ProcessWorkerId {
+    ProcessWorkerId::from_trusted(runner_id.as_uuid().to_string())
+}
+
+fn process_lease_token_from_turn(lease_token: TurnLeaseToken) -> ProcessLeaseToken {
+    ProcessLeaseToken::from_trusted(lease_token.as_uuid().to_string())
+}
+
+async fn recover_expired_leases(transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>) {
     let result: Result<_, TurnError> = transitions
-        .recover_expired_leases(RecoverExpiredLeasesRequest {
+        .recover_expired_process_leases(RecoverExpiredProcessLeasesRequest {
             now: Utc::now(),
             // Scheduler currently owns one global worker pool; if composition
             // introduces per-tenant schedulers, thread that scope filter here.
@@ -1014,8 +1084,10 @@ async fn recover_expired_leases(transitions: Arc<dyn TurnRunTransitionPort>) {
         Ok(response) => {
             for state in response.recovered {
                 debug!(
-                    thread_id = %state.scope.thread_id,
-                    run_id = %state.run_id,
+                    thread_id = %state.scope.thread_id.as_ref().map(|id| id.as_str()).unwrap_or(""),
+                    run_id = %state.process_id,
+                    process_id = %state.process_id,
+                    process_kind = ?state.process_kind,
                     status = ?state.status,
                     failure_category = %state
                         .failure

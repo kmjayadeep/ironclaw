@@ -49,6 +49,22 @@ runtime API yet; it proves production composition can carry a process-owned
 transition handle without duplicating the turn store or introducing a second
 scheduler.
 
+## Scheduler Maintenance Slice
+
+`ironclaw_runner::TurnRunScheduler` now carries a process transition port and
+uses it for scheduler-owned lifecycle maintenance:
+
+- heartbeat for claimed work;
+- expired lease recovery;
+- shutdown relinquish;
+- scheduler terminal failure recording.
+
+The scheduler still claims `ClaimedTurnRun` through `TurnRunTransitionPort`
+because the executor contract currently requires turn-specific run profile
+payloads (`ResolvedRunProfile`, loop driver context, and turn scope). That is
+the next hard boundary: full claim migration needs either an agent-turn process
+claim payload or post-claim profile resolution behind the executor adapter.
+
 ## Boundary Found
 
 The kernel should own the durable process state machine and journal. It should

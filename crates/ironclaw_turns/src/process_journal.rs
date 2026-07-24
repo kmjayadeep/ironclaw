@@ -528,12 +528,14 @@ impl ProcessTransitionPort for AgentTurnProcessTransitionAdapter {
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
         let state = self
             .inner
-            .fail_run(FailRunRequest::try_from(KernelFailProcessRequest {
-                process_id: request.process_id,
-                worker_id: request.worker_id,
-                lease_token: request.lease_token,
-                failure: request.failure,
-            })?)
+            .record_runner_failure(RecordRunnerFailureRequest::try_from(
+                KernelFailProcessRequest {
+                    process_id: request.process_id,
+                    worker_id: request.worker_id,
+                    lease_token: request.lease_token,
+                    failure: request.failure,
+                },
+            )?)
             .await?;
         Ok(state.to_process_state_snapshot())
     }

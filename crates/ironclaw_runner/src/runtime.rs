@@ -16,13 +16,14 @@ use ironclaw_loop_host::{
     SubagentSpawnGoalStore, SubagentSpawnLimits, verify_product_live_cancellation_probe,
 };
 use ironclaw_memory::MemoryService;
+use ironclaw_processes::ProcessTransitionPort;
 use ironclaw_threads::{SessionThreadService, ThreadScope};
 use ironclaw_turns::{
-    AgentLoopDriverError, CheckpointStateStorePort, DefaultTurnCoordinator,
-    DefaultTurnLifecycleEventBus, LifecyclePublicationErrorPort, LifecyclePublishingTurnStateStore,
-    LoopCheckpointStore, RunProfileResolver, TurnCommittedEventObserver, TurnEventSink,
-    TurnLifecycleEventBus, TurnRunWakeNotifier, TurnSpawnTreePort, TurnSpawnTreeStateStore,
-    TurnStateStore,
+    AgentLoopDriverError, AgentTurnProcessTransitionAdapter, CheckpointStateStorePort,
+    DefaultTurnCoordinator, DefaultTurnLifecycleEventBus, LifecyclePublicationErrorPort,
+    LifecyclePublishingTurnStateStore, LoopCheckpointStore, RunProfileResolver,
+    TurnCommittedEventObserver, TurnEventSink, TurnLifecycleEventBus, TurnRunWakeNotifier,
+    TurnSpawnTreePort, TurnSpawnTreeStateStore, TurnStateStore,
     loop_exit::LoopExitEvidencePort,
     run_profile::{
         AgentLoopHostError, CommunicationContextProvider, InstructionSafetyContext,
@@ -835,6 +836,10 @@ where
     let host_factory = Arc::new(host_factory);
 
     let transition_port: Arc<dyn TurnRunTransitionPort> = turn_state;
+    let process_transition_port: Arc<dyn ProcessTransitionPort<Error = ironclaw_turns::TurnError>> =
+        Arc::new(AgentTurnProcessTransitionAdapter::new(Arc::clone(
+            &transition_port,
+        )));
     let loop_exit_applier = Arc::new(LoopExitApplier::new(
         Arc::clone(&transition_port),
         parts.loop_exit_evidence,
@@ -854,7 +859,12 @@ where
         .with_runner_heartbeat_interval(parts.config.heartbeat_interval)
         .with_poll_interval(parts.config.poll_interval)
         .with_lease_recovery_interval(parts.config.lease_recovery_interval);
-    let scheduler = TurnRunScheduler::new(Arc::clone(&transition_port), executor, scheduler_config);
+    let scheduler = TurnRunScheduler::new_with_process_transition(
+        Arc::clone(&transition_port),
+        process_transition_port,
+        executor,
+        scheduler_config,
+    );
     let scheduler_handle = wake_wiring.start(scheduler);
 
     Ok(
