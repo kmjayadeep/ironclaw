@@ -603,6 +603,31 @@ mod tests {
             auth_scope_for_blocked_turn(&self.scope, &self.owner_user_id)
         }
 
+        async fn prepare_client_snapshot(&self, flow_id: AuthFlowId) {
+            self.driver
+                .engine
+                .prepare_oauth_flow(PrepareOAuthFlowRequest {
+                    vendor: "acmevendor".to_string(),
+                    scope: self.auth_scope(),
+                    flow_id,
+                    account_label: CredentialAccountLabel::new("acmevendor").unwrap(),
+                    requested_scopes: vec![ProviderScope::new("msg:read").unwrap()],
+                    expires_at: Utc::now() + ChronoDuration::seconds(60),
+                })
+                .await
+                .expect("test flow has a prepared client snapshot");
+        }
+
+        async fn client_snapshot_exists(&self, flow_id: AuthFlowId) -> bool {
+            let flow_id = flow_id.as_uuid().simple().to_string();
+            self.engine_secrets
+                .metadata_for_scope(&self.auth_scope().resource)
+                .await
+                .expect("engine snapshot metadata remains readable")
+                .into_iter()
+                .any(|metadata| metadata.handle.as_str().contains(&flow_id))
+        }
+
         async fn active_gate_flows(&self) -> Vec<AuthFlowRecord> {
             let auth_scope = self.auth_scope();
             let turn_run_ref = TurnRunRef::new(self.run_id.to_string()).unwrap();
@@ -648,6 +673,11 @@ mod tests {
         let fixture = GateFixture::new();
         let expired_flow_id = AuthFlowId::new();
         let expired_scope = fixture.auth_scope();
+        fixture.prepare_client_snapshot(expired_flow_id).await;
+        assert!(
+            fixture.client_snapshot_exists(expired_flow_id).await,
+            "test precondition: expired flow must own a client snapshot"
+        );
         fixture
             .flow_manager
             .create_flow(NewAuthFlow {
@@ -694,6 +724,10 @@ mod tests {
             .unwrap();
         assert_eq!(expired.status, AuthFlowStatus::Canceled);
         assert_eq!(fixture.active_gate_flows().await.len(), 1);
+        assert!(
+            !fixture.client_snapshot_exists(expired_flow_id).await,
+            "expired-flow replacement must remove the old client snapshot"
+        );
     }
 
     #[tokio::test]
@@ -764,31 +798,9 @@ mod tests {
         let fixture = GateFixture::new();
         let auth_scope = fixture.auth_scope();
         let mismatched_flow_id = AuthFlowId::new();
-        fixture
-            .driver
-            .engine
-            .prepare_oauth_flow(PrepareOAuthFlowRequest {
-                vendor: "acmevendor".to_string(),
-                scope: auth_scope.clone(),
-                flow_id: mismatched_flow_id,
-                account_label: CredentialAccountLabel::new("acmevendor").unwrap(),
-                requested_scopes: vec![ProviderScope::new("msg:read").unwrap()],
-                expires_at: Utc::now() + ChronoDuration::seconds(60),
-            })
-            .await
-            .expect("mismatched live flow has a prepared client snapshot");
-        let mismatched_snapshot_fragment = mismatched_flow_id.as_uuid().simple().to_string();
+        fixture.prepare_client_snapshot(mismatched_flow_id).await;
         assert!(
-            fixture
-                .engine_secrets
-                .metadata_for_scope(&fixture.auth_scope().resource)
-                .await
-                .expect("engine snapshot metadata remains readable")
-                .into_iter()
-                .any(|metadata| metadata
-                    .handle
-                    .as_str()
-                    .contains(&mismatched_snapshot_fragment)),
+            fixture.client_snapshot_exists(mismatched_flow_id).await,
             "test precondition: mismatched flow must own a client snapshot"
         );
         let mismatched = fixture
@@ -844,16 +856,7 @@ mod tests {
         );
         assert_eq!(fixture.active_gate_flows().await.len(), 1);
         assert!(
-            fixture
-                .engine_secrets
-                .metadata_for_scope(&fixture.auth_scope().resource)
-                .await
-                .expect("engine snapshot metadata remains readable")
-                .into_iter()
-                .all(|metadata| !metadata
-                    .handle
-                    .as_str()
-                    .contains(&mismatched_snapshot_fragment)),
+            !fixture.client_snapshot_exists(mismatched_flow_id).await,
             "provider-mismatch cancellation must remove the old client snapshot"
         );
     }
