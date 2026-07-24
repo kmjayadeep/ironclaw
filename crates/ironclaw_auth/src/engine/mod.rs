@@ -369,8 +369,8 @@ impl AuthEngine {
                 AuthProductError::BackendUnavailable
             })?;
         let stored: StoredFlowClientSnapshot = serde_json::from_str(material.expose_secret())
-            .map_err(|_| {
-                tracing::warn!("OAuth flow client snapshot decode failed");
+            .map_err(|error| {
+                tracing::warn!(%error, "OAuth flow client snapshot decode failed");
                 AuthProductError::BackendUnavailable
             })?;
         Ok(Some(EngineOAuthClientMaterial {
@@ -380,8 +380,11 @@ impl AuthEngine {
     }
 
     async fn delete_flow_client_snapshot(&self, scope: &ResourceScope, flow_id: AuthFlowId) {
-        let Ok(handle) = flow_client_snapshot_handle(flow_id) else {
-            return;
+        let handle = match flow_client_snapshot_handle(flow_id) {
+            Ok(handle) => handle,
+            // The helper logs the original construction error before mapping it
+            // to the stable product error.
+            Err(_) => return,
         };
         if let Err(error) = self.secret_store.delete(scope, &handle).await {
             tracing::warn!(%error, "OAuth flow client snapshot cleanup failed");
@@ -400,10 +403,10 @@ impl AuthEngine {
             match self.flow_client_snapshot(scope, flow_id).await? {
                 Some(material) => material,
                 None => {
-                    // Compatibility for flows created before encrypted client
-                    // snapshots were introduced. Every newly prepared static
-                    // flow has a snapshot; only an already-pending upgraded
-                    // flow reaches this live-resolution path.
+                    // Compatibility when the encrypted snapshot is missing,
+                    // including pre-snapshot flows and snapshots that expired.
+                    // Live resolution may observe credentials rotated after
+                    // the authorization request was created.
                     let credentials = recipe
                         .client_credentials
                         .as_ref()
@@ -500,7 +503,10 @@ fn flow_client_snapshot_handle(flow_id: AuthFlowId) -> Result<SecretHandle, Auth
         "{FLOW_CLIENT_SNAPSHOT_HANDLE_PREFIX}-{}",
         flow_id.as_uuid().simple()
     ))
-    .map_err(|_| AuthProductError::BackendUnavailable)
+    .map_err(|error| {
+        tracing::warn!(%error, "OAuth flow client snapshot handle construction failed");
+        AuthProductError::BackendUnavailable
+    })
 }
 
 #[async_trait]
