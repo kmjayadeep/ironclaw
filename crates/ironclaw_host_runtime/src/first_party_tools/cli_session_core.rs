@@ -18,32 +18,6 @@ pub(super) enum CliSessionError {
     InvalidParameters(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CliSessionAction {
-    Start,
-    Send,
-    Read,
-    Kill,
-}
-
-impl CliSessionAction {
-    fn parse(value: &str) -> Result<Self, CliSessionError> {
-        match value {
-            "start" => Ok(Self::Start),
-            "send" => Ok(Self::Send),
-            "read" => Ok(Self::Read),
-            "kill" => Ok(Self::Kill),
-            other => Err(CliSessionError::InvalidParameters(format!(
-                "action must be one of start, send, read, kill; got {other:?}"
-            ))),
-        }
-    }
-
-    fn includes_session_footer(self) -> bool {
-        matches!(self, Self::Start | Self::Read)
-    }
-}
-
 /// Validated, namespaced tmux session identifier. The `ic-` prefix keeps
 /// model-created sessions distinguishable from any other tmux usage inside
 /// the same container; the charset restriction is defense-in-depth
@@ -85,12 +59,55 @@ impl CliSessionName {
     }
 }
 
+/// A validated `builtin.cli_session` request, one variant per action. Each
+/// variant carries exactly the fields that action's `build_tmux_command` arm
+/// needs — `Start` always has a `command`, `Send` always has `text` — so the
+/// "command missing for start" / "text missing for send" states validated in
+/// `parse_cli_session_request` are unrepresentable downstream. This replaces
+/// a single struct with an `action` tag plus `Option<String>` `command`/
+/// `text` fields, which forced `build_tmux_command` to re-match on
+/// combinations `parse_cli_session_request` had already ruled out, and used
+/// to fall back on `.expect()`/`unreachable!()` for the "impossible" arms.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct CliSessionRequest {
-    pub action: CliSessionAction,
-    pub session: CliSessionName,
-    pub command: Option<String>,
-    pub text: Option<String>,
+pub(super) enum CliSessionRequest {
+    Start {
+        session: CliSessionName,
+        command: String,
+    },
+    Send {
+        session: CliSessionName,
+        text: String,
+    },
+    Read {
+        session: CliSessionName,
+    },
+    Kill {
+        session: CliSessionName,
+    },
+}
+
+impl CliSessionRequest {
+    pub(super) fn session(&self) -> &CliSessionName {
+        match self {
+            Self::Start { session, .. }
+            | Self::Send { session, .. }
+            | Self::Read { session }
+            | Self::Kill { session } => session,
+        }
+    }
+
+    pub(super) fn action_str(&self) -> &'static str {
+        match self {
+            Self::Start { .. } => "start",
+            Self::Send { .. } => "send",
+            Self::Read { .. } => "read",
+            Self::Kill { .. } => "kill",
+        }
+    }
+
+    fn includes_session_footer(&self) -> bool {
+        matches!(self, Self::Start { .. } | Self::Read { .. })
+    }
 }
 
 pub(super) fn parse_cli_session_request(
@@ -102,7 +119,6 @@ pub(super) fn parse_cli_session_request(
         .ok_or_else(|| {
             CliSessionError::InvalidParameters("missing 'action' parameter".to_string())
         })?;
-    let action = CliSessionAction::parse(action)?;
     let session = params
         .get("session")
         .and_then(Value::as_str)
@@ -113,24 +129,28 @@ pub(super) fn parse_cli_session_request(
     let command = optional_nonempty_string(params, "command")?;
     let text = optional_nonempty_string(params, "text")?;
     match action {
-        CliSessionAction::Start if command.is_none() => {
-            return Err(CliSessionError::InvalidParameters(
-                "'command' is required for action 'start'".to_string(),
-            ));
+        "start" => {
+            let command = command.ok_or_else(|| {
+                CliSessionError::InvalidParameters(
+                    "'command' is required for action 'start'".to_string(),
+                )
+            })?;
+            Ok(CliSessionRequest::Start { session, command })
         }
-        CliSessionAction::Send if text.is_none() => {
-            return Err(CliSessionError::InvalidParameters(
-                "'text' is required for action 'send'".to_string(),
-            ));
+        "send" => {
+            let text = text.ok_or_else(|| {
+                CliSessionError::InvalidParameters(
+                    "'text' is required for action 'send'".to_string(),
+                )
+            })?;
+            Ok(CliSessionRequest::Send { session, text })
         }
-        _ => {}
+        "read" => Ok(CliSessionRequest::Read { session }),
+        "kill" => Ok(CliSessionRequest::Kill { session }),
+        other => Err(CliSessionError::InvalidParameters(format!(
+            "action must be one of start, send, read, kill; got {other:?}"
+        ))),
     }
-    Ok(CliSessionRequest {
-        action,
-        session,
-        command,
-        text,
-    })
 }
 
 fn optional_nonempty_string(params: &Value, key: &str) -> Result<Option<String>, CliSessionError> {
@@ -158,30 +178,20 @@ fn optional_nonempty_string(params: &Value, key: &str) -> Result<Option<String>,
 /// `crate::sandbox_process`) so shell metacharacters in either can never
 /// leave the quoted literal.
 pub(super) fn build_tmux_command(request: &CliSessionRequest) -> String {
-    let session = shell_single_quote(request.session.as_str());
-    let primary = match (
-        request.action,
-        request.command.as_deref(),
-        request.text.as_deref(),
-    ) {
-        (CliSessionAction::Start, Some(command), _) => {
+    let session = shell_single_quote(request.session().as_str());
+    let primary = match request {
+        CliSessionRequest::Start { command, .. } => {
             let command = shell_single_quote(command);
             format!("tmux new-session -d -s {session} {command}")
         }
-        (CliSessionAction::Send, _, Some(text)) => {
+        CliSessionRequest::Send { text, .. } => {
             let text = shell_single_quote(text);
             format!("tmux send-keys -t {session} -l -- {text} && tmux send-keys -t {session} Enter")
         }
-        (CliSessionAction::Read, ..) => format!("tmux capture-pane -t {session} -p"),
-        (CliSessionAction::Kill, ..) => format!("tmux kill-session -t {session}"),
-        (CliSessionAction::Start, None, _) => {
-            unreachable!("parse_cli_session_request requires 'command' for action Start")
-        }
-        (CliSessionAction::Send, _, None) => {
-            unreachable!("parse_cli_session_request requires 'text' for action Send")
-        }
+        CliSessionRequest::Read { .. } => format!("tmux capture-pane -t {session} -p"),
+        CliSessionRequest::Kill { .. } => format!("tmux kill-session -t {session}"),
     };
-    if request.action.includes_session_footer() {
+    if request.includes_session_footer() {
         // The footer (marker + exit code + session list) must always run so
         // `active_sessions` stays accurate even when `primary` itself
         // failed (e.g. `read` against a session that doesn't exist). But
@@ -282,11 +292,9 @@ mod tests {
 
     #[test]
     fn build_tmux_command_for_start_appends_session_footer() {
-        let request = CliSessionRequest {
-            action: CliSessionAction::Start,
+        let request = CliSessionRequest::Start {
             session: CliSessionName::parse("devserver").unwrap(),
-            command: Some("npm run dev".to_string()),
-            text: None,
+            command: "npm run dev".to_string(),
         };
         assert_eq!(
             build_tmux_command(&request),
@@ -299,11 +307,9 @@ mod tests {
 
     #[test]
     fn build_tmux_command_for_send_quotes_injected_text_literally_and_omits_footer() {
-        let request = CliSessionRequest {
-            action: CliSessionAction::Send,
+        let request = CliSessionRequest::Send {
             session: CliSessionName::parse("devserver").unwrap(),
-            command: None,
-            text: Some("echo 'hi'; rm -rf /".to_string()),
+            text: "echo 'hi'; rm -rf /".to_string(),
         };
         assert_eq!(
             build_tmux_command(&request),
@@ -314,11 +320,8 @@ mod tests {
 
     #[test]
     fn build_tmux_command_for_read_appends_session_footer() {
-        let request = CliSessionRequest {
-            action: CliSessionAction::Read,
+        let request = CliSessionRequest::Read {
             session: CliSessionName::parse("devserver").unwrap(),
-            command: None,
-            text: None,
         };
         assert_eq!(
             build_tmux_command(&request),
@@ -331,11 +334,8 @@ mod tests {
 
     #[test]
     fn build_tmux_command_for_kill_has_no_footer() {
-        let request = CliSessionRequest {
-            action: CliSessionAction::Kill,
+        let request = CliSessionRequest::Kill {
             session: CliSessionName::parse("devserver").unwrap(),
-            command: None,
-            text: None,
         };
         assert_eq!(
             build_tmux_command(&request),

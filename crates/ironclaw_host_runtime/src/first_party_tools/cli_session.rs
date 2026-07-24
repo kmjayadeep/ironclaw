@@ -71,8 +71,8 @@ pub(super) async fn dispatch(
     let parsed =
         cli_session_core::parse_cli_session_request(&request.input).map_err(session_error)?;
     let command = cli_session_core::build_tmux_command(&parsed);
-    let action = parsed.action;
-    let session_name = parsed.session.as_str().to_string();
+    let action = parsed.action_str();
+    let session_name = parsed.session().as_str().to_string();
 
     let output = request
         .services
@@ -105,7 +105,7 @@ pub(super) async fn dispatch(
     // unchanged.
     let reported_exit_code = primary_exit_code.unwrap_or(output.exit_code);
     let mut value = json!({
-        "action": action_str(action),
+        "action": action,
         "session": session_name,
         "output": primary_output,
         "exit_code": reported_exit_code,
@@ -115,15 +115,6 @@ pub(super) async fn dispatch(
         value["active_sessions"] = json!(sessions);
     }
     Ok((value, output.duration))
-}
-
-fn action_str(action: cli_session_core::CliSessionAction) -> &'static str {
-    match action {
-        cli_session_core::CliSessionAction::Start => "start",
-        cli_session_core::CliSessionAction::Send => "send",
-        cli_session_core::CliSessionAction::Read => "read",
-        cli_session_core::CliSessionAction::Kill => "kill",
-    }
 }
 
 fn session_error(error: cli_session_core::CliSessionError) -> FirstPartyCapabilityError {
