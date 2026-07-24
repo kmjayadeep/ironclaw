@@ -209,8 +209,8 @@ impl OAuthGateFlowDriver {
         if existing.expires_at > Utc::now() {
             return Ok(Some(existing));
         }
-        // The flow being replaced is expired and about to be canceled; drop
-        // its now-defunct PKCE verifier and client snapshot.
+        // The flow being replaced is expired and about to be canceled; attempt
+        // cleanup of its now-defunct PKCE verifier and client snapshot.
         self.cleanup_prepared_flow(&existing.scope.resource, existing.id)
             .await;
         flow_manager
