@@ -184,6 +184,16 @@ pub struct CoordinatedDeliveryRequest<'a> {
 struct AuthorizedDeliveryTarget {
     binding: ValidatedReplyTargetBinding,
     require_direct_message: bool,
+    /// Optional threading anchor within the resolved target conversation.
+    thread_anchor: Option<String>,
+}
+
+/// Inputs for resolving transient `/workspace/...` references in final or
+/// triggered assistant text into materialized [`OutboundPart::File`] parts.
+struct WorkspaceMaterialization<'a> {
+    intent: DeliveryIntent,
+    project_filesystem: &'a dyn ProjectFilesystemReader,
+    thread_scope: &'a ThreadScope,
 }
 
 /// One notice-class delivery request (§5.4: `Working`, `Cleanup`,
@@ -415,17 +425,19 @@ impl DeliveryCoordinator {
         }
         self.drive_authorized(
             target_resolver,
-            request.intent,
             attempt,
             AuthorizedDeliveryTarget {
                 binding: target,
                 require_direct_message: request.require_direct_message_target,
+                thread_anchor: request.thread_anchor,
             },
             request.parts,
-            request.thread_anchor,
             request.extension_id,
-            project_filesystem,
-            request.thread_scope,
+            WorkspaceMaterialization {
+                intent: request.intent,
+                project_filesystem,
+                thread_scope: request.thread_scope,
+            },
         )
         .await
     }
@@ -504,14 +516,11 @@ impl DeliveryCoordinator {
     async fn drive_authorized(
         &self,
         target_resolver: &dyn ProductOutboundTargetResolver,
-        intent: DeliveryIntent,
         attempt: OutboundDeliveryAttempt,
         target: AuthorizedDeliveryTarget,
         parts: Vec<OutboundPart>,
-        thread_anchor: Option<String>,
         extension_id: &str,
-        project_filesystem: &dyn ProjectFilesystemReader,
-        thread_scope: &ThreadScope,
+        materialization: WorkspaceMaterialization<'_>,
     ) -> Result<CoordinatedDeliveryOutcome, CoordinatedDeliveryError> {
         // 2. Resolve the trusted conversation metadata for the sealed target.
         let metadata: VerifiedProductOutboundTargetMetadata = match target_resolver
@@ -538,27 +547,24 @@ impl DeliveryCoordinator {
             .resolve_channel_context(&attempt, extension_id, &metadata.external_conversation_ref)
             .await?;
 
-        let parts =
-            match materialize_workspace_file_parts(intent, parts, project_filesystem, thread_scope)
-                .await
-            {
-                Ok(parts) => parts,
-                Err(error) => {
-                    self.mark_terminal(
-                        &attempt,
-                        OutboundDeliveryStatus::Failed,
-                        Some(DeliveryFailureKind::Rejected),
-                    )
-                    .await;
-                    return Err(error);
-                }
-            };
+        let parts = match materialize_workspace_file_parts(materialization, parts).await {
+            Ok(parts) => parts,
+            Err(error) => {
+                self.mark_terminal(
+                    &attempt,
+                    OutboundDeliveryStatus::Failed,
+                    Some(DeliveryFailureKind::Rejected),
+                )
+                .await;
+                return Err(error);
+            }
+        };
 
         self.drive_prepared(
             attempt,
             channel,
             metadata.external_conversation_ref,
-            thread_anchor,
+            target.thread_anchor,
             parts,
             reply_context,
         )
@@ -775,11 +781,14 @@ impl DeliveryCoordinator {
 }
 
 async fn materialize_workspace_file_parts(
-    intent: DeliveryIntent,
+    materialization: WorkspaceMaterialization<'_>,
     mut parts: Vec<OutboundPart>,
-    project_filesystem: &dyn ProjectFilesystemReader,
-    thread_scope: &ThreadScope,
 ) -> Result<Vec<OutboundPart>, CoordinatedDeliveryError> {
+    let WorkspaceMaterialization {
+        intent,
+        project_filesystem,
+        thread_scope,
+    } = materialization;
     reject_caller_supplied_files(&parts)?;
     if !matches!(
         intent,

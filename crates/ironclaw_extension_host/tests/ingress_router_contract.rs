@@ -1060,6 +1060,11 @@ version = "0.1.0"
 description = "generation race fixture"
 trust = "third_party"
 
+[admin_configuration]
+group_id = "extension.attachment-fixture"
+display_name = "Attachment fixture deployment configuration"
+fields = [ {{ handle = "acme_chat_signing_secret", label = "Signing secret", secret = true, required = false }} ]
+
 [runtime]
 kind = "wasm"
 module = "wasm/acme_chat.wasm"
@@ -1090,9 +1095,6 @@ signed_payload = [
   {{ literal = ":" }},
   {{ body = true }},
 ]
-
-[channel.config]
-fields = [ {{ handle = "acme_chat_signing_secret", label = "Signing secret", secret = true }} ]
 
 [[channel.egress]]
 scheme = "https"

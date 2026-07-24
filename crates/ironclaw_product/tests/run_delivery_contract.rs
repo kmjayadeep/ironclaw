@@ -344,10 +344,6 @@ impl ScriptedProjectFilesystemReader {
             }),
         );
     }
-
-    fn reads(&self) -> Vec<String> {
-        self.reads.lock().expect("reads").clone()
-    }
 }
 
 #[async_trait]

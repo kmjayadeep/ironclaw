@@ -1,3 +1,4 @@
+// arch-exempt: large_file, channel attachment fetch/validate/land orchestration + caller-level tests, plan #6364
 //! InboundTurnService — the user-message turn submission path.
 //!
 //! This is the narrower user-message subset of [`ProductWorkflow`]. It

@@ -1,3 +1,4 @@
+// arch-exempt: large_file, transient channel-attachment refs + their reconciliation tests on the envelope contract, plan #6364
 //! Inbound envelope, payload, and acknowledgement types.
 
 use std::fmt;

@@ -1,3 +1,4 @@
+// arch-exempt: large_file, attachment-transfer door routing + sink contract tests, plan #6364
 //! Composition of the generic channel ingress router (extension-runtime P4).
 //!
 //! Assembly only: this module constructs the [`ExtensionIngressRouter`] over

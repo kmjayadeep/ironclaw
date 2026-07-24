@@ -16,7 +16,7 @@ use super::super::super::extension_surface::{
 use super::super::super::github;
 use super::super::options::{HostRuntimeHarnessOptions, ToolsProfile};
 use super::super::{
-    HarnessResult, HostRuntimeCapabilityHarness, RecordingNetworkHttpEgress,
+    HarnessResult, HostRuntimeCapabilityHarness, RecordingNetworkHttpEgress, VendorResponseRouter,
     bundled_extension_provider_trust, capability_ids_from_strs, local_dev_all_effects,
     wildcard_test_policy,
 };
@@ -741,8 +741,7 @@ fn delivery_vendor_router(
 /// The delivery router plus a scripted transient failure on the FIRST
 /// Telegram `getFile` lookup, so the attachment journey can prove the
 /// retryable-release-then-refetch ledger semantics on the production mount.
-fn delivery_vendor_router_with_flaky_get_file()
--> Arc<dyn Fn(&ironclaw_network::NetworkHttpRequest) -> Option<(u16, Vec<u8>)> + Send + Sync> {
+fn delivery_vendor_router_with_flaky_get_file() -> Arc<VendorResponseRouter> {
     let get_file_calls = std::sync::atomic::AtomicUsize::new(0);
     Arc::new(move |request: &ironclaw_network::NetworkHttpRequest| {
         if request.url.contains("api.telegram.org")
