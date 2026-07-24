@@ -109,6 +109,10 @@ pub enum ChannelInboundClassification {
     ApprovalResolution(ApprovalResolutionPayload),
     ScopedApprovalResolution(ScopedApprovalResolutionPayload),
     AuthResolution(AuthResolutionPayload),
+    /// A manifest-declared standardized product command parsed from slash
+    /// text. Classified once by the host sink for every channel; adapters
+    /// never interpret command semantics.
+    Command(InboundCommandPayload),
     NoOp,
 }
 
@@ -122,6 +126,7 @@ impl From<ChannelInboundClassification> for ProductInboundPayload {
                 Self::ScopedApprovalResolution(payload)
             }
             ChannelInboundClassification::AuthResolution(payload) => Self::AuthResolution(payload),
+            ChannelInboundClassification::Command(payload) => Self::Command(payload),
             ChannelInboundClassification::NoOp => Self::NoOp,
         }
     }
