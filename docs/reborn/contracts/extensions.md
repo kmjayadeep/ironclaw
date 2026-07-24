@@ -68,9 +68,12 @@ record rows under:
 ```
 
 Each row has an explicit record kind, `extension_state.v2` schema version,
-typed body, and exact lookup indexes. The installation row is the stable
-package-instance identity; user membership, credential bindings, and health
-are independently mutable records. Removing a user or the final installation
+typed body, and exact lookup indexes. The manifest row is the deployment's
+**install pin** — the validated, hash-pinned copy of the installed package
+definition — not an availability or policy declaration; what *can* be
+installed lives in the available-extension catalog. The installation row is
+the stable package-instance identity; user membership, credential bindings,
+and health are independently mutable records. Removing a user or the final installation
 marks the authoritative row `removed` with a timestamp rather than erasing it.
 Package bytes and assets remain under `/system/extensions/<extension_id>/` and
 are never embedded in lifecycle records.

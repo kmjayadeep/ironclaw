@@ -1616,6 +1616,11 @@ async fn concurrent_creation_does_not_tombstone_the_other_creators_membership() 
         )
         .await
         .unwrap();
+    assert_eq!(
+        membership_rows.len(),
+        2,
+        "creation must leave exactly one membership row per creator"
+    );
     let statuses = membership_rows
         .iter()
         .map(|row| {
