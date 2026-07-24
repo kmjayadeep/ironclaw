@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
+use ironclaw_host_api::WorkspaceFile;
 use ironclaw_host_api::{AgentId, ScopedPath, TenantId, ThreadId, UserId};
 use ironclaw_outbound::{
     CommunicationModality, CommunicationPreferenceRecord, CommunicationPreferenceRepository,
@@ -40,13 +41,12 @@ use ironclaw_product::{
     RunDeliveryObserver, RunDeliveryServices, TriggeredRunDeliveryDriver,
     TriggeredRunDeliveryRequest, TriggeredRunExternalDeliveryTarget,
 };
+use ironclaw_product::{
+    ProjectFilesystemReader, ProjectFsEntry, ProjectFsEntryKind, ProjectFsError, ProjectFsStat,
+};
 use ironclaw_threads::{
     AppendFinalizedAssistantMessageRequest, EnsureThreadRequest, InMemorySessionThreadService,
     MessageContent, SessionThreadService, ThreadScope,
-};
-use ironclaw_host_api::WorkspaceFile;
-use ironclaw_product::{
-    ProjectFilesystemReader, ProjectFsEntry, ProjectFsEntryKind, ProjectFsError, ProjectFsStat,
 };
 use ironclaw_turns::{
     AcceptedMessageRef, CancelRunRequest, CancelRunResponse, EventCursor, GateRef,

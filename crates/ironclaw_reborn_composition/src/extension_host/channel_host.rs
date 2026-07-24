@@ -48,9 +48,8 @@ use ironclaw_product::{
     ProductActorUserResolutionRequest, ProductActorUserResolver,
     ProductConversationSubjectRouteResolver, ProductInstallationKey, ProductInstallationScope,
     ProductWorkflowError, ProjectFilesystemReader, ResolveStoredProductReplyTargetRequest,
-    ResolvedProductActorUser,
-    ResolvedStoredProductReplyTarget, RunDeliveryObserver, RunDeliveryServices,
-    StaticProductInstallationResolver, TriggeredRunDeliveryChannel,
+    ResolvedProductActorUser, ResolvedStoredProductReplyTarget, RunDeliveryObserver,
+    RunDeliveryServices, StaticProductInstallationResolver, TriggeredRunDeliveryChannel,
 };
 use ironclaw_threads::SessionThreadService;
 use ironclaw_turns::{TurnCoordinator, TurnScope};

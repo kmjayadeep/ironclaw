@@ -21,12 +21,12 @@ use ironclaw_approvals::{
     PersistentApprovalPolicyKey, PersistentApprovalPolicyStorePort, ToolPermissionOverride,
     ToolPermissionOverrideInput, ToolPermissionOverrideKey, ToolPermissionOverrideStorePort,
 };
-use ironclaw_host_api::InboundAttachment;
 use ironclaw_auth::{
     AuthAccountLastError, AuthAccountState, CredentialAccountId, CredentialAccountLabel,
     CredentialAccountProjection, CredentialAccountStatus, CredentialOwnership,
 };
 use ironclaw_host_api::CapabilitySurfaceKind;
+use ironclaw_host_api::InboundAttachment;
 use ironclaw_host_api::{
     ActivityId, AgentId, ApprovalRequestId, Blocked, CapabilityId, EffectKind, ExtensionId,
     GateWaypoint, InvocationId, Outcome, OutcomeRefs, PermissionMode, Principal, ProjectId,

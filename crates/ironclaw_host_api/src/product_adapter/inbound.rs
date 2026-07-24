@@ -1279,6 +1279,67 @@ mod tests {
     }
 
     #[test]
+    fn channel_attachment_refs_must_match_descriptors_and_stay_transient() {
+        let descriptor = crate::product_adapter::external::ProductAttachmentDescriptor::new(
+            "file-1",
+            "application/pdf",
+            Some("report.pdf".to_string()),
+            Some(4),
+            crate::product_adapter::external::ProductAttachmentKind::Document,
+        )
+        .expect("descriptor");
+        let source = AttachmentRef {
+            descriptor: descriptor.clone(),
+            vendor_ref: "opaque-provider-file-reference".to_string(),
+            mime_hint: Some("application/pdf".to_string()),
+        };
+        let payload = ProductInboundPayload::UserMessage(
+            UserMessagePayload::new(
+                "review the report",
+                vec![descriptor],
+                ProductTriggerReason::DirectChat,
+            )
+            .expect("payload"),
+        );
+
+        // Mismatched refs fail closed before any transfer authority exists.
+        let mismatched = AttachmentRef {
+            descriptor: crate::product_adapter::external::ProductAttachmentDescriptor::new(
+                "other-file",
+                "application/pdf",
+                None,
+                None,
+                crate::product_adapter::external::ProductAttachmentKind::Document,
+            )
+            .expect("descriptor"),
+            vendor_ref: "other".to_string(),
+            mime_hint: None,
+        };
+        let envelope =
+            ProductInboundEnvelope::from_trusted_parse(sample_context(), sample_parsed(payload))
+                .expect("envelope");
+        assert!(
+            envelope
+                .clone()
+                .with_channel_attachment_refs(vec![mismatched])
+                .is_err(),
+            "refs that do not match the payload descriptors are rejected"
+        );
+
+        // Matching refs stamp, are readable host-side, and never serialize —
+        // the provider transfer reference is transient host state.
+        let envelope = envelope
+            .with_channel_attachment_refs(vec![source])
+            .expect("matching refs stamp");
+        assert_eq!(envelope.channel_attachment_refs().len(), 1);
+        let serialized = serde_json::to_string(&envelope).expect("envelope serializes");
+        assert!(
+            !serialized.contains("opaque-provider-file-reference"),
+            "provider transfer references must not enter the serialized envelope"
+        );
+    }
+
+    #[test]
     fn trusted_context_can_stamp_explicit_source_channel() {
         let evidence = ProtocolAuthEvidence::test_verified(
             AuthRequirement::SharedSecretHeader {

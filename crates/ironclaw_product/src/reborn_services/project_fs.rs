@@ -73,7 +73,6 @@ pub struct ProjectFsFile {
     pub bytes: Vec<u8>,
 }
 
-
 /// Errors a project-filesystem read may produce.
 ///
 /// Deliberately coarse and free of host paths / backend strings: the facade

@@ -721,8 +721,14 @@ fn delivery_vendor_router(
         ));
     }
     if request.url.contains("api.telegram.org") {
+        if request.url.contains("api.telegram.org/file/") {
+            // The manifest's path-prefixed download target streams raw bytes.
+            return Some((200, b"DATA".to_vec()));
+        }
         let body: &[u8] = if request.url.ends_with("/sendMessage") {
             br#"{"ok":true,"result":{"message_id":4242}}"#
+        } else if request.url.ends_with("/getFile") {
+            br#"{"ok":true,"result":{"file_path":"documents/report.pdf","file_size":4}}"#
         } else {
             // setWebhook / deleteWebhook and friends return a bool result.
             br#"{"ok":true,"result":true}"#
@@ -730,6 +736,23 @@ fn delivery_vendor_router(
         return Some((200, body.to_vec()));
     }
     None
+}
+
+/// The delivery router plus a scripted transient failure on the FIRST
+/// Telegram `getFile` lookup, so the attachment journey can prove the
+/// retryable-release-then-refetch ledger semantics on the production mount.
+fn delivery_vendor_router_with_flaky_get_file()
+-> Arc<dyn Fn(&ironclaw_network::NetworkHttpRequest) -> Option<(u16, Vec<u8>)> + Send + Sync> {
+    let get_file_calls = std::sync::atomic::AtomicUsize::new(0);
+    Arc::new(move |request: &ironclaw_network::NetworkHttpRequest| {
+        if request.url.contains("api.telegram.org")
+            && request.url.ends_with("/getFile")
+            && get_file_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+        {
+            return Some((500, br#"{"ok":false,"error_code":500}"#.to_vec()));
+        }
+        delivery_vendor_router(request)
+    })
 }
 
 /// The acme runtime profile extended for the §5.4 delivery proofs: the
@@ -752,7 +775,7 @@ pub(crate) fn extension_delivery_tools_profile() -> HarnessResult<ToolsProfile> 
     }
     let network_egress = Arc::new(
         RecordingNetworkHttpEgress::with_body(br#"{"ok":true}"#.to_vec())
-            .with_vendor_router(Arc::new(delivery_vendor_router)),
+            .with_vendor_router(delivery_vendor_router_with_flaky_get_file()),
     );
     profile.options = profile
         .options

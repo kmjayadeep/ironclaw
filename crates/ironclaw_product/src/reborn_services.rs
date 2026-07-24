@@ -21,13 +21,13 @@ use crate::{
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::future::try_join_all;
-use ironclaw_host_api::InboundAttachment;
 use ironclaw_auth::{
     AuthFlowStatus, AuthProductScope, AuthProviderId, CredentialAccountId,
     CredentialAccountProjection, CredentialAccountStatus, CredentialAccountUpdateBinding,
     ProviderScope,
 };
 use ironclaw_common::{AutomationName, AutomationNameError};
+use ironclaw_host_api::InboundAttachment;
 use ironclaw_host_api::{
     ActivityId, AgentId, CapabilityId, EffectKind, ExtensionId, FailureKind, GrantConstraints,
     InvocationId, Outcome, OutcomeRefs, PermissionMode, Principal, ProductSurfaceCaller,

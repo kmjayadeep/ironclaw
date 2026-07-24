@@ -57,8 +57,8 @@ use chrono::Utc;
 use hmac::{Hmac, KeyInit, Mac};
 use http_body_util::BodyExt;
 use ironclaw_host_api::ChannelInboundProductSurface;
-use ironclaw_host_api::WorkspaceFile;
 use ironclaw_host_api::ProductSurfaceCaller;
+use ironclaw_host_api::WorkspaceFile;
 use ironclaw_host_api::{
     CapabilityGrant, CapabilityGrantId, CapabilityId, CapabilitySet, CorrelationId, EffectKind,
     ExecutionContext, ExtensionId, GrantConstraints, InvocationId, InvocationOrigin, MountView,
@@ -1682,6 +1682,250 @@ async fn telegram_update_becomes_a_turn_and_a_coordinated_reply_impl(storage: St
     assert!(
         String::from_utf8_lossy(&last_set_webhook.body).contains(updated_url),
         "the refreshed adapter must register the new webhook URL"
+    );
+
+    // ── Channel attachment journey (relocated from the composition-resident
+    // attachment_journey_tests): a document update on the production mount
+    // fetches bytes through the manifest's path-constrained `getFile` +
+    // `/file/bot{token}/` egress AFTER durable admission, lands them through
+    // the canonical project-filesystem authority, and starts a byte-free turn
+    // whose transcript message carries `/workspace/attachments/...` refs. A
+    // transient provider failure releases the ledger attempt (503) so the
+    // vendor retry refetches; a duplicate replay after success does no
+    // vendor I/O and does not reland.
+    let attachment_body = json!({
+        "update_id": 502,
+        "message": {
+            "message_id": 12,
+            "date": 1710000300,
+            "caption": "review the attached report",
+            "document": {
+                "file_id": "doc-file-1",
+                "file_unique_id": "doc-unique-1",
+                "file_name": "report.pdf",
+                "mime_type": "application/pdf",
+                "file_size": 4
+            },
+            "from": {"id": 9911, "is_bot": false, "first_name": "Ada"},
+            "chat": {"id": 8675309, "type": "private"}
+        }
+    })
+    .to_string();
+    // Same conversation → same scope → the already-registered paused
+    // gateway serves the attachment run too; pre-release its next permit so
+    // the run replies immediately.
+    paused_gateway.release();
+    let get_file_urls = |requests: &[ironclaw_network::NetworkHttpRequest]| {
+        requests
+            .iter()
+            .filter(|request| request.url.ends_with("/getFile"))
+            .count()
+    };
+    let download_urls = |requests: &[ironclaw_network::NetworkHttpRequest]| {
+        requests
+            .iter()
+            .filter(|request| request.url.contains("api.telegram.org/file/"))
+            .count()
+    };
+
+    // First delivery: the scripted transient `getFile` failure must release
+    // the ledger attempt and surface a retryable 503 to the vendor — never a
+    // durable acceptance.
+    let status = ingress
+        .post(
+            TELEGRAM_ROUTE,
+            &attachment_body,
+            vec![(
+                "X-Telegram-Bot-Api-Secret-Token",
+                TELEGRAM_WEBHOOK_SECRET.to_string(),
+            )],
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "a retryable transfer failure must ask the vendor to redeliver"
+    );
+    ingress.drain().await;
+
+    // Vendor redelivery: the fresh ledger attempt refetches — `getFile` on
+    // the exact declared path and the download through the manifest's
+    // `/file/bot{token}/` prefix, both with the token injected host-side —
+    // then admission commits and the turn starts byte-free.
+    let status = ingress
+        .post(
+            TELEGRAM_ROUTE,
+            &attachment_body,
+            vec![(
+                "X-Telegram-Bot-Api-Secret-Token",
+                TELEGRAM_WEBHOOK_SECRET.to_string(),
+            )],
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "the redelivered update is accepted");
+    ingress.drain().await;
+
+    let requests = inbound.captured_network_requests_for_test();
+    assert_eq!(
+        get_file_urls(&requests),
+        2,
+        "the released attempt plus the successful retry each look the file up once"
+    );
+    assert!(requests.iter().any(|request| {
+        request.url == format!("https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile")
+    }));
+    assert_eq!(download_urls(&requests), 1);
+    assert!(
+        requests.iter().any(|request| {
+            request.url
+                == format!(
+                    "https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/documents/report.pdf"
+                )
+        }),
+        "the byte download must ride the manifest's path-prefixed egress with the injected token"
+    );
+
+    // The accepted transcript message carries the canonical byte-free
+    // workspace ref the agent's file tools resolve.
+    let vendor_thread_scope = ThreadScope {
+        tenant_id: vendor_scope.tenant_id.clone(),
+        agent_id: vendor_scope
+            .agent_id
+            .clone()
+            .expect("vendor scope agent id"),
+        project_id: vendor_scope.project_id.clone(),
+        owner_user_id: vendor_scope.explicit_owner_user_id().cloned(),
+        mission_id: None,
+    };
+    let history = inbound
+        .thread_service_for_test()
+        .expect("group thread service")
+        .list_thread_history(ironclaw_threads::ThreadHistoryRequest {
+            scope: vendor_thread_scope,
+            thread_id: vendor_scope.thread_id.clone(),
+        })
+        .await
+        .expect("vendor thread history");
+    let attachment_messages: Vec<_> = history
+        .messages
+        .iter()
+        .filter(|message| !message.attachments.is_empty())
+        .collect();
+    assert_eq!(
+        attachment_messages.len(),
+        1,
+        "the retry and the duplicate must not reland the attachment"
+    );
+    let storage_key = attachment_messages[0].attachments[0]
+        .storage_key
+        .as_deref()
+        .expect("landed attachment carries a canonical workspace ref");
+    assert!(
+        storage_key.starts_with("/workspace/attachments/"),
+        "unexpected storage key {storage_key}"
+    );
+
+    // Duplicate replay after durable success: acknowledged without any
+    // vendor I/O.
+    let status = ingress
+        .post(
+            TELEGRAM_ROUTE,
+            &attachment_body,
+            vec![(
+                "X-Telegram-Bot-Api-Secret-Token",
+                TELEGRAM_WEBHOOK_SECRET.to_string(),
+            )],
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "duplicate replay is acknowledged");
+    ingress.drain().await;
+    let requests = inbound.captured_network_requests_for_test();
+    assert_eq!(
+        get_file_urls(&requests),
+        2,
+        "duplicate replay must not refetch"
+    );
+    assert_eq!(
+        download_urls(&requests),
+        1,
+        "duplicate replay must not redownload"
+    );
+
+    // ── Outbound half: a final reply in a NEW conversation (same paired
+    // actor, so the same project workspace) references the landed workspace
+    // file; the coordinator materializes the bytes through the real
+    // project-scoped reader and the adapter delivers them natively as
+    // `sendDocument` — raw bytes transient, token injected host-side.
+    let outbound_body = json!({
+        "update_id": 503,
+        "message": {
+            "message_id": 13,
+            "date": 1710000400,
+            "text": "send me the report back",
+            "from": {"id": 9911, "is_bot": false, "first_name": "Ada"},
+            "chat": {"id": 424242, "type": "private"}
+        }
+    })
+    .to_string();
+    let outbound_scope = preresolve_vendor_turn_scope(
+        &telegram_binding_service,
+        &ironclaw_telegram_extension::TelegramChannelAdapter::default(),
+        "telegram",
+        TELEGRAM_INSTALLATION,
+        &evidence,
+        &outbound_body,
+    )
+    .await;
+    let file_reply: &'static str = Box::leak(format!("here it is: {storage_key}").into_boxed_str());
+    inbound
+        .register_scope_gateway_for_test(outbound_scope, Arc::new(StaticReplyGateway(file_reply)));
+    let status = ingress
+        .post(
+            TELEGRAM_ROUTE,
+            &outbound_body,
+            vec![(
+                "X-Telegram-Bot-Api-Secret-Token",
+                TELEGRAM_WEBHOOK_SECRET.to_string(),
+            )],
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    ingress.drain().await;
+
+    let wire_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let send_document = loop {
+        let requests = inbound.captured_network_requests_for_test();
+        if let Some(request) = requests
+            .iter()
+            .find(|request| request.url.ends_with("/sendDocument"))
+        {
+            break request.clone();
+        }
+        assert!(
+            tokio::time::Instant::now() < wire_deadline,
+            "sendDocument must land on the wire; got {:?}",
+            requests.iter().map(|r| r.url.clone()).collect::<Vec<_>>()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert_eq!(
+        send_document.url,
+        format!("https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument")
+    );
+    let multipart = String::from_utf8_lossy(&send_document.body);
+    assert!(
+        multipart.contains("DATA"),
+        "the delivered document must carry the landed workspace bytes"
+    );
+    // The landed segment is `<message_id>-<index>-report.pdf`; the delivered
+    // filename is derived from that path segment.
+    assert!(
+        multipart.contains("report.pdf\""),
+        "the delivered document keeps the landed filename; got {multipart}"
+    );
+    assert!(
+        multipart.contains("424242"),
+        "the document targets the replying conversation"
     );
 }
 

@@ -17,9 +17,9 @@ use crate::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use ironclaw_attachments::DEFAULT_ATTACHMENT_BUDGETS;
-use ironclaw_host_api::{InboundAttachment, RestrictedEgress};
 #[cfg(test)]
 use ironclaw_host_api::UserId;
+use ironclaw_host_api::{InboundAttachment, RestrictedEgress};
 use ironclaw_threads::{
     AcceptInboundMessageRequest, AcceptedInboundMessageReplay, EnsureThreadRequest, MessageContent,
     MessageStatus, ReplayAcceptedInboundMessageRequest, SessionThreadService, ThreadMessageId,

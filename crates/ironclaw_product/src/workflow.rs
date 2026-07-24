@@ -9,15 +9,14 @@ use std::sync::Arc;
 use crate::{
     ApprovalDecision, ChannelAdapter, ExternalConversationRef, ParsedProductInbound,
     ProductAdapterError, ProductInboundAck, ProductInboundEnvelope, ProductInboundPayload,
-    ProductProjectionReadInput,
-    ProductProjectionSubject, ProductProjectionSubscribeInput, ProductRejection,
-    ProductRejectionKind, ProductWorkflowRejectionKind, ProjectionReadRequest,
+    ProductProjectionReadInput, ProductProjectionSubject, ProductProjectionSubscribeInput,
+    ProductRejection, ProductRejectionKind, ProductWorkflowRejectionKind, ProjectionReadRequest,
     ProjectionSubscriptionRequest, RedactedString, TrustedInboundContext, UserMessagePayload,
 };
 use async_trait::async_trait;
 use chrono::Utc;
-use ironclaw_host_api::InboundAttachment;
 use ironclaw_auth::{AuthFlowId, CredentialAccountId};
+use ironclaw_host_api::InboundAttachment;
 use ironclaw_host_api::{RestrictedEgress, ThreadId, UserId};
 use ironclaw_turns::{
     AcceptedMessageRef, AdmissionRejectionReason, GateRef, IdempotencyKey, TurnActor, TurnError,
@@ -232,9 +231,9 @@ impl ChannelInboundProductSurface for DefaultProductSurface {
         // payload carries; `with_channel_attachment_refs` enforces that they
         // correspond exactly and stay out of the serialized envelope.
         let channel_attachment_refs = request.message.attachments.clone();
-        let envelope = match build_channel_envelope(request).and_then(|envelope| {
-            envelope.with_channel_attachment_refs(channel_attachment_refs)
-        }) {
+        let envelope = match build_channel_envelope(request)
+            .and_then(|envelope| envelope.with_channel_attachment_refs(channel_attachment_refs))
+        {
             Ok(envelope) => envelope,
             Err(error) => return ChannelInboundSurfaceOutcome::Invalid(error),
         };

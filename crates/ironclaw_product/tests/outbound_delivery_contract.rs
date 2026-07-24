@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use ironclaw_attachments::DEFAULT_ATTACHMENT_BUDGETS;
 use ironclaw_filesystem::InMemoryBackend;
+use ironclaw_host_api::WorkspaceFile;
 use ironclaw_host_api::{AgentId, ProjectId, ScopedPath, TenantId, ThreadId, UserId};
 use ironclaw_outbound::{
     CommunicationDeliveryIntent, CommunicationDeliveryResolutionRequest, CommunicationModality,
@@ -18,7 +19,6 @@ use ironclaw_outbound::{
     ThreadProjectionAccessRequest, TriggerFireSlot, TriggerOriginRef, TriggerSourceKind,
     VersionedCommunicationPreferenceRecord, WriteCommunicationPreferenceRequest,
 };
-use ironclaw_host_api::WorkspaceFile;
 use ironclaw_product::{ExternalActorRef, ExternalConversationRef};
 use ironclaw_product::{
     ProductOutboundTargetResolver, ProductWorkflowError, ProjectFilesystemReader, ProjectFsEntry,
@@ -702,9 +702,7 @@ async fn coordinate_workspace_reply(
     let coordinator = coordinator_over(&store, &adapter);
     let thread_scope = project_thread_scope();
     let mut request = coordinated_final_reply(scope.clone(), "vendorx", &thread_scope);
-    request.parts = vec![ironclaw_product::OutboundPart::Text(
-        text.to_string(),
-    )];
+    request.parts = vec![ironclaw_product::OutboundPart::Text(text.to_string())];
     let result = coordinator
         .deliver(
             &policy,
@@ -1188,14 +1186,12 @@ async fn coordinator_rejects_caller_supplied_file_parts_before_policy_or_egress(
     let mut request = coordinated_final_reply(scope.clone(), "vendorx", &thread_scope);
     request
         .parts
-        .push(ironclaw_product::OutboundPart::File(
-            WorkspaceFile {
-                path: ScopedPath::new("/workspace/untrusted.bin").expect("scoped path"),
-                filename: Some("untrusted.bin".to_string()),
-                mime_type: "application/octet-stream".to_string(),
-                bytes: vec![0; 1],
-            },
-        ));
+        .push(ironclaw_product::OutboundPart::File(WorkspaceFile {
+            path: ScopedPath::new("/workspace/untrusted.bin").expect("scoped path"),
+            filename: Some("untrusted.bin".to_string()),
+            mime_type: "application/octet-stream".to_string(),
+            bytes: vec![0; 1],
+        }));
 
     let error = coordinator
         .deliver(
@@ -1236,14 +1232,12 @@ async fn coordinator_rejects_pre_materialized_files_on_notice_path() {
     let mut request = working_notice(scope.clone(), "vendorx");
     request
         .parts
-        .push(ironclaw_product::OutboundPart::File(
-            WorkspaceFile {
-                path: ScopedPath::new("/workspace/untrusted.bin").expect("scoped path"),
-                filename: Some("untrusted.bin".to_string()),
-                mime_type: "application/octet-stream".to_string(),
-                bytes: vec![0; 1],
-            },
-        ));
+        .push(ironclaw_product::OutboundPart::File(WorkspaceFile {
+            path: ScopedPath::new("/workspace/untrusted.bin").expect("scoped path"),
+            filename: Some("untrusted.bin".to_string()),
+            mime_type: "application/octet-stream".to_string(),
+            bytes: vec![0; 1],
+        }));
 
     let error = coordinator
         .deliver_notice(request)

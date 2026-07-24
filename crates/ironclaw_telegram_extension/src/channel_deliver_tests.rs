@@ -2,10 +2,10 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use ironclaw_host_api::WorkspaceFile;
-use ironclaw_host_api::{RestrictedEgressError, RestrictedEgressResponse};
 use ironclaw_host_api::product_adapter::{
     ExternalConversationRef, OutboundEnvelope, OutboundPart, OutboundTarget, PartDeliveryOutcome,
 };
+use ironclaw_host_api::{RestrictedEgressError, RestrictedEgressResponse};
 
 use super::*;
 

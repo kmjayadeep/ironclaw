@@ -153,7 +153,6 @@ use ironclaw_product::BlockedAuthPromptSource;
 mod e2e_auth_challenge;
 use e2e_auth_challenge::FakeAuthChallengeProvider;
 
-
 struct InertAttachmentLander;
 
 #[async_trait::async_trait]

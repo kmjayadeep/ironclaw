@@ -510,11 +510,15 @@ impl InboundSink for GenericChannelInboundSink {
                     reason: "channel attachment egress is unavailable".to_string(),
                 });
             };
-            Box::pin(self.config.surface.admit_channel_inbound_with_attachment_transfer(
-                request,
-                channel_adapter,
-                channel_egress,
-            ))
+            Box::pin(
+                self.config
+                    .surface
+                    .admit_channel_inbound_with_attachment_transfer(
+                        request,
+                        channel_adapter,
+                        channel_egress,
+                    ),
+            )
             .await
         };
         match response {

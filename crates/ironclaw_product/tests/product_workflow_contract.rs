@@ -8,13 +8,13 @@ use std::time::Duration as StdDuration;
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
-use ironclaw_host_api::InboundAttachment;
 use ironclaw_auth::{AuthFlowId, CredentialAccountId};
 use ironclaw_conversations::{
     ConversationBindingService as ConversationBindingPort, ExternalActorBindingEpoch,
     InMemoryConversationServices,
 };
 use ironclaw_filesystem::{InMemoryBackend, ScopedFilesystem};
+use ironclaw_host_api::InboundAttachment;
 use ironclaw_host_api::{
     AgentId, ApprovalRequestId, InvocationId, MountAlias, MountGrant, MountPermissions, MountView,
     ProjectId, ResourceScope, TenantId, ThreadId, UserId, VirtualPath,

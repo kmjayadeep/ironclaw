@@ -3,11 +3,11 @@
 //! they are composed under the manifest-declared file endpoint.
 
 use ironclaw_attachments::DEFAULT_ATTACHMENT_BUDGETS;
+use ironclaw_host_api::product_adapter::{AttachmentRef, ChannelError, PartDeliveryOutcome};
 use ironclaw_host_api::{
     InboundAttachment, NetworkMethod, RestrictedEgress, RestrictedEgressRequest, SecretHandle,
     WorkspaceFile,
 };
-use ironclaw_host_api::product_adapter::{AttachmentRef, ChannelError, PartDeliveryOutcome};
 
 use crate::channel::{
     TELEGRAM_BOT_TOKEN_HANDLE, TELEGRAM_TOKEN_PLACEHOLDER, telegram_message_response_outcome,

@@ -61,9 +61,7 @@ use ironclaw_product::{
     ProductInboundPayload, ProtocolAuthEvidence, TrustedInboundContext, UserMessagePayload,
     VerifiedInbound,
 };
-use ironclaw_product::{
-    ProjectFilesystemReader, ProjectFsEntry, ProjectFsError, ProjectFsStat,
-};
+use ironclaw_product::{ProjectFilesystemReader, ProjectFsEntry, ProjectFsError, ProjectFsStat};
 
 struct NoProjectFilesystem;
 
