@@ -535,6 +535,114 @@ mod tests {
         }
     }
 
+    struct FailingCreateFlowManager {
+        error: AuthProductError,
+        engine_secrets: Arc<dyn SecretStorePort>,
+    }
+
+    #[async_trait::async_trait]
+    impl AuthFlowManager for FailingCreateFlowManager {
+        async fn create_flow(
+            &self,
+            request: NewAuthFlow,
+        ) -> Result<AuthFlowRecord, AuthProductError> {
+            let flow_id = request.id.expect("gate creates an explicit flow id");
+            let flow_id = flow_id.as_uuid().simple().to_string();
+            assert!(
+                self.engine_secrets
+                    .metadata_for_scope(&request.scope.resource)
+                    .await
+                    .expect("engine snapshot metadata remains readable")
+                    .into_iter()
+                    .any(|metadata| metadata.handle.as_str().contains(&flow_id)),
+                "test precondition: create_flow failure occurs after snapshot preparation"
+            );
+            Err(self.error.clone())
+        }
+
+        async fn get_flow(
+            &self,
+            _scope: &AuthProductScope,
+            _flow_id: AuthFlowId,
+        ) -> Result<Option<AuthFlowRecord>, AuthProductError> {
+            unreachable!("create-flow failure tests do not read through the manager")
+        }
+
+        async fn claim_oauth_callback(
+            &self,
+            _scope: &AuthProductScope,
+            _request: crate::OAuthCallbackClaimRequest,
+        ) -> Result<AuthFlowRecord, AuthProductError> {
+            unreachable!("create-flow failure tests do not claim callbacks")
+        }
+
+        async fn complete_oauth_callback(
+            &self,
+            _scope: &AuthProductScope,
+            _input: crate::OAuthCallbackInput,
+        ) -> Result<AuthFlowRecord, AuthProductError> {
+            unreachable!("create-flow failure tests do not complete callbacks")
+        }
+
+        async fn complete_credential_selection(
+            &self,
+            _scope: &AuthProductScope,
+            _input: crate::CredentialSelectionInput,
+        ) -> Result<AuthFlowRecord, AuthProductError> {
+            unreachable!("create-flow failure tests do not select credentials")
+        }
+
+        async fn complete_manual_token(
+            &self,
+            _scope: &AuthProductScope,
+            _input: crate::ManualTokenCompletionInput,
+        ) -> Result<AuthFlowRecord, AuthProductError> {
+            unreachable!("create-flow failure tests do not complete manual tokens")
+        }
+
+        async fn cancel_manual_token(
+            &self,
+            _scope: &AuthProductScope,
+            _interaction_id: crate::AuthInteractionId,
+        ) -> Result<Option<AuthFlowRecord>, AuthProductError> {
+            unreachable!("create-flow failure tests do not cancel manual tokens")
+        }
+
+        async fn fail_oauth_callback(
+            &self,
+            _scope: &AuthProductScope,
+            _input: crate::OAuthCallbackFailureInput,
+        ) -> Result<AuthFlowRecord, AuthProductError> {
+            unreachable!("create-flow failure tests do not fail callbacks")
+        }
+
+        async fn mark_continuation_dispatched(
+            &self,
+            _scope: &AuthProductScope,
+            _flow_id: AuthFlowId,
+            _emitted_at: Timestamp,
+        ) -> Result<AuthFlowRecord, AuthProductError> {
+            unreachable!("create-flow failure tests do not dispatch continuations")
+        }
+
+        async fn cancel_flow(
+            &self,
+            _scope: &AuthProductScope,
+            _flow_id: AuthFlowId,
+        ) -> Result<AuthFlowRecord, AuthProductError> {
+            unreachable!("create-flow failure tests have no durable flow to cancel")
+        }
+
+        async fn fail_completed_continuation(
+            &self,
+            _scope: &AuthProductScope,
+            _flow_id: AuthFlowId,
+            _error: crate::AuthErrorCode,
+        ) -> Result<AuthFlowRecord, AuthProductError> {
+            unreachable!("create-flow failure tests do not dispatch continuations")
+        }
+    }
+
     struct GateFixture {
         shared: Arc<InMemoryAuthProductServices>,
         flow_manager: Arc<dyn AuthFlowManager>,
@@ -791,6 +899,57 @@ mod tests {
                 .is_empty(),
             "failed flow creation must not leave an ownerless client snapshot"
         );
+    }
+
+    async fn assert_create_flow_failure_rolls_back_prepared_client_snapshot(
+        expected_error: AuthProductError,
+    ) {
+        let mut fixture = GateFixture::new();
+        fixture.flow_manager = Arc::new(FailingCreateFlowManager {
+            error: expected_error.clone(),
+            engine_secrets: Arc::clone(&fixture.engine_secrets),
+        });
+
+        let error = fixture
+            .driver
+            .challenge_for_blocked_gate(OAuthGateChallengeRequest {
+                flow_manager: &fixture.flow_manager,
+                flow_source: &fixture.flow_source,
+                requirements: std::slice::from_ref(&fixture.requirement),
+                scope: &fixture.scope,
+                owner_user_id: &fixture.owner_user_id,
+                run_id: fixture.run_id,
+                gate_ref: &fixture.gate_ref,
+            })
+            .await
+            .expect_err("scripted flow creation must fail");
+
+        assert_eq!(error, expected_error);
+        assert!(
+            fixture
+                .engine_secrets
+                .metadata_for_scope(&fixture.auth_scope().resource)
+                .await
+                .expect("engine snapshot metadata remains readable")
+                .is_empty(),
+            "create_flow failure must not leave an ownerless client snapshot"
+        );
+    }
+
+    #[tokio::test]
+    async fn gate_backend_conflict_rolls_back_prepared_client_snapshot() {
+        assert_create_flow_failure_rolls_back_prepared_client_snapshot(
+            AuthProductError::BackendConflict,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn gate_generic_create_failure_rolls_back_prepared_client_snapshot() {
+        assert_create_flow_failure_rolls_back_prepared_client_snapshot(
+            AuthProductError::CrossScopeDenied,
+        )
+        .await;
     }
 
     #[tokio::test]
