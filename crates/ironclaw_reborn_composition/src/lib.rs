@@ -34,10 +34,14 @@ mod input;
 mod llm_admin;
 mod local_dev_authorization;
 mod local_dev_mounts;
+mod memory_binding;
+mod memory_provider_factory;
 mod observability;
 mod operator_tool_catalog;
 mod outbound;
 mod product_auth;
+mod product_capability;
+mod product_surface;
 mod production_runtime_policy;
 mod profile_approval_authorization;
 mod projection;
@@ -53,7 +57,6 @@ mod support;
 pub mod test_support;
 mod trigger_fire_access;
 mod turn_run_snapshot;
-mod webui;
 
 pub use admin_token::AdminApiTokenMinter;
 pub use automation::facade::RebornAutomationProductFacade;
@@ -178,6 +181,11 @@ pub use llm_admin::nearai_mcp::{
     NearAiMcpBootstrapConfig, NearAiMcpBootstrapConfigError, nearai_mcp_bootstrap_config_from_env,
 };
 pub use llm_admin::openai_compat_serve::build_openai_compat_route_mount;
+pub use memory_binding::{memory_binding_diagnostics, resolve_memory_binding_policy};
+pub use memory_provider_factory::{
+    Mem0ConnectionConfig, MemoryProviderDeps, build_memory_service_resolver,
+    create_document_store_provider,
+};
 // Re-exported for the host-owned `ironclaw_webui::webui_v2_app`
 // (hoisted up from this crate): its bearer-auth middleware mints tenant-scoped
 // verified-bearer evidence for protected OpenAI-compatible mounts. Ingress must
@@ -224,9 +232,6 @@ pub use product_auth::api::auth::{
     RebornOAuthCallbackRequest, RebornOAuthCallbackResponse, RebornProductAuthServicePorts,
     RebornProductAuthServices,
 };
-// Product-auth WebUI route-mount builders, exposed so the host-owned
-// `ironclaw_webui::webui_v2_app` (moved up from this crate) can
-// compose the Reborn-native product-auth surface into the WebChat v2 router.
 pub use product_auth::serve::{
     ProductAuthRouteMount, ProductAuthRouteState, product_auth_route_mount,
 };
@@ -264,14 +269,6 @@ pub use runtime_input::{
     TurnRunnerSettings,
 };
 pub use runtime_input::{RebornProviderFactory, ResolvedRebornLlm};
-pub use webui::facade::{RebornWebuiBundle, build_webui_services};
-// Host-supplied route-mount vocabulary shared with composition's own route
-// builders (nearai login, OpenAI-compat) and the host-owned gateway assembly
-// in `ironclaw_webui`. The `WebuiServeConfig` / `webui_v2_app`
-// / `WebuiAuthenticator` surface moved up into that ingress crate.
-pub use webui::route_mounts::{
-    ProtectedRouteMount, PublicRouteDrain, PublicRouteDrains, PublicRouteMount,
-};
 
 /// Re-exported identity vocabulary host binaries need to construct
 /// public runtime/WebUI types whose signatures mention a host-api identity.
