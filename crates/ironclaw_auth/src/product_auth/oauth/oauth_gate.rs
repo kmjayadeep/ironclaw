@@ -199,7 +199,7 @@ impl OAuthGateFlowDriver {
             return Ok(None);
         };
         if existing.provider != *requested_provider {
-            self.cleanup_pkce_verifier(&existing.scope.resource, existing.id)
+            self.cleanup_prepared_flow(&existing.scope.resource, existing.id)
                 .await;
             return flow_manager
                 .cancel_flow(&existing.scope, existing.id)
@@ -539,6 +539,7 @@ mod tests {
         shared: Arc<InMemoryAuthProductServices>,
         flow_manager: Arc<dyn AuthFlowManager>,
         flow_source: Arc<dyn AuthFlowRecordSource>,
+        engine_secrets: Arc<dyn SecretStorePort>,
         driver: OAuthGateFlowDriver,
         scope: TurnScope,
         owner_user_id: UserId,
@@ -552,12 +553,14 @@ mod tests {
             let shared = Arc::new(InMemoryAuthProductServices::new());
             let flow_manager: Arc<dyn AuthFlowManager> = shared.clone();
             let flow_source: Arc<dyn AuthFlowRecordSource> = shared.clone();
+            let engine_secrets: Arc<dyn SecretStorePort> = Arc::new(SecretStore::ephemeral());
             Self {
                 shared,
                 flow_manager,
                 flow_source,
+                engine_secrets: Arc::clone(&engine_secrets),
                 driver: OAuthGateFlowDriver::new(
-                    engine_with_credentials(Arc::new(StaticCredentials)),
+                    engine_with_credentials_and_store(Arc::new(StaticCredentials), engine_secrets),
                     Arc::new(SecretStore::ephemeral()),
                 ),
                 scope: TurnScope::new(
@@ -760,10 +763,38 @@ mod tests {
     async fn gate_does_not_reuse_live_turn_gate_flow_for_different_provider() {
         let fixture = GateFixture::new();
         let auth_scope = fixture.auth_scope();
+        let mismatched_flow_id = AuthFlowId::new();
+        fixture
+            .driver
+            .engine
+            .prepare_oauth_flow(PrepareOAuthFlowRequest {
+                vendor: "acmevendor".to_string(),
+                scope: auth_scope.clone(),
+                flow_id: mismatched_flow_id,
+                account_label: CredentialAccountLabel::new("acmevendor").unwrap(),
+                requested_scopes: vec![ProviderScope::new("msg:read").unwrap()],
+                expires_at: Utc::now() + ChronoDuration::seconds(60),
+            })
+            .await
+            .expect("mismatched live flow has a prepared client snapshot");
+        let mismatched_snapshot_fragment = mismatched_flow_id.as_uuid().simple().to_string();
+        assert!(
+            fixture
+                .engine_secrets
+                .metadata_for_scope(&fixture.auth_scope().resource)
+                .await
+                .expect("engine snapshot metadata remains readable")
+                .into_iter()
+                .any(|metadata| metadata
+                    .handle
+                    .as_str()
+                    .contains(&mismatched_snapshot_fragment)),
+            "test precondition: mismatched flow must own a client snapshot"
+        );
         let mismatched = fixture
             .flow_manager
             .create_flow(NewAuthFlow {
-                id: Some(AuthFlowId::new()),
+                id: Some(mismatched_flow_id),
                 scope: auth_scope,
                 kind: AuthFlowKind::IntegrationCredential,
                 provider: AuthProviderId::new("othervendor").unwrap(),
@@ -812,6 +843,19 @@ mod tests {
             "same gate must cancel a stale live flow for another provider before replacement"
         );
         assert_eq!(fixture.active_gate_flows().await.len(), 1);
+        assert!(
+            fixture
+                .engine_secrets
+                .metadata_for_scope(&fixture.auth_scope().resource)
+                .await
+                .expect("engine snapshot metadata remains readable")
+                .into_iter()
+                .all(|metadata| !metadata
+                    .handle
+                    .as_str()
+                    .contains(&mismatched_snapshot_fragment)),
+            "provider-mismatch cancellation must remove the old client snapshot"
+        );
     }
 
     /// A resolvable-but-unconfigured vendor (operator has not saved OAuth
