@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use ironclaw_first_party_extension_ports::DEFAULT_MAX_ACTIVE_SKILLS;
 use ironclaw_host_api::{InvocationId, Resolution};
-use ironclaw_loop_host::{CapabilityResultWrite, DurablePersistence, SkillBundleId};
+use ironclaw_loop_host::{CapabilityResultWrite, DurablePersistence};
 use ironclaw_turns::run_profile::{
     AgentLoopHostError, AgentLoopHostErrorKind, CapabilityFailureKind, ConcurrencyHint, resolution,
 };
@@ -55,9 +55,9 @@ impl SyntheticCapabilityHandler for SkillActivationHandler {
         invocation: SyntheticCapabilityInvocation,
     ) -> Result<Resolution, AgentLoopHostError> {
         let names = parse_skill_activate_names(&invocation.input)?;
-        let plan = match self
+        let result = match self
             .skill_activation_source
-            .activate_skills_for_run(&invocation.run_context, &names)
+            .activate_skills_for_run_with_result(&invocation.run_context, &names)
             .await
         {
             Ok(plan) => plan,
@@ -71,17 +71,10 @@ impl SyntheticCapabilityHandler for SkillActivationHandler {
             // `skill_activation_selection_outcome`.
             Err(error) => return skill_activation_selection_outcome(error),
         };
-        let activated = plan
-            .selection
-            .activations
+        let activated = result
+            .activated_bundles()
             .iter()
-            .filter_map(|activation| {
-                let bundle_id = activation.bundle_id.as_ref()?;
-                let requested = names
-                    .iter()
-                    .any(|requested| requested_skill_matches(requested, bundle_id));
-                requested.then(|| bundle_id.to_string())
-            })
+            .map(ToString::to_string)
             .collect::<Vec<_>>();
         let output = serde_json::json!({
             "activated": activated,
@@ -108,13 +101,6 @@ impl SyntheticCapabilityHandler for SkillActivationHandler {
             write_result.output_digest,
             write_result.model_observation,
         ))
-    }
-}
-
-fn requested_skill_matches(requested: &str, bundle_id: &SkillBundleId) -> bool {
-    match requested.parse::<SkillBundleId>() {
-        Ok(requested_bundle_id) => requested_bundle_id == *bundle_id,
-        Err(_) => bundle_id.name().eq_ignore_ascii_case(requested),
     }
 }
 
@@ -261,6 +247,7 @@ fn skill_activation_selection_outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ironclaw_loop_host::SkillBundleId;
 
     #[test]
     fn parse_skill_activate_names_rejects_missing_names_field() {
@@ -322,15 +309,6 @@ mod tests {
         .expect("ambiguous skill must be a model-visible failure, not a terminal host error");
 
         assert_recoverable_invalid_input(&outcome);
-    }
-
-    #[test]
-    fn requested_bare_skill_matches_bundle_id_not_manifest_name() {
-        let bundle_id =
-            SkillBundleId::new(ironclaw_loop_host::SkillSourceKind::User, "code-review")
-                .expect("valid user bundle id");
-
-        assert!(requested_skill_matches("code-review", &bundle_id));
     }
 
     /// A recoverable model-visible failure is `Resolution::Done` carrying a

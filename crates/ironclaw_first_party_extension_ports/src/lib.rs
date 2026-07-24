@@ -15,7 +15,7 @@ mod skills;
 pub use activation::{
     DEFAULT_MAX_ACTIVE_SKILLS, DEFAULT_MAX_SKILL_CONTEXT_TOKENS, SelectableSkillContextSource,
     SkillActivationMode, SkillActivationObservedEvent, SkillActivationObserver,
-    SkillActivationPlan, SkillActivationRequest, SkillActivationSelection,
+    SkillActivationPlan, SkillActivationRequest, SkillActivationResult, SkillActivationSelection,
     SkillActivationSelectionError, SkillActivationSelectionMode, SkillActivationSelectorConfig,
     SkillInjectionMode,
 };

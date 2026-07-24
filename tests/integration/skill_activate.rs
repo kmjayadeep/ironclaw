@@ -24,6 +24,7 @@ mod reborn_support;
 mod support;
 
 use reborn_support::assertions::ToolErrorClass;
+use reborn_support::builder::RebornIntegrationHarness;
 use reborn_support::group::RebornIntegrationGroup;
 use reborn_support::reply::RebornScriptedReply;
 use serde_json::json;
@@ -36,7 +37,7 @@ async fn skill_activate_dispatches_and_injects_skill_context() {
     let harness = group
         .thread("conv-skill-activate")
         .script([
-            RebornScriptedReply::tool_call("builtin.skill_activate", json!({"names": ["greet"]})),
+            RebornScriptedReply::tool_call("builtin.skill_activate", json!({"names": ["GREET"]})),
             RebornScriptedReply::text("done"),
         ])
         .build()
@@ -374,7 +375,7 @@ fn skill_activate_over_budget_surfaces_recoverable_failed() {
 
 /// C-SYNTH `AmbiguousSkill` seeding arm — a skill name resolving to TWO
 /// Trusted candidates (system-scoped + user-scoped, same name) drives the
-/// real `validate_explicit_mentions_are_unambiguous` reject path
+/// real `validate_activation_targets_are_unambiguous` canonical-target path
 /// (`AmbiguousSkill` → `Failed(InvalidInput)`), distinct from the
 /// `ContextBudgetExceeded` arm above. Proves neither candidate's instructions
 /// leak into a later model request despite the name matching both.
@@ -383,92 +384,20 @@ fn skill_activate_ambiguous_bare_name_returns_canonical_alternatives() {
     run_async_test_with_stack(
         "skill_activate_ambiguous_bare_name_returns_canonical_alternatives",
         || async {
-            let group = RebornIntegrationGroup::skill_activation_tools()
-                .await
-                .expect("skill-activation group builds");
-            let capability_harness = group
-                .capability_harness()
-                .expect("skill-activation group has a host-runtime capability harness");
-            capability_harness
-                .seed_system_skill_for_test(
-                    "duplicate",
-                    "a system-scoped skill",
-                    "SYSTEM_DUPLICATE_SKILL_SENTINEL",
-                )
-                .expect("system-scoped duplicate skill seeds");
-
-            let harness = group
-                .thread("conv-skill-activate-ambiguous")
-                .script([
-                    RebornScriptedReply::tool_call(
-                        "builtin.skill_activate",
-                        json!({"names": ["duplicate"]}),
-                    ),
-                    RebornScriptedReply::text("that name is ambiguous"),
-                ])
-                .build()
-                .await
-                .expect("thread builds");
-            // The user-scoped root is seeded under the SAME (tenant, actor) the built
-            // thread's run resolves under (`harness.binding`) — only then does the
-            // user `/skills` mount the run actually reads from contain this file.
-            capability_harness
-                .seed_user_skill_for_test(
-                    &harness.binding.tenant_id,
-                    &harness.binding.actor_user_id,
-                    "duplicate",
-                    "a user-scoped skill",
-                    "USER_DUPLICATE_SKILL_SENTINEL",
-                )
-                .expect("user-scoped duplicate skill seeds");
-
+            let harness = build_colliding_skill_harness(
+                "conv-skill-activate-ambiguous",
+                "duplicate",
+                "duplicate",
+                "that name is ambiguous",
+            )
+            .await;
             harness
                 .submit_turn("activate the duplicate skill")
                 .await
                 .expect("turn completes despite the ambiguous activation");
-
-            // Model-visible Failed, not a terminal driver_unavailable.
-            harness
-                .assert_tool_error(ToolErrorClass::Failed, "ambiguous skill")
-                .await
-                .expect("ambiguous skill name surfaced as a recoverable Failed tool error");
-            harness
-                .assert_tool_error(ToolErrorClass::Failed, "system:duplicate")
-                .await
-                .expect("ambiguity error offered the system canonical id");
-            harness
-                .assert_tool_error(ToolErrorClass::Failed, "user:duplicate")
-                .await
-                .expect("ambiguity error offered the user canonical id");
-            harness
-                .assert_reply_contains("that name is ambiguous")
-                .await
-                .expect("run recovered and finalized");
-            harness
-                .assert_model_message_content_in_order(&[
-                    "- system:duplicate: a system-scoped skill",
-                    "- system:greet: greets the user warmly",
-                    "- user:duplicate: a user-scoped skill",
-                ])
-                .await
-                .expect("the listing exposes stable canonical identifiers");
-            // Neither candidate's instructions may leak into a later model request —
-            // an ambiguous selection activates nothing.
-            for sentinel in [
-                "SYSTEM_DUPLICATE_SKILL_SENTINEL",
-                "USER_DUPLICATE_SKILL_SENTINEL",
-            ] {
-                let err = harness
-                    .assert_model_request_contains(sentinel)
-                    .await
-                    .expect_err(
-                        "an ambiguous activation must not inject either candidate's instructions",
-                    );
-                assert!(
-                    err.to_string().starts_with("no model request contained"),
-                    "expected the intended \"not found\" assertion failure, got a different harness error: {err}"
-                );
-            }
+            assert_ambiguous_skill_activation(&harness).await;
+            assert_model_request_excludes(&harness, "SYSTEM_DUPLICATE_SKILL_SENTINEL").await;
+            assert_model_request_excludes(&harness, "USER_DUPLICATE_SKILL_SENTINEL").await;
         },
     );
 }
@@ -478,69 +407,111 @@ fn skill_activate_canonical_id_selects_requested_source() {
     run_async_test_with_stack(
         "skill_activate_canonical_id_selects_requested_source",
         || async {
-            let group = RebornIntegrationGroup::skill_activation_tools()
-                .await
-                .expect("skill-activation group builds");
-            let capability_harness = group
-                .capability_harness()
-                .expect("skill-activation group has a host-runtime capability harness");
-            capability_harness
-                .seed_system_skill_for_test(
-                    "duplicate",
-                    "a system-scoped skill",
-                    "SYSTEM_DUPLICATE_SKILL_SENTINEL",
-                )
-                .expect("system-scoped duplicate skill seeds");
-
-            let harness = group
-                .thread("conv-skill-activate-canonical")
-                .script([
-                    RebornScriptedReply::tool_call(
-                        "builtin.skill_activate",
-                        json!({"names": ["user:Duplicate"]}),
-                    ),
-                    RebornScriptedReply::text("activated the user skill"),
-                ])
-                .build()
-                .await
-                .expect("thread builds");
-            capability_harness
-                .seed_user_skill_for_test(
-                    &harness.binding.tenant_id,
-                    &harness.binding.actor_user_id,
-                    "Duplicate",
-                    "a user-scoped skill",
-                    "USER_DUPLICATE_SKILL_SENTINEL",
-                )
-                .expect("user-scoped duplicate skill seeds");
-
+            let harness = build_colliding_skill_harness(
+                "conv-skill-activate-canonical",
+                "user:Duplicate",
+                "Duplicate",
+                "activated the user skill",
+            )
+            .await;
             harness
                 .submit_turn("activate the user duplicate skill")
                 .await
                 .expect("turn completes");
-
-            harness
-                .assert_tool_result_contains("\"activated\":[\"user:Duplicate\"]")
-                .await
-                .expect("skill_activate reported the selected canonical id");
-            harness
-                .assert_tool_result_contains("\"count\":1")
-                .await
-                .expect("exactly one skill activated");
-            harness
-                .assert_model_request_contains("USER_DUPLICATE_SKILL_SENTINEL")
-                .await
-                .expect("the selected user skill reached a later model request");
-
-            let err = harness
-                .assert_model_request_contains("SYSTEM_DUPLICATE_SKILL_SENTINEL")
-                .await
-                .expect_err("the unselected system skill must stay out of model context");
-            assert!(
-                err.to_string().starts_with("no model request contained"),
-                "expected the intended \"not found\" assertion failure, got a different harness error: {err}"
-            );
+            assert_canonical_user_activation(&harness).await;
         },
+    );
+}
+
+async fn build_colliding_skill_harness(
+    conversation_id: &str,
+    requested_skill: &str,
+    user_skill_name: &str,
+    final_reply: &str,
+) -> RebornIntegrationHarness {
+    let group = RebornIntegrationGroup::skill_activation_tools()
+        .await
+        .expect("skill-activation group builds");
+    let capability_harness = group
+        .capability_harness()
+        .expect("skill-activation group has a host-runtime capability harness");
+    capability_harness
+        .seed_system_skill_for_test(
+            "duplicate",
+            "a system-scoped skill",
+            "SYSTEM_DUPLICATE_SKILL_SENTINEL",
+        )
+        .expect("system-scoped duplicate skill seeds");
+    let harness = group
+        .thread(conversation_id)
+        .script([
+            RebornScriptedReply::tool_call(
+                "builtin.skill_activate",
+                json!({"names": [requested_skill]}),
+            ),
+            RebornScriptedReply::text(final_reply),
+        ])
+        .build()
+        .await
+        .expect("thread builds");
+    // User skills must be seeded under the built thread's resolved tenant and actor.
+    capability_harness
+        .seed_user_skill_for_test(
+            &harness.binding.tenant_id,
+            &harness.binding.actor_user_id,
+            user_skill_name,
+            "a user-scoped skill",
+            "USER_DUPLICATE_SKILL_SENTINEL",
+        )
+        .expect("user-scoped duplicate skill seeds");
+    harness
+}
+
+async fn assert_ambiguous_skill_activation(harness: &RebornIntegrationHarness) {
+    for expected in ["ambiguous skill", "system:duplicate", "user:duplicate"] {
+        harness
+            .assert_tool_error(ToolErrorClass::Failed, expected)
+            .await
+            .expect("ambiguity is a recoverable failure with canonical alternatives");
+    }
+    harness
+        .assert_reply_contains("that name is ambiguous")
+        .await
+        .expect("run recovered and finalized");
+    harness
+        .assert_model_message_content_in_order(&[
+            "- system:duplicate: a system-scoped skill",
+            "- system:greet: greets the user warmly",
+            "- user:duplicate: a user-scoped skill",
+        ])
+        .await
+        .expect("the listing exposes stable canonical identifiers");
+}
+
+async fn assert_canonical_user_activation(harness: &RebornIntegrationHarness) {
+    harness
+        .assert_tool_result_contains("\"activated\":[\"user:Duplicate\"]")
+        .await
+        .expect("skill_activate reported the selected canonical id");
+    harness
+        .assert_tool_result_contains("\"count\":1")
+        .await
+        .expect("exactly one skill activated");
+    harness
+        .assert_model_request_contains("USER_DUPLICATE_SKILL_SENTINEL")
+        .await
+        .expect("the selected user skill reached a later model request");
+    assert_model_request_excludes(harness, "SYSTEM_DUPLICATE_SKILL_SENTINEL").await;
+}
+
+async fn assert_model_request_excludes(harness: &RebornIntegrationHarness, sentinel: &str) {
+    let err = harness
+        .assert_model_request_contains(sentinel)
+        .await
+        .expect_err("the unselected skill must stay out of model context");
+    assert!(
+        err.to_string().starts_with("no model request contained"),
+        "expected the intended \"not found\" assertion failure, got a different harness error: {err}"
     );
 }
 

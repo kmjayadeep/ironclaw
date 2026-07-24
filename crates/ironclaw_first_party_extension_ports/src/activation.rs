@@ -201,6 +201,30 @@ impl SkillActivationPlan {
     }
 }
 
+/// Result of one explicit skill-activation request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillActivationResult {
+    plan: SkillActivationPlan,
+    activated_bundles: Vec<SkillBundleId>,
+}
+
+impl SkillActivationResult {
+    fn new(plan: SkillActivationPlan, activated_bundles: Vec<SkillBundleId>) -> Self {
+        Self {
+            plan,
+            activated_bundles,
+        }
+    }
+
+    pub fn into_plan(self) -> SkillActivationPlan {
+        self.plan
+    }
+
+    pub fn activated_bundles(&self) -> &[SkillBundleId] {
+        &self.activated_bundles
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CapturedSkillActivationPlan {
     pub plan: SkillActivationPlan,
@@ -397,8 +421,23 @@ where
         run_context: &LoopRunContext,
         skill_names: &[String],
     ) -> Result<SkillActivationPlan, SkillActivationSelectionError> {
+        Ok(self
+            .activate_skills_for_run_with_result(run_context, skill_names)
+            .await?
+            .into_plan())
+    }
+
+    pub async fn activate_skills_for_run_with_result(
+        &self,
+        run_context: &LoopRunContext,
+        skill_names: &[String],
+    ) -> Result<SkillActivationResult, SkillActivationSelectionError> {
+        let targets = skill_names
+            .iter()
+            .map(|name| SkillActivationTarget::parse(name))
+            .collect::<Vec<_>>();
         let candidate_set = self
-            .load_named_activation_candidate_set(run_context, skill_names)
+            .load_named_activation_candidate_set(run_context, &targets)
             .await?;
         // Account for already-active skills so repeated activate calls respect max_active_skills
         // across the merged set, not just each individual call. Under `Listing`,
@@ -416,13 +455,14 @@ where
             ..self.config.clone()
         };
         let selection = select_named_skill_activations(
-            skill_names,
+            &targets,
             &candidate_set.candidates,
             &effective_config,
             &candidate_set.satisfied_setup_markers,
         )?;
-        let plan =
-            self.merge_active_plan(run_context, activation_plan_for_candidates(selection))?;
+        let next_plan = activation_plan_for_candidates(selection);
+        let activated_bundles = next_plan.activated_bundles().to_vec();
+        let plan = self.merge_active_plan(run_context, next_plan)?;
         // Refresh the captured execution plan so take_activation_plan_for_run reflects
         // model-selected activations made after the first prompt build.
         {
@@ -435,7 +475,7 @@ where
                 captured.plan = plan.clone();
             }
         }
-        Ok(plan)
+        Ok(SkillActivationResult::new(plan, activated_bundles))
     }
 
     pub fn clear_accepted_message(
@@ -639,13 +679,9 @@ where
     async fn load_named_activation_candidate_set(
         &self,
         run_context: &LoopRunContext,
-        skill_names: &[String],
+        targets: &[SkillActivationTarget],
     ) -> Result<ActivationCandidateSet, SkillActivationSelectionError> {
         let descriptors = self.load_activation_descriptors(run_context).await?;
-        let targets = skill_names
-            .iter()
-            .map(|name| SkillActivationTarget::parse(name))
-            .collect::<Vec<_>>();
         let descriptors = descriptors
             .into_iter()
             .filter(|descriptor| targets.iter().any(|target| target.matches(descriptor.id())))
@@ -1383,7 +1419,7 @@ fn select_skill_activations(
 }
 
 fn select_named_skill_activations(
-    skill_names: &[String],
+    targets: &[SkillActivationTarget],
     candidates: &[ActivationCandidate],
     config: &SkillActivationSelectorConfig,
     satisfied_setup_markers: &HashSet<String>,
@@ -1399,11 +1435,7 @@ fn select_named_skill_activations(
     let mut remaining_slots = config.max_active_skills;
     let mut remaining_tokens = config.max_context_tokens;
 
-    let targets = skill_names
-        .iter()
-        .map(|name| SkillActivationTarget::parse(name))
-        .collect::<Vec<_>>();
-    validate_activation_targets_are_unambiguous(&targets, &active_candidates)?;
+    validate_activation_targets_are_unambiguous(targets, &active_candidates)?;
     for target in targets {
         let Some(candidate) = active_candidates
             .iter()
@@ -1416,10 +1448,7 @@ fn select_named_skill_activations(
             ));
             continue;
         };
-        let key = (
-            candidate.descriptor.id().source_kind(),
-            candidate.loaded.manifest.name.clone(),
-        );
+        let key = candidate.descriptor.id().clone();
         if selected_keys.insert(key) {
             reserve_skill_budget(
                 &candidate.loaded,
@@ -1583,12 +1612,8 @@ fn validate_explicit_mentions_are_unambiguous(
         alternatives.sort_unstable();
         alternatives.dedup();
         if alternatives.len() > 1 {
-            let canonical_name = alternatives
-                .first()
-                .map(|bundle_id| bundle_id.name().to_string())
-                .unwrap_or_else(|| name.clone());
             return Err(SkillActivationSelectionError::AmbiguousSkill {
-                name: canonical_name,
+                name: name.clone(),
                 alternatives,
             });
         }
@@ -2781,6 +2806,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn model_selected_canonical_ids_keep_distinct_bundles_with_shared_manifest_name() {
+        let source = Arc::new(StaticSkillBundleSource::new(vec![
+            (
+                SkillSourceKind::User,
+                "alpha",
+                &skill_md(
+                    "shared-manifest",
+                    "Alpha skill",
+                    &[],
+                    "ALPHA_SKILL_SENTINEL",
+                ),
+            ),
+            (
+                SkillSourceKind::User,
+                "beta",
+                &skill_md("shared-manifest", "Beta skill", &[], "BETA_SKILL_SENTINEL"),
+            ),
+        ]));
+        let selectable =
+            SelectableSkillContextSource::new(source, SkillActivationSelectorConfig::default());
+        let context = run_context().await;
+
+        let plan = selectable
+            .activate_skills_for_run(
+                &context,
+                &["user:alpha".to_string(), "user:beta".to_string()],
+            )
+            .await
+            .expect("distinct canonical bundle ids activate");
+
+        assert_eq!(
+            plan.activated_bundles(),
+            &[
+                SkillBundleId::new(SkillSourceKind::User, "alpha").unwrap(),
+                SkillBundleId::new(SkillSourceKind::User, "beta").unwrap(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn model_selected_canonical_ids_reject_same_name_collision_in_one_call() {
+        let source = Arc::new(StaticSkillBundleSource::new(vec![
+            (
+                SkillSourceKind::System,
+                "deploy",
+                &skill_md(
+                    "system-deploy-manifest",
+                    "System deploy",
+                    &[],
+                    "SYSTEM_DEPLOY_SENTINEL",
+                ),
+            ),
+            (
+                SkillSourceKind::User,
+                "deploy",
+                &skill_md(
+                    "user-deploy-manifest",
+                    "User deploy",
+                    &[],
+                    "USER_DEPLOY_SENTINEL",
+                ),
+            ),
+        ]));
+        let selectable =
+            SelectableSkillContextSource::new(source, SkillActivationSelectorConfig::default());
+        let context = run_context().await;
+
+        let error = selectable
+            .activate_skills_for_run(
+                &context,
+                &["system:deploy".to_string(), "user:deploy".to_string()],
+            )
+            .await
+            .expect_err("colliding canonical ids must fail in one call");
+
+        assert!(matches!(
+            error,
+            SkillActivationSelectionError::AmbiguousSkill { .. }
+        ));
+    }
+
+    #[tokio::test]
     async fn model_selected_activation_reads_only_requested_skill_bodies() {
         let source = Arc::new(ReadCountingSkillBundleSource::new(vec![
             (
@@ -2884,6 +2991,40 @@ mod tests {
             .await
             .expect("active plan context loads");
         assert_eq!(selected.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn activation_result_reports_only_bundles_resolved_for_current_call() {
+        let source = Arc::new(StaticSkillBundleSource::new(vec![
+            (
+                SkillSourceKind::User,
+                "code-review",
+                &skill_md("code-review", "Review code", &[], "CODE_REVIEW_SENTINEL"),
+            ),
+            (
+                SkillSourceKind::User,
+                "spreadsheet",
+                &skill_md("spreadsheet", "Spreadsheet work", &[], "SHEET_SENTINEL"),
+            ),
+        ]));
+        let selectable =
+            SelectableSkillContextSource::new(source, SkillActivationSelectorConfig::default());
+        let context = run_context().await;
+
+        selectable
+            .activate_skills_for_run(&context, &["code-review".to_string()])
+            .await
+            .expect("first activation succeeds");
+        let result = selectable
+            .activate_skills_for_run_with_result(&context, &["spreadsheet".to_string()])
+            .await
+            .expect("second activation succeeds");
+
+        assert_eq!(
+            result.activated_bundles(),
+            &[SkillBundleId::new(SkillSourceKind::User, "spreadsheet").unwrap()]
+        );
+        assert_eq!(result.into_plan().activated_bundles().len(), 2);
     }
 
     #[tokio::test]
@@ -3437,18 +3578,13 @@ mod tests {
         let source = Arc::new(StaticSkillBundleSource::new(vec![
             (
                 SkillSourceKind::System,
-                "code-review",
-                &skill_md(
-                    "code-review",
-                    "System review",
-                    &[],
-                    "SYSTEM_REVIEW_SENTINEL",
-                ),
+                "alpha",
+                &skill_md("deploy", "System deploy", &[], "SYSTEM_DEPLOY_SENTINEL"),
             ),
             (
                 SkillSourceKind::User,
-                "code-review",
-                &skill_md("code-review", "User review", &[], "USER_REVIEW_SENTINEL"),
+                "beta",
+                &skill_md("deploy", "User deploy", &[], "USER_DEPLOY_SENTINEL"),
             ),
         ]));
         let selectable =
@@ -3458,19 +3594,26 @@ mod tests {
             .record_user_message(
                 context.scope.clone(),
                 accepted_message_ref(&context),
-                "/code-review this PR",
+                "/deploy this project",
             )
             .expect("record message");
 
         let error = selectable
-            .selected_candidates(&context, "/code-review this PR", false)
+            .selected_candidates(&context, "/deploy this project", false)
             .await
             .expect_err("ambiguous activation should fail");
 
-        assert!(matches!(
-            error,
-            SkillActivationSelectionError::AmbiguousSkill { .. }
-        ));
+        let SkillActivationSelectionError::AmbiguousSkill { name, alternatives } = error else {
+            panic!("expected ambiguous skill error");
+        };
+        assert_eq!(name, "deploy");
+        assert_eq!(
+            alternatives,
+            vec![
+                SkillBundleId::new(SkillSourceKind::System, "alpha").unwrap(),
+                SkillBundleId::new(SkillSourceKind::User, "beta").unwrap(),
+            ]
+        );
     }
 
     #[tokio::test]
