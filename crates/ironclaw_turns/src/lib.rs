@@ -16,6 +16,7 @@ mod ids;
 mod lifecycle;
 pub mod loop_exit;
 mod origin;
+pub mod process_journal;
 pub mod product_adapter;
 pub mod product_context;
 mod request;
@@ -80,6 +81,18 @@ pub use loop_exit::{
     LoopExitViolationKind, LoopFailed, LoopFailureKind,
 };
 pub use origin::{ProductTurnContext, RunOriginAdapter, TurnOriginKind, TurnSurfaceType};
+pub use process_journal::{
+    AGENT_TURN_PROCESS_KIND, AgentTurnProcessMetadata, AgentTurnProcessStateMetadata,
+    AgentTurnProcessTransitionAdapter, KernelApplyValidatedExitRequest, KernelClaimProcessRequest,
+    KernelClaimProcessesRequest, KernelClaimedProcess, KernelFailProcessRequest,
+    KernelProcessCheckpointRef, KernelProcessId, KernelProcessJournalCursor,
+    KernelProcessJournalEntry, KernelProcessJournalKind, KernelProcessKind,
+    KernelProcessLeaseRequest, KernelProcessLeaseSnapshot, KernelProcessOutcome,
+    KernelProcessSnapshot, KernelProcessStateSnapshot, KernelProcessStatus,
+    KernelProcessSuspension, KernelProcessSuspensionKind, KernelProcessWorkerId,
+    KernelRecordModelRouteRequest, KernelRecoverExpiredLeasesRequest,
+    KernelRecoverExpiredLeasesResponse, KernelSuspendProcessRequest,
+};
 pub use request::{
     CancelRunRequest, GateResumeDisposition, GetRunStateRequest, ResumeTurnPrecondition,
     ResumeTurnRequest, RetryTurnRequest, SubmitChildRunRequest, SubmitTurnRequest, TurnTimestamp,

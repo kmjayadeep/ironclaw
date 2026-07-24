@@ -56,6 +56,7 @@ use ironclaw_loop_host::{
     LoopCapabilityResultWriter, ModelGatewayBackedSystemInferencePort,
 };
 use ironclaw_observability::live_latency_started_at;
+use ironclaw_processes::ProcessTransitionPort;
 use ironclaw_product::ProjectionStream;
 use ironclaw_product::{
     ApprovalBlockedTurnRun, ApprovalInteractionScope, ApprovalInteractionService,
@@ -106,8 +107,8 @@ use ironclaw_outbound::OutboundDeliveryTargetRegistrationOutcome;
 use ironclaw_outbound::OutboundError;
 #[cfg(any(test, feature = "test-support"))]
 use ironclaw_product::RebornOutboundDeliveryTargetId;
-use ironclaw_turns::ExternalToolCatalog;
 use ironclaw_turns::run_profile::{MemoryPromptContextService, UserProfileContext};
+use ironclaw_turns::{AgentTurnProcessTransitionAdapter, ExternalToolCatalog};
 
 use self::latency::{trace_runtime_latency_error, trace_runtime_latency_ok};
 use self::runtime_turn_scheduler::RuntimeTurnScheduler;
@@ -369,6 +370,7 @@ struct RuntimeStoreParts {
     scoped_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
     turn_state_store: Arc<dyn RuntimeTurnStateStore>,
     turn_state_flush: Arc<dyn TurnStateFlush>,
+    process_transition_port: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     checkpoint_state_store: Arc<dyn ironclaw_turns::CheckpointStateStorePort>,
     loop_checkpoint_store: Arc<dyn ironclaw_turns::LoopCheckpointStore>,
     thread_service: Arc<dyn SessionThreadService>,
@@ -454,6 +456,10 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
         scoped_filesystem,
         turn_state_store: Arc::clone(&turn_state) as Arc<dyn RuntimeTurnStateStore>,
         turn_state_flush: Arc::clone(&turn_state) as Arc<dyn TurnStateFlush>,
+        process_transition_port: Arc::new(AgentTurnProcessTransitionAdapter::new(Arc::clone(
+            &turn_state,
+        )
+            as Arc<dyn ironclaw_turns::runner::TurnRunTransitionPort>)),
         checkpoint_state_store,
         loop_checkpoint_store,
         thread_service,
@@ -767,6 +773,11 @@ pub struct RebornRuntime {
     /// that committed at memory speed) so a planned restart recovers in-flight
     /// turns, not just the synchronously-durable gate-park/terminal/new-run ones.
     turn_state_flush: Arc<dyn TurnStateFlush>,
+    #[allow(
+        dead_code,
+        reason = "migration handle for process-journal cutover; wired before runner call sites move"
+    )]
+    pub(crate) process_transition_port: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     pub(crate) turn_run_snapshot_source: Arc<dyn TurnRunSnapshotSource>,
     turn_tree_store: Arc<dyn TurnSpawnTreeStateStore>,
     thread_service: Arc<dyn SessionThreadService>,
@@ -3616,6 +3627,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         scoped_filesystem,
         turn_state_store,
         turn_state_flush,
+        process_transition_port,
         checkpoint_state_store,
         loop_checkpoint_store,
         thread_service,
@@ -4806,6 +4818,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         budget_event_projection,
         poll_settings: poll,
         admin_api_token_minter,
+        process_transition_port,
         actor_user_id,
         source_binding_ref: validated_identity.source_binding_ref,
         reply_target_binding_ref: validated_identity.reply_target_binding_ref,

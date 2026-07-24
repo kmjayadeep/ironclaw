@@ -9,7 +9,11 @@
 
 ## 1. Purpose
 
-`ironclaw_processes` owns host-tracked background capability lifecycle state.
+`ironclaw_processes` owns process lifecycle state. The original V1 surface is
+host-tracked background capability execution; the 2026-07-24 journal slice adds
+the richer kernel process vocabulary used to converge turns, subagents,
+capability invocations, automations, and external waits onto one durable process
+journal.
 
 It is intentionally below `CapabilityHost`:
 
@@ -71,6 +75,55 @@ pub enum ProcessStatus {
     Killed,
 }
 ```
+
+The process-journal slice adds a separate canonical lifecycle vocabulary for
+queued/leased/suspended/recovered process kernels without changing the V1
+runtime-execution `ProcessStatus` wire contract:
+
+```rust
+pub enum ProcessLifecycleStatus {
+    Queued,
+    Running,
+    Suspended,
+    StopRequested,
+    CancelRequested,
+    Stopped,
+    Cancelled,
+    Completed,
+    Failed,
+    Killed,
+    RecoveryRequired,
+}
+```
+
+`ProcessLifecycleStatus`, `ProcessSuspension`, `ProcessJournalEntry`,
+`JournaledProcessSnapshot`, lease requests, stop/kill/suspend/resume envelopes,
+and `ProcessOutcome` live in `ironclaw_processes::journal` and are re-exported
+from the crate root. Domain crates such as `ironclaw_turns` should adapt their
+domain records into these process-owned contracts instead of defining parallel
+journal/status vocabularies.
+
+The same module owns the process transition port:
+
+```rust
+#[async_trait]
+pub trait ProcessTransitionPort: Send + Sync {
+    async fn claim_next_process(...) -> Result<Option<ClaimedProcess>, Self::Error>;
+    async fn heartbeat_process(...) -> Result<ProcessJournalCursor, Self::Error>;
+    async fn recover_expired_process_leases(...)
+        -> Result<RecoverExpiredProcessLeasesResponse, Self::Error>;
+    async fn suspend_process(...) -> Result<JournaledProcessSnapshot, Self::Error>;
+    async fn complete_process(...) -> Result<JournaledProcessSnapshot, Self::Error>;
+    async fn cancel_process(...) -> Result<JournaledProcessSnapshot, Self::Error>;
+    async fn fail_process(...) -> Result<JournaledProcessSnapshot, Self::Error>;
+    async fn relinquish_process(...) -> Result<JournaledProcessSnapshot, Self::Error>;
+}
+```
+
+During migration, `ironclaw_turns::AgentTurnProcessTransitionAdapter` implements
+this port over the existing `TurnRunTransitionPort`. This is intentionally an
+adapter, not a second store: process-named callers must converge onto the
+existing transition engine until the backing store itself is renamed/moved.
 
 `spawn_json` creates a `Running` process record. `BackgroundProcessManager` then drives `Running -> Completed` or `Running -> Failed` from the attached `ProcessExecutor`. `ProcessHost::kill` drives `Running -> Killed` and, when configured with a shared `ProcessCancellationRegistry`, also signals the running executor's cooperative cancellation token. Terminal states are protected: `Completed`, `Failed`, and `Killed` cannot be overwritten by a late background completion.
 
