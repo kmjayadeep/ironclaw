@@ -389,8 +389,8 @@ impl AuthEngine {
 
     /// Remove the client snapshot created by [`Self::prepare_oauth_flow`].
     ///
-    /// Callers use this idempotent rollback when durable flow creation fails
-    /// after preparation has already persisted the encrypted client pair.
+    /// Callers use this idempotent cleanup after durable flow creation fails or
+    /// after a prepared flow reaches a terminal state.
     pub async fn cleanup_prepared_oauth_flow(&self, scope: &ResourceScope, flow_id: AuthFlowId) {
         let handle = match flow_client_snapshot_handle(flow_id) {
             Ok(handle) => handle,

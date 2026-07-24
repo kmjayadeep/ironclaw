@@ -199,24 +199,24 @@ impl OAuthGateFlowDriver {
             return Ok(None);
         };
         if existing.provider != *requested_provider {
+            flow_manager
+                .cancel_flow(&existing.scope, existing.id)
+                .await?;
             self.cleanup_prepared_flow(&existing.scope.resource, existing.id)
                 .await;
-            return flow_manager
-                .cancel_flow(&existing.scope, existing.id)
-                .await
-                .map(|_| None);
+            return Ok(None);
         }
         if existing.expires_at > Utc::now() {
             return Ok(Some(existing));
         }
-        // The flow being replaced is expired and about to be canceled; attempt
-        // cleanup of its now-defunct PKCE verifier and client snapshot.
-        self.cleanup_prepared_flow(&existing.scope.resource, existing.id)
-            .await;
         flow_manager
             .cancel_flow(&existing.scope, existing.id)
-            .await
-            .map(|_| None)
+            .await?;
+        // Cancellation is durable; now attempt cleanup of the terminal flow's
+        // defunct PKCE verifier and client snapshot.
+        self.cleanup_prepared_flow(&existing.scope.resource, existing.id)
+            .await;
+        Ok(None)
     }
 
     async fn store_pkce_verifier(
@@ -248,10 +248,11 @@ impl OAuthGateFlowDriver {
         let Ok(handle) = self.pkce_secret_handle(flow_id) else {
             return;
         };
-        if self.secret_store.delete(scope, &handle).await.is_err() {
+        if let Err(error) = self.secret_store.delete(scope, &handle).await {
             tracing::warn!(
                 flow_id = %flow_id,
-                "failed to clean up OAuth gate PKCE verifier after flow creation failure"
+                error = %error,
+                "failed to clean up OAuth gate PKCE verifier"
             );
         }
     }
@@ -535,21 +536,37 @@ mod tests {
         }
     }
 
-    struct FailingCreateFlowManager {
-        error: AuthProductError,
-        engine_secrets: Arc<dyn SecretStorePort>,
+    enum FlowManagerFailure {
+        Create {
+            error: AuthProductError,
+            engine_secrets: Arc<dyn SecretStorePort>,
+        },
+        Cancel {
+            error: AuthProductError,
+        },
+    }
+
+    struct FailingFlowManager {
+        failure: FlowManagerFailure,
     }
 
     #[async_trait::async_trait]
-    impl AuthFlowManager for FailingCreateFlowManager {
+    impl AuthFlowManager for FailingFlowManager {
         async fn create_flow(
             &self,
             request: NewAuthFlow,
         ) -> Result<AuthFlowRecord, AuthProductError> {
+            let FlowManagerFailure::Create {
+                error,
+                engine_secrets,
+            } = &self.failure
+            else {
+                unreachable!("cancel-flow failure tests do not create flows through the manager");
+            };
             let flow_id = request.id.expect("gate creates an explicit flow id");
             let flow_id = flow_id.as_uuid().simple().to_string();
             assert!(
-                self.engine_secrets
+                engine_secrets
                     .metadata_for_scope(&request.scope.resource)
                     .await
                     .expect("engine snapshot metadata remains readable")
@@ -557,7 +574,7 @@ mod tests {
                     .any(|metadata| metadata.handle.as_str().contains(&flow_id)),
                 "test precondition: create_flow failure occurs after snapshot preparation"
             );
-            Err(self.error.clone())
+            Err(error.clone())
         }
 
         async fn get_flow(
@@ -630,7 +647,10 @@ mod tests {
             _scope: &AuthProductScope,
             _flow_id: AuthFlowId,
         ) -> Result<AuthFlowRecord, AuthProductError> {
-            unreachable!("create-flow failure tests have no durable flow to cancel")
+            let FlowManagerFailure::Cancel { error } = &self.failure else {
+                unreachable!("create-flow failure tests have no durable flow to cancel");
+            };
+            Err(error.clone())
         }
 
         async fn fail_completed_continuation(
@@ -726,6 +746,18 @@ mod tests {
                 .expect("test flow has a prepared client snapshot");
         }
 
+        async fn prepare_callback_material(&self, flow_id: AuthFlowId) {
+            self.prepare_client_snapshot(flow_id).await;
+            self.driver
+                .store_pkce_verifier(
+                    &self.auth_scope().resource,
+                    flow_id,
+                    SecretMaterial::from("test-pkce-verifier"),
+                )
+                .await
+                .expect("test flow has a stored PKCE verifier");
+        }
+
         async fn client_snapshot_exists(&self, flow_id: AuthFlowId) -> bool {
             let flow_id = flow_id.as_uuid().simple().to_string();
             self.engine_secrets
@@ -734,6 +766,46 @@ mod tests {
                 .expect("engine snapshot metadata remains readable")
                 .into_iter()
                 .any(|metadata| metadata.handle.as_str().contains(&flow_id))
+        }
+
+        async fn pkce_verifier_exists(&self, flow_id: AuthFlowId) -> bool {
+            let handle = self
+                .driver
+                .pkce_secret_handle(flow_id)
+                .expect("test flow has a valid PKCE handle");
+            self.driver
+                .secret_store
+                .metadata(&self.auth_scope().resource, &handle)
+                .await
+                .expect("PKCE metadata remains readable")
+                .is_some()
+        }
+
+        async fn create_mismatched_flow(&self, flow_id: AuthFlowId) -> AuthFlowRecord {
+            self.shared
+                .create_flow(NewAuthFlow {
+                    id: Some(flow_id),
+                    scope: self.auth_scope(),
+                    kind: AuthFlowKind::IntegrationCredential,
+                    provider: AuthProviderId::new("othervendor").unwrap(),
+                    challenge: AuthChallenge::OAuthUrl {
+                        authorization_url: OAuthAuthorizationUrl::new(
+                            "https://auth.other.example/authorize?state=existing".to_string(),
+                        )
+                        .unwrap(),
+                        expires_at: Utc::now() + ChronoDuration::seconds(60),
+                    },
+                    continuation: AuthContinuationRef::TurnGateResume {
+                        turn_run_ref: TurnRunRef::new(self.run_id.to_string()).unwrap(),
+                        gate_ref: self.gate_ref.clone(),
+                    },
+                    update_binding: None,
+                    opaque_state_hash: None,
+                    pkce_verifier_hash: None,
+                    expires_at: Utc::now() + ChronoDuration::seconds(60),
+                })
+                .await
+                .unwrap()
         }
 
         async fn active_gate_flows(&self) -> Vec<AuthFlowRecord> {
@@ -905,9 +977,11 @@ mod tests {
         expected_error: AuthProductError,
     ) {
         let mut fixture = GateFixture::new();
-        fixture.flow_manager = Arc::new(FailingCreateFlowManager {
-            error: expected_error.clone(),
-            engine_secrets: Arc::clone(&fixture.engine_secrets),
+        fixture.flow_manager = Arc::new(FailingFlowManager {
+            failure: FlowManagerFailure::Create {
+                error: expected_error.clone(),
+                engine_secrets: Arc::clone(&fixture.engine_secrets),
+            },
         });
 
         let error = fixture
@@ -955,38 +1029,13 @@ mod tests {
     #[tokio::test]
     async fn gate_does_not_reuse_live_turn_gate_flow_for_different_provider() {
         let fixture = GateFixture::new();
-        let auth_scope = fixture.auth_scope();
         let mismatched_flow_id = AuthFlowId::new();
         fixture.prepare_client_snapshot(mismatched_flow_id).await;
         assert!(
             fixture.client_snapshot_exists(mismatched_flow_id).await,
             "test precondition: mismatched flow must own a client snapshot"
         );
-        let mismatched = fixture
-            .flow_manager
-            .create_flow(NewAuthFlow {
-                id: Some(mismatched_flow_id),
-                scope: auth_scope,
-                kind: AuthFlowKind::IntegrationCredential,
-                provider: AuthProviderId::new("othervendor").unwrap(),
-                challenge: AuthChallenge::OAuthUrl {
-                    authorization_url: OAuthAuthorizationUrl::new(
-                        "https://auth.other.example/authorize?state=existing".to_string(),
-                    )
-                    .unwrap(),
-                    expires_at: Utc::now() + ChronoDuration::seconds(60),
-                },
-                continuation: AuthContinuationRef::TurnGateResume {
-                    turn_run_ref: TurnRunRef::new(fixture.run_id.to_string()).unwrap(),
-                    gate_ref: fixture.gate_ref.clone(),
-                },
-                update_binding: None,
-                opaque_state_hash: None,
-                pkce_verifier_hash: None,
-                expires_at: Utc::now() + ChronoDuration::seconds(60),
-            })
-            .await
-            .unwrap();
+        let mismatched = fixture.create_mismatched_flow(mismatched_flow_id).await;
 
         let flow = fixture.challenge().await;
         assert_eq!(flow.provider.as_str(), "acmevendor");
@@ -1017,6 +1066,58 @@ mod tests {
         assert!(
             !fixture.client_snapshot_exists(mismatched_flow_id).await,
             "provider-mismatch cancellation must remove the old client snapshot"
+        );
+    }
+
+    #[tokio::test]
+    async fn gate_cancel_failure_retains_active_flow_and_callback_material() {
+        let mut fixture = GateFixture::new();
+        let mismatched_flow_id = AuthFlowId::new();
+        let mismatched = fixture.create_mismatched_flow(mismatched_flow_id).await;
+        fixture.prepare_callback_material(mismatched_flow_id).await;
+        assert!(
+            fixture.client_snapshot_exists(mismatched_flow_id).await,
+            "test precondition: active flow must own a client snapshot"
+        );
+        assert!(
+            fixture.pkce_verifier_exists(mismatched_flow_id).await,
+            "test precondition: active flow must own a PKCE verifier"
+        );
+        fixture.flow_manager = Arc::new(FailingFlowManager {
+            failure: FlowManagerFailure::Cancel {
+                error: AuthProductError::CrossScopeDenied,
+            },
+        });
+
+        let error = fixture
+            .driver
+            .challenge_for_blocked_gate(OAuthGateChallengeRequest {
+                flow_manager: &fixture.flow_manager,
+                flow_source: &fixture.flow_source,
+                requirements: std::slice::from_ref(&fixture.requirement),
+                scope: &fixture.scope,
+                owner_user_id: &fixture.owner_user_id,
+                run_id: fixture.run_id,
+                gate_ref: &fixture.gate_ref,
+            })
+            .await
+            .expect_err("scripted cancellation must fail");
+
+        assert_eq!(error, AuthProductError::CrossScopeDenied);
+        let retained = fixture
+            .shared
+            .get_flow(&mismatched.scope, mismatched.id)
+            .await
+            .unwrap()
+            .expect("failed cancellation must retain the active flow");
+        assert_eq!(retained.status, AuthFlowStatus::AwaitingUser);
+        assert!(
+            fixture.client_snapshot_exists(mismatched_flow_id).await,
+            "failed cancellation must retain the callback client snapshot"
+        );
+        assert!(
+            fixture.pkce_verifier_exists(mismatched_flow_id).await,
+            "failed cancellation must retain the callback PKCE verifier"
         );
     }
 
