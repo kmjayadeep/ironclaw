@@ -266,6 +266,10 @@ fn test_scope() -> AuthProductScope {
     AuthProductScope::new(resource, AuthSurface::Callback)
 }
 
+fn future_flow_expiry() -> chrono::DateTime<Utc> {
+    Utc::now() + Duration::minutes(10)
+}
+
 fn hex64(fill: u8) -> String {
     format!("{fill:02x}").repeat(32)
 }
@@ -456,6 +460,7 @@ async fn authorize_url_is_host_constructed_for_every_oauth_vendor_row() {
                     .iter()
                     .map(|scope| ProviderScope::new(scope.to_string()).unwrap())
                     .collect(),
+                expires_at: future_flow_expiry(),
             })
             .await
             .unwrap_or_else(|error| panic!("{vendor} prepare: {error}"));
@@ -516,6 +521,7 @@ async fn google_extra_authorize_params_come_from_recipe_data() {
             flow_id: AuthFlowId::new(),
             account_label: CredentialAccountLabel::new("account").unwrap(),
             requested_scopes: Vec::new(),
+            expires_at: future_flow_expiry(),
         })
         .await
         .unwrap();
@@ -565,6 +571,7 @@ async fn recipes_cannot_supply_or_override_reserved_authorize_params() {
                 flow_id: AuthFlowId::new(),
                 account_label: CredentialAccountLabel::new("account").unwrap(),
                 requested_scopes: Vec::new(),
+                expires_at: future_flow_expiry(),
             })
             .await
             .expect_err("reserved param must be rejected");
@@ -595,6 +602,7 @@ async fn authorization_endpoint_predefining_reserved_params_is_rejected() {
             flow_id: AuthFlowId::new(),
             account_label: CredentialAccountLabel::new("account").unwrap(),
             requested_scopes: Vec::new(),
+            expires_at: future_flow_expiry(),
         })
         .await
         .expect_err("endpoint predefining state must be rejected");
@@ -614,6 +622,7 @@ async fn scope_widening_is_rejected_before_any_vendor_call() {
             flow_id: AuthFlowId::new(),
             account_label: CredentialAccountLabel::new("account").unwrap(),
             requested_scopes: vec![ProviderScope::new("admin").unwrap()],
+            expires_at: future_flow_expiry(),
         })
         .await
         .expect_err("scope outside the ceiling must be rejected");
@@ -720,6 +729,7 @@ async fn rotation_preserves_in_flight_callback_and_updates_later_refresh() {
     );
     let scope = test_scope();
     let flow_id = AuthFlowId::new();
+    let accepted_callback_until = Utc::now() + Duration::minutes(30);
     harness
         .engine
         .prepare_oauth_flow(PrepareOAuthFlowRequest {
@@ -728,9 +738,24 @@ async fn rotation_preserves_in_flight_callback_and_updates_later_refresh() {
             flow_id,
             account_label: CredentialAccountLabel::new("account").unwrap(),
             requested_scopes: vec![ProviderScope::new("msg:read").unwrap()],
+            expires_at: accepted_callback_until,
         })
         .await
         .expect("flow preparation snapshots its client");
+    let snapshot = harness
+        .secrets
+        .metadata_for_scope(&scope.resource)
+        .await
+        .expect("snapshot metadata remains readable")
+        .into_iter()
+        .find(|metadata| metadata.handle.as_str().starts_with("oauth-flow-client-"))
+        .expect("static OAuth flow stores client snapshot metadata");
+    assert!(
+        snapshot
+            .expires_at
+            .is_some_and(|expires_at| expires_at > accepted_callback_until),
+        "the client snapshot must outlive the accepted callback window"
+    );
     credentials.rotate("client-after-rotation", "secret-after-rotation");
     harness.server.script(
         "https://auth.acme.example/token",
@@ -1363,6 +1388,7 @@ async fn dcr_vendor_registers_once_and_runs_standard_oauth_afterwards() {
             flow_id,
             account_label: CredentialAccountLabel::new("account").unwrap(),
             requested_scopes: Vec::new(),
+            expires_at: future_flow_expiry(),
         })
     };
     let prepared = prepare(AuthFlowId::new()).await.expect("first notion flow");
@@ -1474,6 +1500,7 @@ async fn dcr_issuer_sharing_only_a_public_suffix_is_rejected_before_any_attacker
             flow_id: AuthFlowId::new(),
             account_label: CredentialAccountLabel::new("account").unwrap(),
             requested_scopes: Vec::new(),
+            expires_at: future_flow_expiry(),
         })
         .await;
 
@@ -1532,6 +1559,7 @@ async fn dcr_issuer_on_same_registrable_domain_under_multi_part_suffix_registers
             flow_id: AuthFlowId::new(),
             account_label: CredentialAccountLabel::new("account").unwrap(),
             requested_scopes: Vec::new(),
+            expires_at: future_flow_expiry(),
         })
         .await
         .expect("sibling issuer under the same registrable domain is accepted");

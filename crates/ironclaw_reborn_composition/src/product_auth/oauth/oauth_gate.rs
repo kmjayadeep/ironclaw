@@ -113,6 +113,7 @@ impl OAuthGateFlowDriver {
 
         let flow_id = AuthFlowId::new();
         let vendor = requirement.provider.as_str();
+        let expires_at = Utc::now() + ChronoDuration::seconds(GATE_FLOW_TTL_SECONDS);
         let prepared = self
             .engine
             .prepare_oauth_flow(PrepareOAuthFlowRequest {
@@ -121,9 +122,9 @@ impl OAuthGateFlowDriver {
                 flow_id,
                 account_label: CredentialAccountLabel::new(vendor)?,
                 requested_scopes: provider_scopes(&requirement.provider_scopes)?,
+                expires_at,
             })
             .await?;
-        let expires_at = Utc::now() + ChronoDuration::seconds(GATE_FLOW_TTL_SECONDS);
         self.store_pkce_verifier(
             &auth_scope.resource,
             flow_id,

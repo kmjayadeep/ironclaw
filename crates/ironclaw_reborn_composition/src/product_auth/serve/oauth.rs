@@ -197,6 +197,7 @@ pub(super) async fn extension_oauth_start_handler(
             flow_id,
             account_label,
             requested_scopes,
+            expires_at: request.expires_at,
         },
     ))
     .await?;

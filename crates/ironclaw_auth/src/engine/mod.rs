@@ -46,14 +46,14 @@ use crate::{
     OAuthClientId, OAuthProviderCallbackRequest, OAuthProviderExchange,
     OAuthProviderExchangeContext, OAuthProviderRefresh, OAuthProviderRefreshRequest,
     OAuthRedirectUri, OAuthState, OpaqueStateHash, PkceVerifierHash, PkceVerifierSecret,
-    ProviderScope, opaque_state_hash, pkce_s256_challenge, pkce_verifier_hash,
+    ProviderScope, Timestamp, opaque_state_hash, pkce_s256_challenge, pkce_verifier_hash,
     validate_provider_callback_request,
 };
 
 pub use dcr::DCR_CLIENT_HANDLE_PREFIX;
 
 const FLOW_CLIENT_SNAPSHOT_HANDLE_PREFIX: &str = "oauth-flow-client";
-const FLOW_CLIENT_SNAPSHOT_TTL_MINUTES: i64 = 15;
+const FLOW_CLIENT_SNAPSHOT_EXPIRY_GRACE_SECONDS: i64 = 60;
 
 #[derive(Serialize, Deserialize)]
 struct StoredFlowClientSnapshot {
@@ -202,6 +202,8 @@ pub struct PrepareOAuthFlowRequest {
     pub account_label: CredentialAccountLabel,
     /// Requested scopes; empty means "the recipe's full scope ceiling".
     pub requested_scopes: Vec<ProviderScope>,
+    /// Latest time the owning flow may accept a callback.
+    pub expires_at: Timestamp,
 }
 
 /// Host-constructed flow material. The raw PKCE verifier is returned exactly
@@ -319,6 +321,7 @@ impl AuthEngine {
         scope: &ResourceScope,
         flow_id: AuthFlowId,
         material: &EngineOAuthClientMaterial,
+        flow_expires_at: Timestamp,
     ) -> Result<(), AuthProductError> {
         let stored = StoredFlowClientSnapshot {
             client_id: material.client_id.as_str().to_string(),
@@ -331,12 +334,17 @@ impl AuthEngine {
             tracing::warn!(%error, "OAuth flow client snapshot serialization failed");
             AuthProductError::BackendUnavailable
         })?;
+        let snapshot_expires_at = flow_expires_at
+            .checked_add_signed(Duration::seconds(FLOW_CLIENT_SNAPSHOT_EXPIRY_GRACE_SECONDS))
+            .ok_or_else(|| {
+                AuthProductError::invalid_request("OAuth flow expiry is out of range")
+            })?;
         self.secret_store
             .put(
                 scope.clone(),
                 flow_client_snapshot_handle(flow_id)?,
                 SecretMaterial::from(encoded),
-                Some(Utc::now() + Duration::minutes(FLOW_CLIENT_SNAPSHOT_TTL_MINUTES)),
+                Some(snapshot_expires_at),
             )
             .await
             .map(|_| ())
@@ -403,10 +411,10 @@ impl AuthEngine {
             match self.flow_client_snapshot(scope, flow_id).await? {
                 Some(material) => material,
                 None => {
-                    // Compatibility when the encrypted snapshot is missing,
-                    // including pre-snapshot flows and snapshots that expired.
-                    // Live resolution may observe credentials rotated after
-                    // the authorization request was created.
+                    // Compatibility for flows created before encrypted client
+                    // snapshots were introduced. New snapshots outlive their
+                    // owning flow's accepted callback window, so normal expiry
+                    // cannot route an accepted callback through live credentials.
                     let credentials = recipe
                         .client_credentials
                         .as_ref()
@@ -434,6 +442,11 @@ impl AuthEngine {
         &self,
         request: PrepareOAuthFlowRequest,
     ) -> Result<PreparedOAuthFlow, AuthProductError> {
+        if request.expires_at <= Utc::now() {
+            return Err(AuthProductError::invalid_request(
+                "OAuth flow expiry must be in the future",
+            ));
+        }
         let (recipe, resource) = self.oauth2_recipe(&request.vendor)?;
         // Enforce the recipe invariants at execution time; manifest-parse
         // validation is not trusted alone (AUTH-2).
@@ -483,8 +496,13 @@ impl AuthEngine {
             // minted the authorization request. Persist that pair before
             // returning the URL so a later operator rotation affects new
             // flows and refreshes without corrupting this callback.
-            self.persist_flow_client_snapshot(&request.scope.resource, request.flow_id, &material)
-                .await?;
+            self.persist_flow_client_snapshot(
+                &request.scope.resource,
+                request.flow_id,
+                &material,
+                request.expires_at,
+            )
+            .await?;
         }
 
         Ok(PreparedOAuthFlow {
