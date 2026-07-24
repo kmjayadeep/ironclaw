@@ -2501,9 +2501,10 @@ loop-facing capability result and every result mirror is deleted.
   deleting the tracked `InMemory*Store` mirrors because those are gone, but it
   remains the replacement oracle before further turn-store semantic rewrites.
 - **§5.3.4 / #6284 endgame** — the recoverability conformance matrix (§11.7 /
-  §11.9), the model-error observation channel, `read_diagnostic(diag_ref)`, and
-  the per-kind remediation generalization. The vocabulary prerequisites are now
-  merged; the conformance/observation work remains.
+  §11.9), remaining model-error observation work, and the per-kind remediation
+  generalization. Capability failure causes now use the permitted minimum-bar
+  design: complete producer-scrubbed detail is inlined into the bounded
+  model-visible diagnostic channel, so `diagnostic_ref` is only a log handle.
 - **§5.2 `ProductSurface`** facade collapse — the `ProductSurface` freeze has
   landed (§10 ratchet, above), so the surface can only shrink. Initial reads now
   flow through view descriptors (`query`) rather than per-feature methods:

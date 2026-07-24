@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Recoverable capability errors:** carry the complete producer-scrubbed cause
+  through the bounded model diagnostic channel, including path-shaped context,
+  and emit an explicit fallback when a runtime supplies no usable detail.
 - **Skill selection:** instruct the model to review visible skills before
   answering and clarify that `skill_activate` loads full instructions for
   relevant skills selected by exact listed name.
