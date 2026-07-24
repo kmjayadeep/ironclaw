@@ -18,7 +18,7 @@ use ironclaw_host_api::{MountView, ResourceScope};
 
 use crate::{
     CommandExecutionOutput, CommandExecutionRequest, RuntimeProcessError, SandboxCommandTransport,
-    TenantSandboxProcessPort,
+    TenantSandboxProcessPort, process_output::sanitize_command_output_bytes,
 };
 
 mod broker;
@@ -451,6 +451,25 @@ async fn set_sandbox_writable_permissions(
     Ok(())
 }
 
+/// Redact secret-shaped content out of a sandboxed command's raw combined
+/// stdout/stderr before it becomes model-visible.
+///
+/// Docker exec output reaches [`RebornScopedSandboxCommandTransport::run_command`]
+/// as a raw string with no pass through `LeakDetector` at all — unlike
+/// [`crate::process_port::HostProcessPort`], which routes every command's
+/// output through `capture_command_output` -> `sanitize_command_output_bytes`
+/// before it becomes model-visible. Without this, a sandboxed shell command
+/// that echoes a `.env` value or an API-key-shaped token would reach the
+/// model verbatim. This reuses the exact same chokepoint the host path uses
+/// (`sanitize_command_output_bytes`) rather than threading the sandbox path
+/// through the `StreamCapture`/saved-output-file machinery
+/// `capture_command_output` also does — that machinery is shaped for
+/// `AsyncRead` child-process pipes and does not fit the already-materialized
+/// Docker log-stream string this transport produces.
+fn redact_sandbox_command_output(raw_output: &str) -> String {
+    sanitize_command_output_bytes(raw_output.as_bytes(), raw_output.to_string()).preview
+}
+
 #[async_trait]
 impl SandboxCommandTransport for RebornScopedSandboxCommandTransport {
     async fn run_command(
@@ -533,6 +552,7 @@ impl SandboxCommandTransport for RebornScopedSandboxCommandTransport {
             output_limit,
         )
         .await?;
+        output.output = redact_sandbox_command_output(&output.output);
         self.activity.touch(&key);
         self.reconcile_background_jobs(&container_id, &key).await;
         output
@@ -1021,6 +1041,42 @@ mod tests {
             .unwrap_err();
 
         assert!(format!("{error}").contains("scoped mount grants are not supported"));
+    }
+
+    /// Regression for the sandbox output leak: pre-fix, `run_command`
+    /// assigned Docker's raw stdout/stderr straight to
+    /// `CommandExecutionOutput::output` with no pass through
+    /// `LeakDetector` at all — unlike `HostProcessPort`'s
+    /// `capture_command_output` path, which redacts every command's output
+    /// before it becomes model-visible. Drives the exact helper
+    /// `run_command` calls (`redact_sandbox_command_output`) rather than
+    /// requiring a live Docker daemon, and asserts parity against the same
+    /// `COMMAND_OUTPUT_BLOCKED_MARKER` the host path's own
+    /// `capture_command_output_blocks_secret_like_small_preview` test
+    /// (`process_output.rs`) pins for the identical secret shape.
+    #[test]
+    fn redact_sandbox_command_output_blocks_secret_like_content() {
+        let secret_output = "sk-proj-test1234567890abcdefghij";
+
+        let redacted = redact_sandbox_command_output(secret_output);
+
+        assert_eq!(
+            redacted,
+            crate::process_output::COMMAND_OUTPUT_BLOCKED_MARKER
+        );
+        assert!(
+            !redacted.contains("sk-proj-test1234567890abcdefghij"),
+            "the secret-shaped token must never reach the model verbatim"
+        );
+    }
+
+    #[test]
+    fn redact_sandbox_command_output_leaves_clean_output_untouched() {
+        let clean_output = "hello from the sandboxed container\n";
+
+        let redacted = redact_sandbox_command_output(clean_output);
+
+        assert_eq!(redacted, clean_output);
     }
 
     fn process_read_only_permissions() -> MountPermissions {

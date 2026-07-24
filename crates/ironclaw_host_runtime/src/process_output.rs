@@ -30,7 +30,10 @@ const COMMAND_OUTPUT_SCRATCH_PREFIX: &str = "ironclaw-command-output-scratch-";
 /// permissions, so saved output files from different tenants/users/projects
 /// live in disjoint, non-enumerable directories.
 const COMMAND_OUTPUT_ROOT_DIRNAME: &str = "ironclaw-command-outputs";
-const COMMAND_OUTPUT_BLOCKED_MARKER: &str =
+// pub(crate): the sandbox transport (`sandbox_process.rs`) asserts its
+// redacted output against this exact marker to prove parity with the host
+// path's blocked-output behavior.
+pub(crate) const COMMAND_OUTPUT_BLOCKED_MARKER: &str =
     "[Full command output blocked due to potential secret leakage]\n";
 const STREAM_READ_BUF_SIZE: usize = 16 * 1024;
 
@@ -397,9 +400,9 @@ fn write_final_saved_output(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SanitizedCommandOutput {
-    preview: String,
-    sanitization: SavedCommandOutputSanitization,
+pub(crate) struct SanitizedCommandOutput {
+    pub(crate) preview: String,
+    pub(crate) sanitization: SavedCommandOutputSanitization,
     saved_replacement: Option<String>,
 }
 
@@ -407,7 +410,23 @@ fn sanitize_preview_bytes(bytes: &[u8]) -> String {
     sanitize_command_output_bytes(bytes, String::from_utf8_lossy(bytes).to_string()).preview
 }
 
-fn sanitize_command_output_bytes(content: &[u8], raw_preview: String) -> SanitizedCommandOutput {
+/// Scan `content` for leaked secrets via `ironclaw_safety::LeakDetector` and
+/// return the model-facing preview text with matches redacted (or replaced
+/// entirely by [`COMMAND_OUTPUT_BLOCKED_MARKER`] when the detector itself
+/// errors). `raw_preview` is used verbatim only when `content` is clean —
+/// pass the same bytes rendered as a `String` (see [`sanitize_preview_bytes`])
+/// unless a caller already has a cheaper preview available.
+///
+/// Widened from private to `pub(crate)` so both host-process capture
+/// (`capture_command_output` above) and the tenant-sandbox exec path
+/// (`sandbox_process.rs`'s `RebornScopedSandboxCommandTransport::run_command`)
+/// share the identical redaction chokepoint on their command output — the
+/// sandbox path previously returned Docker stdout/stderr straight to the
+/// model with no `LeakDetector` pass at all.
+pub(crate) fn sanitize_command_output_bytes(
+    content: &[u8],
+    raw_preview: String,
+) -> SanitizedCommandOutput {
     let content_text = String::from_utf8_lossy(content);
     let detector = ironclaw_safety::LeakDetector::new();
     let (preview, saved_replacement, sanitization) = match detector.scan_and_clean(&content_text) {
