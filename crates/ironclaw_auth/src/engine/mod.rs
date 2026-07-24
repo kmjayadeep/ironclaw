@@ -327,8 +327,10 @@ impl AuthEngine {
                 .as_ref()
                 .map(|secret| secret.expose_secret().to_string()),
         };
-        let encoded =
-            serde_json::to_string(&stored).map_err(|_| AuthProductError::BackendUnavailable)?;
+        let encoded = serde_json::to_string(&stored).map_err(|error| {
+            tracing::warn!(%error, "OAuth flow client snapshot serialization failed");
+            AuthProductError::BackendUnavailable
+        })?;
         self.secret_store
             .put(
                 scope.clone(),
