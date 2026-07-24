@@ -466,13 +466,13 @@ fn bot_api_request(method: &str, body: serde_json::Value) -> RestrictedEgressReq
 }
 
 #[cfg(test)]
-#[path = "channel_tests.rs"]
+#[path = "tests/channel.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "channel_fetch_tests.rs"]
+#[path = "tests/channel_fetch.rs"]
 mod fetch_tests;
 
 #[cfg(test)]
-#[path = "channel_deliver_tests.rs"]
+#[path = "tests/channel_deliver.rs"]
 mod deliver_tests;
