@@ -33,11 +33,9 @@ use ironclaw_host_runtime::{
 use ironclaw_reborn_composition::{RebornAttestedComposition, RebornAttestedRaiseHook};
 use ironclaw_secrets::SecretsCrypto;
 use ironclaw_signing_provider::{GateRef as SigningGateRef, SigningProof};
-use secrecy::SecretString;
 use serde_json::json;
 
 const DEV_TESTNET_CHAIN: &str = "eip155:11155111"; // sepolia (testnet)
-const MASTER_KEY: &str = "0123456789abcdef0123456789ABCDEF";
 
 fn owner_scope() -> ResourceScope {
     ResourceScope {
@@ -106,7 +104,10 @@ fn sample_evm() -> (TxEip1559, DecodedTransaction) {
 /// Provision an EVM custodial keystore bound to the address derived from
 /// `priv_bytes`. Returns the keystore + the lowercase-hex (no `0x`) account.
 async fn keystore_with_evm_key(priv_bytes: &[u8; 32]) -> (Arc<SecretsKeyStore>, String) {
-    let crypto = SecretsCrypto::new(SecretString::from(MASTER_KEY.to_string())).unwrap();
+    // Per-test random master key (no stable key in source). The in-memory
+    // keystore never crosses a process boundary, so a fresh key each run is
+    // sufficient and keeps test keying material independent from local-dev.
+    let crypto = SecretsCrypto::generate();
     let keystore = Arc::new(SecretsKeyStore::new(crypto));
     let key = k256::ecdsa::SigningKey::from_slice(priv_bytes).unwrap();
     let address = evm::address_of(&key);
@@ -197,6 +198,15 @@ async fn custodial_request_signature_raises_gate_and_existing_resolve_path_conti
     // The existing resolve path: drive the real signer-continuation driver with
     // the matching EVM tx. This reads the persisted binding, claims the sealed
     // one-shot grant, re-checks the hash, custodial-signs, and broadcasts.
+    //
+    // NOTE on the proof type: the custodial branch
+    // (`ProviderId::Custodial` at driver.rs) IGNORES the `proof` argument
+    // entirely — it reconstructs and re-hashes the signable from the binding
+    // and signs with the keystore; the proof is only read on the external-wallet
+    // branch (where a wallet attestation must be verified). There is no
+    // `SigningProof::Custodial` variant. We pass an empty placeholder here and
+    // separately assert the proof is irrelevant for custodial in
+    // `custodial_continuation_ignores_proof_type` below.
     let proof = SigningProof::WebAuthnAssertionProof(vec![]);
     let continuation = composition
         .driver()
@@ -271,4 +281,180 @@ async fn near_and_walletconnect_provider_hints_fail_closed_without_raising() {
         err,
         ironclaw_attested_runtime::ContinuationError::MissingBinding
     ));
+}
+
+#[tokio::test]
+async fn custodial_continuation_ignores_proof_type() {
+    // The custodial resolve branch reconstructs and re-hashes the signable from
+    // the authoritative binding and signs with the keystore; it NEVER reads the
+    // `proof` argument (there is no `SigningProof::Custodial` variant). This test
+    // pins that contract: a custodial gate raised here continues successfully
+    // when handed a non-WebAuthn proof type (`WalletConnectProof`), proving the
+    // proof type is irrelevant on the custodial branch. If proof validation is
+    // ever added to the custodial path, this test must change deliberately.
+    let priv_bytes = [0x55u8; 32];
+    let (keystore, account) = keystore_with_evm_key(&priv_bytes).await;
+    let (_tx, decoded) = sample_evm();
+
+    let composition = composition_with_keystore(Arc::clone(&keystore));
+    let hook = RebornAttestedRaiseHook::new(Arc::clone(&composition));
+    let capability_id = CapabilityId::new("builtin.request_signature").unwrap();
+    let input = json!({
+        "provider_hint": "custodial",
+        "signer_account": account,
+        "decoded": decoded,
+    });
+
+    let gate = match hook
+        .raise(AttestedRaiseRequest::new(
+            capability_id.clone(),
+            execution_context(owner_scope()),
+            input,
+        ))
+        .await
+    {
+        RuntimeCapabilityOutcome::AttestedSigningRequired(gate) => gate,
+        other => panic!("expected AttestedSigningRequired, got {other:?}"),
+    };
+
+    let signing_gate_ref = SigningGateRef::new(format!("gate:attested-{}", gate.gate_id.as_str()));
+
+    // A proof type that is NOT the custodial-adjacent WebAuthn assertion. The
+    // custodial branch must still continue: the proof is never read.
+    let unrelated_proof = SigningProof::WalletConnectProof(vec![0xde, 0xad]);
+    let continuation = composition
+        .driver()
+        .continue_after_resolved(&signing_gate_ref, &unrelated_proof)
+        .await
+        .expect("custodial continuation succeeds regardless of proof type");
+    assert_eq!(
+        continuation.ledger_state,
+        ironclaw_attestation::SigningLedgerState::Signed
+    );
+}
+
+#[tokio::test]
+async fn overlong_signer_account_fails_closed_without_raising() {
+    // `signer_account` is raw agent-supplied JSON and enters the hash domain via
+    // the signing context. An over-long string is rejected (InvalidInput) before
+    // any hashing/binding work, closing the unbounded-allocation /
+    // hash-domain-confusion path. Fail-closed: no gate is raised, no grant sealed.
+    let priv_bytes = [0x66u8; 32];
+    let (keystore, _account) = keystore_with_evm_key(&priv_bytes).await;
+    let (_tx, decoded) = sample_evm();
+
+    let composition = composition_with_keystore(Arc::clone(&keystore));
+    let hook = RebornAttestedRaiseHook::new(Arc::clone(&composition));
+    let capability_id = CapabilityId::new("builtin.request_signature").unwrap();
+
+    // 129 bytes: one over the 128-byte chain-agnostic cap.
+    let overlong = "a".repeat(129);
+    let input = json!({
+        "provider_hint": "custodial",
+        "signer_account": overlong,
+        "decoded": decoded,
+    });
+    let outcome = hook
+        .raise(AttestedRaiseRequest::new(
+            capability_id.clone(),
+            execution_context(owner_scope()),
+            input,
+        ))
+        .await;
+    match outcome {
+        RuntimeCapabilityOutcome::Failed(failure) => {
+            assert_eq!(failure.capability_id, capability_id);
+            assert_eq!(failure.kind, RuntimeFailureKind::InvalidInput);
+        }
+        other => panic!("expected Failed for overlong signer_account, got {other:?}"),
+    }
+
+    // No binding persisted for the rejected raise.
+    let signing_gate_ref = SigningGateRef::new("gate:attested-overlong-none");
+    let proof = SigningProof::WebAuthnAssertionProof(vec![]);
+    let err = composition
+        .driver()
+        .continue_after_resolved(&signing_gate_ref, &proof)
+        .await
+        .expect_err("no binding persisted for an over-long signer_account");
+    assert!(matches!(
+        err,
+        ironclaw_attested_runtime::ContinuationError::MissingBinding
+    ));
+}
+
+#[tokio::test]
+async fn concurrent_register_of_same_gate_serializes_to_one_winner() {
+    // `register_attested_gate` is the serializer against a double-raise race for
+    // the SAME gate: the one-shot grant seal is an atomic CAS (`AlreadySealed`
+    // → `DuplicateBinding`) and the binding `put` is insert-only. Firing two
+    // concurrent registrations for an IDENTICAL `(gate_ref, binding)` — the
+    // grant key is derived from the binding's context + hash, so both share it —
+    // must collapse to exactly one success and one `DuplicateBinding`, never two
+    // accepted registrations.
+    //
+    // (Two independent `request_signature` invocations each mint a fresh gate_id
+    // → distinct gate_ref/run_id → distinct grant key, so they are intentionally
+    // NOT the same gate. The race this guards is re-registering one gate_ref,
+    // which is exactly what this drives.)
+    let priv_bytes = [0x77u8; 32];
+    let (keystore, account) = keystore_with_evm_key(&priv_bytes).await;
+    let (_tx, decoded) = sample_evm();
+
+    // Raise once into a throwaway composition to obtain a valid authoritative
+    // binding (real hash + context + decoded tx) without hand-constructing it.
+    let seed = composition_with_keystore(Arc::clone(&keystore));
+    let seed_hook = RebornAttestedRaiseHook::new(Arc::clone(&seed));
+    let capability_id = CapabilityId::new("builtin.request_signature").unwrap();
+    let gate = match seed_hook
+        .raise(AttestedRaiseRequest::new(
+            capability_id.clone(),
+            execution_context(owner_scope()),
+            json!({
+                "provider_hint": "custodial",
+                "signer_account": account,
+                "decoded": decoded,
+            }),
+        ))
+        .await
+    {
+        RuntimeCapabilityOutcome::AttestedSigningRequired(gate) => gate,
+        other => panic!("expected AttestedSigningRequired, got {other:?}"),
+    };
+    let gate_ref = SigningGateRef::new(format!("gate:attested-{}", gate.gate_id.as_str()));
+    let binding = seed
+        .bindings()
+        .get(&gate_ref)
+        .await
+        .expect("seed binding persisted");
+
+    // Fresh composition that has never seen this gate. Two concurrent
+    // registrations contend on the grant CAS + insert-only binding store.
+    let target = composition_with_keystore(Arc::clone(&keystore));
+    let t_a = Arc::clone(&target);
+    let t_b = Arc::clone(&target);
+    let gr_a = gate_ref.clone();
+    let gr_b = gate_ref.clone();
+    let b_a = binding.clone();
+    let b_b = binding.clone();
+    let (res_a, res_b) = tokio::join!(
+        async move { t_a.register_attested_gate(gr_a, b_a, 1, None).await },
+        async move { t_b.register_attested_gate(gr_b, b_b, 1, None).await },
+    );
+
+    let ok = [&res_a, &res_b].iter().filter(|r| r.is_ok()).count();
+    let dup = [&res_a, &res_b]
+        .iter()
+        .filter(|r| {
+            matches!(
+                r,
+                Err(ironclaw_reborn_composition::RegisterAttestedGateError::DuplicateBinding)
+            )
+        })
+        .count();
+    assert_eq!(ok, 1, "exactly one concurrent register wins the grant CAS");
+    assert_eq!(
+        dup, 1,
+        "the losing concurrent register must fail closed as DuplicateBinding"
+    );
 }

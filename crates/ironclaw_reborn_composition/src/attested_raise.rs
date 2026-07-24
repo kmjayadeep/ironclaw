@@ -55,6 +55,15 @@ use ironclaw_signing_provider::{
 
 use crate::attested::RebornAttestedComposition;
 
+/// Maximum byte length of the agent-supplied `signer_account` before it enters
+/// the hash domain. Chain-agnostic upper bound (no per-chain format knowledge):
+/// it only closes the unbounded-allocation / hash-domain-confusion path that an
+/// adversarial agent could open with an arbitrarily long string. The longest
+/// real account identity (e.g. a NEAR named account or a hex address) is well
+/// under this; honest callers are never affected. Per-chain *format* validation
+/// belongs at the shared decoder/provider boundary, not here.
+const SIGNER_ACCOUNT_MAX_BYTES: usize = 128;
+
 /// Wire form of the `request_signature` params the agent supplies.
 ///
 /// The transaction arrives already decoded (the host/decoder produced the
@@ -165,6 +174,18 @@ where
                 )
             })?;
 
+        // Bound the agent-supplied signer string before it enters the hash
+        // domain. `signer_account` is raw caller-supplied JSON; a length cap
+        // (chain-agnostic) closes the unbounded-allocation / hash-domain-confusion
+        // path without needing per-chain format knowledge. Fail-closed: an
+        // over-long signer raises no gate.
+        if params.signer_account.len() > SIGNER_ACCOUNT_MAX_BYTES {
+            return Err(RaiseFailure::new(
+                RuntimeFailureKind::InvalidInput,
+                "request_signature signer_account exceeds maximum length",
+            ));
+        }
+
         // Provider selection. Custodial-only on this branch: NEAR/WC fail closed
         // because their resolve-side verifiers need binding fields
         // (expected_access_key / expected_signing_payload) that do not exist on
@@ -250,7 +271,7 @@ where
         // Persist the authoritative binding + seal the one-shot grant. If this
         // fails, surface Failed (fail-closed) — no gate is raised.
         self.composition
-            .register_attested_gate(signing_gate_ref, binding, 0, None)
+            .register_attested_gate(signing_gate_ref, binding, now_unix_millis(), None)
             .await
             .map_err(|error| {
                 RaiseFailure::new(
@@ -268,6 +289,23 @@ where
             },
         ))
     }
+}
+
+/// Current Unix time in milliseconds.
+///
+/// Two saturating fallbacks, neither reachable in practice on a sane clock:
+/// returns `0` if the system clock is set before the Unix epoch, and clamps to
+/// `i64::MAX` if the millisecond count somehow exceeds `i64` (year ~292 million).
+/// `i64::MAX` is a deliberately monotonic-high sentinel: it can never look like a
+/// stale/expired timestamp to a future replay-window or expiry check (those
+/// treat *older* timestamps as suspect), so the clamp fails safe rather than
+/// silently aging a grant.
+fn now_unix_millis() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
 }
 
 /// Build the authoritative [`SigningContext`] from the already-authorized

@@ -564,6 +564,12 @@ impl FirstPartyCapabilityHandler for BuiltinFirstPartyTools {
         let mut process_count = 0u32;
         let (output, display_preview) = match request.capability_id.as_str() {
             ECHO_CAPABILITY_ID => (echo::dispatch(&request.input)?, None),
+            // Hook-absent fallback ONLY. In production `DefaultHostRuntime`
+            // intercepts `request_signature` before builtin dispatch and routes
+            // it to the composition `AttestedRaiseHook`; this arm is reached just
+            // when no hook is wired (e.g. a bare runtime / test harness), and it
+            // fails closed (`UnsupportedRunner`). Do not "clean up" as dead code:
+            // it is the fail-closed guarantee for the unwired path.
             REQUEST_SIGNATURE_CAPABILITY_ID => (request_signature::dispatch(&request.input)?, None),
             TIME_CAPABILITY_ID => (time::dispatch(&request.input)?, None),
             JSON_CAPABILITY_ID => (json::dispatch(&request.input)?, None),
