@@ -32,8 +32,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use ironclaw_attested_runtime::{
-    AttestedGateBindingStore, BindingOwner, ContinuationError, InMemoryAttestedGateBindingStore,
-    VerifiedContinuation,
+    AttestedGateBindingStore, BindingKey, BindingOwner, ContinuationError, VerifiedContinuation,
 };
 use ironclaw_product_workflow::{
     AttestedContinuationOutcome, AttestedContinuationRejection, AttestedGateContinuationPort,
@@ -77,7 +76,7 @@ pub struct RebornAttestedContinuation {
     /// against the persisted `binding.context` BEFORE claiming the grant /
     /// signing / broadcasting (defense-in-depth, layered on top of the driver's
     /// own binding read + hash re-check + one-shot grant CAS).
-    bindings: Arc<dyn ironclaw_attested_runtime::AttestedGateBindingStore>,
+    bindings: Arc<dyn AttestedGateBindingStore>,
 }
 
 impl RebornAttestedContinuation {
@@ -149,7 +148,7 @@ impl RebornAttestedContinuation {
         // 403 here would tell a foreign tenant the gate exists.
         let binding = self
             .bindings
-            .get(&ironclaw_attested_runtime::BindingKey::new(
+            .get(&BindingKey::new(
                 ironclaw_signing_provider::TenantId::new(scope.tenant_id.as_str()),
                 SigningGateRef::new(gate_ref.as_str()),
             ))
