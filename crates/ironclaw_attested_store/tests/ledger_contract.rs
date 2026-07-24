@@ -149,7 +149,8 @@ mod libsql_backend {
     }
     #[tokio::test]
     async fn distinct_gates_advance_independently() {
-        contract::distinct_gates_advance_independently(fresh().await).await;
+        let (store, _dir) = fresh().await;
+        contract::distinct_gates_advance_independently(store).await;
     }
     #[tokio::test]
     async fn terminal_states_never_advance() {

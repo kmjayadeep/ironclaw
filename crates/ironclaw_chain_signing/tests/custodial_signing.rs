@@ -220,10 +220,10 @@ async fn second_signing_of_same_grant_is_refused_one_shot() {
     f.signer.sign_evm(&f.req).await.expect("first sign");
     let err = f
         .grants
-        .claim(&GrantKey::from_context(
-            &f.req.context,
-            f.req.approved_tx_hash,
-        ))
+        .claim(
+            &GrantKey::from_context(&f.req.context, f.req.approved_tx_hash),
+            ironclaw_attestation::now_unix_millis(),
+        )
         .await
         .unwrap_err();
     assert_eq!(err, ironclaw_attestation::GrantError::AlreadyClaimed);
@@ -453,7 +453,7 @@ async fn preflight_failure_after_authorize_does_not_consume_grant() {
     // Crucially, the grant must NOT have been consumed: claiming it now must
     // SUCCEED (proving the gate_ref is still retryable, not stranded).
     grants
-        .claim(&gk)
+        .claim(&gk, ironclaw_attestation::now_unix_millis())
         .await
         .expect("grant must remain claimable after a post-authorize pre-flight failure");
 }

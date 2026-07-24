@@ -31,7 +31,7 @@ use ironclaw_attestation::{
     SigningLedgerState,
 };
 use ironclaw_attested_runtime::{
-    AttestedGateBinding, AttestedGateBindingStore, AttestedSignerContinuationDriver,
+    AttestedGateBinding, AttestedGateBindingStore, AttestedSignerContinuationDriver, BindingKey,
     ContinuationError, CustodialMainnetShipGate, InMemoryAttestedGateBindingStore,
     InMemoryResumeGuard, ProviderRegistry, ResumeGuard, RuntimeAttestedResumePort, SyncBindingRead,
     approved_tx_hash_ref_hex,
@@ -434,7 +434,7 @@ async fn put_binding_with_scope_res(
 ) -> Result<(), ironclaw_attested_runtime::BindingError> {
     bindings
         .put(
-            SigningGateRef::new(GATE),
+            BindingKey::new(ctx.tenant.clone(), SigningGateRef::new(GATE)),
             AttestedGateBinding {
                 provider_id: ProviderId::Custodial,
                 context: ctx.clone(),
@@ -538,8 +538,14 @@ async fn threat_1_sealed_grant_one_shot_claim() {
     let grants = InMemorySealedGrantStore::new();
     seal_grant(&grants, &ctx, hash).await;
     let key = GrantKey::from_context(&ctx, hash);
-    grants.claim(&key).await.expect("first claim wins");
-    let err = grants.claim(&key).await.expect_err("second claim fails");
+    grants
+        .claim(&key, ironclaw_attestation::now_unix_millis())
+        .await
+        .expect("first claim wins");
+    let err = grants
+        .claim(&key, ironclaw_attestation::now_unix_millis())
+        .await
+        .expect_err("second claim fails");
     assert_eq!(err, ironclaw_attestation::GrantError::AlreadyClaimed);
     let _ = keystore; // keep the bound key alive for parity with other cases
 }
@@ -594,12 +600,15 @@ async fn driver_rechecks_inconsistent_binding() {
     impl AttestedGateBindingStore for InconsistentStore {
         async fn put(
             &self,
-            _gate_ref: SigningGateRef,
+            _key: ironclaw_attested_runtime::BindingKey,
             _binding: AttestedGateBinding,
         ) -> Result<(), ironclaw_attested_runtime::BindingError> {
             Ok(())
         }
-        async fn get(&self, _gate_ref: &SigningGateRef) -> Option<AttestedGateBinding> {
+        async fn get(
+            &self,
+            _key: &ironclaw_attested_runtime::BindingKey,
+        ) -> Option<AttestedGateBinding> {
             Some(self.0.clone())
         }
     }
@@ -954,7 +963,7 @@ async fn gate_resolve_is_tenant_isolated_cross_tenant_grant_fails_closed() {
     // Tenant B's grant was never claimed — it is still sealed and claimable.
     let b_key = GrantKey::from_context(&ctx_b, hash);
     grants
-        .claim(&b_key)
+        .claim(&b_key, ironclaw_attestation::now_unix_millis())
         .await
         .expect("tenant-B grant must remain unclaimed by the failed cross-tenant resolve");
 
@@ -1020,7 +1029,7 @@ async fn gate_resolve_cross_tenant_keystore_scope_fails_closed() {
     // the one-shot grant is untouched and still claimable.
     let a_key = GrantKey::from_context(&ctx_a, hash);
     grants
-        .claim(&a_key)
+        .claim(&a_key, ironclaw_attestation::now_unix_millis())
         .await
         .expect("grant must remain unclaimed when the keystore-scope lookup fails first");
 
@@ -1061,7 +1070,7 @@ async fn binding_store_is_tenant_isolated_by_gate_ref() {
     ctx_a.gate_ref = gate_a.clone();
     bindings
         .put(
-            gate_a.clone(),
+            BindingKey::new(ctx_a.tenant.clone(), gate_a.clone()),
             AttestedGateBinding {
                 provider_id: ProviderId::Custodial,
                 context: ctx_a.clone(),
@@ -1078,7 +1087,13 @@ async fn binding_store_is_tenant_isolated_by_gate_ref() {
     // Tenant B's gate_ref has NO binding just because tenant A's does.
     let gate_b = SigningGateRef::new("gate:tenant-b:resolve");
     assert!(
-        bindings.get(&gate_b).await.is_none(),
+        bindings
+            .get(&BindingKey::new(
+                SigningTenantId::new("tenant-b"),
+                gate_b.clone()
+            ))
+            .await
+            .is_none(),
         "tenant-B gate_ref must not resolve tenant-A's binding"
     );
     assert!(
@@ -1092,7 +1107,7 @@ async fn binding_store_is_tenant_isolated_by_gate_ref() {
     ctx_b.gate_ref = gate_b.clone();
     bindings
         .put(
-            gate_b.clone(),
+            BindingKey::new(ctx_b.tenant.clone(), gate_b.clone()),
             AttestedGateBinding {
                 provider_id: ProviderId::Custodial,
                 context: ctx_b.clone(),
@@ -1108,12 +1123,18 @@ async fn binding_store_is_tenant_isolated_by_gate_ref() {
 
     // Each gate_ref resolves to its OWN tenant's binding, never the other's.
     let got_a = bindings
-        .get(&gate_a)
+        .get(&BindingKey::new(
+            SigningTenantId::new("tenant-a"),
+            gate_a.clone(),
+        ))
         .await
         .expect("tenant-a binding present");
     assert_eq!(got_a.context.tenant.as_str(), "tenant-a");
     let got_b = bindings
-        .get(&gate_b)
+        .get(&BindingKey::new(
+            SigningTenantId::new("tenant-b"),
+            gate_b.clone(),
+        ))
         .await
         .expect("tenant-b binding present");
     assert_eq!(got_b.context.tenant.as_str(), "tenant-b");
@@ -1122,7 +1143,10 @@ async fn binding_store_is_tenant_isolated_by_gate_ref() {
     // the store key must equal the binding's own `context.gate_ref`.
     let err = bindings
         .put(
-            SigningGateRef::new("gate:tenant-a:resolve"),
+            BindingKey::new(
+                SigningTenantId::new("tenant-a"),
+                SigningGateRef::new("gate:tenant-a:resolve"),
+            ),
             AttestedGateBinding {
                 provider_id: ProviderId::Custodial,
                 context: ctx_b, // gate_ref is tenant-b's, keyed under tenant-a's
@@ -1134,11 +1158,11 @@ async fn binding_store_is_tenant_isolated_by_gate_ref() {
             },
         )
         .await
-        .expect_err("binding whose context.gate_ref != store key must be rejected");
-    assert_eq!(
-        err,
-        ironclaw_attested_runtime::BindingError::GateRefMismatch
-    );
+        .expect_err("binding filed under another tenant's key must be rejected");
+    // The composite key checks the tenant axis BEFORE the gate_ref, so a
+    // cross-tenant smuggle is refused as a tenant mismatch (it is also a
+    // gate_ref mismatch; the tenant is the stronger, first-checked axis).
+    assert_eq!(err, ironclaw_attested_runtime::BindingError::TenantMismatch);
 }
 
 // ── Threats #1/#16 via the resume PORT (drives the turns resume boundary) ──
@@ -1283,6 +1307,7 @@ async fn binding_write_rejects_chain_mismatch() {
 
     // The decoded tx is on eip155:11155111 (testnet); bind a MAINNET chain. The
     // store must reject this so a testnet/mainnet smuggle never persists.
+    let tenant = ctx.tenant.clone();
     let binding = AttestedGateBinding {
         provider_id: ProviderId::Custodial,
         context: ctx,
@@ -1294,7 +1319,7 @@ async fn binding_write_rejects_chain_mismatch() {
     };
     let bindings = InMemoryAttestedGateBindingStore::new();
     let err = bindings
-        .put(SigningGateRef::new(GATE), binding)
+        .put(BindingKey::new(tenant, SigningGateRef::new(GATE)), binding)
         .await
         .expect_err("chain mismatch must be rejected");
     assert_eq!(err, ironclaw_attested_runtime::BindingError::ChainMismatch);
@@ -1418,7 +1443,7 @@ async fn put_external_binding(
 ) {
     bindings
         .put(
-            SigningGateRef::new(GATE),
+            BindingKey::new(ctx.tenant.clone(), SigningGateRef::new(GATE)),
             AttestedGateBinding {
                 provider_id,
                 context: ctx.clone(),
@@ -1548,12 +1573,15 @@ async fn driver_rejects_binding_chain_mismatch() {
     impl AttestedGateBindingStore for ChainMismatchStore {
         async fn put(
             &self,
-            _gate_ref: SigningGateRef,
+            _key: ironclaw_attested_runtime::BindingKey,
             _binding: AttestedGateBinding,
         ) -> Result<(), ironclaw_attested_runtime::BindingError> {
             Ok(())
         }
-        async fn get(&self, _gate_ref: &SigningGateRef) -> Option<AttestedGateBinding> {
+        async fn get(
+            &self,
+            _key: &ironclaw_attested_runtime::BindingKey,
+        ) -> Option<AttestedGateBinding> {
             Some(self.0.clone())
         }
     }
