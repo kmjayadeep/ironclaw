@@ -16,6 +16,7 @@
 use async_trait::async_trait;
 
 use crate::RestrictedEgress;
+use crate::attachment::{InboundAttachment, WorkspaceFile};
 
 use crate::product_adapter::external::{
     ExternalActorRef, ExternalConversationRef, ExternalEventId, ProductAttachmentDescriptor,
@@ -50,6 +51,18 @@ pub trait ChannelAdapter: Send + Sync {
     /// Parse one host-verified inbound request into a normalized outcome.
     /// Pure protocol work: no I/O, no secrets, bounded input.
     fn inbound(&self, request: VerifiedInbound<'_>) -> Result<InboundOutcome, ChannelError>;
+
+    /// Fetch one inbound attachment's bytes through the channel's restricted
+    /// egress. The generic workflow calls this only after duplicate replay has
+    /// missed and before-inbound policy has returned Allow or Rewrite, then
+    /// lands the returned bytes through the canonical project filesystem path.
+    async fn fetch_attachment(
+        &self,
+        _attachment: &AttachmentRef,
+        _egress: &dyn RestrictedEgress,
+    ) -> Result<InboundAttachment, ChannelError> {
+        Err(ChannelError::Unsupported)
+    }
 
     /// Render and send one normalized outbound envelope through restricted
     /// egress. Owns vendor formatting, splitting, target syntax, DM
@@ -175,6 +188,10 @@ pub struct OutboundTarget {
 #[derive(Debug, Clone)]
 pub enum OutboundPart {
     Text(String),
+    /// A project-workspace file materialized immediately before adapter
+    /// delivery. Raw bytes are transient: this part is never persisted in a
+    /// delivery attempt, event, projection, or transcript.
+    File(WorkspaceFile),
     /// Structured authentication challenge. The coordinator forwards this
     /// unchanged; each channel adapter owns native rendering while preserving
     /// the same recipe materialization WebUI consumes.
@@ -237,6 +254,8 @@ pub enum ChannelError {
     Render { reason: String },
     #[error("vendor wiring failed: {reason}")]
     VendorWiring { reason: String },
+    #[error("attachment transfer failed: {reason}")]
+    AttachmentTransfer { reason: String, retryable: bool },
     #[error("channel operation is not supported by this adapter")]
     Unsupported,
 }

@@ -569,6 +569,21 @@ impl RunDeliveryEventHandler {
             prompts::run_notification_projection_id(state.run_id, notification.event_kind),
         ))
         .map_err(|reason| RunDeliveryError::InvalidProjectionRef { reason })?;
+        let Some(scope_agent_id) = state.scope.agent_id.clone() else {
+            return Err(RunDeliveryError::Workflow(
+                ProductWorkflowError::BindingResolutionFailed {
+                    reason: "turn scope missing agent_id required for delivery thread scope"
+                        .to_string(),
+                },
+            ));
+        };
+        let thread_scope = ThreadScope {
+            tenant_id: state.scope.tenant_id.clone(),
+            agent_id: scope_agent_id,
+            project_id: state.scope.project_id.clone(),
+            owner_user_id: state.scope.explicit_owner_user_id().cloned(),
+            mission_id: None,
+        };
         let outcome = self
             .services
             .coordinator
@@ -576,6 +591,7 @@ impl RunDeliveryEventHandler {
                 &outbound_policy,
                 self.services.communication_preferences.as_ref(),
                 &authority,
+                self.services.project_filesystem.as_ref(),
                 CoordinatedDeliveryRequest {
                     intent: notification.intent,
                     delivery: PrepareCommunicationDeliveryRequest {
@@ -608,6 +624,7 @@ impl RunDeliveryEventHandler {
                     thread_anchor: None,
                     require_direct_message_target: notification.require_direct_message_target,
                     extension_id: &self.services.extension_id,
+                    thread_scope: &thread_scope,
                 },
             )
             .await?;

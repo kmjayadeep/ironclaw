@@ -105,6 +105,12 @@ impl ChannelAdapter for SlackChannelAdapter {
                         }
                     }
                 }
+                OutboundPart::File(_) => {
+                    parts.push(PartDeliveryOutcome::Permanent {
+                        reason: "slack file delivery is not enabled for this adapter".to_string(),
+                    });
+                    break 'parts;
+                }
                 OutboundPart::AuthPrompt {
                     view,
                     direct_message,

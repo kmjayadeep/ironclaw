@@ -44,10 +44,11 @@ use ironclaw_product::{
     BlockedAuthFlowCanceller, BlockedAuthPromptSource, ChannelConnectionNoticePolicy,
     ChannelPairingConsumeOutcome, ChannelPairingRegistry, ChannelWorkflowState,
     ChannelWorkflowStateService, ConversationBindingService, DefaultInboundTurnService,
-    DefaultProductSurface, DeliveryCoordinator, PreferenceTargetCodec,
+    DefaultProductSurface, DeliveryCoordinator, InboundAttachmentLander, PreferenceTargetCodec,
     ProductActorUserResolutionRequest, ProductActorUserResolver,
     ProductConversationSubjectRouteResolver, ProductInstallationKey, ProductInstallationScope,
-    ProductWorkflowError, ResolveStoredProductReplyTargetRequest, ResolvedProductActorUser,
+    ProductWorkflowError, ProjectFilesystemReader, ResolveStoredProductReplyTargetRequest,
+    ResolvedProductActorUser,
     ResolvedStoredProductReplyTarget, RunDeliveryObserver, RunDeliveryServices,
     StaticProductInstallationResolver, TriggeredRunDeliveryChannel,
 };
@@ -126,6 +127,7 @@ pub(crate) struct ChannelHostDeliveryDeps {
     pub(crate) route_store: Arc<dyn DeliveredGateRouteStore>,
     pub(crate) communication_preferences: Arc<dyn CommunicationPreferenceRepository>,
     pub(crate) current_delivery_targets: Arc<dyn ironclaw_product::CurrentDeliveryTargetResolver>,
+    pub(crate) project_filesystem: Arc<dyn ProjectFilesystemReader>,
     pub(crate) approval_context: Option<Arc<dyn ApprovalPromptContextSource>>,
     pub(crate) blocked_auth_prompts: Option<Arc<dyn BlockedAuthPromptSource>>,
     pub(crate) auth_flow_cancel: Option<Arc<dyn BlockedAuthFlowCanceller>>,
@@ -141,6 +143,7 @@ pub(crate) struct GenericChannelHostDeps {
     pub(crate) workflow_state: Arc<ChannelWorkflowStateService>,
     pub(crate) thread_service: Arc<dyn SessionThreadService>,
     pub(crate) turn_coordinator: Arc<dyn TurnCoordinator>,
+    pub(crate) inbound_attachments: Arc<dyn InboundAttachmentLander>,
     pub(crate) approval_interaction: Option<Arc<dyn ApprovalInteractionService>>,
     pub(crate) auth_interaction: Option<Arc<dyn AuthInteractionService>>,
     pub(crate) identity: ChannelHostIdentity,
@@ -417,6 +420,7 @@ impl GenericChannelHostAssembly {
             outbound_store: Arc::clone(&delivery.outbound_store),
             route_store: Arc::clone(&delivery.route_store),
             communication_preferences: Arc::clone(&delivery.communication_preferences),
+            project_filesystem: Arc::clone(&delivery.project_filesystem),
             coordinator: Arc::clone(&delivery.coordinator),
             extension_id: extension_id.to_string(),
             fallback_notice_scope,
@@ -572,11 +576,13 @@ impl GenericChannelHostAssembly {
 
         let (binding, workflow_state) = self.build_binding(source, extras).await?;
 
-        let inbound = Arc::new(DefaultInboundTurnService::new(
+        let inbound = DefaultInboundTurnService::new(
             Arc::clone(&binding),
             Arc::clone(&self.deps.thread_service),
             Arc::clone(&self.deps.turn_coordinator),
-        ));
+        )
+        .with_inbound_attachments(Arc::clone(&self.deps.inbound_attachments));
+        let inbound = Arc::new(inbound);
         let mut workflow = DefaultProductSurface::new(
             inbound,
             Arc::clone(&workflow_state.ledger),
@@ -792,6 +798,7 @@ impl GenericChannelHostAssembly {
             outbound_store: Arc::clone(&delivery.outbound_store),
             route_store: Arc::clone(&delivery.route_store),
             communication_preferences: Arc::clone(&delivery.communication_preferences),
+            project_filesystem: Arc::clone(&delivery.project_filesystem),
             coordinator: Arc::clone(&delivery.coordinator),
             extension_id: source.extension_id().to_string(),
             fallback_notice_scope,

@@ -420,6 +420,8 @@ impl InboundSink for GenericChannelInboundSink {
             extension_id: _,
             installation_id,
             message,
+            channel_adapter,
+            channel_egress,
         } = admission;
         let installation = AdapterInstallationId::new(&installation_id).map_err(Self::permanent)?;
         // Pairing pre-admission gate: a serviced pairing interaction is
@@ -496,7 +498,25 @@ impl InboundSink for GenericChannelInboundSink {
             classification,
             message,
         };
-        let response = Box::pin(self.config.surface.admit_channel_inbound(request)).await;
+        let response = if request.message.attachments.is_empty() {
+            Box::pin(self.config.surface.admit_channel_inbound(request)).await
+        } else {
+            // Attachment-bearing admission pins the exact adapter and
+            // manifest-restricted egress that parsed the request, so accepted
+            // intake can fetch bytes after replay dedupe and policy.
+            let Some(channel_egress) = channel_egress else {
+                return Err(InboundSinkError {
+                    retryable: true,
+                    reason: "channel attachment egress is unavailable".to_string(),
+                });
+            };
+            Box::pin(self.config.surface.admit_channel_inbound_with_attachment_transfer(
+                request,
+                channel_adapter,
+                channel_egress,
+            ))
+            .await
+        };
         match response {
             ChannelInboundSurfaceOutcome::Admitted(admission) => {
                 let admission = *admission;
@@ -521,7 +541,13 @@ impl InboundSink for GenericChannelInboundSink {
                     })
                 }
             }
-            ChannelInboundSurfaceOutcome::Invalid(error) => Err(Self::permanent(error)),
+            // Honor the error's own retryability: a transient admission
+            // failure (e.g. a surface without attachment-transfer support)
+            // must not claim a durable permanent outcome.
+            ChannelInboundSurfaceOutcome::Invalid(error) => Err(InboundSinkError {
+                retryable: error.is_retryable(),
+                reason: error.to_string(),
+            }),
             ChannelInboundSurfaceOutcome::Rejected(rejection) => {
                 let ChannelInboundSurfaceRejectedAdmission { envelope, error } = *rejection;
                 let retryable = error.is_retryable();
@@ -602,6 +628,9 @@ pub(crate) fn build_extension_ingress(
     watch: ironclaw_extension_host::SnapshotWatch,
     deployment_channels: Arc<ironclaw_extension_host::DeploymentChannelRegistry>,
     reply_context: Arc<dyn ironclaw_extension_host::ingress::ReplyContextStorePort>,
+    channel_egress_transport: Option<
+        Arc<dyn ironclaw_extension_host::egress::ChannelEgressTransport>,
+    >,
 ) -> ExtensionIngressParts {
     let registry = Arc::new(ExtensionIngressRegistry::default());
     let router = Arc::new(
@@ -611,6 +640,7 @@ pub(crate) fn build_extension_ingress(
                 secrets: Arc::clone(&registry) as Arc<dyn IngressSecretsPort>,
                 sink: Arc::clone(&registry) as Arc<dyn InboundSink>,
                 reply_context: Arc::clone(&reply_context),
+                channel_egress_transport,
             },
             ironclaw_extension_host::ingress::IngressRouterConfig::default(),
         )
@@ -790,9 +820,13 @@ mod tests {
 
     use ironclaw_host_api::ChannelInboundProductSurface;
     use ironclaw_host_api::UserId;
+    use ironclaw_host_api::{
+        RestrictedEgress, RestrictedEgressError, RestrictedEgressRequest, RestrictedEgressResponse,
+    };
     use ironclaw_product::{
-        ChannelAdapter, ExternalActorRef, ExternalConversationRef, ExternalEventId, InboundOutcome,
-        NormalizedInboundMessage, ParsedProductInbound, ProductInboundPayload,
+        AttachmentRef, ChannelAdapter, ExternalActorRef, ExternalConversationRef, ExternalEventId,
+        InboundOutcome, NormalizedInboundMessage, ParsedProductInbound,
+        ProductAttachmentDescriptor, ProductAttachmentKind, ProductInboundPayload,
         ProductTriggerReason, TrustedInboundContext, UserMessagePayload, VerifiedInbound,
     };
     use ironclaw_product::{ChannelInboundSurfaceAdmission, ChannelInboundSurfaceOutcome};
@@ -803,6 +837,7 @@ mod tests {
 
     struct CountingSurface {
         submissions: AtomicUsize,
+        transfer_submissions: AtomicUsize,
         payloads: Mutex<Vec<ProductInboundPayload>>,
     }
 
@@ -810,12 +845,17 @@ mod tests {
         fn new() -> Self {
             Self {
                 submissions: AtomicUsize::new(0),
+                transfer_submissions: AtomicUsize::new(0),
                 payloads: Mutex::new(Vec::new()),
             }
         }
 
         fn submit_count(&self) -> usize {
             self.submissions.load(Ordering::SeqCst)
+        }
+
+        fn transfer_submit_count(&self) -> usize {
+            self.transfer_submissions.load(Ordering::SeqCst)
         }
 
         fn payloads(&self) -> Vec<ProductInboundPayload> {
@@ -880,6 +920,42 @@ mod tests {
                 envelope,
                 ack,
             }))
+        }
+
+        async fn admit_channel_inbound_with_attachment_transfer(
+            &self,
+            request: ChannelInboundSurfaceRequest,
+            _channel_adapter: Arc<dyn ChannelAdapter>,
+            _channel_egress: Arc<dyn ironclaw_host_api::RestrictedEgress>,
+        ) -> ChannelInboundSurfaceOutcome {
+            self.transfer_submissions.fetch_add(1, Ordering::SeqCst);
+            self.admit_channel_inbound(request).await
+        }
+    }
+
+    /// A surface that panics on the bytes-free door and inherits the default
+    /// (fail-closed) attachment-transfer door.
+    struct DefaultingAttachmentSurface;
+
+    #[async_trait]
+    impl ChannelInboundProductSurface for DefaultingAttachmentSurface {
+        async fn admit_channel_inbound(
+            &self,
+            _request: ChannelInboundSurfaceRequest,
+        ) -> ChannelInboundSurfaceOutcome {
+            panic!("attachment admission must use the channel-transfer entrypoint")
+        }
+    }
+
+    struct TestRestrictedEgress;
+
+    #[async_trait]
+    impl RestrictedEgress for TestRestrictedEgress {
+        async fn send(
+            &self,
+            _request: RestrictedEgressRequest,
+        ) -> Result<RestrictedEgressResponse, RestrictedEgressError> {
+            Err(RestrictedEgressError::PolicyDenied)
         }
     }
 
@@ -953,7 +1029,29 @@ mod tests {
                 attachments: Vec::new(),
                 reply_context: None,
             },
+            channel_adapter: Arc::new(
+                ironclaw_extension_host::test_support::FakeChannelAdapter::default(),
+            ),
+            channel_egress: None,
         }
+    }
+
+    fn admission_with_attachment() -> InboundAdmission {
+        let mut admission = admission_for("review the attached report");
+        admission.message.attachments.push(AttachmentRef {
+            descriptor: ProductAttachmentDescriptor::new(
+                "file-1",
+                "application/pdf",
+                Some("report.pdf".to_string()),
+                Some(4),
+                ProductAttachmentKind::Document,
+            )
+            .expect("attachment descriptor"),
+            vendor_ref: "opaque-provider-file-reference".to_string(),
+            mime_hint: Some("application/pdf".to_string()),
+        });
+        admission.channel_egress = Some(Arc::new(TestRestrictedEgress));
+        admission
     }
 
     fn pairing_sink(
@@ -1021,6 +1119,10 @@ mod tests {
             extension_id: extension_id.to_string(),
             installation_id: installation_id.to_string(),
             message,
+            channel_adapter: Arc::new(
+                ironclaw_extension_host::test_support::FakeChannelAdapter::default(),
+            ),
+            channel_egress: None,
         })
         .await
         .expect("normalized interaction reaches workflow");
@@ -1369,5 +1471,68 @@ mod tests {
         sink.drain().await;
         assert_eq!(workflow.submit_count(), 1);
         assert_eq!(observer.lock().expect("outcomes lock").pop(), None);
+    }
+
+    #[tokio::test]
+    async fn generic_sink_routes_attachment_admission_through_the_transfer_door() {
+        let (sink, workflow, _observer) = pairing_sink(ChannelPairingInterception::NotHandled);
+
+        sink.admit(admission_with_attachment())
+            .await
+            .expect("attachment message reaches the product surface");
+
+        assert_eq!(
+            workflow.transfer_submit_count(),
+            1,
+            "attachment-bearing admission must pin the transfer door"
+        );
+        let payloads = workflow.payloads();
+        assert_eq!(payloads.len(), 1);
+        let ProductInboundPayload::UserMessage(payload) = &payloads[0] else {
+            panic!("attachment admission stays a user message");
+        };
+        assert_eq!(payload.attachments.len(), 1);
+        assert_eq!(payload.attachments[0].external_file_id, "file-1");
+    }
+
+    #[tokio::test]
+    async fn attachment_admission_without_channel_egress_is_retryable() {
+        let (sink, workflow, _observer) = pairing_sink(ChannelPairingInterception::NotHandled);
+        let mut admission = admission_with_attachment();
+        admission.channel_egress = None;
+
+        let error = sink
+            .admit(admission)
+            .await
+            .expect_err("missing channel egress must not claim durable acceptance");
+
+        assert!(error.retryable);
+        assert_eq!(error.reason, "channel attachment egress is unavailable");
+        assert_eq!(workflow.submit_count(), 0);
+        assert_eq!(workflow.transfer_submit_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn inherited_attachment_transfer_failure_is_retryable_without_durable_ack() {
+        let sink = GenericChannelInboundSink::new(ChannelInboundSinkConfig {
+            adapter_id: ProductAdapterId::new("vendorx").expect("adapter id"),
+            evidence: VerifiedEvidenceMint::SharedSecretHeader {
+                header: "X-Vendor-Secret".to_string(),
+            },
+            surface: Arc::new(DefaultingAttachmentSurface),
+            observer: None,
+        });
+
+        let error = sink
+            .admit(admission_with_attachment())
+            .await
+            .expect_err("an inherited unsupported transfer must not claim durable acceptance");
+
+        assert!(error.retryable);
+        assert!(
+            error.reason.contains("workflow transient failure"),
+            "unexpected reason: {}",
+            error.reason
+        );
     }
 }

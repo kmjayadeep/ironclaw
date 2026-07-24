@@ -602,6 +602,13 @@ impl RebornRuntimeStores {
         let outbound_state = Arc::clone(&self.outbound_state);
         let delivered_gate_routes = Arc::clone(&self.delivered_gate_routes);
         let outbound_preferences = Arc::clone(&self.outbound_preferences);
+        let workspace_filesystem = Arc::clone(&self.workspace_filesystem);
+        let project_filesystem: Arc<dyn ironclaw_product::ProjectFilesystemReader> = Arc::new(
+            crate::support::fs::ProjectScopedFilesystemReader::with_max_read_bytes(
+                Arc::clone(&workspace_filesystem),
+                ironclaw_attachments::DEFAULT_ATTACHMENT_BUDGETS.max_file_bytes as u64,
+            ),
+        );
         let delivery = self.delivery_coordinator.clone().map(|coordinator| {
             crate::extension_host::channel_host::ChannelHostDeliveryDeps {
                 coordinator,
@@ -610,12 +617,16 @@ impl RebornRuntimeStores {
                 communication_preferences: Arc::clone(&outbound_preferences),
                 current_delivery_targets: Arc::clone(&self.current_delivery_targets)
                     as Arc<dyn CurrentDeliveryTargetResolver>,
+                project_filesystem: Arc::clone(&project_filesystem),
                 approval_context,
                 blocked_auth_prompts,
                 auth_flow_cancel,
                 event_router: run_delivery_events,
             }
         });
+        let inbound_attachments = Arc::new(crate::support::fs::ProjectScopedAttachmentLander::new(
+            workspace_filesystem,
+        ));
 
         let identity_lookup = Some(Arc::clone(&self.channel_identity_store)
             as Arc<dyn crate::provider_identity::RebornUserIdentityLookup>);
@@ -629,6 +640,7 @@ impl RebornRuntimeStores {
                     workflow_state,
                     thread_service,
                     turn_coordinator,
+                    inbound_attachments,
                     approval_interaction,
                     auth_interaction,
                     identity,
@@ -4584,6 +4596,7 @@ async fn build_backend_production(
                     channel_egress_scope.user_id.clone(),
                 ),
             ),
+            channel_egress_transport.clone(),
         );
         let channel_pairing_registry_built = {
             let registry = Arc::new(ChannelPairingRegistry::default());

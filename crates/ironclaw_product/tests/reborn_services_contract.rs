@@ -21,7 +21,7 @@ use ironclaw_approvals::{
     PersistentApprovalPolicyKey, PersistentApprovalPolicyStorePort, ToolPermissionOverride,
     ToolPermissionOverrideInput, ToolPermissionOverrideKey, ToolPermissionOverrideStorePort,
 };
-use ironclaw_attachments::InboundAttachment;
+use ironclaw_host_api::InboundAttachment;
 use ironclaw_auth::{
     AuthAccountLastError, AuthAccountState, CredentialAccountId, CredentialAccountLabel,
     CredentialAccountProjection, CredentialAccountStatus, CredentialOwnership,
@@ -2632,7 +2632,7 @@ impl ProjectFilesystemReader for StaticProjectFilesystemReader {
         &self,
         _thread_scope: &ThreadScope,
         _path: &str,
-    ) -> Result<ProjectFsFile, ProjectFsError> {
+    ) -> Result<ironclaw_host_api::WorkspaceFile, ProjectFsError> {
         Err(ProjectFsError::NotFound)
     }
 

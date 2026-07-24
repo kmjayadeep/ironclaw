@@ -21,7 +21,7 @@ use crate::{
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::future::try_join_all;
-use ironclaw_attachments::InboundAttachment;
+use ironclaw_host_api::InboundAttachment;
 use ironclaw_auth::{
     AuthFlowStatus, AuthProductScope, AuthProviderId, CredentialAccountId,
     CredentialAccountProjection, CredentialAccountStatus, CredentialAccountUpdateBinding,
@@ -3885,10 +3885,17 @@ where
             .await?;
         // dispatch-exempt: read-only, already-authorized workspace file download
         // through the facade's own port — not an in-turn mutating tool call.
-        reader
+        let file = reader
             .read_file(&thread_scope, &request.path)
             .await
-            .map_err(map_project_fs_error)
+            .map_err(map_project_fs_error)?;
+        Ok(ProjectFsFile {
+            path: file.path.as_str().to_string(),
+            filename: file.filename,
+            mime_type: file.mime_type,
+            size_bytes: file.bytes.len() as u64,
+            bytes: file.bytes,
+        })
     }
 
     async fn list_fs_mounts(

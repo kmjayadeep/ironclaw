@@ -62,6 +62,38 @@ use ironclaw_product::{
     VerifiedInbound,
 };
 use ironclaw_product::{
+    ProjectFilesystemReader, ProjectFsEntry, ProjectFsError, ProjectFsStat,
+};
+
+struct NoProjectFilesystem;
+
+#[async_trait]
+impl ProjectFilesystemReader for NoProjectFilesystem {
+    async fn list_dir(
+        &self,
+        _thread_scope: &ironclaw_threads::ThreadScope,
+        _path: &str,
+    ) -> Result<Vec<ProjectFsEntry>, ProjectFsError> {
+        Err(ProjectFsError::NotFound)
+    }
+
+    async fn read_file(
+        &self,
+        _thread_scope: &ironclaw_threads::ThreadScope,
+        _path: &str,
+    ) -> Result<ironclaw_host_api::WorkspaceFile, ProjectFsError> {
+        Err(ProjectFsError::NotFound)
+    }
+
+    async fn stat(
+        &self,
+        _thread_scope: &ironclaw_threads::ThreadScope,
+        _path: &str,
+    ) -> Result<ProjectFsStat, ProjectFsError> {
+        Err(ProjectFsError::NotFound)
+    }
+}
+use ironclaw_product::{
     BlockedAuthPromptRequest, BlockedAuthPromptSource, ChannelDeliveryResolver,
     ConversationBindingService, CurrentDeliveryTarget, CurrentDeliveryTargetResolver,
     DeliveryCoordinator, DeliveryReplyContextSource, DeliveryRetryPolicy,
@@ -647,6 +679,7 @@ fn triggered_wire_fixture(
         harness.binding.subject_user_id.clone(),
     );
     let run_services = RunDeliveryServices {
+        project_filesystem: std::sync::Arc::new(NoProjectFilesystem),
         binding_service: harness
             .binding_service_for_test()
             .expect("group binding service"),
@@ -1007,6 +1040,7 @@ async fn drive_immediate_cross_channel_result(
         available: AtomicBool::new(true),
     });
     let run_services = RunDeliveryServices {
+        project_filesystem: std::sync::Arc::new(NoProjectFilesystem),
         binding_service: matrix_binding_service,
         thread_service: harness
             .thread_service_for_test()
@@ -1543,6 +1577,7 @@ async fn web_app_source_can_seal_the_current_run_to_web_app_without_external_egr
         },
     ));
     let run_services = RunDeliveryServices {
+        project_filesystem: std::sync::Arc::new(NoProjectFilesystem),
         binding_service: harness
             .binding_service_for_test()
             .expect("group binding service"),
@@ -1750,6 +1785,7 @@ async fn web_app_source_immediate_result_fans_out_to_selected_external_bot_wire(
         },
     ));
     let run_services = RunDeliveryServices {
+        project_filesystem: std::sync::Arc::new(NoProjectFilesystem),
         binding_service: harness
             .binding_service_for_test()
             .expect("group binding service"),

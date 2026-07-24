@@ -11,13 +11,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use ironclaw_attachments::{
-    DEFAULT_MAX_ATTACHMENT_BYTES, InboundAttachment, land_inbound_attachments,
-};
+use ironclaw_attachments::{DEFAULT_MAX_ATTACHMENT_BYTES, land_inbound_attachments};
 use ironclaw_filesystem::{FilesystemError, RootFilesystem, ScopedFilesystem};
 use ironclaw_host_api::{
-    ProductSurfaceError, ProductSurfaceErrorCode, ProductSurfaceErrorKind, ResourceScope,
-    ScopedPath,
+    InboundAttachment, ProductSurfaceError, ProductSurfaceErrorCode, ProductSurfaceErrorKind,
+    ResourceScope, ScopedPath,
 };
 use ironclaw_loop_host::{LoopAttachmentReadError, LoopAttachmentReadPort};
 use ironclaw_product::{InboundAttachmentLander, InboundAttachmentReader};

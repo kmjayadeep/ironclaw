@@ -1508,6 +1508,16 @@ impl RebornRuntime {
         let workflow_state = Arc::new(ironclaw_product::ChannelWorkflowStateService::new(
             workflow_filesystem,
         ));
+        let workspace_filesystem = self.read_write_workspace_filesystem()?;
+        let project_filesystem: Arc<dyn ironclaw_product::ProjectFilesystemReader> = Arc::new(
+            crate::support::fs::ProjectScopedFilesystemReader::with_max_read_bytes(
+                Arc::clone(&workspace_filesystem),
+                ironclaw_attachments::DEFAULT_ATTACHMENT_BUDGETS.max_file_bytes as u64,
+            ),
+        );
+        let inbound_attachments = Arc::new(crate::support::fs::ProjectScopedAttachmentLander::new(
+            workspace_filesystem,
+        ));
         let delivery = self.delivery_coordinator.clone().map(|coordinator| {
             crate::extension_host::channel_host::ChannelHostDeliveryDeps {
                 coordinator,
@@ -1516,6 +1526,7 @@ impl RebornRuntime {
                 communication_preferences: Arc::clone(&self.outbound_preferences),
                 current_delivery_targets: Arc::clone(&self.current_delivery_targets)
                     as Arc<dyn ironclaw_product::CurrentDeliveryTargetResolver>,
+                project_filesystem: Arc::clone(&project_filesystem),
                 approval_context: None,
                 blocked_auth_prompts: None,
                 auth_flow_cancel: None,
@@ -1534,6 +1545,7 @@ impl RebornRuntime {
                     workflow_state,
                     thread_service,
                     turn_coordinator,
+                    inbound_attachments,
                     approval_interaction: None,
                     auth_interaction: None,
                     identity,

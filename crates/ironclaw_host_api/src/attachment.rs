@@ -1,7 +1,32 @@
-//! Canonical in-memory representation of a materialized attachment or file.
+//! Attachment vocabulary shared by product adapters, workflow, and landing.
+//!
+//! These are the byte-carrying attachment DTOs referenced by product-adapter
+//! contracts (e.g. [`crate::product_adapter::ChannelAdapter`]); the landing
+//! and budget logic that consumes them lives in `ironclaw_attachments`.
 
-use ironclaw_host_api::ScopedPath;
 use std::fmt;
+
+use crate::ScopedPath;
+
+/// One inbound attachment with its raw bytes, ready to be landed and turned
+/// into a transcript attachment reference.
+///
+/// The attachment kind and the fallback filename extension are *derived from*
+/// `mime_type` against the attachment format registry by the landing routine —
+/// the authoritative source — so callers cannot drift them out of sync with
+/// the MIME type they pass.
+#[derive(Debug, Clone)]
+pub struct InboundAttachment {
+    /// Stable identifier for this attachment within its message.
+    pub id: String,
+    /// MIME type as received at the ingress boundary. The attachment kind and
+    /// fallback extension are derived from this.
+    pub mime_type: String,
+    /// Original filename, when the source provided one.
+    pub filename: Option<String>,
+    /// Raw attachment bytes to land in the project filesystem.
+    pub bytes: Vec<u8>,
+}
 
 /// A trusted, in-memory file whose path has already been validated by its
 /// owning filesystem boundary.
@@ -33,9 +58,6 @@ impl<P> MaterializedFile<P> {
 
 /// A file from a thread's scoped project workspace.
 pub type WorkspaceFile = MaterializedFile<ScopedPath>;
-
-/// A file from the standalone multi-mount browse surface.
-pub type ProjectFsFile = MaterializedFile<String>;
 
 #[cfg(test)]
 mod tests {

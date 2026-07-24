@@ -153,6 +153,50 @@ use ironclaw_product::BlockedAuthPromptSource;
 mod e2e_auth_challenge;
 use e2e_auth_challenge::FakeAuthChallengeProvider;
 
+
+struct InertAttachmentLander;
+
+#[async_trait::async_trait]
+impl ironclaw_product::InboundAttachmentLander for InertAttachmentLander {
+    async fn land(
+        &self,
+        _thread_scope: &ironclaw_threads::ThreadScope,
+        _message_id: &str,
+        _attachments: Vec<ironclaw_host_api::InboundAttachment>,
+    ) -> Result<Vec<ironclaw_threads::AttachmentRef>, ironclaw_host_api::ProductSurfaceError> {
+        Ok(Vec::new())
+    }
+}
+
+struct NoProjectFilesystem;
+
+#[async_trait::async_trait]
+impl ironclaw_product::ProjectFilesystemReader for NoProjectFilesystem {
+    async fn list_dir(
+        &self,
+        _thread_scope: &ironclaw_threads::ThreadScope,
+        _path: &str,
+    ) -> Result<Vec<ironclaw_product::ProjectFsEntry>, ironclaw_product::ProjectFsError> {
+        Err(ironclaw_product::ProjectFsError::NotFound)
+    }
+
+    async fn read_file(
+        &self,
+        _thread_scope: &ironclaw_threads::ThreadScope,
+        _path: &str,
+    ) -> Result<ironclaw_host_api::WorkspaceFile, ironclaw_product::ProjectFsError> {
+        Err(ironclaw_product::ProjectFsError::NotFound)
+    }
+
+    async fn stat(
+        &self,
+        _thread_scope: &ironclaw_threads::ThreadScope,
+        _path: &str,
+    ) -> Result<ironclaw_product::ProjectFsStat, ironclaw_product::ProjectFsError> {
+        Err(ironclaw_product::ProjectFsError::NotFound)
+    }
+}
+
 const TENANT: &str = "tenant:slack";
 const AGENT: &str = "agent:slack";
 const PROJECT: &str = "project:slack";
@@ -477,6 +521,7 @@ async fn build_harness_with_options(options: HarnessOptions) -> Harness {
                 UserId::new(USER).expect("user"),       // safety: static test user id is valid.
             ),
         ),
+        None,
     );
     let delivery_coordinator = Arc::new(DeliveryCoordinator::new(
         Arc::clone(&outbound_store),
@@ -522,6 +567,7 @@ async fn build_harness_with_options(options: HarnessOptions) -> Harness {
         )),
         thread_service: Arc::new(threads.clone()),
         turn_coordinator: Arc::new(coordinator.clone()),
+        inbound_attachments: Arc::new(InertAttachmentLander),
         approval_interaction: Some(approval_interaction),
         auth_interaction: Some(auths.clone() as Arc<dyn AuthInteractionService>),
         identity: ChannelHostIdentity {
@@ -539,6 +585,7 @@ async fn build_harness_with_options(options: HarnessOptions) -> Harness {
             communication_preferences: preferences,
             current_delivery_targets: Arc::clone(&current_delivery_targets)
                 as Arc<dyn CurrentDeliveryTargetResolver>,
+            project_filesystem: Arc::new(NoProjectFilesystem),
             approval_context: None,
             blocked_auth_prompts: options.auth_challenges.map(|provider| {
                 Arc::new(ProductAuthBlockedAuthPromptSource::new(Some(provider)))
@@ -1389,6 +1436,7 @@ async fn triggered_approval_prompt_route_resolves_dm_approve_on_foreign_scope() 
     let fixture = triggered_delivery_fixture(Arc::clone(&outbound_store)).await;
     let driver_egress = fixture.driver_egress.clone();
     let services = RunDeliveryServices {
+        project_filesystem: Arc::new(NoProjectFilesystem),
         binding_service: Arc::new(NoopTriggeredBindingService),
         thread_service: Arc::new(threads),
         turn_coordinator: coordinator,
@@ -1630,6 +1678,7 @@ async fn triggered_auth_prompt_route_delivers_dm_setup_link_on_foreign_scope() {
     let fixture = triggered_delivery_fixture(Arc::clone(&outbound_store)).await;
     let driver_egress = fixture.driver_egress.clone();
     let services = RunDeliveryServices {
+        project_filesystem: Arc::new(NoProjectFilesystem),
         binding_service: Arc::new(NoopTriggeredBindingService),
         thread_service: Arc::new(threads),
         turn_coordinator: coordinator,
@@ -1757,6 +1806,7 @@ async fn triggered_auth_prompt_oauth_target_not_dm_suppresses_setup_link_and_can
     let fixture = triggered_delivery_fixture(Arc::clone(&outbound_store)).await;
     let driver_egress = fixture.driver_egress.clone();
     let services = RunDeliveryServices {
+        project_filesystem: Arc::new(NoProjectFilesystem),
         binding_service: Arc::new(NoopTriggeredBindingService),
         thread_service: Arc::new(threads),
         turn_coordinator: Arc::clone(&coordinator) as Arc<dyn TurnCoordinator>,

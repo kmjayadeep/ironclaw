@@ -33,6 +33,7 @@
 
 pub mod action;
 pub mod approval;
+pub mod attachment;
 pub mod audit;
 pub mod authorized;
 pub mod capability;
@@ -83,6 +84,7 @@ pub mod product_surface;
 // authoritative grouping for each vocabulary family.
 pub use action::*;
 pub use approval::*;
+pub use attachment::*;
 pub use audit::*;
 pub use authorized::*;
 pub use capability::*;

@@ -463,6 +463,10 @@ fn pairing_admission_for(
         extension_id: EXT.to_string(),
         installation_id: installation_id.to_string(),
         message: direct_message(&format!("/start {}", code.as_str()), actor_id),
+        channel_adapter: std::sync::Arc::new(
+            ironclaw_extension_host::test_support::FakeChannelAdapter::default(),
+        ),
+        channel_egress: None,
     }
 }
 

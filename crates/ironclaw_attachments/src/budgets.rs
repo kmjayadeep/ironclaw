@@ -9,7 +9,7 @@ pub struct AttachmentBudgets {
 /// Current WebUI-compatible attachment budgets.
 pub const DEFAULT_ATTACHMENT_BUDGETS: AttachmentBudgets = AttachmentBudgets {
     max_count: 10,
-    max_file_bytes: 5 * 1024 * 1024,
+    max_file_bytes: 10 * 1024 * 1024,
     max_total_bytes: 10 * 1024 * 1024,
 };
 
@@ -20,7 +20,7 @@ mod tests {
     #[test]
     fn default_budgets_match_webui_contract() {
         assert_eq!(DEFAULT_ATTACHMENT_BUDGETS.max_count, 10);
-        assert_eq!(DEFAULT_ATTACHMENT_BUDGETS.max_file_bytes, 5 * 1024 * 1024);
+        assert_eq!(DEFAULT_ATTACHMENT_BUDGETS.max_file_bytes, 10 * 1024 * 1024);
         assert_eq!(DEFAULT_ATTACHMENT_BUDGETS.max_total_bytes, 10 * 1024 * 1024);
     }
 }

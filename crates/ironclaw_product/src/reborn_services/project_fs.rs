@@ -16,6 +16,7 @@
 //! out are scoped paths (`/workspace/...`) — never host or virtual paths.
 
 use async_trait::async_trait;
+use ironclaw_host_api::WorkspaceFile;
 use serde::{Deserialize, Serialize};
 
 use ironclaw_threads::ThreadScope;
@@ -71,6 +72,7 @@ pub struct ProjectFsFile {
     pub size_bytes: u64,
     pub bytes: Vec<u8>,
 }
+
 
 /// Errors a project-filesystem read may produce.
 ///
@@ -150,7 +152,7 @@ pub trait ProjectFilesystemReader: Send + Sync {
         &self,
         thread_scope: &ThreadScope,
         path: &str,
-    ) -> Result<ProjectFsFile, ProjectFsError>;
+    ) -> Result<WorkspaceFile, ProjectFsError>;
 
     /// Return metadata for `path` without reading its bytes.
     async fn stat(

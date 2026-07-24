@@ -10,33 +10,13 @@
 
 use ironclaw_common::{AttachmentKind, AttachmentRef, canonical_extension, kind_for_mime};
 use ironclaw_filesystem::{RootFilesystem, ScopedFilesystem};
-use ironclaw_host_api::ResourceScope;
+use ironclaw_host_api::{InboundAttachment, ResourceScope};
 
 use crate::landing::{AttachmentLanding, AttachmentLandingError, land_attachment};
 
 /// Canonical extension to synthesize a filename with when the MIME type is not
 /// in the attachment format registry.
 const UNKNOWN_EXTENSION: &str = "bin";
-
-/// One inbound attachment with its raw bytes, ready to be landed and turned
-/// into a transcript [`AttachmentRef`].
-///
-/// The attachment `kind` and the fallback filename extension are *derived from*
-/// `mime_type` against the [`ironclaw_common`] attachment format registry — the
-/// authoritative source — so callers cannot drift them out of sync with the
-/// MIME type they pass.
-#[derive(Debug, Clone)]
-pub struct InboundAttachment {
-    /// Stable identifier for this attachment within its message.
-    pub id: String,
-    /// MIME type as received at the ingress boundary. The attachment kind and
-    /// fallback extension are derived from this.
-    pub mime_type: String,
-    /// Original filename, when the source provided one.
-    pub filename: Option<String>,
-    /// Raw attachment bytes to land in the project filesystem.
-    pub bytes: Vec<u8>,
-}
 
 /// Land each inbound attachment's bytes under the project mount and return the
 /// transcript references, with `storage_key` set to the landed [`ScopedPath`]

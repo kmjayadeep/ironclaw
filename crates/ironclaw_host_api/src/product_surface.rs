@@ -10,10 +10,11 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActivityId, AdapterInstallationId, AgentId, CapabilityId, ChannelInboundClassification,
-    NormalizedInboundMessage, ProductAdapterError, ProductAdapterId, ProductInboundAck,
-    ProductInboundEnvelope, ProductSourceChannel, ProjectId, ProtocolAuthEvidence, RedactedString,
-    TenantId, ThreadId, TurnActor, TurnScope, UserId,
+    ActivityId, AdapterInstallationId, AgentId, CapabilityId, ChannelAdapter,
+    ChannelInboundClassification, NormalizedInboundMessage, ProductAdapterError, ProductAdapterId,
+    ProductInboundAck, ProductInboundEnvelope, ProductSourceChannel, ProjectId,
+    ProtocolAuthEvidence, RedactedString, RestrictedEgress, TenantId, ThreadId, TurnActor,
+    TurnScope, UserId,
 };
 
 /// One verified, normalized channel message admitted through a product surface.
@@ -70,6 +71,32 @@ pub trait ChannelInboundProductSurface: Send + Sync {
         &self,
         request: ChannelInboundSurfaceRequest,
     ) -> ChannelInboundSurfaceOutcome;
+
+    /// Admit one channel message while pinning the exact adapter and
+    /// manifest-restricted egress authority that parsed it, so accepted
+    /// user-message intake can fetch attachment bytes through restricted
+    /// egress after replay dedupe and before-inbound policy. The authority is
+    /// transient host state and never enters the serialized envelope or the
+    /// durable action ledger.
+    ///
+    /// The default admits attachment-free messages through
+    /// [`Self::admit_channel_inbound`] and fails attachment-bearing admission
+    /// closed (retryably) for surfaces without transfer support.
+    async fn admit_channel_inbound_with_attachment_transfer(
+        &self,
+        request: ChannelInboundSurfaceRequest,
+        _channel_adapter: Arc<dyn ChannelAdapter>,
+        _channel_egress: Arc<dyn RestrictedEgress>,
+    ) -> ChannelInboundSurfaceOutcome {
+        if request.message.attachments.is_empty() {
+            return self.admit_channel_inbound(request).await;
+        }
+        ChannelInboundSurfaceOutcome::Invalid(ProductAdapterError::WorkflowTransient {
+            reason: RedactedString::new(
+                "channel attachment transfer is not supported by this product surface",
+            ),
+        })
+    }
 }
 
 /// Authenticated product-surface caller stamped by a trusted terminal boundary.

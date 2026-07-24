@@ -158,6 +158,7 @@ struct TriggeredNotification {
 /// triggered run.
 struct TriggeredNotificationContext<'a> {
     scope: &'a TurnScope,
+    thread_scope: &'a ThreadScope,
     actor: &'a TurnActor,
     run_id: TurnRunId,
     trigger_context: &'a TriggerCommunicationContext,
@@ -389,6 +390,7 @@ impl TriggeredRunDeliveryEventHandler {
         };
         let context = TriggeredNotificationContext {
             scope: &state.scope,
+            thread_scope: &thread_scope,
             actor: &actor,
             run_id: state.run_id,
             trigger_context: &self.request.trigger_context,
@@ -984,6 +986,7 @@ async fn deliver_triggered_notification(
             &outbound_policy,
             services.communication_preferences.as_ref(),
             context.authority,
+            services.project_filesystem.as_ref(),
             CoordinatedDeliveryRequest {
                 intent: notification.intent,
                 delivery,
@@ -991,6 +994,7 @@ async fn deliver_triggered_notification(
                 thread_anchor: None,
                 require_direct_message_target: notification.require_direct_message_target,
                 extension_id: &services.extension_id,
+                thread_scope: context.thread_scope,
             },
         )
         .await

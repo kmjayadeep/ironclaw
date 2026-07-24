@@ -10,12 +10,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{
-    ProductAdapterId, ProductInboundAck, ProductInboundEnvelope, ProductInboundPayload,
-    ProductRejection, ProductSourceChannel,
+    AttachmentRef as ChannelAttachmentRef, ChannelAdapter, ChannelError, ProductAdapterId,
+    ProductInboundAck, ProductInboundEnvelope, ProductInboundPayload, ProductRejection,
+    ProductSourceChannel,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use ironclaw_attachments::InboundAttachment;
+use ironclaw_attachments::DEFAULT_ATTACHMENT_BUDGETS;
+use ironclaw_host_api::{InboundAttachment, RestrictedEgress};
 #[cfg(test)]
 use ironclaw_host_api::UserId;
 use ironclaw_threads::{
@@ -192,6 +194,24 @@ pub trait InboundTurnService: Send + Sync {
         self.accept_user_message_with_before_policy(envelope, before_inbound_policy)
             .await
     }
+
+    /// Accept a channel user message with the exact transient adapter and
+    /// restricted egress authority pinned by the ingress router.
+    async fn accept_user_message_with_before_policy_and_channel_transfer(
+        &self,
+        envelope: &ProductInboundEnvelope,
+        before_inbound_policy: &dyn BeforeInboundPolicy,
+        _channel_adapter: Arc<dyn ChannelAdapter>,
+        _channel_egress: Arc<dyn RestrictedEgress>,
+    ) -> Result<InboundUserMessageDispatch, ProductWorkflowError> {
+        if !envelope.channel_attachment_refs().is_empty() {
+            return Err(permanent_attachment_failure(
+                "channel attachment transfer is not supported by this turn service",
+            ));
+        }
+        self.accept_user_message_with_before_policy(envelope, before_inbound_policy)
+            .await
+    }
 }
 
 /// Default implementation that composes a [`ConversationBindingService`] with a
@@ -268,8 +288,14 @@ where
         envelope: &ProductInboundEnvelope,
         before_inbound_policy: &dyn BeforeInboundPolicy,
     ) -> Result<InboundUserMessageDispatch, ProductWorkflowError> {
-        self.accept_with_before_policy_inner(envelope, before_inbound_policy, Vec::new())
-            .await
+        self.accept_with_before_policy_inner(
+            envelope,
+            before_inbound_policy,
+            Vec::new(),
+            None,
+            None,
+        )
+        .await
     }
 
     async fn accept_user_message_with_before_policy_and_attachments(
@@ -278,8 +304,31 @@ where
         before_inbound_policy: &dyn BeforeInboundPolicy,
         attachments: Vec<InboundAttachment>,
     ) -> Result<InboundUserMessageDispatch, ProductWorkflowError> {
-        self.accept_with_before_policy_inner(envelope, before_inbound_policy, attachments)
-            .await
+        self.accept_with_before_policy_inner(
+            envelope,
+            before_inbound_policy,
+            attachments,
+            None,
+            None,
+        )
+        .await
+    }
+
+    async fn accept_user_message_with_before_policy_and_channel_transfer(
+        &self,
+        envelope: &ProductInboundEnvelope,
+        before_inbound_policy: &dyn BeforeInboundPolicy,
+        channel_adapter: Arc<dyn ChannelAdapter>,
+        channel_egress: Arc<dyn RestrictedEgress>,
+    ) -> Result<InboundUserMessageDispatch, ProductWorkflowError> {
+        self.accept_with_before_policy_inner(
+            envelope,
+            before_inbound_policy,
+            Vec::new(),
+            Some(channel_adapter),
+            Some(channel_egress),
+        )
+        .await
     }
 }
 
@@ -294,6 +343,8 @@ where
         envelope: &ProductInboundEnvelope,
         before_inbound_policy: &dyn BeforeInboundPolicy,
         attachments: Vec<InboundAttachment>,
+        pinned_channel_adapter: Option<Arc<dyn ChannelAdapter>>,
+        pinned_channel_egress: Option<Arc<dyn RestrictedEgress>>,
     ) -> Result<InboundUserMessageDispatch, ProductWorkflowError> {
         let ProductInboundPayload::UserMessage(payload) = envelope.payload() else {
             return Err(ProductWorkflowError::UnsupportedActionKind {
@@ -337,10 +388,102 @@ where
             }
         };
 
+        let attachments = self
+            .resolve_inbound_attachments(
+                envelope_for_turn,
+                attachments,
+                pinned_channel_adapter.as_deref(),
+                pinned_channel_egress.as_deref(),
+            )
+            .await?;
+
         self.accept_prepared_user_message(prepared_for_turn, envelope_for_turn, attachments)
             .await
             .map(Box::new)
             .map(InboundUserMessageDispatch::Accepted)
+    }
+
+    async fn resolve_inbound_attachments(
+        &self,
+        envelope: &ProductInboundEnvelope,
+        inline_attachments: Vec<InboundAttachment>,
+        pinned_channel_adapter: Option<&dyn ChannelAdapter>,
+        pinned_channel_egress: Option<&dyn RestrictedEgress>,
+    ) -> Result<Vec<InboundAttachment>, ProductWorkflowError> {
+        let ProductInboundPayload::UserMessage(payload) = envelope.payload() else {
+            return Err(ProductWorkflowError::UnsupportedActionKind {
+                kind: "non_user_message".into(),
+            });
+        };
+        let sources = envelope.channel_attachment_refs();
+        if !inline_attachments.is_empty() {
+            if !sources.is_empty() {
+                return Err(permanent_attachment_failure(
+                    "mixed inline and channel attachment sources are not allowed",
+                ));
+            }
+            return Ok(inline_attachments);
+        }
+        if payload.attachments.is_empty() {
+            return Ok(Vec::new());
+        }
+        if sources.is_empty() {
+            return Err(permanent_attachment_failure(
+                "attachment descriptors have no channel transfer references",
+            ));
+        }
+        validate_attachment_sources(payload.attachments.as_slice(), sources)?;
+
+        let adapter = pinned_channel_adapter.ok_or_else(|| {
+            permanent_attachment_failure("channel attachment transfer is not configured")
+        })?;
+        let egress = pinned_channel_egress.ok_or_else(|| {
+            permanent_attachment_failure("channel attachment transfer is not configured")
+        })?;
+        let mut fetched = Vec::with_capacity(sources.len());
+        let mut total_bytes = 0usize;
+        for source in sources {
+            let mut attachment = adapter
+                .fetch_attachment(source, egress)
+                .await
+                .map_err(channel_attachment_error)?;
+            if attachment.id != source.descriptor.external_file_id {
+                return Err(permanent_attachment_failure(
+                    "fetched attachment id does not match its descriptor",
+                ));
+            }
+            let mime_type = ironclaw_common::normalize_mime_type(&attachment.mime_type);
+            if mime_type != source.descriptor.mime_type
+                || !ironclaw_common::is_supported_mime(&mime_type)
+            {
+                return Err(permanent_attachment_failure(
+                    "fetched attachment MIME type does not match its descriptor",
+                ));
+            }
+            attachment.mime_type = mime_type;
+            attachment.filename = source.descriptor.filename.clone();
+            if attachment.bytes.len() > DEFAULT_ATTACHMENT_BUDGETS.max_file_bytes {
+                return Err(permanent_attachment_failure(
+                    "attachment exceeds the per-file byte limit",
+                ));
+            }
+            if let Some(declared_size) = source.descriptor.size_bytes
+                && declared_size != attachment.bytes.len() as u64
+            {
+                return Err(ProductWorkflowError::InboundAttachmentFailed {
+                    reason: "fetched attachment size does not match its descriptor".into(),
+                    retryable: true,
+                });
+            }
+            total_bytes = total_bytes.saturating_add(attachment.bytes.len());
+            if total_bytes > DEFAULT_ATTACHMENT_BUDGETS.max_total_bytes {
+                return Err(permanent_attachment_failure(
+                    "attachments exceed the total byte limit",
+                ));
+            }
+            fetched.push(attachment);
+        }
+        Ok(fetched)
     }
 
     async fn prepare_user_message(
@@ -447,8 +590,8 @@ where
                 reason: format!("failed to ensure thread: {e}"),
             })?;
 
-        // Inline attachment bytes (e.g. images on the OpenAI-compatible
-        // surface) are landed into project storage through the same authority
+        // Inbound attachment bytes (inline or fetched after channel policy)
+        // are landed into project storage through the same authority
         // the agent's file tools resolve through, then carried on the message as
         // refs — never as raw bytes through the bytes-free product envelope.
         let content = if attachments.is_empty() {
@@ -502,6 +645,75 @@ where
         }))
         .submit_or_replay(&self.thread_service, &self.turn_coordinator)
         .await
+    }
+}
+
+fn validate_attachment_sources(
+    descriptors: &[crate::ProductAttachmentDescriptor],
+    sources: &[ChannelAttachmentRef],
+) -> Result<(), ProductWorkflowError> {
+    if descriptors.len() != sources.len() {
+        return Err(permanent_attachment_failure(
+            "channel attachment references do not match message descriptors",
+        ));
+    }
+    if sources.len() > DEFAULT_ATTACHMENT_BUDGETS.max_count {
+        return Err(permanent_attachment_failure(
+            "attachments exceed the count limit",
+        ));
+    }
+    let mut declared_total = 0u64;
+    for (descriptor, source) in descriptors.iter().zip(sources) {
+        if descriptor != &source.descriptor {
+            return Err(permanent_attachment_failure(
+                "channel attachment references do not match message descriptors",
+            ));
+        }
+        if !ironclaw_common::is_supported_mime(&descriptor.mime_type) {
+            return Err(permanent_attachment_failure(
+                "attachment MIME type is not supported",
+            ));
+        }
+        if let Some(size) = descriptor.size_bytes {
+            if size > DEFAULT_ATTACHMENT_BUDGETS.max_file_bytes as u64 {
+                return Err(permanent_attachment_failure(
+                    "attachment exceeds the per-file byte limit",
+                ));
+            }
+            declared_total = declared_total.saturating_add(size);
+            if declared_total > DEFAULT_ATTACHMENT_BUDGETS.max_total_bytes as u64 {
+                return Err(permanent_attachment_failure(
+                    "attachments exceed the total byte limit",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn channel_attachment_error(error: ChannelError) -> ProductWorkflowError {
+    match error {
+        ChannelError::AttachmentTransfer { retryable, .. } => {
+            ProductWorkflowError::InboundAttachmentFailed {
+                reason: "channel attachment transfer failed".into(),
+                retryable,
+            }
+        }
+        ChannelError::Unsupported => permanent_attachment_failure(
+            "channel adapter does not support inbound attachment transfer",
+        ),
+        ChannelError::Parse { .. }
+        | ChannelError::Render { .. }
+        | ChannelError::VendorWiring { .. } => {
+            permanent_attachment_failure("channel attachment transfer failed")
+        }
+    }
+}
+
+fn permanent_attachment_failure(reason: impl Into<String>) -> ProductWorkflowError {
+    ProductWorkflowError::InboundAttachmentFailed {
+        reason: reason.into(),
+        retryable: false,
     }
 }
 
@@ -940,15 +1152,27 @@ fn segment(name: &str, value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{future::pending, sync::Mutex};
+    use std::{
+        collections::VecDeque,
+        future::pending,
+        sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
 
     use crate::{
-        AdapterInstallationId, ExternalActorRef, ExternalConversationRef, ProductAdapterId,
-        ProductTriggerReason, UserMessagePayload,
+        AdapterInstallationId, DeliveryReport, ExternalActorRef, ExternalConversationRef,
+        InboundOutcome, OutboundEnvelope, ProductAdapterId, ProductAttachmentDescriptor,
+        ProductAttachmentKind, ProductRejectionKind, ProductTriggerReason, UserMessagePayload,
+        VerifiedInbound,
     };
     use async_trait::async_trait;
     use chrono::TimeZone;
-    use ironclaw_host_api::{AgentId, TenantId, ThreadId, UserId};
+    use ironclaw_host_api::{
+        AgentId, RestrictedEgressError, RestrictedEgressRequest, RestrictedEgressResponse,
+        TenantId, ThreadId, UserId,
+    };
     use ironclaw_threads::{
         AcceptInboundMessageRequest, AcceptedInboundMessage, AcceptedInboundMessageReplay,
         AppendAssistantDraftRequest, AppendCapabilityDisplayPreviewRequest,
@@ -1662,6 +1886,13 @@ mod tests {
     }
 
     fn user_message_envelope() -> ProductInboundEnvelope {
+        user_message_envelope_with_refs("evt:image-1", Vec::new())
+    }
+
+    fn user_message_envelope_with_refs(
+        event_id: &str,
+        channel_attachment_refs: Vec<ChannelAttachmentRef>,
+    ) -> ProductInboundEnvelope {
         let installation_id = AdapterInstallationId::new("install_alpha").expect("install");
         let evidence = ProtocolAuthEvidence::test_verified(
             AuthRequirement::SharedSecretHeader {
@@ -1677,16 +1908,708 @@ mod tests {
         )
         .expect("trusted context");
         let parsed = ParsedProductInbound::new(
-            ExternalEventId::new("evt:image-1").expect("event"),
+            ExternalEventId::new(event_id).expect("event"),
             ExternalActorRef::new("test", "user1", None::<String>).expect("actor"),
             ExternalConversationRef::new(None, "conv1", None, None).expect("conversation"),
             ProductInboundPayload::UserMessage(
-                UserMessagePayload::new("look at this", vec![], ProductTriggerReason::DirectChat)
-                    .expect("payload"),
+                UserMessagePayload::new(
+                    "look at this",
+                    channel_attachment_refs
+                        .iter()
+                        .map(|source| source.descriptor.clone())
+                        .collect(),
+                    ProductTriggerReason::DirectChat,
+                )
+                .expect("payload"),
             ),
         )
         .expect("parsed inbound");
-        ProductInboundEnvelope::from_trusted_parse(context, parsed).expect("envelope")
+        ProductInboundEnvelope::from_trusted_parse(context, parsed)
+            .expect("envelope")
+            .with_channel_attachment_refs(channel_attachment_refs)
+            .expect("matching channel refs")
+    }
+
+    fn channel_attachment_ref(id: &str, size_bytes: Option<u64>) -> ChannelAttachmentRef {
+        ChannelAttachmentRef {
+            descriptor: ProductAttachmentDescriptor::new(
+                id,
+                "image/png",
+                Some(format!("{id}.png")),
+                size_bytes,
+                ProductAttachmentKind::Image,
+            )
+            .expect("attachment descriptor"),
+            vendor_ref: format!("vendor:{id}"),
+            mime_hint: Some("image/png".to_string()),
+        }
+    }
+
+    struct DenyAllRestrictedEgress;
+
+    #[async_trait]
+    impl RestrictedEgress for DenyAllRestrictedEgress {
+        async fn send(
+            &self,
+            _request: RestrictedEgressRequest,
+        ) -> Result<RestrictedEgressResponse, RestrictedEgressError> {
+            Err(RestrictedEgressError::PolicyDenied)
+        }
+    }
+
+    struct FetchingChannelAdapter {
+        fetch_count: AtomicUsize,
+        fetched_vendor_refs: Mutex<Vec<String>>,
+        results: Mutex<VecDeque<Result<InboundAttachment, ChannelError>>>,
+    }
+
+    impl FetchingChannelAdapter {
+        fn new(results: impl IntoIterator<Item = Result<InboundAttachment, ChannelError>>) -> Self {
+            Self {
+                fetch_count: AtomicUsize::new(0),
+                fetched_vendor_refs: Mutex::new(Vec::new()),
+                results: Mutex::new(results.into_iter().collect()),
+            }
+        }
+
+        fn fetch_count(&self) -> usize {
+            self.fetch_count.load(Ordering::SeqCst)
+        }
+
+        fn fetched_vendor_refs(&self) -> Vec<String> {
+            self.fetched_vendor_refs
+                .lock()
+                .expect("fetched vendor refs lock")
+                .clone()
+        }
+    }
+
+    #[async_trait]
+    impl ChannelAdapter for FetchingChannelAdapter {
+        fn inbound(&self, _request: VerifiedInbound<'_>) -> Result<InboundOutcome, ChannelError> {
+            unimplemented!("not used by attachment workflow tests")
+        }
+
+        async fn fetch_attachment(
+            &self,
+            _attachment: &ChannelAttachmentRef,
+            _egress: &dyn RestrictedEgress,
+        ) -> Result<InboundAttachment, ChannelError> {
+            self.fetch_count.fetch_add(1, Ordering::SeqCst);
+            self.fetched_vendor_refs
+                .lock()
+                .expect("fetched vendor refs lock")
+                .push(_attachment.vendor_ref.clone());
+            self.results
+                .lock()
+                .expect("fetch results lock")
+                .pop_front()
+                .unwrap_or_else(|| {
+                    Err(ChannelError::AttachmentTransfer {
+                        reason: "no scripted attachment result".to_string(),
+                        retryable: false,
+                    })
+                })
+        }
+
+        async fn deliver(
+            &self,
+            _envelope: OutboundEnvelope,
+            _egress: &dyn RestrictedEgress,
+        ) -> Result<DeliveryReport, ChannelError> {
+            unimplemented!("not used by attachment workflow tests")
+        }
+    }
+
+    fn rewritten_payload(
+        descriptors: Vec<ProductAttachmentDescriptor>,
+    ) -> BeforeInboundPolicyOutcome {
+        BeforeInboundPolicyOutcome::RewriteUserMessage(
+            UserMessagePayload::new(
+                "policy-rewritten",
+                descriptors,
+                ProductTriggerReason::DirectChat,
+            )
+            .expect("rewritten payload"),
+        )
+    }
+
+    #[tokio::test]
+    async fn policy_rewrite_can_filter_channel_attachments_and_keeps_the_exact_source() {
+        let first = channel_attachment_ref("first", Some(1));
+        let second = channel_attachment_ref("second", Some(1));
+        let adapter = Arc::new(FetchingChannelAdapter::new([Ok(InboundAttachment {
+            id: second.descriptor.external_file_id.clone(),
+            mime_type: second.descriptor.mime_type.clone(),
+            filename: second.descriptor.filename.clone(),
+            bytes: vec![2],
+        })]));
+        let service = DefaultInboundTurnService::new(
+            LandingBindingStub,
+            Arc::new(InMemorySessionThreadService::default()),
+            CapturingTurnCoordinator::default(),
+        )
+        .with_inbound_attachments(Arc::new(CapturingLander::default()));
+        let envelope =
+            user_message_envelope_with_refs("evt:rewrite-filter", vec![first, second.clone()]);
+
+        let result = accept_channel_message(
+            &service,
+            &envelope,
+            &FetchMustNotPrecedePolicy {
+                adapter: adapter.clone(),
+                outcome: rewritten_payload(vec![second.descriptor.clone()]),
+            },
+            adapter.clone(),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Ok(InboundUserMessageDispatch::Accepted(_))
+        ));
+        assert_eq!(adapter.fetched_vendor_refs(), vec![second.vendor_ref]);
+    }
+
+    #[tokio::test]
+    async fn policy_rewrite_can_reorder_channel_attachments_and_sources_follow_descriptors() {
+        let first = channel_attachment_ref("first", Some(1));
+        let second = channel_attachment_ref("second", Some(1));
+        let adapter = Arc::new(FetchingChannelAdapter::new([
+            Ok(InboundAttachment {
+                id: second.descriptor.external_file_id.clone(),
+                mime_type: second.descriptor.mime_type.clone(),
+                filename: second.descriptor.filename.clone(),
+                bytes: vec![2],
+            }),
+            Ok(InboundAttachment {
+                id: first.descriptor.external_file_id.clone(),
+                mime_type: first.descriptor.mime_type.clone(),
+                filename: first.descriptor.filename.clone(),
+                bytes: vec![1],
+            }),
+        ]));
+        let service = DefaultInboundTurnService::new(
+            LandingBindingStub,
+            Arc::new(InMemorySessionThreadService::default()),
+            CapturingTurnCoordinator::default(),
+        )
+        .with_inbound_attachments(Arc::new(CapturingLander::default()));
+        let envelope = user_message_envelope_with_refs(
+            "evt:rewrite-reorder",
+            vec![first.clone(), second.clone()],
+        );
+
+        let result = accept_channel_message(
+            &service,
+            &envelope,
+            &FetchMustNotPrecedePolicy {
+                adapter: adapter.clone(),
+                outcome: rewritten_payload(vec![
+                    second.descriptor.clone(),
+                    first.descriptor.clone(),
+                ]),
+            },
+            adapter.clone(),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Ok(InboundUserMessageDispatch::Accepted(_))
+        ));
+        assert_eq!(
+            adapter.fetched_vendor_refs(),
+            vec![second.vendor_ref, first.vendor_ref]
+        );
+    }
+
+    #[tokio::test]
+    async fn policy_rewrite_rejects_injected_or_ambiguous_channel_attachment_sources() {
+        let unique = channel_attachment_ref("unique", Some(1));
+        let injected = channel_attachment_ref("injected", Some(1));
+        let duplicate_a = channel_attachment_ref("duplicate", Some(1));
+        let mut duplicate_b = duplicate_a.clone();
+        duplicate_b.vendor_ref = "vendor:duplicate-other".to_string();
+
+        let cases = [
+            (
+                "evt:rewrite-injected",
+                vec![unique],
+                vec![injected.descriptor],
+            ),
+            (
+                "evt:rewrite-ambiguous",
+                vec![duplicate_a.clone(), duplicate_b],
+                vec![duplicate_a.descriptor],
+            ),
+        ];
+        for (event_id, sources, rewritten_descriptors) in cases {
+            let adapter = Arc::new(FetchingChannelAdapter::new([]));
+            let service = DefaultInboundTurnService::new(
+                LandingBindingStub,
+                Arc::new(InMemorySessionThreadService::default()),
+                CapturingTurnCoordinator::default(),
+            )
+            .with_inbound_attachments(Arc::new(CapturingLander::default()));
+            let envelope = user_message_envelope_with_refs(event_id, sources);
+
+            let result = accept_channel_message(
+                &service,
+                &envelope,
+                &FetchMustNotPrecedePolicy {
+                    adapter: adapter.clone(),
+                    outcome: rewritten_payload(rewritten_descriptors),
+                },
+                adapter.clone(),
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                Err(ProductWorkflowError::TurnSubmissionRejected { .. })
+            ));
+            assert_eq!(adapter.fetch_count(), 0);
+        }
+    }
+
+    type AttachmentTurnService = DefaultInboundTurnService<
+        LandingBindingStub,
+        Arc<InMemorySessionThreadService>,
+        CapturingTurnCoordinator,
+    >;
+
+    async fn accept_channel_message(
+        service: &AttachmentTurnService,
+        envelope: &ProductInboundEnvelope,
+        policy: &dyn BeforeInboundPolicy,
+        adapter: Arc<FetchingChannelAdapter>,
+    ) -> Result<InboundUserMessageDispatch, ProductWorkflowError> {
+        service
+            .accept_user_message_with_before_policy_and_channel_transfer(
+                envelope,
+                policy,
+                adapter,
+                Arc::new(DenyAllRestrictedEgress),
+            )
+            .await
+    }
+
+    struct FetchMustNotPrecedePolicy {
+        adapter: Arc<FetchingChannelAdapter>,
+        outcome: BeforeInboundPolicyOutcome,
+    }
+
+    #[async_trait]
+    impl BeforeInboundPolicy for FetchMustNotPrecedePolicy {
+        async fn check_user_message(
+            &self,
+            _request: BeforeInboundPolicyRequest,
+        ) -> Result<BeforeInboundPolicyOutcome, ProductWorkflowError> {
+            assert_eq!(
+                self.adapter.fetch_count(),
+                0,
+                "attachment bytes must not be fetched before policy"
+            );
+            Ok(self.outcome.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn channel_attachment_fetches_after_policy_then_lands_once() {
+        let bytes = vec![0x89, b'P', b'N', b'G'];
+        let source = channel_attachment_ref("channel-image-0", Some(bytes.len() as u64));
+        let adapter = Arc::new(FetchingChannelAdapter::new([Ok(InboundAttachment {
+            id: source.descriptor.external_file_id.clone(),
+            mime_type: "image/png".to_string(),
+            filename: source.descriptor.filename.clone(),
+            bytes: bytes.clone(),
+        })]));
+        let lander = Arc::new(CapturingLander::default());
+        let service = DefaultInboundTurnService::new(
+            LandingBindingStub,
+            Arc::new(InMemorySessionThreadService::default()),
+            CapturingTurnCoordinator::default(),
+        )
+        .with_inbound_attachments(lander.clone());
+        let envelope = user_message_envelope_with_refs("evt:channel-allow", vec![source]);
+
+        let dispatch = accept_channel_message(
+            &service,
+            &envelope,
+            &FetchMustNotPrecedePolicy {
+                adapter: adapter.clone(),
+                outcome: BeforeInboundPolicyOutcome::Allow,
+            },
+            adapter.clone(),
+        )
+        .await
+        .expect("channel attachment turn succeeds");
+
+        assert!(matches!(dispatch, InboundUserMessageDispatch::Accepted(_)));
+        assert_eq!(adapter.fetch_count(), 1);
+        let landed = lander.landed.lock().expect("landed lock");
+        assert_eq!(landed.len(), 1);
+        assert_eq!(landed[0].bytes, bytes);
+    }
+
+    #[tokio::test]
+    async fn rejected_policy_never_fetches_channel_attachment() {
+        let source = channel_attachment_ref("channel-image-0", None);
+        let adapter = Arc::new(FetchingChannelAdapter::new([]));
+        let lander = Arc::new(CapturingLander::default());
+        let service = DefaultInboundTurnService::new(
+            LandingBindingStub,
+            Arc::new(InMemorySessionThreadService::default()),
+            CapturingTurnCoordinator::default(),
+        )
+        .with_inbound_attachments(lander.clone());
+        let envelope = user_message_envelope_with_refs("evt:channel-reject", vec![source]);
+
+        let dispatch = accept_channel_message(
+            &service,
+            &envelope,
+            &FetchMustNotPrecedePolicy {
+                adapter: adapter.clone(),
+                outcome: BeforeInboundPolicyOutcome::Reject(ProductRejection::permanent(
+                    ProductRejectionKind::PolicyDenied,
+                    "rejected by test policy",
+                )),
+            },
+            adapter.clone(),
+        )
+        .await
+        .expect("policy rejection is a dispatch outcome");
+
+        assert!(matches!(dispatch, InboundUserMessageDispatch::Rejected(_)));
+        assert_eq!(adapter.fetch_count(), 0);
+        assert!(lander.landed.lock().expect("landed lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn accepted_message_replay_does_not_refetch_or_reland_attachment() {
+        let bytes = vec![0x89, b'P', b'N', b'G'];
+        let source = channel_attachment_ref("channel-image-0", Some(bytes.len() as u64));
+        let adapter = Arc::new(FetchingChannelAdapter::new([Ok(InboundAttachment {
+            id: source.descriptor.external_file_id.clone(),
+            mime_type: "image/png".to_string(),
+            filename: source.descriptor.filename.clone(),
+            bytes,
+        })]));
+        let lander = Arc::new(CapturingLander::default());
+        let service = DefaultInboundTurnService::new(
+            LandingBindingStub,
+            Arc::new(InMemorySessionThreadService::default()),
+            CapturingTurnCoordinator::default(),
+        )
+        .with_inbound_attachments(lander.clone());
+        let envelope = user_message_envelope_with_refs("evt:channel-replay", vec![source]);
+
+        accept_channel_message(
+            &service,
+            &envelope,
+            &NoopBeforeInboundPolicy,
+            adapter.clone(),
+        )
+        .await
+        .expect("first delivery succeeds");
+        accept_channel_message(
+            &service,
+            &envelope,
+            &NoopBeforeInboundPolicy,
+            adapter.clone(),
+        )
+        .await
+        .expect("accepted replay succeeds");
+
+        assert_eq!(adapter.fetch_count(), 1);
+        assert_eq!(lander.landed.lock().expect("landed lock").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn declared_attachment_over_budget_fails_before_fetch_or_landing() {
+        let source = channel_attachment_ref(
+            "channel-image-0",
+            Some(DEFAULT_ATTACHMENT_BUDGETS.max_file_bytes as u64 + 1),
+        );
+        let adapter = Arc::new(FetchingChannelAdapter::new([]));
+        let lander = Arc::new(CapturingLander::default());
+        let service = DefaultInboundTurnService::new(
+            LandingBindingStub,
+            Arc::new(InMemorySessionThreadService::default()),
+            CapturingTurnCoordinator::default(),
+        )
+        .with_inbound_attachments(lander.clone());
+        let envelope = user_message_envelope_with_refs("evt:channel-too-large", vec![source]);
+
+        let result = accept_channel_message(
+            &service,
+            &envelope,
+            &NoopBeforeInboundPolicy,
+            adapter.clone(),
+        )
+        .await;
+        let Err(error) = result else {
+            panic!("declared oversized attachment must fail");
+        };
+
+        assert!(matches!(
+            error,
+            ProductWorkflowError::InboundAttachmentFailed {
+                retryable: false,
+                ..
+            }
+        ));
+        assert_eq!(adapter.fetch_count(), 0);
+        assert!(lander.landed.lock().expect("landed lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn retryable_channel_transfer_can_retry_without_duplicate_landing() {
+        let bytes = vec![0x89, b'P', b'N', b'G'];
+        let source = channel_attachment_ref("channel-image-0", Some(bytes.len() as u64));
+        let adapter = Arc::new(FetchingChannelAdapter::new([
+            Err(ChannelError::AttachmentTransfer {
+                reason: "provider timeout details".to_string(),
+                retryable: true,
+            }),
+            Ok(InboundAttachment {
+                id: source.descriptor.external_file_id.clone(),
+                mime_type: "image/png".to_string(),
+                filename: None,
+                bytes,
+            }),
+        ]));
+        let lander = Arc::new(CapturingLander::default());
+        let service = DefaultInboundTurnService::new(
+            LandingBindingStub,
+            Arc::new(InMemorySessionThreadService::default()),
+            CapturingTurnCoordinator::default(),
+        )
+        .with_inbound_attachments(lander.clone());
+        let envelope = user_message_envelope_with_refs("evt:channel-retry", vec![source]);
+
+        let first = accept_channel_message(
+            &service,
+            &envelope,
+            &NoopBeforeInboundPolicy,
+            adapter.clone(),
+        )
+        .await;
+        assert!(matches!(
+            first,
+            Err(ProductWorkflowError::InboundAttachmentFailed {
+                retryable: true,
+                ref reason,
+            }) if reason == "channel attachment transfer failed"
+        ));
+        let second = accept_channel_message(
+            &service,
+            &envelope,
+            &NoopBeforeInboundPolicy,
+            adapter.clone(),
+        )
+        .await;
+
+        assert!(matches!(
+            second,
+            Ok(InboundUserMessageDispatch::Accepted(_))
+        ));
+        assert_eq!(adapter.fetch_count(), 2);
+        assert_eq!(lander.landed.lock().expect("landed lock").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn missing_transfer_support_fails_closed_without_landing() {
+        let source = channel_attachment_ref("channel-image-0", None);
+        let lander = Arc::new(CapturingLander::default());
+        let service = DefaultInboundTurnService::new(
+            LandingBindingStub,
+            Arc::new(InMemorySessionThreadService::default()),
+            CapturingTurnCoordinator::default(),
+        )
+        .with_inbound_attachments(lander.clone());
+        let envelope = user_message_envelope_with_refs("evt:channel-unsupported", vec![source]);
+
+        let result = service
+            .accept_user_message_with_before_policy(&envelope, &NoopBeforeInboundPolicy)
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(ProductWorkflowError::InboundAttachmentFailed {
+                retryable: false,
+                ..
+            })
+        ));
+        assert!(lander.landed.lock().expect("landed lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn mixed_inline_and_channel_sources_fail_before_fetch_or_landing() {
+        let source = channel_attachment_ref("channel-image-0", None);
+        let adapter = Arc::new(FetchingChannelAdapter::new([]));
+        let lander = Arc::new(CapturingLander::default());
+        let service = DefaultInboundTurnService::new(
+            LandingBindingStub,
+            Arc::new(InMemorySessionThreadService::default()),
+            CapturingTurnCoordinator::default(),
+        )
+        .with_inbound_attachments(lander.clone());
+        let envelope = user_message_envelope_with_refs("evt:channel-mixed", vec![source]);
+
+        let result = service
+            .accept_user_message_with_before_policy_and_attachments(
+                &envelope,
+                &NoopBeforeInboundPolicy,
+                vec![InboundAttachment {
+                    id: "inline-image-0".to_string(),
+                    mime_type: "image/png".to_string(),
+                    filename: Some("inline.png".to_string()),
+                    bytes: vec![0x89, b'P', b'N', b'G'],
+                }],
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(ProductWorkflowError::InboundAttachmentFailed {
+                retryable: false,
+                ..
+            })
+        ));
+        assert_eq!(adapter.fetch_count(), 0);
+        assert!(lander.landed.lock().expect("landed lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn count_and_declared_total_limits_fail_before_fetch() {
+        let cases = [
+            (
+                "evt:channel-too-many",
+                (0..=DEFAULT_ATTACHMENT_BUDGETS.max_count)
+                    .map(|index| channel_attachment_ref(&format!("image-{index}"), Some(1)))
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "evt:channel-total-too-large",
+                (0..3)
+                    .map(|index| {
+                        channel_attachment_ref(&format!("image-{index}"), Some(4 * 1024 * 1024))
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        ];
+
+        for (event_id, sources) in cases {
+            let adapter = Arc::new(FetchingChannelAdapter::new([]));
+            let service = DefaultInboundTurnService::new(
+                LandingBindingStub,
+                Arc::new(InMemorySessionThreadService::default()),
+                CapturingTurnCoordinator::default(),
+            )
+            .with_inbound_attachments(Arc::new(CapturingLander::default()));
+            let envelope = user_message_envelope_with_refs(event_id, sources);
+
+            let result = accept_channel_message(
+                &service,
+                &envelope,
+                &NoopBeforeInboundPolicy,
+                adapter.clone(),
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                Err(ProductWorkflowError::InboundAttachmentFailed {
+                    retryable: false,
+                    ..
+                })
+            ));
+            assert_eq!(adapter.fetch_count(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn actual_per_file_and_total_limits_fail_without_landing() {
+        let per_file_source = channel_attachment_ref("too-large", None);
+        let per_file_adapter = Arc::new(FetchingChannelAdapter::new([Ok(InboundAttachment {
+            id: per_file_source.descriptor.external_file_id.clone(),
+            mime_type: "image/png".to_string(),
+            filename: None,
+            bytes: vec![0; DEFAULT_ATTACHMENT_BUDGETS.max_file_bytes + 1],
+        })]));
+        let per_file_lander = Arc::new(CapturingLander::default());
+        let per_file_service = DefaultInboundTurnService::new(
+            LandingBindingStub,
+            Arc::new(InMemorySessionThreadService::default()),
+            CapturingTurnCoordinator::default(),
+        )
+        .with_inbound_attachments(per_file_lander.clone());
+        let per_file_envelope =
+            user_message_envelope_with_refs("evt:actual-file-too-large", vec![per_file_source]);
+
+        let per_file_result = accept_channel_message(
+            &per_file_service,
+            &per_file_envelope,
+            &NoopBeforeInboundPolicy,
+            per_file_adapter.clone(),
+        )
+        .await;
+        assert!(matches!(
+            per_file_result,
+            Err(ProductWorkflowError::InboundAttachmentFailed {
+                retryable: false,
+                ..
+            })
+        ));
+        assert_eq!(per_file_adapter.fetch_count(), 1);
+        assert!(
+            per_file_lander
+                .landed
+                .lock()
+                .expect("landed lock")
+                .is_empty()
+        );
+
+        let total_sources = (0..3)
+            .map(|index| channel_attachment_ref(&format!("total-{index}"), None))
+            .collect::<Vec<_>>();
+        let total_results = total_sources.iter().map(|source| {
+            Ok(InboundAttachment {
+                id: source.descriptor.external_file_id.clone(),
+                mime_type: "image/png".to_string(),
+                filename: None,
+                bytes: vec![0; 4 * 1024 * 1024],
+            })
+        });
+        let total_adapter = Arc::new(FetchingChannelAdapter::new(total_results));
+        let total_lander = Arc::new(CapturingLander::default());
+        let total_service = DefaultInboundTurnService::new(
+            LandingBindingStub,
+            Arc::new(InMemorySessionThreadService::default()),
+            CapturingTurnCoordinator::default(),
+        )
+        .with_inbound_attachments(total_lander.clone());
+        let total_envelope =
+            user_message_envelope_with_refs("evt:actual-total-too-large", total_sources);
+
+        let total_result = accept_channel_message(
+            &total_service,
+            &total_envelope,
+            &NoopBeforeInboundPolicy,
+            total_adapter.clone(),
+        )
+        .await;
+        assert!(matches!(
+            total_result,
+            Err(ProductWorkflowError::InboundAttachmentFailed {
+                retryable: false,
+                ..
+            })
+        ));
+        assert_eq!(total_adapter.fetch_count(), 3);
+        assert!(total_lander.landed.lock().expect("landed lock").is_empty());
     }
 
     /// Caller-level coverage for the native vision door: a user message carrying

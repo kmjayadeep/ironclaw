@@ -3593,6 +3593,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "hmac 0.13.0",
+ "ironclaw_attachments",
  "ironclaw_auth",
  "ironclaw_dispatcher",
  "ironclaw_extensions",
@@ -4703,6 +4704,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "ironclaw_attachments",
  "ironclaw_host_api",
  "ironclaw_product",
  "ironclaw_telegram_v2_adapter",

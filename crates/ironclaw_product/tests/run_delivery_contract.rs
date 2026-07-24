@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use ironclaw_host_api::{AgentId, TenantId, ThreadId, UserId};
+use ironclaw_host_api::{AgentId, ScopedPath, TenantId, ThreadId, UserId};
 use ironclaw_outbound::{
     CommunicationModality, CommunicationPreferenceRecord, CommunicationPreferenceRepository,
     DeliveredGateRouteStore, DeliveryDefaultScope, OutboundStateStore, OutboundStateStorePort,
@@ -43,6 +43,10 @@ use ironclaw_product::{
 use ironclaw_threads::{
     AppendFinalizedAssistantMessageRequest, EnsureThreadRequest, InMemorySessionThreadService,
     MessageContent, SessionThreadService, ThreadScope,
+};
+use ironclaw_host_api::WorkspaceFile;
+use ironclaw_product::{
+    ProjectFilesystemReader, ProjectFsEntry, ProjectFsEntryKind, ProjectFsError, ProjectFsStat,
 };
 use ironclaw_turns::{
     AcceptedMessageRef, CancelRunRequest, CancelRunResponse, EventCursor, GateRef,
@@ -322,6 +326,78 @@ impl DeliveryReplyContextSource for NoStoredReplyContext {
     }
 }
 
+#[derive(Default)]
+struct ScriptedProjectFilesystemReader {
+    files: Mutex<HashMap<String, Result<WorkspaceFile, ProjectFsError>>>,
+    reads: Mutex<Vec<String>>,
+}
+
+impl ScriptedProjectFilesystemReader {
+    fn insert_file(&self, path: &str, mime_type: &str, bytes: &[u8]) {
+        self.files.lock().expect("files").insert(
+            path.to_string(),
+            Ok(WorkspaceFile {
+                path: ScopedPath::new(path).expect("scoped workspace path"),
+                filename: path.rsplit('/').next().map(str::to_string),
+                mime_type: mime_type.to_string(),
+                bytes: bytes.to_vec(),
+            }),
+        );
+    }
+
+    fn reads(&self) -> Vec<String> {
+        self.reads.lock().expect("reads").clone()
+    }
+}
+
+#[async_trait]
+impl ProjectFilesystemReader for ScriptedProjectFilesystemReader {
+    async fn list_dir(
+        &self,
+        _thread_scope: &ThreadScope,
+        _path: &str,
+    ) -> Result<Vec<ProjectFsEntry>, ProjectFsError> {
+        Err(ProjectFsError::NotADirectory)
+    }
+
+    async fn read_file(
+        &self,
+        _thread_scope: &ThreadScope,
+        path: &str,
+    ) -> Result<WorkspaceFile, ProjectFsError> {
+        self.reads.lock().expect("reads").push(path.to_string());
+        self.files
+            .lock()
+            .expect("files")
+            .get(path)
+            .cloned()
+            .unwrap_or(Err(ProjectFsError::NotFound))
+    }
+
+    async fn stat(
+        &self,
+        _thread_scope: &ThreadScope,
+        path: &str,
+    ) -> Result<ProjectFsStat, ProjectFsError> {
+        match self
+            .files
+            .lock()
+            .expect("files")
+            .get(path)
+            .cloned()
+            .unwrap_or(Err(ProjectFsError::NotFound))
+        {
+            Ok(file) => Ok(ProjectFsStat {
+                path: file.path.as_str().to_string(),
+                kind: ProjectFsEntryKind::File,
+                size_bytes: file.bytes.len() as u64,
+                mime_type: file.mime_type,
+            }),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 struct StaticBindingService {
     binding: ironclaw_product::ResolvedBinding,
     fail: bool,
@@ -597,6 +673,7 @@ fn build_harness_with_prompt(
         Arc::new(ironclaw_outbound::test_support::in_memory_backed_outbound_state_store());
     let turns = Arc::new(ScriptedTurnCoordinator::with_states(states));
     let threads = Arc::new(InMemorySessionThreadService::default());
+    let project_files = Arc::new(ScriptedProjectFilesystemReader::default());
     let coordinator = Arc::new(DeliveryCoordinator::new(
         Arc::clone(&store) as Arc<dyn OutboundStateStorePort>,
         Arc::new(StaticResolver {
@@ -618,6 +695,7 @@ fn build_harness_with_prompt(
         outbound_store: Arc::clone(&store) as Arc<dyn OutboundStateStorePort>,
         route_store: Arc::clone(&route_store) as Arc<dyn DeliveredGateRouteStore>,
         communication_preferences: Arc::clone(&store) as Arc<dyn CommunicationPreferenceRepository>,
+        project_filesystem: Arc::clone(&project_files) as Arc<dyn ProjectFilesystemReader>,
         coordinator,
         extension_id: EXTENSION_ID.to_string(),
         fallback_notice_scope: fallback_scope(),
@@ -1166,6 +1244,7 @@ struct TriggeredHarness {
     delivery_store: Arc<OutboundStateStore<ironclaw_filesystem::InMemoryBackend>>,
     turns: Arc<ScriptedTurnCoordinator>,
     threads: Arc<InMemorySessionThreadService>,
+    project_files: Arc<ScriptedProjectFilesystemReader>,
 }
 
 fn build_triggered_harness(
@@ -1200,6 +1279,7 @@ fn build_triggered_harness_with_prompt(
         Arc::new(ironclaw_outbound::test_support::in_memory_backed_outbound_state_store());
     let turns = Arc::new(ScriptedTurnCoordinator::with_states(states));
     let threads = Arc::new(InMemorySessionThreadService::default());
+    let project_files = Arc::new(ScriptedProjectFilesystemReader::default());
     let coordinator = Arc::new(DeliveryCoordinator::new(
         Arc::clone(&store) as Arc<dyn OutboundStateStorePort>,
         Arc::new(StaticResolver {
@@ -1221,6 +1301,7 @@ fn build_triggered_harness_with_prompt(
         outbound_store: Arc::clone(&store) as Arc<dyn OutboundStateStorePort>,
         route_store: Arc::clone(&route_store) as Arc<dyn DeliveredGateRouteStore>,
         communication_preferences: Arc::clone(&store) as Arc<dyn CommunicationPreferenceRepository>,
+        project_filesystem: Arc::clone(&project_files) as Arc<dyn ProjectFilesystemReader>,
         coordinator,
         extension_id: EXTENSION_ID.to_string(),
         fallback_notice_scope: fallback_scope(),
@@ -1249,6 +1330,7 @@ fn build_triggered_harness_with_prompt(
         delivery_store,
         turns,
         threads,
+        project_files,
     }
 }
 
@@ -1814,6 +1896,7 @@ where
         },
     ));
     let services = RunDeliveryServices {
+        project_filesystem: Arc::new(ScriptedProjectFilesystemReader::default()),
         binding_service: Arc::clone(&binding)
             as Arc<dyn ironclaw_product::ConversationBindingService>,
         thread_service: Arc::clone(&threads) as Arc<dyn SessionThreadService>,
@@ -1885,6 +1968,7 @@ fn build_triggered_lifecycle_harness() -> TriggeredLifecycleHarness {
         },
     ));
     let services = RunDeliveryServices {
+        project_filesystem: Arc::new(ScriptedProjectFilesystemReader::default()),
         binding_service: Arc::new(StaticBindingService {
             binding: binding(),
             fail: true,
@@ -3588,6 +3672,42 @@ async fn triggered_final_reply_reaches_the_preference_target_with_footer() {
         "dm-creator",
         "delivered to the decoded preference target"
     );
+}
+
+#[tokio::test]
+async fn triggered_final_reply_materializes_workspace_files_before_adapter_delivery() {
+    let harness = build_triggered_harness(
+        vec![scripted_state(TurnStatus::Completed, None)],
+        None,
+        true,
+    );
+    seed_preference(&harness.store).await;
+    harness.project_files.insert_file(
+        "/workspace/trigger.json",
+        "application/json",
+        br#"{"ok":true}"#,
+    );
+    let run_id = TurnRunId::new();
+    seed_final_message(
+        &harness.threads,
+        run_id,
+        "trigger complete: /workspace/trigger.json",
+    )
+    .await;
+
+    harness
+        .driver
+        .on_trigger_submitted(triggered_request(run_id, false))
+        .await;
+    let outcome = wait_for_outcome(&harness.delivery_store, run_id).await;
+    assert_eq!(outcome, TriggeredRunDeliveryOutcomeKind::Delivered);
+    let envelopes = harness.adapter.envelopes();
+    assert!(matches!(
+        &envelopes[0].parts[1],
+        OutboundPart::File(file)
+            if file.path.as_str() == "/workspace/trigger.json"
+                && file.bytes == br#"{"ok":true}"#
+    ));
 }
 
 #[tokio::test]

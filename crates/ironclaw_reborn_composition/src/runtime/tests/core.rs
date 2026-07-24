@@ -5237,7 +5237,7 @@ async fn webui_workspace_filesystem_lands_attachment_with_read_write_mount() {
         &lander,
         &thread_scope,
         "msg-attachment-mount",
-        vec![ironclaw_attachments::InboundAttachment {
+        vec![ironclaw_host_api::InboundAttachment {
             id: "att-0".to_string(),
             mime_type: "image/png".to_string(),
             filename: Some("mount-check.png".to_string()),

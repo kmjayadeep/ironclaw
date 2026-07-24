@@ -253,6 +253,7 @@ pub(super) fn map_lifecycle_error(error: ProductWorkflowError) -> ProductSurface
         | ProductWorkflowError::AuthInteractionRejected { .. }
         | ProductWorkflowError::AuthContinuationRejected { .. }
         | ProductWorkflowError::BeforeInboundPolicyFailed { .. }
+        | ProductWorkflowError::InboundAttachmentFailed { .. }
         | ProductWorkflowError::DuplicateAction { .. }
         | ProductWorkflowError::OutboundTargetNotDirectMessage
         | ProductWorkflowError::UnknownInstallation => ProductSurfaceError::internal_invariant(),

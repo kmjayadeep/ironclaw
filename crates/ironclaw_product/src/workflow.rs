@@ -7,17 +7,18 @@
 use std::sync::Arc;
 
 use crate::{
-    ApprovalDecision, ExternalConversationRef, ParsedProductInbound, ProductAdapterError,
-    ProductInboundAck, ProductInboundEnvelope, ProductInboundPayload, ProductProjectionReadInput,
+    ApprovalDecision, ChannelAdapter, ExternalConversationRef, ParsedProductInbound,
+    ProductAdapterError, ProductInboundAck, ProductInboundEnvelope, ProductInboundPayload,
+    ProductProjectionReadInput,
     ProductProjectionSubject, ProductProjectionSubscribeInput, ProductRejection,
     ProductRejectionKind, ProductWorkflowRejectionKind, ProjectionReadRequest,
     ProjectionSubscriptionRequest, RedactedString, TrustedInboundContext, UserMessagePayload,
 };
 use async_trait::async_trait;
 use chrono::Utc;
-use ironclaw_attachments::InboundAttachment;
+use ironclaw_host_api::InboundAttachment;
 use ironclaw_auth::{AuthFlowId, CredentialAccountId};
-use ironclaw_host_api::{ThreadId, UserId};
+use ironclaw_host_api::{RestrictedEgress, ThreadId, UserId};
 use ironclaw_turns::{
     AcceptedMessageRef, AdmissionRejectionReason, GateRef, IdempotencyKey, TurnActor, TurnError,
     TurnErrorCategory, TurnRunId, TurnScope,
@@ -145,7 +146,21 @@ impl DefaultProductSurface {
         &self,
         envelope: ProductInboundEnvelope,
     ) -> Result<ProductInboundAck, ProductAdapterError> {
-        self.submit_inbound_inner(envelope, Vec::new()).await
+        self.submit_inbound_inner(envelope, Vec::new(), None).await
+    }
+
+    async fn submit_inbound_with_channel_attachment_transfer(
+        &self,
+        envelope: ProductInboundEnvelope,
+        channel_adapter: Arc<dyn ChannelAdapter>,
+        channel_egress: Arc<dyn RestrictedEgress>,
+    ) -> Result<ProductInboundAck, ProductAdapterError> {
+        self.submit_inbound_inner(
+            envelope,
+            Vec::new(),
+            Some((channel_adapter, channel_egress)),
+        )
+        .await
     }
 
     pub async fn read_projection(
@@ -197,59 +212,92 @@ impl ChannelInboundProductSurface for DefaultProductSurface {
         &self,
         request: ChannelInboundSurfaceRequest,
     ) -> ChannelInboundSurfaceOutcome {
-        let context = match TrustedInboundContext::from_verified_evidence_with_source_channel(
-            request.adapter_id,
-            request.source_channel,
-            request.installation_id,
-            request.received_at,
-            &request.evidence,
-        ) {
-            Ok(context) => context,
-            Err(error) => return ChannelInboundSurfaceOutcome::Invalid(error),
-        };
-        let payload = match request.classification {
-            Some(classification) => ProductInboundPayload::from(classification),
-            None => {
-                let payload = UserMessagePayload::new(
-                    request.message.text.clone(),
-                    request
-                        .message
-                        .attachments
-                        .iter()
-                        .map(|attachment| attachment.descriptor.clone())
-                        .collect(),
-                    request.message.trigger,
-                );
-                match payload {
-                    Ok(payload) => ProductInboundPayload::UserMessage(payload),
-                    Err(error) => return ChannelInboundSurfaceOutcome::Invalid(error),
-                }
-            }
-        };
-        let parsed = match ParsedProductInbound::new(
-            request.message.event_id,
-            request.message.actor,
-            request.message.conversation,
-            payload,
-        ) {
-            Ok(parsed) => parsed,
-            Err(error) => return ChannelInboundSurfaceOutcome::Invalid(error),
-        };
-        let envelope = match ProductInboundEnvelope::from_trusted_parse(context, parsed) {
+        let envelope = match build_channel_envelope(request) {
             Ok(envelope) => envelope,
             Err(error) => return ChannelInboundSurfaceOutcome::Invalid(error),
         };
-        match Box::pin(self.submit_inbound(envelope.clone())).await {
-            Ok(ack) => {
-                ChannelInboundSurfaceOutcome::Admitted(Box::new(ChannelInboundSurfaceAdmission {
-                    envelope,
-                    ack,
-                }))
-            }
-            Err(error) => ChannelInboundSurfaceOutcome::Rejected(Box::new(
-                ChannelInboundSurfaceRejectedAdmission { envelope, error },
-            )),
+        admission_outcome(
+            envelope.clone(),
+            Box::pin(self.submit_inbound(envelope)).await,
+        )
+    }
+
+    async fn admit_channel_inbound_with_attachment_transfer(
+        &self,
+        request: ChannelInboundSurfaceRequest,
+        channel_adapter: Arc<dyn ChannelAdapter>,
+        channel_egress: Arc<dyn RestrictedEgress>,
+    ) -> ChannelInboundSurfaceOutcome {
+        // Preserve the vendor transfer references beside the descriptors the
+        // payload carries; `with_channel_attachment_refs` enforces that they
+        // correspond exactly and stay out of the serialized envelope.
+        let channel_attachment_refs = request.message.attachments.clone();
+        let envelope = match build_channel_envelope(request).and_then(|envelope| {
+            envelope.with_channel_attachment_refs(channel_attachment_refs)
+        }) {
+            Ok(envelope) => envelope,
+            Err(error) => return ChannelInboundSurfaceOutcome::Invalid(error),
+        };
+        admission_outcome(
+            envelope.clone(),
+            Box::pin(self.submit_inbound_with_channel_attachment_transfer(
+                envelope,
+                channel_adapter,
+                channel_egress,
+            ))
+            .await,
+        )
+    }
+}
+
+/// Build the canonical channel inbound envelope from one verified, normalized
+/// surface request — shared by both admission doors.
+fn build_channel_envelope(
+    request: ChannelInboundSurfaceRequest,
+) -> Result<ProductInboundEnvelope, ProductAdapterError> {
+    let context = TrustedInboundContext::from_verified_evidence_with_source_channel(
+        request.adapter_id,
+        request.source_channel,
+        request.installation_id,
+        request.received_at,
+        &request.evidence,
+    )?;
+    let payload = match request.classification {
+        Some(classification) => ProductInboundPayload::from(classification),
+        None => ProductInboundPayload::UserMessage(UserMessagePayload::new(
+            request.message.text.clone(),
+            request
+                .message
+                .attachments
+                .iter()
+                .map(|attachment| attachment.descriptor.clone())
+                .collect(),
+            request.message.trigger,
+        )?),
+    };
+    let parsed = ParsedProductInbound::new(
+        request.message.event_id,
+        request.message.actor,
+        request.message.conversation,
+        payload,
+    )?;
+    ProductInboundEnvelope::from_trusted_parse(context, parsed)
+}
+
+fn admission_outcome(
+    envelope: ProductInboundEnvelope,
+    submission: Result<ProductInboundAck, ProductAdapterError>,
+) -> ChannelInboundSurfaceOutcome {
+    match submission {
+        Ok(ack) => {
+            ChannelInboundSurfaceOutcome::Admitted(Box::new(ChannelInboundSurfaceAdmission {
+                envelope,
+                ack,
+            }))
         }
+        Err(error) => ChannelInboundSurfaceOutcome::Rejected(Box::new(
+            ChannelInboundSurfaceRejectedAdmission { envelope, error },
+        )),
     }
 }
 
@@ -262,6 +310,7 @@ impl DefaultProductSurface {
         &self,
         envelope: ProductInboundEnvelope,
         attachments: Vec<InboundAttachment>,
+        pinned_channel_transfer: Option<(Arc<dyn ChannelAdapter>, Arc<dyn RestrictedEgress>)>,
     ) -> Result<ProductInboundAck, ProductAdapterError> {
         if matches!(
             envelope.payload(),
@@ -343,6 +392,7 @@ impl DefaultProductSurface {
                         delivered_gate_routes: &*self.delivered_gate_routes,
                     },
                     attachments,
+                    pinned_channel_transfer,
                 )
                 .await;
 
@@ -415,7 +465,7 @@ impl DefaultProductSurface {
         envelope: ProductInboundEnvelope,
         attachments: Vec<InboundAttachment>,
     ) -> Result<ProductInboundAck, ProductAdapterError> {
-        self.submit_inbound_inner(envelope, attachments).await
+        self.submit_inbound_inner(envelope, attachments, None).await
     }
 }
 
@@ -1068,18 +1118,40 @@ async fn dispatch_payload(
     action_fingerprint: ActionFingerprintKey,
     ports: DispatchPorts<'_>,
     attachments: Vec<InboundAttachment>,
+    pinned_channel_transfer: Option<(Arc<dyn ChannelAdapter>, Arc<dyn RestrictedEgress>)>,
 ) -> Result<DispatchedAction, ProductWorkflowError> {
     match envelope.payload() {
         ProductInboundPayload::UserMessage(_) => {
-            match ports
-                .inbound_turn_service
-                .accept_user_message_with_before_policy_and_attachments(
-                    envelope,
-                    ports.before_inbound_policy,
-                    attachments,
-                )
-                .await?
-            {
+            let dispatch = match pinned_channel_transfer {
+                Some((adapter, egress)) => {
+                    if !attachments.is_empty() {
+                        return Err(ProductWorkflowError::TurnSubmissionRejected {
+                            reason: "mixed inline and channel attachment sources are not allowed"
+                                .into(),
+                        });
+                    }
+                    ports
+                        .inbound_turn_service
+                        .accept_user_message_with_before_policy_and_channel_transfer(
+                            envelope,
+                            ports.before_inbound_policy,
+                            adapter,
+                            egress,
+                        )
+                        .await?
+                }
+                None => {
+                    ports
+                        .inbound_turn_service
+                        .accept_user_message_with_before_policy_and_attachments(
+                            envelope,
+                            ports.before_inbound_policy,
+                            attachments,
+                        )
+                        .await?
+                }
+            };
+            match dispatch {
                 InboundUserMessageDispatch::Accepted(outcome) => {
                     let ack = outcome.to_ack();
                     let dispatch_kind = dispatch_kind_from_ack(&ack, envelope.payload())?;
@@ -1714,6 +1786,13 @@ fn terminal_ack_for_error(error: &ProductWorkflowError) -> Option<ProductInbound
             ProductRejectionKind::PolicyDenied,
             reason.clone(),
         ))),
+        ProductWorkflowError::InboundAttachmentFailed {
+            reason,
+            retryable: false,
+        } => Some(ProductInboundAck::Rejected(ProductRejection::permanent(
+            ProductRejectionKind::InvalidRequest,
+            reason.clone(),
+        ))),
         ProductWorkflowError::BindingResolutionFailed { .. }
         | ProductWorkflowError::TurnSubmissionRejected { .. }
         | ProductWorkflowError::TurnSubmissionFailed { .. }
@@ -1725,6 +1804,9 @@ fn terminal_ack_for_error(error: &ProductWorkflowError) -> Option<ProductInbound
         | ProductWorkflowError::Transient { .. }
         | ProductWorkflowError::BeforeInboundPolicyFailed {
             permanent: false, ..
+        }
+        | ProductWorkflowError::InboundAttachmentFailed {
+            retryable: true, ..
         }
         | ProductWorkflowError::OutboundTargetNotDirectMessage
         | ProductWorkflowError::DuplicateAction { .. } => None,
@@ -1974,6 +2056,29 @@ mod tests {
             })
             .is_none()
         );
+        assert!(
+            terminal_ack_for_error(&ProductWorkflowError::InboundAttachmentFailed {
+                reason: "channel attachment transfer failed".to_string(),
+                retryable: true,
+            })
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn terminal_ack_for_error_settles_permanent_attachment_failure() {
+        let ack = terminal_ack_for_error(&ProductWorkflowError::InboundAttachmentFailed {
+            reason: "attachment exceeds the count limit".to_string(),
+            retryable: false,
+        })
+        .expect("permanent attachment failure is terminal");
+        assert!(matches!(
+            ack,
+            ProductInboundAck::Rejected(rejection)
+                if rejection.kind == ProductRejectionKind::InvalidRequest
+                    && rejection.disposition()
+                        == crate::ProductRejectionDisposition::Permanent
+        ));
     }
 
     #[test]
