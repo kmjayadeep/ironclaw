@@ -276,7 +276,7 @@ Run:
 
 ```bash
 cargo test --test reborn_integration_extension_user_lifecycle_isolation \
-  users_install_remove_and_reinstall_survive_restart
+  normalized_user_memberships_survive_runtime_restart_and_soft_removal
 ```
 
 Expected: FAIL until the restart/reinstall contract is implemented.

@@ -1560,3 +1560,248 @@ async fn final_member_reservation_blocks_a_join_from_a_second_store() {
             .is_none()
     );
 }
+
+/// Review finding: two processes that both observe "no active core" (fresh
+/// install or reinstall race) must not have the later creator's component
+/// sync tombstone the earlier creator's just-activated membership. Creation
+/// merges membership rows; it never sweeps rows it did not write.
+#[tokio::test]
+async fn concurrent_creation_does_not_tombstone_the_other_creators_membership() {
+    let backend = Arc::new(
+        FaultInjecting::new(InMemoryBackend::new()).with_fault(
+            Fault::on(FilesystemOperation::WriteFile)
+                .path("/v2/installations/")
+                .nth(1)
+                .backend("interrupt the first creator before its core commit"),
+        ),
+    );
+    let filesystem: Arc<dyn RootFilesystem> = backend;
+    let root = VirtualPath::new("/system/extensions/.installations/creation-race").unwrap();
+    let first = ExtensionInstallationStore::load_at(
+        Arc::clone(&filesystem),
+        root.clone(),
+        HostPortCatalog::empty(),
+        contracts(),
+    )
+    .await
+    .unwrap();
+    let second = ExtensionInstallationStore::load_at(
+        Arc::clone(&filesystem),
+        root.clone(),
+        HostPortCatalog::empty(),
+        contracts(),
+    )
+    .await
+    .unwrap();
+    let alice_install = normalized_installation("sha256:abc");
+    let bob = UserId::new("bob").unwrap();
+    let bob_install = alice_install
+        .clone()
+        .with_owner(InstallationOwner::user(bob.clone()));
+
+    first
+        .upsert_manifest_and_installation(manifest("sha256:abc"), alice_install)
+        .await
+        .expect_err("the injected core-commit failure must interrupt the first creator");
+    second
+        .upsert_manifest_and_installation(manifest("sha256:abc"), bob_install)
+        .await
+        .expect("the second creator completes the installation");
+
+    let membership_rows = filesystem
+        .query(
+            &VirtualPath::new(format!("{}/v2/memberships", root.as_str())).unwrap(),
+            &Filter::All,
+            Page::first(10),
+        )
+        .await
+        .unwrap();
+    let statuses = membership_rows
+        .iter()
+        .map(|row| {
+            let body: serde_json::Value = row.entry.parse_json().unwrap();
+            (
+                body["user_id"].as_str().unwrap().to_string(),
+                body["status"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        statuses.get("alice").map(String::as_str),
+        Some("active"),
+        "creation must not sweep a concurrent creator's membership row"
+    );
+    assert_eq!(statuses.get("bob").map(String::as_str), Some("active"));
+    let merged = second
+        .get_installation(&installation_id("acme-tools-prod"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        merged.owner().members().unwrap(),
+        &BTreeSet::from([UserId::new("alice").unwrap(), bob])
+    );
+}
+
+/// Review finding: once the v2 records (the authority) are committed, a
+/// failure writing the legacy compatibility projection must not fail the
+/// operation — the caller would compensate against a live install and leave a
+/// ghost. The projection is repaired at the next startup instead.
+#[tokio::test]
+async fn aggregate_projection_write_failure_does_not_fail_a_committed_v2_install() {
+    let backend = Arc::new(
+        FaultInjecting::new(InMemoryBackend::new()).with_fault(
+            Fault::on(FilesystemOperation::WriteFile)
+                .path("projection-loss/installations/")
+                .nth(1)
+                .backend("interrupt the compatibility projection write"),
+        ),
+    );
+    let filesystem: Arc<dyn RootFilesystem> = backend;
+    let root = VirtualPath::new("/system/extensions/.installations/projection-loss").unwrap();
+    let store = ExtensionInstallationStore::load_at(
+        Arc::clone(&filesystem),
+        root.clone(),
+        HostPortCatalog::empty(),
+        contracts(),
+    )
+    .await
+    .unwrap();
+    let expected = normalized_installation("sha256:abc");
+
+    store
+        .upsert_manifest_and_installation(manifest("sha256:abc"), expected.clone())
+        .await
+        .expect("a committed v2 install succeeds even when the projection write fails");
+    assert_eq!(
+        store
+            .get_installation(expected.installation_id())
+            .await
+            .unwrap(),
+        Some(expected.clone())
+    );
+    assert!(
+        filesystem
+            .query(
+                &VirtualPath::new(format!("{}/installations", root.as_str())).unwrap(),
+                &Filter::All,
+                Page::first(10),
+            )
+            .await
+            .unwrap()
+            .is_empty(),
+        "the failed projection write leaves no legacy row behind"
+    );
+
+    drop(store);
+    let reopened = ExtensionInstallationStore::load_at(
+        Arc::clone(&filesystem),
+        root.clone(),
+        HostPortCatalog::empty(),
+        contracts(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        reopened
+            .get_installation(expected.installation_id())
+            .await
+            .unwrap(),
+        Some(expected)
+    );
+    assert_eq!(
+        filesystem
+            .query(
+                &VirtualPath::new(format!("{}/installations", root.as_str())).unwrap(),
+                &Filter::All,
+                Page::first(10),
+            )
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "startup must repair the compatibility projection from v2"
+    );
+}
+
+/// Review finding: a health update is a diagnostic write and must never
+/// rewrite the installation core — a read-then-rewrite of the whole aggregate
+/// can race a final removal and resurrect a removed core. The core row must
+/// stay byte- and version-identical across a health update, and a health
+/// update against a removed installation reports it as missing.
+#[tokio::test]
+async fn update_health_mutates_only_the_health_row() {
+    let filesystem: Arc<dyn RootFilesystem> = Arc::new(InMemoryBackend::new());
+    let root = VirtualPath::new("/system/extensions/.installations/health-isolated").unwrap();
+    let store = ExtensionInstallationStore::load_at(
+        Arc::clone(&filesystem),
+        root.clone(),
+        HostPortCatalog::empty(),
+        contracts(),
+    )
+    .await
+    .unwrap();
+    let installed = normalized_installation("sha256:abc");
+    store
+        .upsert_manifest_and_installation(manifest("sha256:abc"), installed.clone())
+        .await
+        .unwrap();
+    let core_path = VirtualPath::new(format!("{}/v2/installations", root.as_str())).unwrap();
+    let core_before = filesystem
+        .query(&core_path, &Filter::All, Page::first(10))
+        .await
+        .unwrap();
+    assert_eq!(core_before.len(), 1);
+
+    let degraded = ExtensionHealthSnapshot::new(
+        ExtensionHealthStatus::Unhealthy,
+        Some(ExtensionHealthMessage::new("activation failed")),
+        Utc::now(),
+    );
+    store
+        .update_health(installed.installation_id(), degraded.clone())
+        .await
+        .unwrap();
+
+    let core_after = filesystem
+        .query(&core_path, &Filter::All, Page::first(10))
+        .await
+        .unwrap();
+    assert_eq!(
+        core_after[0].version, core_before[0].version,
+        "a health update must not rewrite the installation core row"
+    );
+    let refreshed = store
+        .get_installation(installed.installation_id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(refreshed.health().status(), degraded.status());
+    assert_eq!(refreshed.health().checked_at(), degraded.checked_at());
+    assert_eq!(
+        refreshed.health().message().unwrap().to_string(),
+        ExtensionHealthMessage::placeholder(),
+        "persisted health messages stay redacted"
+    );
+
+    store
+        .delete_installation(installed.installation_id())
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .update_health(installed.installation_id(), degraded)
+            .await
+            .unwrap_err(),
+        ExtensionInstallationError::InstallationNotFound { .. }
+    ));
+    let core_removed = filesystem
+        .query(&core_path, &Filter::All, Page::first(10))
+        .await
+        .unwrap();
+    let body: serde_json::Value = core_removed[0].entry.parse_json().unwrap();
+    assert_eq!(
+        body["status"], "removed",
+        "a health update must never resurrect a removed core"
+    );
+}

@@ -984,6 +984,19 @@ impl V2LifecycleStatus {
     }
 }
 
+/// How an aggregate write reconciles child rows it did not explicitly carry.
+///
+/// `Full` may tombstone active rows omitted from the aggregate and is only
+/// safe under a core reservation, which excludes concurrent writers.
+/// `ActivateOnly` merges: it activates the aggregate's rows and leaves every
+/// other row untouched, so an unreserved write (creation, reactivation,
+/// compensation) can never drop a concurrent creator's or joiner's membership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum V2ComponentSync {
+    Full,
+    ActivateOnly,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct V2ManifestRecord {
@@ -1655,6 +1668,28 @@ impl ExtensionInstallationStore {
         .map_err(|error| map_extension_state_cas_error(error, "manifest"))
     }
 
+    async fn require_active_v2_core(
+        &self,
+        installation_id: &ExtensionInstallationId,
+    ) -> Result<V2InstallationRecord, ExtensionInstallationError> {
+        let Some((core, _)) = self.load_v2_installation_record(installation_id).await? else {
+            return Err(ExtensionInstallationError::InstallationNotFound {
+                installation_id: installation_id.clone(),
+            });
+        };
+        match core.status {
+            V2LifecycleStatus::Active => Ok(core),
+            V2LifecycleStatus::Removing => {
+                Err(ExtensionInstallationError::MembershipMutationInProgress {
+                    installation_id: installation_id.clone(),
+                })
+            }
+            V2LifecycleStatus::Removed => Err(ExtensionInstallationError::InstallationNotFound {
+                installation_id: installation_id.clone(),
+            }),
+        }
+    }
+
     async fn put_v2_installation(
         &self,
         installation: &ExtensionInstallation,
@@ -1671,9 +1706,27 @@ impl ExtensionInstallationStore {
             }
             _ => None,
         };
-        if let Err(error) = self.write_v2_installation_components(installation).await {
+        // Only a reserved update of an ACTIVE core may sweep rows omitted from
+        // the aggregate: the reservation excludes concurrent writers, so an
+        // omitted-but-active row is genuinely stale. Creation/reactivation
+        // holds no reservation — a concurrent creator may have activated its
+        // own membership between our core load and this write, and sweeping it
+        // would silently drop that user from an installation whose install
+        // call succeeded. Creation therefore merges (activate-only).
+        let sync = if prior.is_some() {
+            V2ComponentSync::Full
+        } else {
+            V2ComponentSync::ActivateOnly
+        };
+        if let Err(error) = self
+            .write_v2_installation_components(installation, sync)
+            .await
+        {
             if let Some(prior) = prior
-                && self.write_v2_installation_components(&prior).await.is_err()
+                && self
+                    .write_v2_installation_components(&prior, V2ComponentSync::Full)
+                    .await
+                    .is_err()
             {
                 return Err(store_unavailable_error(
                     "aggregate update failed and its prior installation could not be restored",
@@ -1687,6 +1740,7 @@ impl ExtensionInstallationStore {
     async fn write_v2_installation_components(
         &self,
         installation: &ExtensionInstallation,
+        sync: V2ComponentSync,
     ) -> Result<(), ExtensionInstallationError> {
         let desired_members = installation.owner().members().cloned().unwrap_or_default();
         for user_id in &desired_members {
@@ -1697,20 +1751,22 @@ impl ExtensionInstallationStore {
             )
             .await?;
         }
-        let existing_memberships = self
-            .query_v2_memberships(installation.installation_id())
-            .await?;
-        for membership in existing_memberships {
-            if desired_members.contains(&membership.user_id) {
-                continue;
-            }
-            if membership.status == V2LifecycleStatus::Active {
-                self.deactivate_v2_membership_row(
-                    installation.installation_id(),
-                    &membership.user_id,
-                    installation.updated_at(),
-                )
+        if sync == V2ComponentSync::Full {
+            let existing_memberships = self
+                .query_v2_memberships(installation.installation_id())
                 .await?;
+            for membership in existing_memberships {
+                if desired_members.contains(&membership.user_id) {
+                    continue;
+                }
+                if membership.status == V2LifecycleStatus::Active {
+                    self.deactivate_v2_membership_row(
+                        installation.installation_id(),
+                        &membership.user_id,
+                        installation.updated_at(),
+                    )
+                    .await?;
+                }
             }
         }
 
@@ -1731,20 +1787,22 @@ impl ExtensionInstallationStore {
             )
             .await?;
         }
-        let existing_bindings = self
-            .query_v2_credential_bindings(installation.installation_id())
-            .await?;
-        for binding in existing_bindings {
-            if desired_binding_handles.contains(&binding.credential_handle) {
-                continue;
-            }
-            if binding.status == V2LifecycleStatus::Active {
-                self.deactivate_v2_credential_binding_row(
-                    installation.installation_id(),
-                    &binding.credential_handle,
-                    installation.updated_at(),
-                )
+        if sync == V2ComponentSync::Full {
+            let existing_bindings = self
+                .query_v2_credential_bindings(installation.installation_id())
                 .await?;
+            for binding in existing_bindings {
+                if desired_binding_handles.contains(&binding.credential_handle) {
+                    continue;
+                }
+                if binding.status == V2LifecycleStatus::Active {
+                    self.deactivate_v2_credential_binding_row(
+                        installation.installation_id(),
+                        &binding.credential_handle,
+                        installation.updated_at(),
+                    )
+                    .await?;
+                }
             }
         }
 
@@ -2790,9 +2848,14 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
                 .await;
             return Err(error);
         }
-        self.put_installation(&installation, CasExpectation::Any)
-            .await
-            .map_err(SaveRowError::into_installation_error)
+        // silent-ok: the v2 records (the authority) are committed, so the
+        // install has succeeded; failing on a compatibility-projection write
+        // would make callers compensate against a live install and leave a
+        // ghost. Startup repairs the projection from v2.
+        let _ = self
+            .put_installation(&installation, CasExpectation::Any)
+            .await;
+        Ok(())
     }
 
     async fn list_installations(
@@ -2828,9 +2891,13 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
             })?;
         validate_installation_against_one_manifest(&manifest, &installation)?;
         self.put_v2_installation(&installation).await?;
-        self.put_installation(&installation, CasExpectation::Any)
-            .await
-            .map_err(SaveRowError::into_installation_error)
+        // silent-ok: v2 is authoritative and committed; see
+        // upsert_manifest_and_installation for why the projection write must
+        // not fail the operation. Startup repairs the projection from v2.
+        let _ = self
+            .put_installation(&installation, CasExpectation::Any)
+            .await;
+        Ok(())
     }
 
     async fn activate_membership(
@@ -2871,6 +2938,13 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
             });
         };
         if observed_core.status != V2LifecycleStatus::Active {
+            // Deliberately roll the new row back only for `Removed`. While a
+            // removal reservation (`Removing`) is held, unconditionally
+            // deactivating our row can interleave with the reserver's
+            // member-count recheck and strand the core active with zero
+            // members. Leaving the row active is the safe at-least-once
+            // outcome: a final removal tombstones every active row, and the
+            // caller's transient error invites the retry that converges.
             if changed && observed_core.status == V2LifecycleStatus::Removed {
                 self.deactivate_v2_membership_row(installation_id, user_id, now)
                     .await?;
@@ -2895,9 +2969,12 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
             .canonicalize_v2_installation_owner(installation_id, now)
             .await?;
         let installation = self.reconstruct_v2_installation(&core).await?;
-        self.put_installation(&installation, CasExpectation::Any)
-            .await
-            .map_err(SaveRowError::into_installation_error)?;
+        // silent-ok: the membership row (the authority) is committed; a
+        // projection-write failure must not report the join as failed.
+        // Startup repairs the projection from v2.
+        let _ = self
+            .put_installation(&installation, CasExpectation::Any)
+            .await;
         Ok(installation)
     }
 
@@ -2929,7 +3006,12 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
             if !matches!(error, ExtensionInstallationError::StoreUnavailable { .. }) {
                 return Err(error);
             }
-            let v2_restored = self.write_v2_installation_components(&prior).await;
+            // Activate-only: compensation re-activates the prior member set
+            // and must never sweep a row a concurrent creator/join wrote —
+            // sweeping here could drop a user whose own call succeeded.
+            let v2_restored = self
+                .write_v2_installation_components(&prior, V2ComponentSync::ActivateOnly)
+                .await;
             let compatibility_restored = self.put_installation(&prior, CasExpectation::Any).await;
             if v2_restored.is_err() || compatibility_restored.is_err() {
                 return Err(store_unavailable_error(
@@ -2944,7 +3026,9 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
         {
             Ok(result) => Ok(result),
             Err(error) => {
-                let v2_restored = self.write_v2_installation_components(&prior).await;
+                let v2_restored = self
+                    .write_v2_installation_components(&prior, V2ComponentSync::ActivateOnly)
+                    .await;
                 let compatibility_restored =
                     self.put_installation(&prior, CasExpectation::Any).await;
                 if v2_restored.is_err() || compatibility_restored.is_err() {
@@ -3018,25 +3102,31 @@ impl ExtensionInstallationStorePort for ExtensionInstallationStore {
         installation_id: &ExtensionInstallationId,
         health: ExtensionHealthSnapshot,
     ) -> Result<(), ExtensionInstallationError> {
-        let Some(current) = self.get_installation(installation_id).await? else {
-            return Err(ExtensionInstallationError::InstallationNotFound {
-                installation_id: installation_id.clone(),
-            });
+        // Health is a diagnostic record isolated from lifecycle state: write
+        // only the health row, never the core. Rewriting the aggregate here
+        // could race a final removal and resurrect a removed core.
+        self.require_active_v2_core(installation_id).await?;
+        let record = V2HealthRecord {
+            schema_version: EXTENSION_STATE_V2_SCHEMA.to_string(),
+            installation_id: installation_id.clone(),
+            health,
+            updated_at: Utc::now(),
         };
-        let updated =
-            ExtensionInstallation::from_persisted_parts(ExtensionInstallationPersistedParts {
-                installation_id: current.installation_id().clone(),
-                extension_id: current.extension_id().clone(),
-                manifest_ref: current.manifest_ref().clone(),
-                credential_bindings: current.credential_bindings().to_vec(),
-                owner: current.owner().clone(),
-                updated_at: Utc::now(),
-                health,
-            })?;
-        self.put_v2_installation(&updated).await?;
-        self.put_installation(&updated, CasExpectation::Any)
-            .await
-            .map_err(SaveRowError::into_installation_error)
+        self.write_v2_health(&record).await?;
+        // Re-check after the write: if a removal landed in between, the row
+        // above is an orphaned diagnostic on a tombstoned core (harmless and
+        // invisible) and the installation must be reported as gone rather
+        // than projected back into the compatibility view.
+        let core = self.require_active_v2_core(installation_id).await?;
+        let installation = self.reconstruct_v2_installation(&core).await?;
+        // silent-ok: v2 is authoritative and committed; the compatibility
+        // projection is repaired from v2 at the next startup if this write
+        // fails, and failing the operation here would misreport a committed
+        // health update.
+        let _ = self
+            .put_installation(&installation, CasExpectation::Any)
+            .await;
+        Ok(())
     }
 }
 

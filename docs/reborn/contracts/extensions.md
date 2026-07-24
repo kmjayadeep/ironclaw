@@ -85,12 +85,26 @@ uses the still-active compatibility snapshot to roll back an interrupted
 reservation. Aggregate `ExtensionInstallation` values are reconstructed at
 the typed store boundary for existing callers.
 
+Only a reserved update sweeps child rows omitted from its aggregate.
+Creation and reactivation hold no reservation and merge (activate-only), so
+they never tombstone a membership a concurrent creator or joiner wrote. A
+health update writes only the health row — never the installation core — so
+it cannot race a removal into resurrecting a tombstoned installation. A
+mutation's outcome is decided by the v2 records alone: once they commit, a
+failed compatibility-projection write does not fail the operation; startup
+repair converges the projection.
+
 Membership removal uses the same core reservation as a cross-process gate.
 A non-final leave updates only the caller row and releases the core; a final
 leave keeps the reservation until shared runtime teardown and soft removal
 complete. Concurrent joins fail transiently while the reservation is held.
 Removal retries are idempotent, and the core becomes `removed` only after its
-child tombstones are durable.
+child tombstones are durable. These transitions are pinned by
+`cargo test -p ironclaw_extensions --test installations_contract`
+(normalized layout, membership mutation, interruption, and backend
+contracts) and
+`cargo test --test reborn_integration_extension_user_lifecycle_isolation`
+(the production-composition restart journey).
 
 These are `VirtualPath` keys, not a promise of literal host directories.
 `RootFilesystem` may route them to disk, libSQL, PostgreSQL, or another
@@ -111,7 +125,11 @@ repairs these views from v2. The installation compatibility row is also the
 bounded rollback snapshot while a v2 core is explicitly `removing`; outside
 that transition it is never lifecycle authority. Old and new binaries must not
 write the same installation root concurrently: deploys must quiesce old
-writers before the new binary starts. Once a v2 writer has run, rollback
+writers before the new binary starts. Same-version processes may share the
+root, but startup recovery assumes no concurrent mid-transition writer: a
+process that boots while another holds a reservation may transiently restore
+it, and the writers reconverge through re-reservation and retries rather
+than losing the removal. Once a v2 writer has run, rollback
 requires a data backup or a binary that understands v2; starting an
 aggregate-only writer would create divergent state.
 
