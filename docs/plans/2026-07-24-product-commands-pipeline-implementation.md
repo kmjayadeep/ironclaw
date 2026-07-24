@@ -8,12 +8,22 @@ central declaration, per the approved spec
 (`docs/plans/2026-07-24-product-commands-pipeline.md`).
 
 **Architecture:** Descriptor metadata inventory in `ironclaw_host_api`
-(vocabulary); behavior table + hub + admission in `ironclaw_product`;
-slash classification once in the generic channel sink
-(`ironclaw_reborn_composition` `extension_ingress.rs`), membership-checked
-against the manifest-declared `channel.commands`; results delivered by the
-run-delivery observer; WebUI derives menu + execution + rendering from the
-inventory. No adapter changes.
+(vocabulary); commands execute as **product capability operations** on
+`ProductSurface::invoke` per Illia's #6616 (`product.model.command`,
+`product.lifecycle.command`, + our new `product.status.command`); admission in
+`ironclaw_product`; slash classification once in the generic channel sink
+(post-#6616 home: `ironclaw_extension_host`), membership-checked against the
+manifest-declared `channel.commands`; results delivered by the run-delivery
+observer; WebUI derives menu + execution + rendering from the inventory. No
+adapter changes, no hub, no parallel execution path.
+
+**STATUS 2026-07-24:** Tasks 1–2 committed (990de4de1, 10b143c06) +
+`ChannelInboundClassification::Command` variant (2d5e4c569). Implementation
+PAUSED pending Illia's train (#6615/#6616/#6619). **Task 0 (new prereq):**
+once the train lands, rebase `alpine-fight` onto `main` per the spec's
+"Base & rebase strategy" section, re-run Tasks 1–2 test suites, and re-apply
+the Task 3 sink WIP (session scratchpad `task3-sink-wip.patch`) at the moved
+sink location before continuing.
 
 **Tech Stack:** Rust workspace (axum, serde, tokio), React/TS SPA (vitest),
 TOML v3 extension manifests.
@@ -101,15 +111,18 @@ pub fn is_product_command_name(name: &str) -> bool; // name only, not alias
 - Modify: `crates/ironclaw_host_api/src/product_adapter/inbound.rs`
   (`ChannelInboundClassification::Command(InboundCommandPayload)` + `From`
   arm → `ProductInboundPayload::Command`)
-- Modify: `crates/ironclaw_reborn_composition/src/extension_host/extension_ingress.rs`
-  (`ChannelInboundSinkConfig` gains `pub commands: Vec<String>`; in
+- Modify: the generic sink at its **post-#6616 home in
+  `ironclaw_extension_host`** (formerly
+  `ironclaw_reborn_composition/src/extension_host/extension_ingress.rs`):
+  `ChannelInboundSinkConfig` gains `pub commands: Vec<String>`; in
   `InboundSink::admit`, when the interaction parse yields `None`, run
   `parse_product_slash_command(&message.text, message.trigger)`; if the parsed
-  name/alias resolves via `find_product_command` → classify
-  `Command(payload)`; unresolved or parse error → ordinary message)
-- Modify: `crates/ironclaw_reborn_composition/src/extension_host/channel_host.rs`
-  (`build_generic_graph` passes `channel.commands.clone()` into the sink
-  config)
+  name/alias resolves via `find_product_command` AND its canonical name is in
+  the declared set → classify `Command(payload)`; unresolved, undeclared, or
+  parse error → ordinary message. WIP patch with the field plumbing + 4 tests:
+  `~/.claude/projects/.../memory/product-commands-task3-sink-wip.patch`.
+- Modify: the channel-host graph assembly (`build_generic_graph`, post-#6616
+  location) passes `channel.commands.clone()` into the sink config.
 
 **Interfaces (produces):** every generic-channel message with a known slash
 command reaches the workflow as `ProductInboundPayload::Command` — no adapter
@@ -125,7 +138,29 @@ admission construction.
       resolution (precedence); `/`-only → ordinary message.
 - [ ] Green; `cargo test -p ironclaw_reborn_composition`; fmt; commit.
 
-### Task 4: `CommandResultView` + hub in `ironclaw_product`
+### Task 4 (REVISED): `CommandResultView` + `product.status.command` operation
+
+Post-#6616 shape — no hub, no `ProductCommandService`. Add to
+`ironclaw_product`:
+
+- `CommandResultView` / `CommandResultField` + `command_help_text()` +
+  `render_command_result_text()` in `commands.rs` (unchanged from the
+  original task below).
+- `PRODUCT_STATUS_COMMAND_OPERATION_ID = "product.status.command"` + empty
+  typed input, a `ProductCommandHandler::ProductStatusCommand` arm in
+  `reborn_services/product_capability_handlers.rs` calling a new facade
+  method `execute_product_status_command(caller, thread)` (run-state read:
+  active run id, state, started-at; idle otherwise), and an arm in
+  `product_command_operation` mapping `ProductCommand::Status` to it
+  (replacing #6616's reject). Extend
+  `tests/product_command_surface_contract.rs`.
+- All command handlers return `CommandResultView`-shaped output.
+
+The original hub task below is retained only for its test list and
+`CommandResultView` code block — the `ProductCommandHub` struct itself is
+superseded.
+
+### Task 4 (original, superseded): `CommandResultView` + hub in `ironclaw_product`
 
 **Files:**
 - Modify: `crates/ironclaw_product/src/commands.rs` — add:
@@ -177,7 +212,19 @@ command_help_text())`.
       closed), never a panic.
 - [ ] Green; `cargo test -p ironclaw_product`; fmt; commit.
 
-### Task 5: Admission impl + composition wiring
+### Task 5 (REVISED): Admission impl + channel-host wiring
+
+Post-#6616 shape: implement `PairedDmCommandAdmission` against the surviving
+admission port (`ProductSurfaceError` signature); in the channel-host graph
+assembly (its post-#6616 home), wire per-extension admission (declared set
+from the manifest + graph's binding service) via
+`with_product_command_admission_service` AND pass the runtime `ProductSurface`
+handle as the workflow's `command_surface` — both are unwired fail-closed
+stubs even after #6616. Do NOT delete `provider_admin_product_command`
+ourselves: #6615 moves it to `ironclaw_operator` and #6616 deletes it. The
+original task below is retained for its admission test list.
+
+### Task 5 (original, superseded): Admission impl + composition wiring
 
 **Files:**
 - Create: `crates/ironclaw_product/src/command_admission.rs` —
@@ -228,7 +275,17 @@ command_help_text())`.
       ack posts the rejection text; a user-message ack still posts nothing new.
 - [ ] Green; `cargo test -p ironclaw_product`; fmt; commit.
 
-### Task 7: WebUI backend (facade + routes)
+### Task 7 (REVISED): WebUI backend (facade + routes)
+
+Post-#6616 note: `execute_product_command` does NOT call a hub — it parses
+with the shared slash parser + `ProductCommand::from_payload`, maps through
+the same `product_command_operation` fn the channel dispatch uses, and
+invokes the operation through the facade's existing capability dispatch
+(`ProductCommandHandler`) with the authenticated caller. Everything else in
+the original task (endpoints, DTOs, descriptors/router/contract test, test
+list) stands.
+
+### Task 7 (original shape): WebUI backend (facade + routes)
 
 **Files:**
 - Modify: `crates/ironclaw_product/src/reborn_services.rs` +

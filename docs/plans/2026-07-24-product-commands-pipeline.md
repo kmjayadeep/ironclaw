@@ -46,11 +46,11 @@ field; behavior lives in the crate that already owns the command contract.
 The descriptor **metadata** inventory — name, aliases, title, description,
 usage (static strs) — lives in `ironclaw_host_api` (the shared vocabulary
 crate), because manifest validation in `ironclaw_extensions` depends only on
-`host_api` and must see the legal command names. The **behavior** table —
-parse + execute binding per descriptor — stays in
-`ironclaw_product/src/commands.rs`. A contract test pins the two 1:1 (every
-descriptor has exactly one behavior entry and vice versa), so each fact is
-still declared once. The handler receives the ports bundle and a resolved `CommandScope`
+`host_api` and must see the legal command names. The **behavior** binding —
+parse per descriptor, plus the fixed name → capability-operation mapping
+(§2) — stays in `ironclaw_product/src/commands.rs`. Contract tests pin the
+tables 1:1 (every descriptor has exactly one parse binding and one operation
+mapping, and vice versa), so each fact is still declared once. The handler receives the ports bundle and a resolved `CommandScope`
 (tenant/user/thread identity — the *only* context execution needs):
 
 - `model` → `LlmConfigService::snapshot` (no args) / `set_active` (set,
@@ -67,22 +67,38 @@ lines/fields (`CommandResultView`: title + rows of label/value + optional
 plain-text lines) — so channels and the frontend render any command with one
 generic renderer. Command-specific JSON never leaks to a surface.
 
-### 2. Hub service + admission (`ironclaw_product`)
+### 2. Execution: capability operations (adopting #6616's model)
 
-- `ProductCommandHub` — the one concrete `ProductCommandService`: resolve
-  `CommandScope` from `ProductCommandContext` via the extension's
-  `ConversationBindingService`, look up the table entry, execute. A thin loop
-  over the table, no per-command match outside it. Constructed with the ports
-  bundle (`LlmConfigService`, run-state read, binding).
-- `PairedDmCommandAdmission` — the one concrete
-  `ProductCommandAdmissionService`: admit iff the auth claim is Verified, the
-  external actor resolves to a bound (paired) user, and the conversation is
-  direct (DM). Also enforces the manifest opt-in (§3): a command outside the
-  extension's declared set is rejected as unknown. Fail-closed on any resolver
-  error.
+Commands execute as **product capability operations** on the
+`ProductSurface::invoke` surface — the same mediated dispatch path every
+WebUI operation uses. This adopts the architecture Illia lands in PR #6616
+(`reborn-remove-product-workflow-facades`): each command family has an
+operation ID + typed input (`product.model.command` /
+`product.lifecycle.command`, handlers in
+`reborn_services/product_capability_handlers.rs`), and the channel workflow's
+command arm does parse → admission → binding → `ProductSurfaceCaller` →
+`command_surface.invoke(operation_id, input)` (`dispatch_product_command`).
+The old `ProductCommandService` port is deleted by that PR; we build no hub
+and no parallel execution path.
 
-Composition's dormant `RebornProviderAdminProductCommandService` is deleted as
-superseded (never wired).
+What this PR adds on top:
+
+- **`product.status.command`** — a new operation ID + handler (the #6616
+  dispatch currently rejects `Status` as unavailable): run-state read for the
+  caller's thread (active run id, state, started-at; idle otherwise).
+- **`PairedDmCommandAdmission`** — the one concrete
+  `ProductCommandAdmissionService` (the port survives #6616 with
+  `ProductSurfaceError`): admit iff the auth claim is Verified, the external
+  actor resolves to a bound (paired) user, and the conversation is direct
+  (DM). Also enforces the manifest opt-in (§3) as defense in depth. Fail
+  closed on any resolver error.
+- **Presentational output**: command handlers return the standardized
+  `CommandResultView` shape (§6/§7) so channels and the frontend render any
+  command's result with one generic renderer.
+
+The `/model` executor already exists behind #6615/#6616
+(`execute_product_model_command` over the operator/LLM-config services);
+nothing to build there.
 
 ### 3. Manifest opt-in (`channel.commands`)
 
@@ -98,13 +114,16 @@ set from the resolved manifest and supplies it to (a) the generic sink's
 classification step (§5) and (b) the admission service. No adapter or host
 code ever names a specific command.
 
-### 4. Composition wiring (`ironclaw_reborn_composition`)
+### 4. Channel-host wiring (assembly only)
 
-Assembly only: construct `ProductCommandHub` + `PairedDmCommandAdmission` with
-profile-provided ports and pass them via the existing
-`DefaultProductSurface::with_product_command_admission_service` /
-`with_product_command_service` builders in `build_generic_graph`
-(`extension_host/channel_host.rs:579`). ~A handful of lines.
+Even after #6616, both command seams remain unwired fail-closed stubs in
+production: the per-extension `DefaultProductSurface` gets neither an
+admission service nor a `command_surface`. This PR wires both in the
+channel-host graph assembly (post-#6616 home: `ironclaw_extension_host` /
+what remains in composition): construct the per-extension
+`PairedDmCommandAdmission` (declared set from the manifest, binding service
+from the graph) and pass the runtime's `ProductSurface` handle as the
+command surface. ~A handful of lines; no behavior in assembly.
 
 ### 5. Channel edges (generic parsers only)
 
@@ -148,11 +167,13 @@ the existing rejection-hint path, extended to cover command rejections.
     description, usage) straight from the table. WebUI sees all commands by
     default (no manifest gate; the browser surface is the operator).
   - `POST /api/v2/commands/execute` `{ text, thread_id }` → parse with the
-    same `ProductCommand::from_payload`, execute on the hub with a
-    `CommandScope` built from the authenticated session (session operator is
-    trivially "paired"; thread bound through the existing
-    `SessionThreadService` scope rules) → returns the `CommandResultView` (or
-    the typed rejection).
+    shared slash parser + `ProductCommand::from_payload`, map through the
+    same fixed name → operation mapping the channel dispatch uses, and invoke
+    the operation through the facade's existing capability dispatch with the
+    authenticated caller (session operator is trivially "paired"; thread
+    bound through the existing `SessionThreadService` scope rules) → returns
+    the `CommandResultView` (or the typed rejection). The frontend stays
+    dumb: it never learns operation IDs or per-command semantics.
 - **Frontend:** three generic pieces — slash-menu/autocomplete fed by the
   inventory endpoint; composer intercept for a leading `/` that calls execute
   and never submits a turn; one `CommandResult` renderer component for the
@@ -200,9 +221,30 @@ family (PR 2 candidate, stricter admission); group-chat commands; a dedicated
 autocomplete on channels (Telegram BotFather command registration etc.);
 Telegram `/start` deep-link pairing (§5b follow-up).
 
+## Base & rebase strategy (Illia's composition-extraction train)
+
+This PR builds on top of Illia's in-flight train (#6615 operator extraction,
+#6616 command-as-capability + extension-host relocation, #6619 product-auth
+extraction; #6618 merged). Do not branch off his agent branches (they
+force-push under review); rebase `alpine-fight` onto `main` once the train
+lands. Known reconciliations:
+
+- `commands.rs`: keep his operation IDs/typed inputs, keep our descriptor
+  metadata move to `host_api` (textual conflict, mechanical).
+- Sink classification (§5) re-applies at `extension_ingress.rs`'s new home in
+  `ironclaw_extension_host`; the written tests carry over
+  (WIP patch preserved in the session scratchpad: `task3-sink-wip.patch`).
+- Admission implements the post-#6616 port signature (`ProductSurfaceError`).
+- `/status` is a new operation ID beside his two — never a bespoke service.
+- `ChannelInboundClassification::Command` is already committed on our branch
+  (host_api, stable file).
+
 ## PR train context
 
-PR 1 (this): the generic machine. PR 2+: each new command = one table row +
-its underlying runtime operation if missing (`/stop` → cancel_run exists;
-`/new` → thread rebind op; `/compact` → user-triggered compaction op;
-`/undo` → mark-excluded timeline op — never delete, per LLM-data retention).
+PR 1 (this): the generic machine. PR 2+: each new command = one inventory
+descriptor + one operation handler + its underlying runtime operation if
+missing (`/stop` → cancel_run exists as an operation already; `/new` → thread
+rebind op; `/compact` → user-triggered compaction op; `/undo` → mark-excluded
+timeline op — never delete, per LLM-data retention). Lifecycle commands from
+chat (PR 2) are already operations (`product.lifecycle.command`) — that PR is
+admission policy + enabling, not execution work.
