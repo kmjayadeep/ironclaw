@@ -95,4 +95,18 @@ mod tests {
         assert!(google.contains("config set google.client_secret"));
         assert!(google.contains("config set google.redirect_uri"));
     }
+
+    #[test]
+    fn google_backend_auth_text_points_at_webui_admin_without_restart_instruction() {
+        let text = google_backend_auth_text();
+        assert!(text.contains("rejected"), "text: {text}");
+        assert!(
+            text.contains("WebUI Admin > Extension Configuration"),
+            "text: {text}"
+        );
+        assert!(
+            !text.to_ascii_lowercase().contains("restart"),
+            "text: {text}"
+        );
+    }
 }

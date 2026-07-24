@@ -68,6 +68,20 @@ fn build_approval_interaction_service_with_parts(
 }
 
 impl RebornRuntime {
+    /// Root filesystem used by the production administrator-configuration
+    /// resolver assembled in `build_reborn_runtime`.
+    ///
+    /// This purpose-specific seam lets caller-path tests inject a durable
+    /// storage failure without replacing the resolver or credential source.
+    /// For tests only -- gated behind `test-support`, ships zero bytes in
+    /// production builds.
+    #[cfg(feature = "test-support")]
+    pub fn admin_configuration_root_filesystem_for_test(
+        &self,
+    ) -> Arc<dyn ironclaw_filesystem::RootFilesystem> {
+        Arc::clone(&self.extension_filesystem) as Arc<dyn ironclaw_filesystem::RootFilesystem>
+    }
+
     /// Real approval interaction service owned by this runtime.
     ///
     /// For tests only -- gated behind `test-support`, ships zero bytes in production builds.

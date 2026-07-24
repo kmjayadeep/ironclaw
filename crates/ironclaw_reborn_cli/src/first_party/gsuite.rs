@@ -137,8 +137,9 @@ fn gsuite_error(
         None => match error.reason() {
             // `BackendAuth` means the account resolved but the provider rejected
             // the request while exchanging/refreshing the token — configured,
-            // but rejected. Distinct from `AuthRequired` and the not-configured
-            // pre-dispatch check.
+            // but rejected. Distinct from `AuthRequired`, which represents a
+            // missing or expired user account; deployment client material is
+            // resolved by the manifest-driven product-auth engine at dispatch.
             Some(GsuiteCredentialDispatchReason::BackendAuth) => {
                 FirstPartyCapabilityError::dispatch_with_host_remediation(
                     error.kind(),
@@ -254,7 +255,9 @@ impl RuntimeCredentialAccountVisibilityPolicy for GsuiteRuntimeCredentialAccount
 
 #[cfg(test)]
 mod tests {
-    use ironclaw_first_party_extensions::GMAIL_LIST_MESSAGES_CAPABILITY_ID;
+    use ironclaw_first_party_extensions::{
+        GMAIL_LIST_MESSAGES_CAPABILITY_ID, GMAIL_SEND_MESSAGE_CAPABILITY_ID,
+    };
     use ironclaw_reborn_composition::{
         AuthProductScope, AuthProviderId, AuthSurface, CredentialAccountId, CredentialAccountLabel,
         CredentialAccountStatus, CredentialOwnership, RuntimeDispatchErrorKind, Timestamp,
@@ -284,6 +287,34 @@ mod tests {
         let requirement = &credential_requirements[0];
         assert_eq!(requirement.provider.as_str(), GOOGLE_PROVIDER_ID);
         assert_eq!(requirement.requester_extension.as_str(), "gmail");
+    }
+
+    #[test]
+    fn gmail_backend_auth_failure_carries_webui_admin_remediation() {
+        let capability_id = CapabilityId::new(GMAIL_SEND_MESSAGE_CAPABILITY_ID).unwrap();
+        let error = GsuiteDispatchError::new(RuntimeDispatchErrorKind::Backend)
+            .with_reason(GsuiteCredentialDispatchReason::BackendAuth);
+
+        let mapped = gsuite_error(error, &capability_id);
+
+        let FirstPartyCapabilityError::Dispatch { detail, .. } = mapped else {
+            panic!("expected Gmail backend auth failure to map to Dispatch");
+        };
+        let detail = detail.expect("backend auth failure carries remediation detail");
+        let detail = format!("{detail:?}");
+        assert!(
+            detail.starts_with("HostRemediation"),
+            "expected host remediation detail, got {detail}"
+        );
+        assert!(detail.contains("rejected"), "detail: {detail}");
+        assert!(
+            detail.contains("WebUI Admin > Extension Configuration"),
+            "detail: {detail}"
+        );
+        assert!(
+            !detail.to_ascii_lowercase().contains("restart"),
+            "detail: {detail}"
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@ the recorded model's final wording.
 
 import asyncio
 import json
+import secrets
 import uuid
 from collections import Counter
 from datetime import UTC, datetime, timedelta
@@ -169,6 +170,7 @@ async def reborn_qa_emulate_runtime(
             ),
         )
     )
+    google_client_secret = secrets.token_urlsafe(32)
     proc, base_url = await start_reborn_webui_v2_server(
         ironclaw_reborn_binary=ironclaw_reborn_binary,
         mock_llm_server=mock_llm_server,
@@ -178,7 +180,7 @@ async def reborn_qa_emulate_runtime(
         extra_env={
             "IRONCLAW_REBORN_TEST_HTTP_REWRITE_MAP": rewrite_map,
             "IRONCLAW_REBORN_GOOGLE_CLIENT_ID": "reborn-qa-emulate-client",
-            "IRONCLAW_REBORN_GOOGLE_CLIENT_SECRET": "reborn-qa-emulate-secret",
+            "IRONCLAW_REBORN_GOOGLE_CLIENT_SECRET": google_client_secret,
             "IRONCLAW_REBORN_GOOGLE_OAUTH_REDIRECT_URI": (
                 "http://127.0.0.1/api/reborn/product-auth/oauth/google/callback"
             ),

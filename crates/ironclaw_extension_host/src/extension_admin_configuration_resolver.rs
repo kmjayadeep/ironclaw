@@ -375,6 +375,25 @@ mod tests {
         let manifest = manifest("non-channel-tools", descriptor);
         assert!(manifest.channel.is_none());
         let resolver = ExtensionAdminConfigurationResolver::new(service, scope, [manifest]);
+        let handles = [
+            SecretHandle::new("oauth_client_id").unwrap(),
+            SecretHandle::new("oauth_client_secret").unwrap(),
+        ];
+
+        let snapshot = resolver
+            .credential_handle_values(&handles)
+            .await
+            .unwrap()
+            .expect("complete OAuth pair");
+        assert_eq!(snapshot.revision, 1);
+        assert_eq!(
+            secrecy::ExposeSecret::expose_secret(&snapshot.values[&handles[0]]),
+            "client-id"
+        );
+        assert_eq!(
+            secrecy::ExposeSecret::expose_secret(&snapshot.values[&handles[1]]),
+            "client-secret"
+        );
 
         for (handle, expected) in [
             ("oauth_client_id", "client-id"),

@@ -9,12 +9,15 @@ use axum::body::{Body, to_bytes};
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use chrono::{Duration as ChronoDuration, Utc};
-use ironclaw_auth::GOOGLE_GMAIL_READONLY_SCOPE;
+use ironclaw_auth::{
+    GOOGLE_GMAIL_MODIFY_SCOPE, GOOGLE_GMAIL_READONLY_SCOPE, GOOGLE_GMAIL_SEND_SCOPE,
+};
+use ironclaw_filesystem::{CasExpectation, Entry};
 use ironclaw_host_api::runtime_policy::{
     ApprovalPolicy, AuditMode, DeploymentMode, EffectiveRuntimePolicy, FilesystemBackendKind,
     NetworkMode, ProcessBackendKind, RuntimeProfile, SecretMode,
 };
-use ironclaw_host_api::{AgentId, InvocationId, TenantId, UserId};
+use ironclaw_host_api::{AgentId, InvocationId, TenantId, UserId, VirtualPath};
 use ironclaw_loop_host::{
     HostManagedModelError, HostManagedModelErrorKind, HostManagedModelGateway,
     HostManagedModelRequest, HostManagedModelResponse,
@@ -23,9 +26,9 @@ use ironclaw_network::{
     NetworkHttpEgress, NetworkHttpError, NetworkHttpRequest, NetworkHttpResponse, NetworkUsage,
 };
 use ironclaw_reborn_composition::{
-    LOCAL_DEV_SECRETS_MASTER_KEY_PATH, OAuthClientConfig, PollSettings, RebornRuntime,
-    RebornRuntimeIdentity, RebornRuntimeInput, build_reborn_runtime, build_webui_services,
-    local_dev_build_input,
+    LOCAL_DEV_SECRETS_MASTER_KEY_PATH, OAuthClientConfig, PollSettings, ProductAuthRouteState,
+    RebornRuntime, RebornRuntimeIdentity, RebornRuntimeInput, build_reborn_runtime,
+    local_dev_build_input, product_auth_route_mount,
 };
 use ironclaw_reborn_config::{RebornBootConfig, RebornHome, RebornProfile};
 use ironclaw_webui::{WebuiAuthentication, WebuiAuthenticator, WebuiServeConfig, webui_v2_app};
@@ -36,6 +39,15 @@ const TOKEN: &str = "admin-oauth-runtime-token";
 const TENANT: &str = "admin-oauth-runtime-tenant";
 const USER: &str = "admin-oauth-runtime-operator";
 const AGENT: &str = "admin-oauth-runtime-agent";
+
+fn gmail_scopes() -> String {
+    [
+        GOOGLE_GMAIL_READONLY_SCOPE,
+        GOOGLE_GMAIL_SEND_SCOPE,
+        GOOGLE_GMAIL_MODIFY_SCOPE,
+    ]
+    .join(" ")
+}
 
 #[derive(Debug)]
 struct UnusedModelGateway;
@@ -105,7 +117,7 @@ impl NetworkHttpEgress for OAuthTokenEgress {
             "access_token": "google-access-token",
             "refresh_token": "google-refresh-token",
             "expires_in": 3600,
-            "scope": GOOGLE_GMAIL_READONLY_SCOPE,
+            "scope": gmail_scopes(),
         })
         .to_string()
         .into_bytes();
@@ -181,14 +193,26 @@ async fn build_harness() -> Harness {
         .with_boot_config(boot);
 
     let runtime = build_reborn_runtime(input).await.expect("runtime builds");
-    let bundle = build_webui_services(&runtime, None).expect("WebUI services build");
+    let product_surface = runtime.product_surface(None).expect("product surface");
+    let tenant_id = TenantId::new(TENANT).expect("valid tenant");
+    let agent_id = AgentId::new(AGENT).expect("valid agent");
+    let product_auth_mount = product_auth_route_mount(
+        ProductAuthRouteState::new(
+            runtime.product_auth_services(),
+            tenant_id.clone(),
+            Some(agent_id.clone()),
+            None,
+        )
+        .with_product_surface(Arc::clone(&product_surface)),
+    );
     let config = WebuiServeConfig::new(
-        TenantId::new(TENANT).expect("valid tenant"),
+        tenant_id,
         Arc::new(OperatorToken),
         vec![HeaderValue::from_static("http://localhost:0")],
     )
-    .with_default_agent_id(AgentId::new(AGENT).expect("valid agent"));
-    let router = webui_v2_app(bundle, config).expect("WebUI router builds");
+    .with_default_agent_id(agent_id)
+    .with_split_route_mount(product_auth_mount);
+    let router = webui_v2_app(product_surface, config).expect("WebUI router builds");
     Harness {
         runtime,
         router,
@@ -219,7 +243,10 @@ async fn install_gmail(router: &axum::Router) {
         .clone()
         .oneshot(operator_post(
             "/api/webchat/v2/extensions/install",
-            json!({"package_ref": {"kind": "extension", "id": "gmail"}}),
+            json!({
+                "package_ref": {"kind": "extension", "id": "gmail"},
+                "client_action_id": "admin-oauth-runtime-install-gmail",
+            }),
         ))
         .await
         .expect("install Gmail request");
@@ -267,26 +294,34 @@ async fn save_google_admin_configuration(
     );
 }
 
-async fn start_gmail_oauth(router: &axum::Router) -> Value {
-    let response = router
+async fn start_gmail_oauth_response(router: &axum::Router) -> axum::response::Response {
+    router
         .clone()
         .oneshot(operator_post(
             "/api/webchat/v2/extensions/gmail/setup/oauth/start",
             json!({
-                "provider": "google",
-                "account_label": "work google",
-                "scopes": [GOOGLE_GMAIL_READONLY_SCOPE],
+                "requirement": "gmail_account",
                 "expires_at": (Utc::now() + ChronoDuration::minutes(5)).to_rfc3339(),
                 "invocation_id": InvocationId::new().to_string(),
             }),
         ))
         .await
-        .expect("start Gmail OAuth request");
-    assert_eq!(response.status(), StatusCode::OK);
-    response_json(response).await
+        .expect("start Gmail OAuth request")
 }
 
-fn assert_authorization_client(started: &Value, expected_client_id: &str) {
+async fn start_gmail_oauth(router: &axum::Router) -> Value {
+    let response = start_gmail_oauth_response(router).await;
+    let status = response.status();
+    let body = response_json(response).await;
+    assert_eq!(status, StatusCode::OK, "OAuth start body: {body}");
+    body
+}
+
+fn assert_authorization_client(
+    started: &Value,
+    expected_client_id: &str,
+    forbidden_client_secret: &str,
+) {
     let authorization_url = started["authorization_url"]
         .as_str()
         .expect("authorization URL");
@@ -296,6 +331,14 @@ fn assert_authorization_client(started: &Value, expected_client_id: &str) {
             .query_pairs()
             .any(|(name, value)| name == "client_id" && value == expected_client_id),
         "authorization URL must use client id {expected_client_id}: {authorization_url}"
+    );
+    assert!(
+        !authorization_url.contains(forbidden_client_secret),
+        "authorization URL must not expose the client secret"
+    );
+    assert!(
+        !started.to_string().contains(forbidden_client_secret),
+        "OAuth start response must not expose the client secret"
     );
 }
 
@@ -319,7 +362,7 @@ async fn complete_gmail_oauth(router: &axum::Router, started: &Value) {
         .query_pairs_mut()
         .append_pair("state", &state)
         .append_pair("code", "google-authorization-code")
-        .append_pair("scope", GOOGLE_GMAIL_READONLY_SCOPE);
+        .append_pair("scope", &gmail_scopes());
     let uri = callback[url::Position::BeforePath..].to_string();
     let mut request = Request::builder()
         .method(Method::GET)
@@ -354,7 +397,11 @@ async fn webui_admin_configuration_overrides_boot_pair_and_rotates_without_resta
     install_gmail(&harness.router).await;
 
     let boot = start_gmail_oauth(&harness.router).await;
-    assert_authorization_client(&boot, "boot.apps.googleusercontent.com");
+    assert_authorization_client(
+        &boot,
+        "boot.apps.googleusercontent.com",
+        "boot-google-secret",
+    );
 
     save_google_admin_configuration(
         &harness.router,
@@ -364,7 +411,11 @@ async fn webui_admin_configuration_overrides_boot_pair_and_rotates_without_resta
     )
     .await;
     let admin = start_gmail_oauth(&harness.router).await;
-    assert_authorization_client(&admin, "admin.apps.googleusercontent.com");
+    assert_authorization_client(
+        &admin,
+        "admin.apps.googleusercontent.com",
+        "admin-google-secret",
+    );
 
     save_google_admin_configuration(
         &harness.router,
@@ -376,7 +427,11 @@ async fn webui_admin_configuration_overrides_boot_pair_and_rotates_without_resta
     complete_gmail_oauth(&harness.router, &admin).await;
 
     let rotated = start_gmail_oauth(&harness.router).await;
-    assert_authorization_client(&rotated, "rotated.apps.googleusercontent.com");
+    assert_authorization_client(
+        &rotated,
+        "rotated.apps.googleusercontent.com",
+        "rotated-google-secret",
+    );
     complete_gmail_oauth(&harness.router, &rotated).await;
 
     let forms = harness.token_egress.forms();
@@ -399,6 +454,51 @@ async fn webui_admin_configuration_overrides_boot_pair_and_rotates_without_resta
             Some(expected_secret)
         );
     }
+
+    harness
+        .runtime
+        .shutdown()
+        .await
+        .expect("runtime shutdown clean");
+}
+
+#[tokio::test]
+async fn admin_configuration_lookup_failure_is_retryable_and_never_uses_boot_credentials() {
+    let harness = build_harness().await;
+    install_gmail(&harness.router).await;
+    save_google_admin_configuration(
+        &harness.router,
+        "admin.apps.googleusercontent.com",
+        "admin-google-secret",
+        0,
+    )
+    .await;
+
+    let record_path = VirtualPath::new(format!(
+        "/tenants/{TENANT}/shared/extension-admin-configuration/groups/vendor.google.json"
+    ))
+    .expect("valid administrator configuration record path");
+    let filesystem = harness
+        .runtime
+        .admin_configuration_root_filesystem_for_test();
+    filesystem
+        .put(
+            &record_path,
+            Entry::bytes(b"{invalid-administrator-record".to_vec()),
+            CasExpectation::Any,
+        )
+        .await
+        .expect("corrupt administrator configuration fixture");
+
+    let response = start_gmail_oauth_response(&harness.router).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "backend_unavailable");
+    assert_eq!(body["retryable"], true);
+    let serialized = body.to_string();
+    assert!(!serialized.contains("boot.apps.googleusercontent.com"));
+    assert!(!serialized.contains("boot-google-secret"));
+    assert!(!serialized.contains("admin-google-secret"));
 
     harness
         .runtime

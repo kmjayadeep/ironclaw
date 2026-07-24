@@ -54,12 +54,16 @@ Open **WebUI Admin → Extension Configuration**, find **Google OAuth client
 credentials**, and save the Client ID and Client Secret from Google Cloud.
 
 The configuration is shared by Gmail, Calendar, Drive, Docs, Sheets, and
-Slides. New or rotated values apply to the next OAuth operation without an SSH
-session or IronClaw restart.
+Slides. In local or hosted single-tenant WebUI-backed runtimes, new or rotated
+values apply to the next OAuth operation without an SSH session or IronClaw
+restart.
 
 The runtime reads this persisted administrator configuration through the
 tenant-scoped extension-management surface. Only an authorized WebUI
 administrator can save or rotate the shared values.
+
+Production-shaped multi-tenant runtimes remain boot-configuration-only until
+scoped extension administration is available for that deployment mode.
 
 </Step>
 
