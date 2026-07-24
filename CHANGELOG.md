@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Extension persistence:** normalize filesystem-backed extension lifecycle
+  state into typed manifest, installation, user-membership, credential-binding,
+  and health records with bounded CAS updates, CAS-protected membership/removal
+  reservations, soft removal, legacy aggregate compatibility views, and
+  restart repair.
+
 ### Fixed
 
 - **Skill selection:** instruct the model to review visible skills before

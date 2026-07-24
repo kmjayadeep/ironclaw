@@ -17,7 +17,8 @@ use ironclaw_extensions::{
     CapabilityVisibility, ExtensionError, ExtensionInstallation, ExtensionInstallationError,
     ExtensionInstallationId, ExtensionInstallationPersistedParts, ExtensionInstallationStorePort,
     ExtensionLifecycleService, ExtensionManifestRecord, ExtensionManifestRef, ExtensionPackage,
-    InstallationOwner, ManifestHash, ManifestSource, canonicalize_installation_rows,
+    InstallationOwner, ManifestHash, ManifestSource, MembershipDeactivation,
+    canonicalize_installation_rows,
 };
 use ironclaw_filesystem::{FilesystemError, RootFilesystem};
 use ironclaw_host_api::{
@@ -1332,17 +1333,11 @@ impl ExtensionManagementPort {
             // outer command can reconcile any newly completed personal setup.
             // The bundle is already registered/materialized and needs no
             // compensating write.
-            Some(existing) => {
-                if let Some(new_owner) = existing
-                    .owner()
-                    .joined_by(caller)
-                    .map_err(map_extension_installation_error)?
-                {
-                    self.installation_store
-                        .upsert_installation(existing.with_owner(new_owner))
-                        .await
-                        .map_err(map_extension_installation_error)?;
-                }
+            Some(_) => {
+                self.installation_store
+                    .activate_membership(&installation_id, caller)
+                    .await
+                    .map_err(map_extension_installation_error)?;
             }
             None => {
                 self.install_fresh_locked(&available, caller).await?;
@@ -2145,38 +2140,62 @@ impl ExtensionManagementPort {
             .load_installation(&extension_id, &installation_id)
             .await?;
         ensure_caller_may_operate(&installation, caller)?;
-        // A caller leaves the shared package aggregate without affecting any
-        // other member. Only the final member tears down shared runtime state.
-        if let Some(remaining) = installation
+        let projected_remaining = installation
             .owner()
             .without_member(caller)
+            .map_err(map_extension_installation_error)?;
+        if projected_remaining.as_ref() == Some(installation.owner()) {
+            return Err(ProductWorkflowError::Transient {
+                reason: format!(
+                    "extension {} removal changed no membership for an authorized caller",
+                    extension_id.as_str()
+                ),
+            });
+        }
+        match self
+            .installation_store
+            .deactivate_membership(&installation_id, caller)
+            .await
             .map_err(map_extension_installation_error)?
         {
-            // Evidence tripwire (`tool-evidence.md`): a leave that changed
-            // nothing means the caller was never a member of this row. The
-            // authorization gate above must have rejected that caller, so
-            // reaching here is an internal invariant violation — never report
-            // `removed: true` for a mutation that did not mutate.
-            if &remaining == installation.owner() {
-                return Err(ProductWorkflowError::Transient {
-                    reason: format!(
-                        "extension {} removal changed no membership for an authorized caller",
-                        extension_id.as_str()
-                    ),
-                });
+            MembershipDeactivation::MembershipRemoved(updated) => {
+                let Some(updated_members) = updated.owner().members() else {
+                    return Err(ProductWorkflowError::Transient {
+                        reason: format!(
+                            "extension {} membership removal returned a tenant owner",
+                            extension_id.as_str()
+                        ),
+                    });
+                };
+                if updated_members.contains(caller) {
+                    return Err(ProductWorkflowError::Transient {
+                        reason: format!(
+                            "extension {} membership store returned an invalid owner projection",
+                            extension_id.as_str()
+                        ),
+                    });
+                }
+                return Ok(response_with_payload(
+                    Some(package_ref),
+                    InstallationState::Removed,
+                    LifecycleProductPayload::ExtensionRemove { removed: true },
+                ));
             }
-            let remaining_installation = installation.clone().with_owner(remaining);
-            self.installation_store
-                .upsert_installation(remaining_installation)
-                .await
-                .map_err(map_extension_installation_error)?;
-            return Ok(response_with_payload(
-                Some(package_ref),
-                InstallationState::Removed,
-                LifecycleProductPayload::ExtensionRemove { removed: true },
-            ));
+            MembershipDeactivation::FinalMemberReserved => {}
         }
-        let lifecycle_package = self.lifecycle_package(&extension_id).await?;
+        let lifecycle_package = match self.lifecycle_package(&extension_id).await {
+            Ok(package) => package,
+            Err(error) => {
+                if let Err(restore_error) = self.restore_installation(&installation).await {
+                    return Err(compensation_failure(
+                        "extension remove could not load the lifecycle package and membership reservation restore failed",
+                        error,
+                        restore_error,
+                    ));
+                }
+                return Err(error);
+            }
+        };
         // Hosted-MCP discovery can republish a package that differs from the
         // lifecycle-registered package; unpublish the active-registry package
         // and fall back only when nothing is currently active.
@@ -2186,12 +2205,28 @@ impl ExtensionManagementPort {
             .get_extension(&extension_id)
             .cloned()
             .unwrap_or_else(|| lifecycle_package.clone());
-        self.remove_lifecycle_package(&extension_id).await?;
+        if let Err(error) = self.remove_lifecycle_package(&extension_id).await {
+            if let Err(restore_error) = self.restore_installation(&installation).await {
+                return Err(compensation_failure(
+                    "extension remove failed to unregister the lifecycle package and membership reservation restore failed",
+                    error,
+                    restore_error,
+                ));
+            }
+            return Err(error);
+        }
         self.unpublish_from_generic_host(&extension_id).await;
         if let Err(error) = self
             .active_extensions
             .unpublish(&active_package_for_unpublish)
         {
+            if let Err(restore_error) = self.restore_installation(&installation).await {
+                return Err(compensation_failure(
+                    "extension remove failed to unpublish the runtime package and installation restore failed",
+                    error,
+                    restore_error,
+                ));
+            }
             if let Err(restore_error) = self
                 .restore_runtime_publication(&installation_id, &lifecycle_package)
                 .await
@@ -2211,6 +2246,13 @@ impl ExtensionManagementPort {
             .await
         {
             let original_error = map_extension_installation_error(error);
+            if let Err(restore_error) = self.restore_installation(&installation).await {
+                return Err(compensation_failure(
+                    "extension remove failed to delete installation and installation restore failed",
+                    original_error,
+                    restore_error,
+                ));
+            }
             if let Err(restore_error) = self
                 .restore_runtime_publication(&installation_id, &lifecycle_package)
                 .await
@@ -3154,7 +3196,8 @@ fn map_extension_installation_error(error: ExtensionInstallationError) -> Produc
         // malformed lifecycle request — surface it in the same Transient class
         // credential-cleanup failures already use so callers retry the
         // operation instead of abandoning it.
-        error @ ExtensionInstallationError::StoreUnavailable { .. } => {
+        error @ (ExtensionInstallationError::StoreUnavailable { .. }
+        | ExtensionInstallationError::MembershipMutationInProgress { .. }) => {
             ProductWorkflowError::Transient {
                 reason: error.to_string(),
             }
@@ -9211,6 +9254,8 @@ output_schema_ref = "schemas/search.output.json"
         /// #5459 P1: fail the NEXT `upsert_installation` once, then clear —
         /// simulates a mid-install persist failure so the retry can heal.
         fail_next_upsert_installation: std::sync::atomic::AtomicBool,
+        activate_membership_calls: std::sync::atomic::AtomicUsize,
+        deactivate_membership_calls: std::sync::atomic::AtomicUsize,
     }
 
     impl Default for DeleteInstallationFailingStore {
@@ -9221,6 +9266,8 @@ output_schema_ref = "schemas/search.output.json"
                 fail_get_installation: false,
                 mismatched_get_installation: false,
                 fail_next_upsert_installation: std::sync::atomic::AtomicBool::new(false),
+                activate_membership_calls: std::sync::atomic::AtomicUsize::new(0),
+                deactivate_membership_calls: std::sync::atomic::AtomicUsize::new(0),
             }
         }
     }
@@ -9326,6 +9373,30 @@ output_schema_ref = "schemas/search.output.json"
             self.inner.upsert_installation(installation).await
         }
 
+        async fn activate_membership(
+            &self,
+            installation_id: &ExtensionInstallationId,
+            user_id: &UserId,
+        ) -> Result<ExtensionInstallation, ExtensionInstallationError> {
+            self.activate_membership_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner
+                .activate_membership(installation_id, user_id)
+                .await
+        }
+
+        async fn deactivate_membership(
+            &self,
+            installation_id: &ExtensionInstallationId,
+            user_id: &UserId,
+        ) -> Result<MembershipDeactivation, ExtensionInstallationError> {
+            self.deactivate_membership_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner
+                .deactivate_membership(installation_id, user_id)
+                .await
+        }
+
         async fn delete_installation(
             &self,
             installation_id: &ExtensionInstallationId,
@@ -9333,8 +9404,9 @@ output_schema_ref = "schemas/search.output.json"
             if self.fail_manifest_delete {
                 self.inner.delete_installation(installation_id).await
             } else {
+                self.inner.delete_installation(installation_id).await?;
                 Err(ExtensionInstallationError::InvalidInstallation {
-                    reason: "delete installation failed".to_string(),
+                    reason: "delete installation failed after the durable tombstone".to_string(),
                 })
             }
         }

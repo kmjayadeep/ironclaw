@@ -437,7 +437,7 @@ pub use installations::{
     ExtensionInstallationStore, ExtensionInstallationStorePort, ExtensionManifestRecord,
     ExtensionManifestRef, ExtensionRemovalChannelId, ExtensionRemovalCleanupAdapterId,
     ExtensionRemovalCleanupBinding, ExtensionRemovalCleanupRequirement, InstallationOwner,
-    ManifestHash,
+    ManifestHash, MembershipDeactivation,
 };
 pub use lifecycle::{
     ExtensionLifecycleEvent, ExtensionLifecycleEventSink, ExtensionLifecycleService,

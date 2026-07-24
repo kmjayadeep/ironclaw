@@ -135,6 +135,51 @@ async fn members_install_the_same_tool_independently() {
     }
 }
 
+/// Joining and leaving an existing installation must use the store's
+/// membership operations. Rewriting the aggregate installation row would
+/// reintroduce a lost-update race between independent users.
+#[tokio::test]
+async fn membership_changes_do_not_rewrite_the_aggregate_installation() {
+    let (_dir, port, _registry, installation_store, _trust_policy) =
+        extension_port_with_delete_installation_failing_store(ExtensionRegistry::new());
+    let fixture_ref =
+        LifecyclePackageRef::new(LifecyclePackageKind::Extension, "fixture").expect("fixture ref");
+    let alice = UserId::new("alice").expect("user");
+    let bob = UserId::new("bob").expect("user");
+
+    port.install(fixture_ref.clone(), &alice)
+        .await
+        .expect("alice installs");
+
+    installation_store
+        .fail_next_upsert_installation
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    port.install(fixture_ref.clone(), &bob)
+        .await
+        .expect("bob joins through the per-user membership operation");
+    assert_eq!(
+        installation_store
+            .activate_membership_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "joining an existing installation must call activate_membership"
+    );
+
+    installation_store
+        .fail_next_upsert_installation
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    port.remove(fixture_ref, &hosted_mcp_scope("alice"), Some(&alice))
+        .await
+        .expect("alice leaves through the per-user membership operation");
+    assert_eq!(
+        installation_store
+            .deactivate_membership_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "leaving a shared installation must call deactivate_membership"
+    );
+}
+
 /// Remove = leave the member set: the other member keeps the tool; the
 /// LAST member's remove triggers the full teardown, after which the id
 /// is free for a fresh install.

@@ -15,7 +15,7 @@ use ironclaw_extensions::{
     ExtensionHealthSnapshot, ExtensionInstallation, ExtensionInstallationError,
     ExtensionInstallationId, ExtensionInstallationStore, ExtensionInstallationStorePort,
     ExtensionManifest, ExtensionManifestRecord, ExtensionPackage, ExtensionRegistry,
-    ManifestSource,
+    ManifestSource, MembershipDeactivation,
 };
 use ironclaw_filesystem::{DiskFilesystem, InMemoryBackend};
 use ironclaw_host_api::{
@@ -316,6 +316,26 @@ impl ExtensionInstallationStorePort for OwnerReadFailingStore {
         installation: ExtensionInstallation,
     ) -> Result<(), ExtensionInstallationError> {
         self.inner.upsert_installation(installation).await
+    }
+
+    async fn activate_membership(
+        &self,
+        installation_id: &ExtensionInstallationId,
+        user_id: &UserId,
+    ) -> Result<ExtensionInstallation, ExtensionInstallationError> {
+        self.inner
+            .activate_membership(installation_id, user_id)
+            .await
+    }
+
+    async fn deactivate_membership(
+        &self,
+        installation_id: &ExtensionInstallationId,
+        user_id: &UserId,
+    ) -> Result<MembershipDeactivation, ExtensionInstallationError> {
+        self.inner
+            .deactivate_membership(installation_id, user_id)
+            .await
     }
 
     async fn delete_installation(

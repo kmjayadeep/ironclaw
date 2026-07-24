@@ -55,17 +55,65 @@ V1 installed extensions live under:
 /system/extensions/<extension_id>/
 ```
 
-Generic runtime and caller-membership state lives in filesystem record rows under:
+Generic runtime and caller-membership state uses normalized, typed filesystem
+record rows under:
+
+```text
+/system/extensions/.installations/v2/
+  manifests/<hashed_extension_id>.json
+  installations/<hashed_installation_id>.json
+  memberships/<hashed_installation_id>/<hashed_user_id>.json
+  credential-bindings/<hashed_installation_id>/<hashed_credential_handle>.json
+  health/<hashed_installation_id>.json
+```
+
+Each row has an explicit record kind, `extension_state.v2` schema version,
+typed body, and exact lookup indexes. The installation row is the stable
+package-instance identity; user membership, credential bindings, and health
+are independently mutable records. Removing a user or the final installation
+marks the authoritative row `removed` with a timestamp rather than erasing it.
+Package bytes and assets remain under `/system/extensions/<extension_id>/` and
+are never embedded in lifecycle records.
+
+All authoritative read-modify-write transitions use the shared bounded
+filesystem CAS helper. A fresh installation writes child rows before making
+the installation core active, so an interrupted write cannot expose a partial
+aggregate. Updates to an active aggregate first reserve the core as
+`removing`, keep it out of typed reads while children change, and publish the
+core as `active` last. A failed update restores the prior aggregate; startup
+uses the still-active compatibility snapshot to roll back an interrupted
+reservation. Aggregate `ExtensionInstallation` values are reconstructed at
+the typed store boundary for existing callers.
+
+Membership removal uses the same core reservation as a cross-process gate.
+A non-final leave updates only the caller row and releases the core; a final
+leave keeps the reservation until shared runtime teardown and soft removal
+complete. Concurrent joins fail transiently while the reservation is held.
+Removal retries are idempotent, and the core becomes `removed` only after its
+child tombstones are durable.
+
+These are `VirtualPath` keys, not a promise of literal host directories.
+`RootFilesystem` may route them to disk, libSQL, PostgreSQL, or another
+compatible backend while retaining the same partitioning and typed store API.
+Health metadata is diagnostic, not lifecycle authority. These records do not
+own administrator configuration.
+
+During the v2 transition, the previous aggregate paths remain compatibility
+views:
 
 ```text
 /system/extensions/.installations/manifests/<hashed_extension_id>.json
 /system/extensions/.installations/installations/<hashed_installation_id>.json
 ```
 
-The store declares exact indexes for extension id and runtime installation id,
-and uses row CAS for membership, compatibility health metadata, and deletes.
-Health metadata is diagnostic, not lifecycle authority. These records do not
-own administrator configuration.
+Store startup imports a legacy row only when no v2 authority row exists, then
+repairs these views from v2. The installation compatibility row is also the
+bounded rollback snapshot while a v2 core is explicitly `removing`; outside
+that transition it is never lifecycle authority. Old and new binaries must not
+write the same installation root concurrently: deploys must quiesce old
+writers before the new binary starts. Once a v2 writer has run, rollback
+requires a data backup or a binary that understands v2; starting an
+aggregate-only writer would create divergent state.
 
 Manifest-declared administrator configuration is stored once per tenant under
 the tenant-rewriting admin-configuration scoped mount, at the logical record
