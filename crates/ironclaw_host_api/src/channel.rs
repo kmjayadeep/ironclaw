@@ -110,6 +110,13 @@ pub struct ChannelDescriptor {
     /// hosts must not infer a recipe from an extension id or display name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection: Option<ChannelConnectionDescriptor>,
+    /// Standardized product commands this channel opts into, by canonical
+    /// name from `crate::product_commands::PRODUCT_COMMANDS` (never aliases).
+    /// Empty means the channel supports no slash commands. The declaration is
+    /// the only authority for which commands the host classifies and admits
+    /// on this channel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<String>,
 }
 
 impl ChannelDescriptor {
@@ -129,6 +136,22 @@ impl ChannelDescriptor {
         }
         if let Some(connection) = &self.connection {
             connection.validate()?;
+        }
+        let mut seen_commands = std::collections::BTreeSet::new();
+        for command in &self.commands {
+            if command.trim().is_empty() {
+                return Err(ChannelDescriptorError::EmptyCommand);
+            }
+            if !crate::product_commands::is_product_command_name(command) {
+                return Err(ChannelDescriptorError::UnknownCommand {
+                    name: command.clone(),
+                });
+            }
+            if !seen_commands.insert(command.as_str()) {
+                return Err(ChannelDescriptorError::DuplicateCommand {
+                    name: command.clone(),
+                });
+            }
         }
         if let Some(ingress) = &self.ingress {
             ingress
@@ -403,6 +426,12 @@ pub enum ChannelDescriptorError {
         "channel connection inbound_code_prefixes requires web_generated_code and at most 8 unique non-whitespace prefixes of at most 32 bytes"
     )]
     InvalidConnectionCodePrefixes,
+    #[error("channel commands entries must not be empty")]
+    EmptyCommand,
+    #[error("channel command `{name}` is declared more than once")]
+    DuplicateCommand { name: String },
+    #[error("channel command `{name}` is not a canonical standardized product command name")]
+    UnknownCommand { name: String },
     #[error(transparent)]
     Verification(RecipeValidationError),
     #[error("egress target `{host}` declares an injection but no credential_handle")]
@@ -463,6 +492,52 @@ max_message_chars = 40000
             "{}\n\n[connection]\nprovider = \"vendor\"\nstrategy = \"web_generated_code\"\ninstructions = \"Send the displayed code.\"\nsubmit_label = \"Connect\"\nerror_message = \"Pairing failed.\"\nconnection_success_message = \"Connected.\"\ndeep_link_template = \"https://vendor.example/connect?code={{code}}\"\ninbound_code_prefixes = {prefixes}\n\n[connection.notices]\nconnect_required = \"Connect first.\"\npaired = \"Connected.\"\nalready_paired_same_user = \"Already connected.\"\nalready_bound_to_other_user = \"Connected elsewhere.\"\nexpired_or_unknown = \"Invalid code.\"\n",
             documented_channel_toml()
         )
+    }
+
+    #[test]
+    fn channel_commands_validate_against_the_canonical_inventory() {
+        let mut channel: ChannelDescriptor = toml::from_str(documented_channel_toml()).unwrap();
+
+        channel.commands = vec!["model".to_string(), "status".to_string()];
+        channel.validate().expect("canonical names are accepted");
+
+        channel.commands = vec!["model".to_string(), "nonsense".to_string()];
+        assert!(matches!(
+            channel.validate().unwrap_err(),
+            ChannelDescriptorError::UnknownCommand { name } if name == "nonsense"
+        ));
+
+        // Aliases are presentation-layer; manifests declare canonical names.
+        channel.commands = vec!["progress".to_string()];
+        assert!(matches!(
+            channel.validate().unwrap_err(),
+            ChannelDescriptorError::UnknownCommand { name } if name == "progress"
+        ));
+
+        channel.commands = vec!["model".to_string(), "model".to_string()];
+        assert!(matches!(
+            channel.validate().unwrap_err(),
+            ChannelDescriptorError::DuplicateCommand { name } if name == "model"
+        ));
+
+        channel.commands = vec!["  ".to_string()];
+        assert!(matches!(
+            channel.validate().unwrap_err(),
+            ChannelDescriptorError::EmptyCommand
+        ));
+    }
+
+    #[test]
+    fn channel_commands_parse_from_toml_and_default_empty() {
+        let toml = documented_channel_toml().replace(
+            "conversation_model = \"continuous\"",
+            "conversation_model = \"continuous\"\ncommands = [\"model\", \"status\"]",
+        );
+        let channel: ChannelDescriptor = toml::from_str(&toml).unwrap();
+        assert_eq!(channel.commands, vec!["model", "status"]);
+
+        let bare: ChannelDescriptor = toml::from_str(documented_channel_toml()).unwrap();
+        assert!(bare.commands.is_empty());
     }
 
     #[test]

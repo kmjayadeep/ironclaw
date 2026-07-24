@@ -226,6 +226,31 @@ fn channel_runtime_secret_references_must_be_declared_by_admin_configuration() {
     );
 }
 
+/// `channel.commands` opt-in lists validate fail-closed against the canonical
+/// product-command inventory at manifest parse — an unknown or alias name
+/// never reaches host wiring.
+#[test]
+fn channel_commands_must_name_canonical_product_commands() {
+    let toml = ACME_MANIFEST.replace(
+        "conversation_model = \"continuous\"",
+        "conversation_model = \"continuous\"\ncommands = [\"model\", \"nonsense\"]",
+    );
+    let error = parse_v3(&toml).expect_err("unknown channel command must fail closed");
+    assert!(error.contains("nonsense"), "{error}");
+
+    let toml = ACME_MANIFEST.replace(
+        "conversation_model = \"continuous\"",
+        "conversation_model = \"continuous\"\ncommands = [\"model\", \"status\"]",
+    );
+    let record = parse_v3(&toml).expect("canonical command names must parse");
+    let channel = record
+        .resolved()
+        .channel
+        .as_ref()
+        .expect("acme manifest resolves a channel");
+    assert_eq!(channel.commands, vec!["model", "status"]);
+}
+
 /// An `[admin_configuration]` group is deployment-owned, operator-managed state.
 /// Only a host-bundled (first-party) manifest — one compiled into the binary —
 /// may declare one. An untrusted, filesystem-discovered, or registry-installed
