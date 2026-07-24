@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 use ironclaw_host_api::{
     ApprovalRequestId, CapabilityId, CorrelationId, ExtensionId, HostApiError, ProviderToolName,
-    Resolution, ResolutionBatch, RuntimeKind,
+    RecoverabilityClass, RemediationHint, Resolution, ResolutionBatch, RuntimeKind,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -569,6 +569,119 @@ impl CapabilityFailureKind {
         CapabilityFailureKindValue::new(value).map(Self::Unknown)
     }
 
+    /// Which §5.3.4 cell this capability failure lands in today. See
+    /// [`ironclaw_host_api::recoverability`] for the contract and the §11.7
+    /// matrix this row belongs to.
+    ///
+    /// Derived from the live path, not from intent:
+    /// `ironclaw_agent_loop::executor::mapping::capability_error_class` maps
+    /// this kind to a `CapabilityErrorClass`, which
+    /// `DefaultRecoveryStrategy::on_capability_error` turns into a
+    /// `RecoveryOutcome`. `Cancelled` is special-cased one layer earlier, in
+    /// `executor::capabilities`, as cancellation.
+    ///
+    /// The match is exhaustive with no `_` arm on purpose: `CapabilityFailureKind`
+    /// is deliberately not `#[non_exhaustive]` (see the note on the type), so a
+    /// new named variant fails to compile here until it is classified.
+    pub const fn recoverability_class(&self) -> RecoverabilityClass {
+        match self {
+            // -> Transient / Unavailable / Internal -> `retry_or_capability_tool_error`:
+            // retried invisibly on the per-class budget. On exhaustion the loop
+            // degrades to a model-visible tool error rather than aborting, so the
+            // run survives either way.
+            Self::Network
+            | Self::Transient
+            | Self::Backend
+            | Self::Unavailable
+            | Self::Internal => RecoverabilityClass::Retry,
+            // -> InputInvalid -> `RecoveryOutcome::ToolErrorResult`.
+            Self::InvalidInput => RecoverabilityClass::ModelVisible,
+            // -> OperationFailed -> `RecoveryOutcome::ToolErrorResult`. Includes
+            // the open-set `Unknown` escape hatch, which the runtime layer has
+            // already dispositioned as model-visible.
+            Self::MissingRuntime
+            | Self::OperationFailed
+            | Self::OutputTooLarge
+            | Self::Process
+            | Self::Resource
+            | Self::Dispatcher
+            | Self::InvalidOutput
+            | Self::Unknown(_) => RecoverabilityClass::ModelVisible,
+            // -> PolicyDenied -> `RecoveryOutcome::ToolErrorResult`. The model
+            // sees a denial, but with `model_observation: None` — epic item 4
+            // ("denials get no observation at all") is about the *content* of
+            // what it sees, not whether the run survives.
+            //
+            // AUDIT: `GateDeclined` is a *declined* gate, not a pending one, so
+            // it is model-visible rather than `Parked`. A gate that is still
+            // open never reaches this kind — it arrives as
+            // `Resolution::Blocked`, which this enum does not describe.
+            Self::Authorization | Self::GateDeclined | Self::PolicyDenied => {
+                RecoverabilityClass::ModelVisible
+            }
+            // Sanctioned terminal invariant: `executor::capabilities` intercepts
+            // `Cancelled` before classification and exits as cancellation.
+            Self::Cancelled => RecoverabilityClass::Terminal,
+            // KNOWN DEFECT (nearai/ironclaw#6284 item 1): `Permanent` maps to
+            // `CapabilityErrorClass::Permanent`, which aborts the run with
+            // `LoopFailureKind::CapabilityProtocolError`. That is none of the
+            // three sanctioned terminal invariants. Recorded as-is; flipping it
+            // is a later PR's job.
+            Self::Permanent => RecoverabilityClass::Terminal,
+        }
+    }
+
+    /// Whether this kind's model-visible observation carries the non-empty
+    /// remediation hint §11.7 requires — clause (c) of §5.3.4.
+    ///
+    /// This is the enum the observation renderer keys off directly, so this row
+    /// is the load-bearing one for #6284 item 4. Derived from
+    /// `ironclaw_agent_loop::executor::capability_helpers`:
+    /// `model_visible_capability_failure_observation` sends a failure carrying
+    /// `CapabilityFailureDetail::InvalidInput { issues }` to
+    /// `invalid_input_observation`, which emits per-field
+    /// `CapabilityInputRepair`s and the `CorrectArgumentsBeforeRetry` hint.
+    /// Everything else falls to `generic_failure_recovery`, which hardcodes
+    /// `CapabilityRecoveryHint::RespectFailureConstraint` with an always-empty
+    /// `repairs` vec — a retry constraint, not a remediation.
+    ///
+    /// AUDIT: the substantive path is *detail*-driven, not kind-driven — a
+    /// failure reported as `InvalidInput` without issues still renders the empty
+    /// generic hint. `InvalidInput` is recorded [`RemediationHint::Substantive`]
+    /// because the structured path exists for this kind and for no other; item 4
+    /// is what makes it unconditional.
+    ///
+    /// AUDIT: the three denial kinds are the worst rows. They do not even reach
+    /// this renderer — `executor::capabilities` passes `model_observation: None`
+    /// on the `Resolution::Denied` arm, so the model is told a call was refused
+    /// and nothing about what would unlock it, which is the exact inverse of
+    /// §5.3.4's "`Denied` carries what would unlock the call".
+    pub const fn remediation_hint(&self) -> RemediationHint {
+        match self {
+            Self::InvalidInput => RemediationHint::Substantive,
+            // Model-visible with a bare category and an empty `repairs` vec.
+            Self::MissingRuntime
+            | Self::OperationFailed
+            | Self::OutputTooLarge
+            | Self::Process
+            | Self::Resource
+            | Self::Dispatcher
+            | Self::InvalidOutput
+            | Self::Unknown(_)
+            | Self::Authorization
+            | Self::GateDeclined
+            | Self::PolicyDenied => RemediationHint::Absent,
+            // Retried or terminal, so clause (c) does not apply.
+            Self::Network
+            | Self::Transient
+            | Self::Backend
+            | Self::Unavailable
+            | Self::Internal
+            | Self::Cancelled
+            | Self::Permanent => RemediationHint::NotApplicable,
+        }
+    }
+
     pub fn as_str(&self) -> &str {
         match self {
             Self::Authorization => "authorization",
@@ -703,6 +816,125 @@ pub trait LoopCapabilityPort: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every `CapabilityFailureKind` variant, including one `Unknown` value for
+    /// the open-set escape hatch. The exhaustive `match` in the conformance
+    /// test is what fails to compile when a variant is added; this list is what
+    /// makes the new variant actually get asserted.
+    fn all_capability_failure_kinds() -> Vec<CapabilityFailureKind> {
+        vec![
+            CapabilityFailureKind::Authorization,
+            CapabilityFailureKind::Backend,
+            CapabilityFailureKind::Cancelled,
+            CapabilityFailureKind::Dispatcher,
+            CapabilityFailureKind::GateDeclined,
+            CapabilityFailureKind::InvalidInput,
+            CapabilityFailureKind::InvalidOutput,
+            CapabilityFailureKind::MissingRuntime,
+            CapabilityFailureKind::Network,
+            CapabilityFailureKind::OperationFailed,
+            CapabilityFailureKind::OutputTooLarge,
+            CapabilityFailureKind::PolicyDenied,
+            CapabilityFailureKind::Process,
+            CapabilityFailureKind::Resource,
+            CapabilityFailureKind::Transient,
+            CapabilityFailureKind::Unavailable,
+            CapabilityFailureKind::Internal,
+            CapabilityFailureKind::Permanent,
+            CapabilityFailureKind::unknown("some_future_kind").expect("valid unknown kind"),
+        ]
+    }
+
+    /// §11.7 recoverability-matrix row for [`CapabilityFailureKind`].
+    ///
+    /// This test is currently the only consumer of `recoverability_class` — that is
+    /// expected and deliberate. The epic's item-7 gate is a *compile-forced*
+    /// classification: the value is that a new variant cannot land without a
+    /// recorded recoverability class. `LoopProgressEvent::FailureRecovered`
+    /// (nearai/ironclaw#6284 item 7, a later PR) becomes the production
+    /// consumer. **Do not delete this test as "dead code" before then.**
+    ///
+    /// The expectation is an exhaustive `match` with no `_` arm so a new
+    /// variant fails to compile here too, not just in the production
+    /// classifier.
+    #[test]
+    fn every_capability_failure_kind_has_a_recorded_recoverability_class() {
+        use CapabilityFailureKind as K;
+
+        fn expected(kind: &CapabilityFailureKind) -> RecoverabilityClass {
+            match kind {
+                // `capability_error_class` -> Transient/Unavailable/Internal ->
+                // silent retries, degrading to a model-visible tool error.
+                K::Network | K::Transient | K::Backend | K::Unavailable | K::Internal => {
+                    RecoverabilityClass::Retry
+                }
+                // `capability_error_class` -> InputInvalid/OperationFailed/
+                // PolicyDenied -> `RecoveryOutcome::ToolErrorResult`.
+                K::InvalidInput
+                | K::MissingRuntime
+                | K::OperationFailed
+                | K::OutputTooLarge
+                | K::Process
+                | K::Resource
+                | K::Dispatcher
+                | K::InvalidOutput
+                | K::Unknown(_)
+                | K::Authorization
+                | K::GateDeclined
+                | K::PolicyDenied => RecoverabilityClass::ModelVisible,
+                // Cancellation (sanctioned) and the explicit non-retryable
+                // signal, which aborts the run.
+                K::Cancelled | K::Permanent => RecoverabilityClass::Terminal,
+            }
+        }
+
+        for kind in all_capability_failure_kinds() {
+            assert_eq!(
+                kind.recoverability_class(),
+                expected(&kind),
+                "recoverability class for {kind:?} changed — a kind moving to Terminal \
+                 removes a recovery path the model relies on"
+            );
+            // Clause (c) applies to exactly the model-visible rows.
+            assert_eq!(
+                kind.remediation_hint() == RemediationHint::NotApplicable,
+                kind.recoverability_class() != RecoverabilityClass::ModelVisible,
+                "remediation-hint applicability disagrees with the class for {kind:?}"
+            );
+        }
+    }
+
+    /// Ratchet pin: how many [`CapabilityFailureKind`] variants end the run,
+    /// and how many model-visible ones ship the model no remediation.
+    ///
+    /// `Cancelled` is a sanctioned terminal invariant; `Permanent` is not, and
+    /// is a remaining defect on the epic's list (nearai/ironclaw#6284 item 1).
+    /// Eleven of the twelve model-visible kinds carry no substantive hint —
+    /// only `InvalidInput` has a structured repair path (item 4). **Both
+    /// numbers may only go DOWN.**
+    #[test]
+    fn capability_failure_kind_terminal_and_hintless_counts_only_ratchet_down() {
+        let terminal = all_capability_failure_kinds()
+            .iter()
+            .filter(|kind| kind.recoverability_class() == RecoverabilityClass::Terminal)
+            .count();
+        assert_eq!(
+            terminal, 2,
+            "expected exactly 2 terminal CapabilityFailureKind variants \
+             (Cancelled, Permanent); this count may only decrease"
+        );
+
+        let hintless = all_capability_failure_kinds()
+            .iter()
+            .filter(|kind| kind.remediation_hint().is_hintless_model_visible())
+            .count();
+        assert_eq!(
+            hintless, 11,
+            "expected 11 model-visible CapabilityFailureKind variants with no \
+             substantive remediation hint (#6284 item 4); this count may only \
+             decrease"
+        );
+    }
 
     struct DefinitionPort {
         definitions: Vec<ProviderToolDefinition>,

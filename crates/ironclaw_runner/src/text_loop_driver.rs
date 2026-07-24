@@ -94,8 +94,7 @@ impl AgentLoopDriver for TextOnlyModelReplyDriver {
             ParentLoopOutput::AssistantReply(reply) => reply,
             ParentLoopOutput::CapabilityCalls(_) => {
                 return Err(AgentLoopDriverError::Failed {
-                    reason_kind: loop_failure_kind_name(LoopFailureKind::InvalidModelOutput)
-                        .to_string(),
+                    reason_kind: LoopFailureKind::InvalidModelOutput.as_str().to_string(),
                     detail: None,
                 });
             }
@@ -154,7 +153,7 @@ fn completed_final_reply(
 ) -> Result<LoopCompleted, AgentLoopDriverError> {
     let exit_id = LoopExitId::new(format!("exit:{run_id}-final-reply")).map_err(|_| {
         AgentLoopDriverError::Failed {
-            reason_kind: loop_failure_kind_name(LoopFailureKind::DriverBug).to_string(),
+            reason_kind: LoopFailureKind::DriverBug.as_str().to_string(),
             detail: None,
         }
     })?;
@@ -209,14 +208,14 @@ fn map_host_error(stage: &'static str, error: AgentLoopHostError) -> AgentLoopDr
             }
         }
         AgentLoopHostErrorKind::InvalidOutput => AgentLoopDriverError::Failed {
-            reason_kind: loop_failure_kind_name(LoopFailureKind::InvalidModelOutput).to_string(),
+            reason_kind: LoopFailureKind::InvalidModelOutput.as_str().to_string(),
             detail: error.detail.clone(),
         },
         AgentLoopHostErrorKind::Internal => AgentLoopDriverError::Unavailable {
             reason: format!("{stage}: unavailable"),
         },
         AgentLoopHostErrorKind::TranscriptWriteFailed => AgentLoopDriverError::Failed {
-            reason_kind: loop_failure_kind_name(LoopFailureKind::TranscriptWriteFailed).to_string(),
+            reason_kind: LoopFailureKind::TranscriptWriteFailed.as_str().to_string(),
             detail: error.detail.clone(),
         },
         AgentLoopHostErrorKind::BudgetExceeded
@@ -224,43 +223,23 @@ fn map_host_error(stage: &'static str, error: AgentLoopHostError) -> AgentLoopDr
         | AgentLoopHostErrorKind::BudgetAccountingFailed
         | AgentLoopHostErrorKind::ContentFiltered
         | AgentLoopHostErrorKind::PolicyDenied => AgentLoopDriverError::Failed {
-            reason_kind: loop_failure_kind_name(LoopFailureKind::ModelError).to_string(),
+            reason_kind: LoopFailureKind::ModelError.as_str().to_string(),
             detail: error.detail.clone(),
         },
         AgentLoopHostErrorKind::CredentialUnavailable => AgentLoopDriverError::Failed {
-            reason_kind: loop_failure_kind_name(LoopFailureKind::ModelError).to_string(),
+            reason_kind: LoopFailureKind::ModelError.as_str().to_string(),
             detail: error.detail.clone(),
         },
         AgentLoopHostErrorKind::CheckpointRejected => AgentLoopDriverError::Failed {
-            reason_kind: loop_failure_kind_name(LoopFailureKind::CheckpointRejected).to_string(),
+            reason_kind: LoopFailureKind::CheckpointRejected.as_str().to_string(),
             detail: error.detail.clone(),
         },
         AgentLoopHostErrorKind::Unauthorized | AgentLoopHostErrorKind::StaleSurface => {
             AgentLoopDriverError::Failed {
-                reason_kind: loop_failure_kind_name(LoopFailureKind::DriverBug).to_string(),
+                reason_kind: LoopFailureKind::DriverBug.as_str().to_string(),
                 detail: error.detail.clone(),
             }
         }
-    }
-}
-
-fn loop_failure_kind_name(kind: LoopFailureKind) -> &'static str {
-    match kind {
-        LoopFailureKind::ModelError => "model_error",
-        LoopFailureKind::ContextBuildFailed => "context_build_failed",
-        LoopFailureKind::CapabilityProtocolError => "capability_protocol_error",
-        LoopFailureKind::IterationLimit => "iteration_limit",
-        LoopFailureKind::InvalidModelOutput => "invalid_model_output",
-        LoopFailureKind::CheckpointRejected => "checkpoint_rejected",
-        LoopFailureKind::CheckpointUnavailable => "checkpoint_unavailable",
-        LoopFailureKind::TranscriptWriteFailed => "transcript_write_failed",
-        LoopFailureKind::DriverBug => "driver_bug",
-        LoopFailureKind::InterruptedUnexpectedly => "interrupted_unexpectedly",
-        LoopFailureKind::NoProgressDetected => "no_progress_detected",
-        LoopFailureKind::PolicyDenied => "policy_denied",
-        // LoopFailureKind is `#[non_exhaustive]`; fail closed if a new variant
-        // lands in `ironclaw_turns` ahead of this matcher being updated.
-        _ => "driver_bug",
     }
 }
 
@@ -364,7 +343,7 @@ mod tests {
         assert_eq!(
             mapped,
             AgentLoopDriverError::Failed {
-                reason_kind: loop_failure_kind_name(LoopFailureKind::ModelError).to_string(),
+                reason_kind: LoopFailureKind::ModelError.as_str().to_string(),
                 detail: None,
             }
         );
@@ -383,7 +362,7 @@ mod tests {
         assert_eq!(
             mapped,
             AgentLoopDriverError::Failed {
-                reason_kind: loop_failure_kind_name(LoopFailureKind::ModelError).to_string(),
+                reason_kind: LoopFailureKind::ModelError.as_str().to_string(),
                 detail: None,
             }
         );

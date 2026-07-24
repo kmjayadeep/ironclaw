@@ -13,8 +13,9 @@ use thiserror::Error;
 
 use crate::{
     Authorized, CapabilityId, ExtensionId, HostRemediation, InvocationOrigin, MountView,
-    ResourceEstimate, ResourceReceipt, ResourceReservation, ResourceScope, ResourceUsage, RunId,
-    RuntimeCredentialAuthRequirement, RuntimeKind, SecretHandle, UserId,
+    RecoverabilityClass, RemediationHint, ResourceEstimate, ResourceReceipt, ResourceReservation,
+    ResourceScope, ResourceUsage, RunId, RuntimeCredentialAuthRequirement, RuntimeKind,
+    SecretHandle, UserId,
 };
 
 /// Internal adapter request produced after a sealed [`Authorized`] witness is
@@ -204,6 +205,39 @@ pub enum RuntimeDispatchErrorKind {
 pub const INPUT_ENCODE_HUMAN_SUMMARY: &str = "the tool input could not be encoded";
 
 impl RuntimeDispatchErrorKind {
+    /// Every variant, in declaration order.
+    ///
+    /// Exists so the §11.7 recoverability matrix can be asserted over the whole
+    /// enum from crates that cannot write an exhaustive `match` arm list of
+    /// their own without duplicating it (`ironclaw_host_runtime` pins that the
+    /// dispatch→runtime fold preserves each kind's class). Kept beside the
+    /// exhaustive matches below: those are what fail to compile when a variant
+    /// is added, this is what makes the new variant actually get asserted.
+    pub const ALL: [Self; 22] = [
+        Self::Backend,
+        Self::Client,
+        Self::Executor,
+        Self::ExitFailure,
+        Self::ExtensionRuntimeMismatch,
+        Self::FilesystemDenied,
+        Self::Guest,
+        Self::InputEncode,
+        Self::InvalidResult,
+        Self::Manifest,
+        Self::Memory,
+        Self::MethodMissing,
+        Self::NetworkDenied,
+        Self::OperationFailed,
+        Self::OutputDecode,
+        Self::OutputTooLarge,
+        Self::PolicyDenied,
+        Self::Resource,
+        Self::SecretDenied,
+        Self::UndeclaredCapability,
+        Self::UnsupportedRunner,
+        Self::Unknown,
+    ];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Backend => "Backend",
@@ -288,6 +322,113 @@ impl RuntimeDispatchErrorKind {
             Self::UndeclaredCapability => "undeclared_capability",
             Self::UnsupportedRunner => "unsupported_runner",
             Self::Unknown => "unknown",
+        }
+    }
+
+    /// Which §5.3.4 cell this lane-reported dispatch failure lands in today —
+    /// the enum §11.7 names by this exact name. See
+    /// [`crate::recoverability`] for the contract and for why this and
+    /// `RuntimeFailureKind` are both real and both classified.
+    ///
+    /// Derived from the live path, not from intent: `From<DispatchFailureKind>
+    /// for RuntimeFailureKind` (`ironclaw_host_runtime/src/production.rs`)
+    /// folds each kind below into a `RuntimeFailureKind`, whose own classifier
+    /// decides retry-vs-model-visible via `capability_failure_disposition`.
+    /// `runtime_dispatch_error_kind_class_survives_the_runtime_fold` in that
+    /// crate pins that this table and that fold agree, so this is a derived
+    /// table rather than an asserted one.
+    ///
+    /// The match is exhaustive with no `_` arm on purpose: a new variant fails
+    /// to compile here until it is classified.
+    pub const fn recoverability_class(self) -> RecoverabilityClass {
+        match self {
+            // -> `RuntimeFailureKind::Backend` / `Network` / `Internal`, all of
+            // which `capability_failure_disposition` sends to `RetrySameCall`.
+            // The loop retries invisibly and degrades to a model-visible tool
+            // error at budget, so the run survives either way.
+            //
+            // AUDIT: `NetworkDenied` is overloaded — it carries both a genuine
+            // network fault and a *policy* refusal (`UnsupportedNetworkMode`,
+            // `McpError::HostHttpEgressRequired`). The policy half is retried,
+            // which no number of retries can fix, and the model is not told
+            // until the budget is spent (#6284 item 2).
+            Self::Backend
+            | Self::Client
+            | Self::Executor
+            | Self::Manifest
+            | Self::NetworkDenied
+            | Self::UnsupportedRunner
+            | Self::Unknown => RecoverabilityClass::Retry,
+            // -> a `RuntimeFailureKind` that `capability_failure_disposition`
+            // sends to `ModelVisibleToolError`: the model receives the failure
+            // as a tool result and gets a turn.
+            Self::ExitFailure
+            | Self::ExtensionRuntimeMismatch
+            | Self::FilesystemDenied
+            | Self::Guest
+            | Self::InputEncode
+            | Self::InvalidResult
+            | Self::Memory
+            | Self::MethodMissing
+            | Self::OperationFailed
+            | Self::OutputDecode
+            | Self::OutputTooLarge
+            | Self::PolicyDenied
+            | Self::Resource
+            | Self::SecretDenied
+            | Self::UndeclaredCapability => RecoverabilityClass::ModelVisible,
+        }
+    }
+
+    /// Whether this kind's model-visible observation carries the non-empty
+    /// remediation hint §11.7 requires — clause (c) of §5.3.4.
+    ///
+    /// Derived through the same fold as [`Self::recoverability_class`]: the
+    /// hint is chosen from the resulting `CapabilityFailureKind` by
+    /// `ironclaw_agent_loop::executor::capability_helpers`. Only a failure that
+    /// arrives with a structured `CapabilityFailureDetail::InvalidInput`
+    /// renders per-field repairs; every other kind gets the fixed
+    /// `RespectFailureConstraint` hint with an empty `repairs` vec.
+    ///
+    /// `InputEncode` is the only kind whose failures can carry that structured
+    /// detail — `FirstPartyCapabilityError::invalid_input_issues` and
+    /// `ironclaw_capabilities`' dispatch conversion are its only producers — so
+    /// it is the only [`RemediationHint::Substantive`] row here. This axis is
+    /// deliberately *finer-grained than the fold*: `MethodMissing` and
+    /// `UndeclaredCapability` also land on `RuntimeFailureKind::InvalidInput`
+    /// but can never carry issues, so they stay `Absent`.
+    ///
+    /// AUDIT: even for `InputEncode` the substantive hint is *detail*-driven,
+    /// not kind-driven — a lane that reports `InputEncode` without issues still
+    /// renders the empty generic hint. Recorded as `Substantive` because the
+    /// structured path exists for this kind and for no other; #6284 item 4 is
+    /// what makes it unconditional.
+    pub const fn remediation_hint(self) -> RemediationHint {
+        match self {
+            Self::InputEncode => RemediationHint::Substantive,
+            // Model-visible with a bare category and an empty `repairs` vec.
+            Self::ExitFailure
+            | Self::ExtensionRuntimeMismatch
+            | Self::FilesystemDenied
+            | Self::Guest
+            | Self::InvalidResult
+            | Self::Memory
+            | Self::MethodMissing
+            | Self::OperationFailed
+            | Self::OutputDecode
+            | Self::OutputTooLarge
+            | Self::PolicyDenied
+            | Self::Resource
+            | Self::SecretDenied
+            | Self::UndeclaredCapability => RemediationHint::Absent,
+            // Retried, so clause (c) does not apply at this layer.
+            Self::Backend
+            | Self::Client
+            | Self::Executor
+            | Self::Manifest
+            | Self::NetworkDenied
+            | Self::UnsupportedRunner
+            | Self::Unknown => RemediationHint::NotApplicable,
         }
     }
 }
@@ -574,6 +715,94 @@ pub trait CapabilityDispatcher: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// §11.7 recoverability-matrix row for [`RuntimeDispatchErrorKind`] — the
+    /// enum §5.3.4's enforcement paragraph names first.
+    ///
+    /// The conformance tests are the classifiers' only consumer today, and that
+    /// is deliberate: the value of item 7 is a *compile-forced* classification,
+    /// so a new variant cannot land without a recorded class.
+    /// `LoopProgressEvent::FailureRecovered` (#6284 item 7, a later PR) becomes
+    /// the production consumer. **Do not delete these tests as "dead code"
+    /// before then.**
+    ///
+    /// The expectation is an exhaustive `match` with no `_` arm so a new
+    /// variant fails to compile here too, not only in the classifier.
+    #[test]
+    fn every_runtime_dispatch_error_kind_has_a_recorded_recoverability_class() {
+        use RuntimeDispatchErrorKind as K;
+
+        const fn expected(kind: RuntimeDispatchErrorKind) -> RecoverabilityClass {
+            match kind {
+                K::Backend
+                | K::Client
+                | K::Executor
+                | K::Manifest
+                | K::NetworkDenied
+                | K::UnsupportedRunner
+                | K::Unknown => RecoverabilityClass::Retry,
+                K::ExitFailure
+                | K::ExtensionRuntimeMismatch
+                | K::FilesystemDenied
+                | K::Guest
+                | K::InputEncode
+                | K::InvalidResult
+                | K::Memory
+                | K::MethodMissing
+                | K::OperationFailed
+                | K::OutputDecode
+                | K::OutputTooLarge
+                | K::PolicyDenied
+                | K::Resource
+                | K::SecretDenied
+                | K::UndeclaredCapability => RecoverabilityClass::ModelVisible,
+            }
+        }
+
+        for kind in RuntimeDispatchErrorKind::ALL {
+            assert_eq!(
+                kind.recoverability_class(),
+                expected(kind),
+                "recoverability class for {kind:?} changed — a kind moving to \
+                 Terminal removes a recovery path the model relies on"
+            );
+            // Clause (c) applies to exactly the model-visible rows.
+            assert_eq!(
+                kind.remediation_hint() == RemediationHint::NotApplicable,
+                kind.recoverability_class() != RecoverabilityClass::ModelVisible,
+                "remediation-hint applicability disagrees with the class for {kind:?}"
+            );
+        }
+    }
+
+    /// Ratchet pin: no `RuntimeDispatchErrorKind` ends the run today, and the
+    /// count of model-visible kinds that ship the model **no** remediation is
+    /// 14 of 15 (#6284 item 4 — the observation renderer hands every kind but
+    /// the structured-input one a fixed constraint with an empty `repairs`
+    /// vec). **Both numbers may only go DOWN.**
+    #[test]
+    fn runtime_dispatch_error_kind_terminal_and_hintless_counts_only_ratchet_down() {
+        let terminal = RuntimeDispatchErrorKind::ALL
+            .iter()
+            .filter(|kind| kind.recoverability_class() == RecoverabilityClass::Terminal)
+            .count();
+        assert_eq!(
+            terminal, 0,
+            "no lane-reported dispatch failure ends the run today; this count \
+             may only decrease"
+        );
+
+        let hintless = RuntimeDispatchErrorKind::ALL
+            .iter()
+            .filter(|kind| kind.remediation_hint().is_hintless_model_visible())
+            .count();
+        assert_eq!(
+            hintless, 14,
+            "expected 14 model-visible RuntimeDispatchErrorKind variants with \
+             no substantive remediation hint (#6284 item 4); this count may \
+             only decrease"
+        );
+    }
 
     #[test]
     fn dispatch_failure_kind_human_summary_is_plain_language_not_category_token() {

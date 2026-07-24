@@ -27,8 +27,9 @@
 use async_trait::async_trait;
 use ironclaw_host_api::{
     ApprovalRequestId, CapabilityDisplayOutputPreview, CapabilityId, CorrelationId,
-    DispatchFailureDetail, ExecutionContext, ExtensionId, ProcessId, ResourceEstimate,
-    ResourceScope, ResourceUsage, RuntimeCredentialAuthRequirement, RuntimeKind, SecretHandle,
+    DispatchFailureDetail, ExecutionContext, ExtensionId, ProcessId, RecoverabilityClass,
+    RemediationHint, ResourceEstimate, ResourceScope, ResourceUsage,
+    RuntimeCredentialAuthRequirement, RuntimeKind, SecretHandle,
     runtime_policy::{DeploymentMode, EffectiveRuntimePolicy, RuntimeProfile},
 };
 use ironclaw_trust::TrustDecision;
@@ -648,6 +649,100 @@ impl RuntimeFailureKind {
             Self::Resource => "resource",
             Self::Transient => "transient",
             Self::Unavailable => "unavailable",
+        }
+    }
+
+    /// Which §5.3.4 cell this host-sanitized runtime failure lands in today.
+    /// See [`ironclaw_host_api::recoverability`] for the contract, and for why
+    /// this enum is classified alongside the `RuntimeDispatchErrorKind` §11.7
+    /// names — they are different enums on different layers, and both are real.
+    ///
+    /// Derived from the live path, not from intent:
+    /// [`capability_failure_disposition`] picks `RetrySameCall` or
+    /// `ModelVisibleToolError`; `ironclaw_loop_host::capability_port` then
+    /// converts the failure into a `CapabilityFailureKind` (or, for
+    /// `Authorization`/`PolicyDenied`, a `Resolution::Denied`); the agent loop
+    /// classifies that and the recovery strategy decides.
+    ///
+    /// The match is exhaustive with no `_` arm on purpose: `RuntimeFailureKind`
+    /// is deliberately not `#[non_exhaustive]` (see the note on the type), so a
+    /// new variant fails to compile here until it is classified.
+    pub const fn recoverability_class(self) -> RecoverabilityClass {
+        match self {
+            // `RetrySameCall` -> retried invisibly on the loop's per-class
+            // budget; exhaustion degrades to a model-visible tool error rather
+            // than aborting, so the run survives either way.
+            Self::Internal
+            | Self::Backend
+            | Self::Network
+            | Self::Transient
+            | Self::Unavailable => RecoverabilityClass::Retry,
+            // `ModelVisibleToolError` -> `Resolution::Denied`. The model sees
+            // the denial, though with no structured observation attached —
+            // epic item 4.
+            //
+            // AUDIT: `GateDeclined` is a *declined* gate, so it is model-visible
+            // rather than `Parked`; a still-open gate arrives as
+            // `RuntimeCapabilityOutcome::{ApprovalRequired, AuthRequired,
+            // ResourceBlocked}`, which this enum does not describe.
+            Self::Authorization | Self::PolicyDenied | Self::GateDeclined => {
+                RecoverabilityClass::ModelVisible
+            }
+            // `ModelVisibleToolError` -> a recoverable capability failure the
+            // model can correct or explain.
+            Self::InvalidInput
+            | Self::Dispatcher
+            | Self::InvalidOutput
+            | Self::MissingRuntime
+            | Self::OperationFailed
+            | Self::OutputTooLarge
+            | Self::Process
+            | Self::Resource => RecoverabilityClass::ModelVisible,
+            // Sanctioned terminal invariant: dispositioned as model-visible
+            // here, but `ironclaw_agent_loop::executor::capabilities`
+            // intercepts the resulting `CapabilityFailureKind::Cancelled`
+            // before classification and exits as cancellation.
+            Self::Cancelled => RecoverabilityClass::Terminal,
+        }
+    }
+
+    /// Whether this kind's model-visible observation carries the non-empty
+    /// remediation hint §11.7 requires — clause (c) of §5.3.4.
+    ///
+    /// Derived from `ironclaw_loop_host::capability_port`'s name-for-name map
+    /// into `CapabilityFailureKind` and from that kind's own
+    /// `remediation_hint`. `InvalidInput` is the one kind whose failure can
+    /// arrive with structured `CapabilityFailureDetail::InvalidInput` issues and
+    /// therefore render per-field repairs; every other model-visible kind gets
+    /// the fixed `RespectFailureConstraint` hint with an empty `repairs` vec.
+    ///
+    /// AUDIT: `Authorization` / `PolicyDenied` / `GateDeclined` are the worst
+    /// row here — they reach the loop as `Resolution::Denied` with
+    /// `model_observation: None`, so the model is told a call was refused and
+    /// not what would unlock it. §5.3.4 requires the opposite ("`Denied` carries
+    /// what would unlock the call, not merely that it was denied"); #6284 item 4
+    /// is the fix, and this axis is how its progress is counted.
+    pub const fn remediation_hint(self) -> RemediationHint {
+        match self {
+            Self::InvalidInput => RemediationHint::Substantive,
+            // Model-visible with a bare category and an empty `repairs` vec.
+            Self::Authorization
+            | Self::PolicyDenied
+            | Self::GateDeclined
+            | Self::Dispatcher
+            | Self::InvalidOutput
+            | Self::MissingRuntime
+            | Self::OperationFailed
+            | Self::OutputTooLarge
+            | Self::Process
+            | Self::Resource => RemediationHint::Absent,
+            // Retried or terminal, so clause (c) does not apply.
+            Self::Internal
+            | Self::Backend
+            | Self::Network
+            | Self::Transient
+            | Self::Unavailable
+            | Self::Cancelled => RemediationHint::NotApplicable,
         }
     }
 }

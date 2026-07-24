@@ -11,6 +11,7 @@
 // arch-exempt: large_file, keep recovery policy beside its exhaustive mapping tests until the item-7 conformance-matrix extraction, plan #6284
 
 use async_trait::async_trait;
+use ironclaw_host_api::{RecoverabilityClass, RemediationHint};
 use ironclaw_turns::{
     LoopDiagnosticRef, LoopFailureKind, ModelInvalidOutputDetailReason,
     run_profile::LoopSafeSummary,
@@ -133,6 +134,53 @@ pub(crate) enum CapabilityErrorClass {
     Internal,
 }
 
+impl CapabilityErrorClass {
+    /// Which §5.3.4 cell [`DefaultRecoveryStrategy::on_capability_error`] puts
+    /// this class in today. See [`ironclaw_host_api::recoverability`] for the
+    /// contract and the §11.7 matrix this row belongs to.
+    ///
+    /// The match is exhaustive with no `_` arm. `CapabilityErrorClass` is
+    /// `#[non_exhaustive]` for downstream crates, but this classifier lives in
+    /// the defining crate, so a new variant fails to compile here until it is
+    /// classified.
+    pub(crate) const fn recoverability_class(self) -> RecoverabilityClass {
+        match self {
+            // `RecoveryOutcome::ToolErrorResult` — the model gets the failure
+            // as a tool result and continues the batch.
+            Self::PolicyDenied | Self::InputInvalid | Self::OperationFailed => {
+                RecoverabilityClass::ModelVisible
+            }
+            // `retry_or_capability_tool_error` — retried invisibly on the
+            // per-class budget, then degraded to a model-visible tool error.
+            Self::Transient | Self::Unavailable | Self::Internal => RecoverabilityClass::Retry,
+            // KNOWN DEFECT (nearai/ironclaw#6284 item 1): `RecoveryOutcome::Abort`
+            // with `LoopFailureKind::CapabilityProtocolError`. Not one of the
+            // three sanctioned terminal invariants.
+            Self::Permanent => RecoverabilityClass::Terminal,
+        }
+    }
+
+    /// Whether this class's model-visible observation carries the non-empty
+    /// remediation hint §11.7 requires — clause (c) of §5.3.4.
+    ///
+    /// The observation itself is built one layer up, from the
+    /// `CapabilityFailureKind`, so this row is derived from
+    /// `CapabilityFailureKind::remediation_hint`: `InputInvalid` is reached
+    /// only from `InvalidInput`, the one kind with a structured repair path;
+    /// `OperationFailed` collapses many kinds that all render the fixed
+    /// empty-`repairs` hint; and `PolicyDenied` is the denial path, which
+    /// reaches the loop with `model_observation: None` at all.
+    pub(crate) const fn remediation_hint(self) -> RemediationHint {
+        match self {
+            Self::InputInvalid => RemediationHint::Substantive,
+            Self::PolicyDenied | Self::OperationFailed => RemediationHint::Absent,
+            Self::Transient | Self::Unavailable | Self::Internal | Self::Permanent => {
+                RemediationHint::NotApplicable
+            }
+        }
+    }
+}
+
 /// Sanitized model error — class + safe summary + opaque diagnostic ref.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ModelErrorSummary {
@@ -172,6 +220,66 @@ pub(crate) enum ModelErrorClass {
     /// The host could not persist transcript output for the model stage.
     /// Terminal with the precise `transcript_write_failed` category.
     TranscriptWriteFailed,
+}
+
+impl ModelErrorClass {
+    /// Which §5.3.4 cell [`DefaultRecoveryStrategy::on_model_error`] puts this
+    /// class in today. See [`ironclaw_host_api::recoverability`] for the
+    /// contract and the §11.7 matrix this row belongs to.
+    ///
+    /// The match is exhaustive with no `_` arm. `ModelErrorClass` is
+    /// `#[non_exhaustive]` for downstream crates, but this classifier lives in
+    /// the defining crate, so a new variant fails to compile here until it is
+    /// classified.
+    pub(crate) const fn recoverability_class(self) -> RecoverabilityClass {
+        match self {
+            // `retry_or_abort` on the deep availability budget (12 attempts).
+            //
+            // AUDIT: exhaustion aborts with no observation — the model never
+            // learns the provider was down (epic item 2).
+            Self::Transient | Self::Unavailable | Self::Internal => RecoverabilityClass::Retry,
+            // `retry_observe_or_abort`: silent retries (`ShrinkContext` /
+            // `RepairInvalidModelOutput`) first, then one typed observation the
+            // model can act on, then abort. Classified by the best outcome the
+            // model can reach — the silent retry succeeding.
+            Self::ContextOverflow | Self::InvalidOutput => RecoverabilityClass::Retry,
+            // `retry_or_abort` at iteration scope: the surface/prompt-bundle
+            // rebuild is the fix, so the retry is silent. Exhaustion aborts
+            // with the precise `model_stale_request` category.
+            Self::StaleRequest => RecoverabilityClass::Retry,
+            // `observe_once_or_abort`: no silent retry, so the model's first
+            // and only sight of it is the typed observation.
+            Self::ContentFiltered => RecoverabilityClass::ModelVisible,
+            // KNOWN DEFECTS (nearai/ironclaw#6284 item 2): immediate
+            // `RecoveryOutcome::Abort`. Precise, user-actionable categories —
+            // but the run still dies and the model never gets a turn.
+            Self::Unauthorized | Self::CheckpointRejected | Self::TranscriptWriteFailed => {
+                RecoverabilityClass::Terminal
+            }
+        }
+    }
+
+    /// Whether this class's model-visible observation carries the non-empty
+    /// remediation hint §11.7 requires — clause (c) of §5.3.4.
+    ///
+    /// `ContentFiltered` is the only model-visible class, and it already
+    /// satisfies the clause: `ModelErrorRecoveryObservation::content_filtered`
+    /// renders an instruction naming what would make the call succeed, not just
+    /// that it failed.
+    pub(crate) const fn remediation_hint(self) -> RemediationHint {
+        match self {
+            Self::ContentFiltered => RemediationHint::Substantive,
+            Self::Transient
+            | Self::Unavailable
+            | Self::Internal
+            | Self::ContextOverflow
+            | Self::InvalidOutput
+            | Self::StaleRequest
+            | Self::Unauthorized
+            | Self::CheckpointRejected
+            | Self::TranscriptWriteFailed => RemediationHint::NotApplicable,
+        }
+    }
 }
 
 /// Strategy decision plus the new `recovery_state` slot value.
@@ -278,12 +386,20 @@ impl RecoveryStrategy for DefaultRecoveryStrategy {
         err: &CapabilityErrorSummary,
     ) -> RecoveryOutcome {
         let kind = capability_error_to_failure_kind(err.class);
+        // Exhaustive over `CapabilityErrorClass` with no `_` arm and no guard.
+        // A guard arm (`class if capability_error_is_model_visible_tool_failure(class)`)
+        // used to sit at the top, which defeated exhaustiveness checking and
+        // forced a `_ => Abort { DriverBug }` fallback — so any newly added
+        // class silently became run-terminal, the exact inverse of the
+        // recoverability invariant this file implements
+        // (nearai/ironclaw#6284 item 1). The predicate had this as its only
+        // caller and is now inlined as explicit variant arms.
         match err.class {
-            class if capability_error_is_model_visible_tool_failure(class) => {
-                RecoveryOutcome::ToolErrorResult {
-                    recovery: state.recovery_state.cleared_attempts(),
-                }
-            }
+            CapabilityErrorClass::PolicyDenied
+            | CapabilityErrorClass::InputInvalid
+            | CapabilityErrorClass::OperationFailed => RecoveryOutcome::ToolErrorResult {
+                recovery: state.recovery_state.cleared_attempts(),
+            },
             CapabilityErrorClass::Permanent => RecoveryOutcome::Abort {
                 recovery: state.recovery_state.cleared_attempts(),
                 failure_kind: kind,
@@ -309,10 +425,6 @@ impl RecoveryStrategy for DefaultRecoveryStrategy {
                     },
                 )
             }
-            _ => RecoveryOutcome::Abort {
-                recovery: state.recovery_state.cleared_attempts(),
-                failure_kind: LoopFailureKind::DriverBug,
-            },
         }
     }
 
@@ -413,15 +525,6 @@ impl RecoveryStrategy for DefaultRecoveryStrategy {
         3u32.saturating_add(self.max_attempts_per_class)
             .saturating_add(self.max_model_availability_attempts.saturating_mul(3))
     }
-}
-
-fn capability_error_is_model_visible_tool_failure(class: CapabilityErrorClass) -> bool {
-    matches!(
-        class,
-        CapabilityErrorClass::PolicyDenied
-            | CapabilityErrorClass::InputInvalid
-            | CapabilityErrorClass::OperationFailed
-    )
 }
 
 fn retry_or_abort(
@@ -702,6 +805,36 @@ mod tests {
         RecoveryStrategyState::with_attempts_for(RecoveryAttemptClass::ModelTransient, 2)
     }
 
+    /// Every `CapabilityErrorClass` variant. Kept beside the exhaustive
+    /// `match` in `every_capability_error_class_has_a_recorded_recoverability_class`:
+    /// the match is what fails to compile when a variant is added, this array
+    /// is what makes the new variant actually get asserted.
+    const ALL_CAPABILITY_ERROR_CLASSES: [CapabilityErrorClass; 7] = [
+        CapabilityErrorClass::Transient,
+        CapabilityErrorClass::Permanent,
+        CapabilityErrorClass::InputInvalid,
+        CapabilityErrorClass::OperationFailed,
+        CapabilityErrorClass::PolicyDenied,
+        CapabilityErrorClass::Unavailable,
+        CapabilityErrorClass::Internal,
+    ];
+
+    /// Every `ModelErrorClass` variant. See
+    /// [`ALL_CAPABILITY_ERROR_CLASSES`] for why both the array and the
+    /// exhaustive match exist.
+    const ALL_MODEL_ERROR_CLASSES: [ModelErrorClass; 10] = [
+        ModelErrorClass::Transient,
+        ModelErrorClass::ContextOverflow,
+        ModelErrorClass::ContentFiltered,
+        ModelErrorClass::InvalidOutput,
+        ModelErrorClass::Unavailable,
+        ModelErrorClass::Internal,
+        ModelErrorClass::StaleRequest,
+        ModelErrorClass::Unauthorized,
+        ModelErrorClass::CheckpointRejected,
+        ModelErrorClass::TranscriptWriteFailed,
+    ];
+
     #[test]
     fn sanitized_strategy_summary_serializes_as_string() {
         let summary = SanitizedStrategySummary::new("provider unavailable").expect("valid");
@@ -779,6 +912,157 @@ mod tests {
             let restored: ModelErrorClass = serde_json::from_value(value).expect("deserialize");
             assert_eq!(restored, variant);
         }
+    }
+
+    /// §11.7 recoverability-matrix row for [`CapabilityErrorClass`].
+    ///
+    /// This test is currently the only consumer of `recoverability_class` — that is
+    /// expected and deliberate. The epic's item-7 gate is a *compile-forced*
+    /// classification: the value is that a new variant cannot land without a
+    /// recorded recoverability class. `LoopProgressEvent::FailureRecovered` (epic
+    /// item 7, a later PR) becomes the production consumer. **Do not delete
+    /// this test as "dead code" before then.**
+    ///
+    /// The expectation is written as an exhaustive `match` with no `_` arm so a
+    /// new `CapabilityErrorClass` fails to compile here too, not just in the
+    /// production classifier.
+    #[test]
+    fn every_capability_error_class_has_a_recorded_recoverability_class() {
+        use CapabilityErrorClass as C;
+
+        const fn expected(class: C) -> RecoverabilityClass {
+            match class {
+                // `on_capability_error` -> `RecoveryOutcome::ToolErrorResult`.
+                C::PolicyDenied | C::InputInvalid | C::OperationFailed => {
+                    RecoverabilityClass::ModelVisible
+                }
+                // `retry_or_capability_tool_error`: retried invisibly, then
+                // degraded to a model-visible tool error at budget.
+                C::Transient | C::Unavailable | C::Internal => RecoverabilityClass::Retry,
+                // `on_capability_error` -> `RecoveryOutcome::Abort`.
+                C::Permanent => RecoverabilityClass::Terminal,
+            }
+        }
+
+        for class in ALL_CAPABILITY_ERROR_CLASSES {
+            assert_eq!(
+                class.recoverability_class(),
+                expected(class),
+                "recoverability class for {class:?} changed — a class moving to Terminal \
+                 removes a recovery path the model relies on"
+            );
+            // Clause (c) applies to exactly the model-visible rows.
+            assert_eq!(
+                class.remediation_hint() == RemediationHint::NotApplicable,
+                class.recoverability_class() != RecoverabilityClass::ModelVisible,
+                "remediation-hint applicability disagrees with the class for {class:?}"
+            );
+        }
+    }
+
+    /// Ratchet pin: the number of [`CapabilityErrorClass`] variants that end
+    /// the run, and the number of model-visible ones that ship the model no
+    /// remediation.
+    ///
+    /// The terminal row is the epic's remaining defect on this axis
+    /// (nearai/ironclaw#6284 item 1). `Permanent` is not one of the three
+    /// sanctioned terminal invariants (cancellation, budget exhaustion,
+    /// `DriverBug`). Two of the three model-visible classes carry no
+    /// substantive hint (item 4). **Both numbers may only go DOWN.** Raising
+    /// either needs an explicit invariant justification in the PR description.
+    #[test]
+    fn capability_error_class_terminal_and_hintless_counts_only_ratchet_down() {
+        let terminal = ALL_CAPABILITY_ERROR_CLASSES
+            .iter()
+            .filter(|class| class.recoverability_class() == RecoverabilityClass::Terminal)
+            .count();
+        assert_eq!(
+            terminal, 1,
+            "expected exactly 1 terminal CapabilityErrorClass (Permanent); \
+             this count may only decrease"
+        );
+
+        let hintless = ALL_CAPABILITY_ERROR_CLASSES
+            .iter()
+            .filter(|class| class.remediation_hint().is_hintless_model_visible())
+            .count();
+        assert_eq!(
+            hintless, 2,
+            "expected 2 model-visible CapabilityErrorClass variants with no \
+             substantive remediation hint (PolicyDenied, OperationFailed); \
+             this count may only decrease"
+        );
+    }
+
+    /// §11.7 recoverability-matrix row for [`ModelErrorClass`]. See
+    /// [`every_capability_error_class_has_a_recorded_recoverability_class`] for why
+    /// this test is the classifier's only consumer today.
+    #[test]
+    fn every_model_error_class_has_a_recorded_recoverability_class() {
+        use ModelErrorClass as C;
+
+        const fn expected(class: C) -> RecoverabilityClass {
+            match class {
+                // `retry_or_abort` on the deep availability budget.
+                C::Transient | C::Unavailable | C::Internal => RecoverabilityClass::Retry,
+                // `retry_observe_or_abort` — silent retries first.
+                C::ContextOverflow | C::InvalidOutput => RecoverabilityClass::Retry,
+                // `observe_once_or_abort` — the model's first sight of it is
+                // the typed observation.
+                C::ContentFiltered => RecoverabilityClass::ModelVisible,
+                // `retry_or_abort` at iteration scope (surface/prompt rebuild).
+                C::StaleRequest => RecoverabilityClass::Retry,
+                // Immediate `RecoveryOutcome::Abort`.
+                C::Unauthorized | C::CheckpointRejected | C::TranscriptWriteFailed => {
+                    RecoverabilityClass::Terminal
+                }
+            }
+        }
+
+        for class in ALL_MODEL_ERROR_CLASSES {
+            assert_eq!(
+                class.recoverability_class(),
+                expected(class),
+                "recoverability class for {class:?} changed — a class moving to Terminal \
+                 removes a recovery path the model relies on"
+            );
+            // Clause (c) applies to exactly the model-visible rows.
+            assert_eq!(
+                class.remediation_hint() == RemediationHint::NotApplicable,
+                class.recoverability_class() != RecoverabilityClass::ModelVisible,
+                "remediation-hint applicability disagrees with the class for {class:?}"
+            );
+        }
+    }
+
+    /// Ratchet pin for [`ModelErrorClass`]. `Unauthorized`,
+    /// `CheckpointRejected`, and `TranscriptWriteFailed` abort immediately and
+    /// are none of the three sanctioned terminal invariants — epic item 2
+    /// ("only 3 of 10 `ModelErrorClass` variants ever produce an observation").
+    /// The hint axis is clean here: the one model-visible class already renders
+    /// an actionable instruction. **Both numbers may only go DOWN.**
+    #[test]
+    fn model_error_class_terminal_and_hintless_counts_only_ratchet_down() {
+        let terminal = ALL_MODEL_ERROR_CLASSES
+            .iter()
+            .filter(|class| class.recoverability_class() == RecoverabilityClass::Terminal)
+            .count();
+        assert_eq!(
+            terminal, 3,
+            "expected exactly 3 terminal ModelErrorClass variants \
+             (Unauthorized, CheckpointRejected, TranscriptWriteFailed); \
+             this count may only decrease"
+        );
+
+        let hintless = ALL_MODEL_ERROR_CLASSES
+            .iter()
+            .filter(|class| class.remediation_hint().is_hintless_model_visible())
+            .count();
+        assert_eq!(
+            hintless, 0,
+            "ContentFiltered, the only model-visible ModelErrorClass, already \
+             renders an actionable instruction; this count may only decrease"
+        );
     }
 
     #[test]
@@ -970,7 +1254,7 @@ mod tests {
             BackoffDelayMs, CapabilityErrorClass, CapabilityErrorSummary, DefaultRecoveryStrategy,
             ModelErrorClass, ModelErrorSummary, RecoveryOutcome, RecoveryStrategy, RetryAlteration,
             RetryScope, SanitizedStrategySummary, availability_backoff_for, backoff_for,
-            capability_error_to_failure_kind,
+            capability_error_to_failure_kind, capability_retry_attempt_class,
         };
         use crate::state::{
             LoopExecutionState, ModelErrorRecoveryObservation, RecoveryAttemptClass,
@@ -1093,6 +1377,47 @@ mod tests {
             let strategy = DefaultRecoveryStrategy::default();
             assert_eq!(strategy.max_attempts_per_class, 2);
             assert_eq!(strategy.max_total_model_attempts(), 41);
+        }
+
+        /// Behavior lock for the `on_capability_error` restructure that deleted
+        /// the `_ => Abort { DriverBug }` catch-all (nearai/ironclaw#6284 item
+        /// 1). That wildcard was reachable only because the guard arm above it
+        /// defeated exhaustiveness, so **any** new `CapabilityErrorClass`
+        /// silently became run-terminal. Every class that exists today must
+        /// keep byte-identical behavior across the restructure.
+        #[tokio::test]
+        async fn every_capability_error_class_keeps_its_recorded_outcome() {
+            let strategy = DefaultRecoveryStrategy::default();
+            for class in super::ALL_CAPABILITY_ERROR_CLASSES {
+                let state = state_with_no_attempts();
+                let expected = match class {
+                    CapabilityErrorClass::PolicyDenied
+                    | CapabilityErrorClass::InputInvalid
+                    | CapabilityErrorClass::OperationFailed => RecoveryOutcome::ToolErrorResult {
+                        recovery: state.recovery_state.cleared_attempts(),
+                    },
+                    CapabilityErrorClass::Permanent => RecoveryOutcome::Abort {
+                        recovery: state.recovery_state.cleared_attempts(),
+                        failure_kind: capability_error_to_failure_kind(class),
+                    },
+                    CapabilityErrorClass::Transient
+                    | CapabilityErrorClass::Unavailable
+                    | CapabilityErrorClass::Internal => RecoveryOutcome::Retry {
+                        recovery: state.recovery_state.with_incremented_attempts_for(
+                            capability_retry_attempt_class(class).expect("retryable class"),
+                        ),
+                        scope: RetryScope::Call,
+                        alter: Some(RetryAlteration::Backoff {
+                            delay_ms: backoff_for(0),
+                        }),
+                    },
+                };
+                let outcome = strategy.on_capability_error(&state, &cap_err(class)).await;
+                assert_eq!(
+                    outcome, expected,
+                    "on_capability_error outcome for {class:?} changed"
+                );
+            }
         }
 
         #[tokio::test]

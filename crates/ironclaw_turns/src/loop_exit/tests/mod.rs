@@ -5,6 +5,95 @@ use crate::{
 };
 use serde_json::json;
 
+/// `LoopFailureKind::as_str()` is the single naming authority for loop failure
+/// kinds. `ironclaw_runner::text_loop_driver` used to keep a private copy with a
+/// `_ => "driver_bug"` catch-all, which silently swallowed
+/// `CompactionUnavailable` (nearai/ironclaw#6284 item 7). Only `DriverBug` may
+/// ever render as `"driver_bug"`; anything else collapsing to it is the drift
+/// this pins.
+#[test]
+fn only_driver_bug_renders_as_driver_bug() {
+    for kind in LoopFailureKind::ALL {
+        // Exhaustive with no `_` arm (in-crate, so `#[non_exhaustive]` does not
+        // apply): a new variant must be classified here deliberately.
+        let is_driver_bug = match kind {
+            LoopFailureKind::DriverBug => true,
+            LoopFailureKind::ModelError
+            | LoopFailureKind::ContextBuildFailed
+            | LoopFailureKind::CapabilityProtocolError
+            | LoopFailureKind::IterationLimit
+            | LoopFailureKind::InvalidModelOutput
+            | LoopFailureKind::CheckpointRejected
+            | LoopFailureKind::CheckpointUnavailable
+            | LoopFailureKind::TranscriptWriteFailed
+            | LoopFailureKind::InterruptedUnexpectedly
+            | LoopFailureKind::NoProgressDetected
+            | LoopFailureKind::PolicyDenied
+            | LoopFailureKind::CompactionUnavailable => false,
+        };
+        assert_eq!(
+            kind.as_str() == "driver_bug",
+            is_driver_bug,
+            "{kind:?} renders as {:?}",
+            kind.as_str()
+        );
+        assert_eq!(
+            serde_json::to_value(kind).unwrap(),
+            json!(kind.as_str()),
+            "as_str() and the serde wire name diverged for {kind:?}"
+        );
+    }
+}
+
+/// §11.7 recoverability-matrix row for [`LoopFailureKind`] — and the place
+/// where the design doc and the live code visibly disagree.
+///
+/// §11.7 asks every variant of every listed enum to map to "retry / a
+/// model-visible observation carrying a non-empty remediation hint / a park —
+/// never an unclassified terminal bork". `LoopFailureKind` cannot satisfy the
+/// first three: it is the *reason a run already ended*, so every row is
+/// terminal by construction. What it can satisfy — and what this pins — is
+/// "never *unclassified*": each row states whether it is one of §5.3.4's three
+/// sanctioned invariants.
+///
+/// This test is currently the only consumer of `recoverability_class` on this
+/// enum, deliberately; see the classifier's doc comment. **Do not delete it as
+/// "dead code".**
+#[test]
+fn every_loop_failure_kind_is_a_classified_terminal_exit() {
+    for kind in LoopFailureKind::ALL {
+        assert_eq!(
+            kind.recoverability_class(),
+            ironclaw_host_api::RecoverabilityClass::Terminal,
+            "{kind:?} is not terminal — a LoopFailureKind names an exit that \
+             already happened; a recoverable condition must be classified on \
+             the enum that feeds RecoveryOutcome, not here"
+        );
+    }
+}
+
+/// Ratchet pin: how many [`LoopFailureKind`] variants name a terminal exit that
+/// is **not** one of §5.3.4's three sanctioned invariants (cancellation, budget
+/// exhaustion, `DriverBug`).
+///
+/// Every one of these eleven is a condition the model or the user could have
+/// acted on, reported only after the run died (nearai/ironclaw#6284 items 1, 2
+/// and 5). As the epic re-buckets those conditions into model-visible channels,
+/// the corresponding kinds stop being reachable and get deleted from this enum.
+/// **This number may only go DOWN.**
+#[test]
+fn loop_failure_kind_unsanctioned_terminal_count_only_ratchets_down() {
+    let unsanctioned = LoopFailureKind::ALL
+        .iter()
+        .filter(|kind| !kind.is_sanctioned_terminal_invariant())
+        .count();
+    assert_eq!(
+        unsanctioned, 11,
+        "expected 11 unsanctioned terminal LoopFailureKind variants (all but \
+         IterationLimit and DriverBug); this count may only decrease"
+    );
+}
+
 #[test]
 fn no_progress_detected_failure_kind_serializes_as_snake_case() {
     assert_eq!(

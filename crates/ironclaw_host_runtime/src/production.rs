@@ -2559,33 +2559,203 @@ mod tests {
         assert_eq!(RuntimeFailureKind::Unavailable.as_str(), "unavailable");
     }
 
+    /// Every `RuntimeFailureKind` variant. The exhaustive `match` in each
+    /// classification lock below is what fails to compile when a variant is
+    /// added; this array is what makes the new variant actually get asserted.
+    const ALL_RUNTIME_FAILURE_KINDS: [RuntimeFailureKind; 17] = [
+        RuntimeFailureKind::Authorization,
+        RuntimeFailureKind::Backend,
+        RuntimeFailureKind::Cancelled,
+        RuntimeFailureKind::Dispatcher,
+        RuntimeFailureKind::GateDeclined,
+        RuntimeFailureKind::Internal,
+        RuntimeFailureKind::InvalidInput,
+        RuntimeFailureKind::InvalidOutput,
+        RuntimeFailureKind::MissingRuntime,
+        RuntimeFailureKind::Network,
+        RuntimeFailureKind::OperationFailed,
+        RuntimeFailureKind::OutputTooLarge,
+        RuntimeFailureKind::PolicyDenied,
+        RuntimeFailureKind::Process,
+        RuntimeFailureKind::Resource,
+        RuntimeFailureKind::Transient,
+        RuntimeFailureKind::Unavailable,
+    ];
+
+    /// §11.7 recoverability-matrix row for `RuntimeFailureKind`.
+    ///
+    /// This test is currently the only consumer of `recoverability_class` — that is
+    /// expected and deliberate. The epic's item-7 gate is a *compile-forced*
+    /// classification: the value is that a new variant cannot land without a
+    /// recorded recoverability class. `LoopProgressEvent::FailureRecovered`
+    /// (nearai/ironclaw#6284 item 7, a later PR) becomes the production
+    /// consumer. **Do not delete this test as "dead code" before then.**
+    #[test]
+    fn every_runtime_failure_kind_has_a_recorded_recoverability_class() {
+        use RuntimeFailureKind as K;
+        use ironclaw_host_api::RecoverabilityClass;
+
+        const fn expected(kind: RuntimeFailureKind) -> RecoverabilityClass {
+            match kind {
+                // `capability_failure_disposition` -> `RetrySameCall`.
+                K::Internal | K::Backend | K::Network | K::Transient | K::Unavailable => {
+                    RecoverabilityClass::Retry
+                }
+                // `ModelVisibleToolError`; `Authorization`/`PolicyDenied` arrive
+                // as `Resolution::Denied`, the rest as a recoverable failure.
+                K::InvalidInput
+                | K::Authorization
+                | K::PolicyDenied
+                | K::GateDeclined
+                | K::Dispatcher
+                | K::InvalidOutput
+                | K::MissingRuntime
+                | K::OperationFailed
+                | K::OutputTooLarge
+                | K::Process
+                | K::Resource => RecoverabilityClass::ModelVisible,
+                // Sanctioned terminal invariant: intercepted as cancellation by
+                // the agent-loop capability stage.
+                K::Cancelled => RecoverabilityClass::Terminal,
+            }
+        }
+
+        for kind in ALL_RUNTIME_FAILURE_KINDS {
+            assert_eq!(
+                kind.recoverability_class(),
+                expected(kind),
+                "recoverability class for {kind:?} changed — a kind moving to Terminal \
+                 removes a recovery path the model relies on"
+            );
+            // Clause (c) applies to exactly the model-visible rows.
+            assert_eq!(
+                kind.remediation_hint() == ironclaw_host_api::RemediationHint::NotApplicable,
+                kind.recoverability_class() != RecoverabilityClass::ModelVisible,
+                "remediation-hint applicability disagrees with the class for {kind:?}"
+            );
+        }
+    }
+
+    /// Ratchet pin: how many `RuntimeFailureKind` variants end the run, and how
+    /// many model-visible ones ship the model no remediation.
+    ///
+    /// Only `Cancelled` is terminal today, and cancellation is one of the
+    /// epic's three sanctioned terminal invariants. Ten of the eleven
+    /// model-visible kinds carry no substantive hint — including the three
+    /// denial kinds, which §5.3.4 says must "carry what would unlock the call"
+    /// (nearai/ironclaw#6284 item 4). **Both numbers may only go DOWN.**
+    #[test]
+    fn runtime_failure_kind_terminal_and_hintless_counts_only_ratchet_down() {
+        use ironclaw_host_api::RecoverabilityClass;
+
+        let terminal = ALL_RUNTIME_FAILURE_KINDS
+            .iter()
+            .filter(|kind| kind.recoverability_class() == RecoverabilityClass::Terminal)
+            .count();
+        assert_eq!(
+            terminal, 1,
+            "expected exactly 1 terminal RuntimeFailureKind (Cancelled); \
+             this count may only decrease"
+        );
+
+        let hintless = ALL_RUNTIME_FAILURE_KINDS
+            .iter()
+            .filter(|kind| kind.remediation_hint().is_hintless_model_visible())
+            .count();
+        assert_eq!(
+            hintless, 10,
+            "expected 10 model-visible RuntimeFailureKind variants with no \
+             substantive remediation hint (#6284 item 4); this count may only \
+             decrease"
+        );
+    }
+
+    /// The `RuntimeDispatchErrorKind` table in `ironclaw_host_api` is *derived*
+    /// from the `From<DispatchFailureKind> for RuntimeFailureKind` fold in this
+    /// file, not asserted independently. This pins that: reclassifying a
+    /// dispatch kind here without updating the upstream table fails the build's
+    /// tests rather than leaving two tables quietly disagreeing.
+    ///
+    /// This is also why both enums are classified — §11.7 names
+    /// `RuntimeDispatchErrorKind`, but the enum the loop's recovery strategy
+    /// actually consumes is `RuntimeFailureKind`, one fold downstream.
+    ///
+    /// The fold is **lossy on the hint axis**, so that half is asserted as an
+    /// inequality rather than an equality: `MethodMissing` and
+    /// `UndeclaredCapability` both fold to `RuntimeFailureKind::InvalidInput`
+    /// alongside `InputEncode`, but only `InputEncode` can carry the structured
+    /// `DispatchFailureDetail::InvalidInput { issues }` that renders per-field
+    /// repairs (`FirstPartyCapabilityError::invalid_input_issues` and
+    /// `CapabilityInvocationError`'s dispatch conversion are its only
+    /// producers). The dispatch layer is therefore allowed to be *more*
+    /// pessimistic than the folded kind, never more optimistic — a `Substantive`
+    /// row upstream must still be `Substantive` downstream.
+    #[test]
+    fn runtime_dispatch_error_kind_class_survives_the_runtime_fold() {
+        use ironclaw_host_api::{DispatchFailureKind, RemediationHint, RuntimeDispatchErrorKind};
+
+        for kind in RuntimeDispatchErrorKind::ALL {
+            let folded = RuntimeFailureKind::from(DispatchFailureKind::Runtime(kind));
+            assert_eq!(
+                kind.recoverability_class(),
+                folded.recoverability_class(),
+                "{kind:?} folds to {folded:?}, whose recoverability class \
+                 disagrees with the dispatch-layer table"
+            );
+            // Applicability is a function of the class, so it must match exactly.
+            assert_eq!(
+                kind.remediation_hint() == RemediationHint::NotApplicable,
+                folded.remediation_hint() == RemediationHint::NotApplicable,
+                "{kind:?} folds to {folded:?} with a different remediation-hint \
+                 applicability"
+            );
+            if kind.remediation_hint() == RemediationHint::Substantive {
+                assert_eq!(
+                    folded.remediation_hint(),
+                    RemediationHint::Substantive,
+                    "{kind:?} claims a substantive remediation hint but folds to \
+                     {folded:?}, which records none — the dispatch layer may only \
+                     be more pessimistic than the fold, never more optimistic"
+                );
+            }
+        }
+    }
+
+    /// Disposition lock for every `RuntimeFailureKind`.
+    ///
+    /// The expectation is an exhaustive `match` with no `_` arm, driven by the
+    /// shared `ALL_RUNTIME_FAILURE_KINDS` list, rather than a hand-maintained
+    /// case array. The array shape let `GateDeclined` sit unasserted (16 rows
+    /// for 17 variants) — nearai/ironclaw#6284 item 7.
     #[test]
     fn capability_failure_disposition_maps_failure_kinds_once() {
         use crate::CapabilityFailureDisposition::*;
+        use RuntimeFailureKind as K;
 
-        let cases = [
-            (RuntimeFailureKind::Authorization, ModelVisibleToolError),
-            (RuntimeFailureKind::Backend, RetrySameCall),
-            (RuntimeFailureKind::Cancelled, ModelVisibleToolError),
-            (RuntimeFailureKind::Dispatcher, ModelVisibleToolError),
-            (RuntimeFailureKind::Internal, RetrySameCall),
-            (RuntimeFailureKind::InvalidInput, ModelVisibleToolError),
-            (RuntimeFailureKind::InvalidOutput, ModelVisibleToolError),
-            (RuntimeFailureKind::MissingRuntime, ModelVisibleToolError),
-            (RuntimeFailureKind::Network, RetrySameCall),
-            (RuntimeFailureKind::OperationFailed, ModelVisibleToolError),
-            (RuntimeFailureKind::OutputTooLarge, ModelVisibleToolError),
-            (RuntimeFailureKind::PolicyDenied, ModelVisibleToolError),
-            (RuntimeFailureKind::Process, ModelVisibleToolError),
-            (RuntimeFailureKind::Resource, ModelVisibleToolError),
-            (RuntimeFailureKind::Transient, RetrySameCall),
-            (RuntimeFailureKind::Unavailable, RetrySameCall),
-        ];
+        const fn expected(kind: RuntimeFailureKind) -> crate::CapabilityFailureDisposition {
+            match kind {
+                K::Backend | K::Internal | K::Network | K::Transient | K::Unavailable => {
+                    RetrySameCall
+                }
+                K::Authorization
+                | K::Cancelled
+                | K::Dispatcher
+                | K::GateDeclined
+                | K::InvalidInput
+                | K::InvalidOutput
+                | K::MissingRuntime
+                | K::OperationFailed
+                | K::OutputTooLarge
+                | K::PolicyDenied
+                | K::Process
+                | K::Resource => ModelVisibleToolError,
+            }
+        }
 
-        for (kind, expected) in cases {
+        for kind in ALL_RUNTIME_FAILURE_KINDS {
             assert_eq!(
                 crate::capability_failure_disposition(kind),
-                expected,
+                expected(kind),
                 "{kind:?}"
             );
         }

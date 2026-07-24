@@ -495,6 +495,111 @@ pub enum LoopFailureKind {
 }
 
 impl LoopFailureKind {
+    /// Every variant, in declaration order. Kept beside the exhaustive matches
+    /// below: those are what fail to compile when a variant is added, this is
+    /// what makes the new variant actually get asserted.
+    ///
+    /// Enumerating a `#[non_exhaustive]` enum is only sound from inside the
+    /// defining crate, which is exactly why this and
+    /// [`Self::recoverability_class`] live here rather than beside the other
+    /// classifiers.
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 13] = [
+        Self::ModelError,
+        Self::ContextBuildFailed,
+        Self::CapabilityProtocolError,
+        Self::IterationLimit,
+        Self::InvalidModelOutput,
+        Self::CheckpointRejected,
+        Self::CheckpointUnavailable,
+        Self::TranscriptWriteFailed,
+        Self::DriverBug,
+        Self::InterruptedUnexpectedly,
+        Self::NoProgressDetected,
+        Self::PolicyDenied,
+        Self::CompactionUnavailable,
+    ];
+
+    /// Which §5.3.4 cell this loop failure lands in — see
+    /// [`ironclaw_host_api::recoverability`] for the contract and the §11.7
+    /// matrix this row belongs to.
+    ///
+    /// **Every arm is [`RecoverabilityClass::Terminal`], and structurally must
+    /// be.** Unlike the other enums §11.7 lists, `LoopFailureKind` is not a
+    /// failure the loop then decides what to do with — it is the *reason a
+    /// `LoopExit::Failed` was already produced*. Reaching this enum means the
+    /// run is over; retry, model-visible observation, and park all happen
+    /// upstream, on the enums that feed `RecoveryOutcome`. So the §11.7
+    /// sentence ("maps to retry / a model-visible observation / a park — never
+    /// an unclassified terminal bork") cannot hold here as written; what it can
+    /// hold, and what this classifier records, is *which* terminal exits are
+    /// one of the three sanctioned invariants and which are the defect surface
+    /// the epic is shrinking. The
+    /// `loop_failure_kind_unsanctioned_terminal_count_only_ratchets_down` test
+    /// is the ratchet over that second number.
+    ///
+    /// This classifier lives in `ironclaw_turns` rather than beside its peers
+    /// because `LoopFailureKind` is `#[non_exhaustive]`: a downstream crate
+    /// cannot write a `match` that a new variant breaks, so cross-crate
+    /// exhaustiveness is impossible and the compile-forcing has to happen here.
+    pub const fn recoverability_class(self) -> ironclaw_host_api::RecoverabilityClass {
+        use ironclaw_host_api::RecoverabilityClass;
+        match self {
+            // Sanctioned terminal invariants.
+            //
+            // `IterationLimit` is budget exhaustion; `DriverBug` is the loop's
+            // own contract being violated.
+            //
+            // AUDIT: `InterruptedUnexpectedly` is an infrastructure interruption
+            // (lease loss, shutdown) rather than a user-requested cancellation,
+            // so it is recorded as a defect rather than as the cancellation
+            // invariant — user/host cancellation exits through `LoopCancelled`,
+            // which is not this enum. AUDIT: `NoProgressDetected` is a
+            // deliberate stop condition, arguably a budget on progress, but the
+            // model is not told what tripped it, so it is not counted as
+            // sanctioned either.
+            Self::IterationLimit | Self::DriverBug => RecoverabilityClass::Terminal,
+            // KNOWN DEFECTS (nearai/ironclaw#6284 items 1, 2 and 5): every one
+            // of these names a condition the model or the user could have acted
+            // on, reported after the run has already ended.
+            Self::ModelError
+            | Self::ContextBuildFailed
+            | Self::CapabilityProtocolError
+            | Self::InvalidModelOutput
+            | Self::CheckpointRejected
+            | Self::CheckpointUnavailable
+            | Self::TranscriptWriteFailed
+            | Self::InterruptedUnexpectedly
+            | Self::NoProgressDetected
+            | Self::PolicyDenied
+            | Self::CompactionUnavailable => RecoverabilityClass::Terminal,
+        }
+    }
+
+    /// Whether this terminal exit is one of §5.3.4's three sanctioned
+    /// invariants — cancellation, budget exhaustion, `DriverBug`.
+    ///
+    /// The second axis for this enum. `RemediationHint` does not apply (no
+    /// row is model-visible), so what is worth counting instead is how much of
+    /// the terminal vocabulary is *unsanctioned*. Exhaustive with no `_` arm
+    /// for the same reason as [`Self::recoverability_class`].
+    pub const fn is_sanctioned_terminal_invariant(self) -> bool {
+        match self {
+            Self::IterationLimit | Self::DriverBug => true,
+            Self::ModelError
+            | Self::ContextBuildFailed
+            | Self::CapabilityProtocolError
+            | Self::InvalidModelOutput
+            | Self::CheckpointRejected
+            | Self::CheckpointUnavailable
+            | Self::TranscriptWriteFailed
+            | Self::InterruptedUnexpectedly
+            | Self::NoProgressDetected
+            | Self::PolicyDenied
+            | Self::CompactionUnavailable => false,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ModelError => "model_error",
