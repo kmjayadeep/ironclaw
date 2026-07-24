@@ -140,15 +140,25 @@ jobs:
           SOURCE_SHA: ${{ steps.source_sha.outputs.sha }}
         run: |
           CURRENT_BUILT_SHA=""
+          CURRENT_BUILT_WORKER_SHA=""
 
           if docker pull "${IMAGE_NAME}:staging" > /dev/null 2>&1; then
             CURRENT_BUILT_SHA=$(docker inspect --format='{{index .Config.Labels "ironclaw.git.sha"}}' "${IMAGE_NAME}:staging" 2>/dev/null || echo "")
           fi
+          if docker pull "${IMAGE_NAME_WORKER}:staging" > /dev/null 2>&1; then
+            CURRENT_BUILT_WORKER_SHA=$(docker inspect --format='{{index .Config.Labels "ironclaw.git.sha"}}' "${IMAGE_NAME_WORKER}:staging" 2>/dev/null || echo "")
+          fi
 
           echo "Current built commit (ironclaw): ${CURRENT_BUILT_SHA:-<none>}"
+          echo "Current built commit (ironclaw-worker): ${CURRENT_BUILT_WORKER_SHA:-<none>}"
           echo "Current source commit: ${SOURCE_SHA}"
 
-          if [[ -n "${CURRENT_BUILT_SHA}" && "${CURRENT_BUILT_SHA}" == "${SOURCE_SHA}" ]]; then
+          # Only skip when BOTH images already match the source commit — a
+          # worker-only change, or a prior run that pushed `ironclaw:staging`
+          # but failed before pushing/smoking `ironclaw-worker:staging`,
+          # must not skip the worker image's build/push/smoke.
+          if [[ -n "${CURRENT_BUILT_SHA}" && "${CURRENT_BUILT_SHA}" == "${SOURCE_SHA}" \
+                && -n "${CURRENT_BUILT_WORKER_SHA}" && "${CURRENT_BUILT_WORKER_SHA}" == "${SOURCE_SHA}" ]]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "Current commit already built — skipping."
           else
