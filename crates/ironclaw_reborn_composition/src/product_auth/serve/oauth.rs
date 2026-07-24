@@ -8,6 +8,21 @@
 
 use super::*;
 
+async fn cleanup_prepared_oauth_flow_with_timeout(
+    engine: &ironclaw_auth::AuthEngine,
+    scope: &ResourceScope,
+    flow_id: AuthFlowId,
+) {
+    if let Err(error) = run_with_backend_timeout(async {
+        engine.cleanup_prepared_oauth_flow(scope, flow_id).await;
+        Ok::<(), ProductAuthRouteFailure>(())
+    })
+    .await
+    {
+        tracing::warn!(?error, %flow_id, "prepared OAuth flow cleanup timed out");
+    }
+}
+
 pub(super) async fn oauth_start_handler(
     State(state): State<ProductAuthRouteState>,
     Extension(caller): Extension<ProductSurfaceCaller>,
@@ -224,9 +239,7 @@ pub(super) async fn extension_oauth_start_handler(
     {
         Ok(flow) => flow,
         Err(error) => {
-            engine
-                .cleanup_prepared_oauth_flow(&scope.resource, flow_id)
-                .await;
+            cleanup_prepared_oauth_flow_with_timeout(&engine, &scope.resource, flow_id).await;
             return Err(error);
         }
     };
@@ -242,9 +255,7 @@ pub(super) async fn extension_oauth_start_handler(
                 .cancel_flow(&scope, flow.id),
         )
         .await;
-        engine
-            .cleanup_prepared_oauth_flow(&scope.resource, flow.id)
-            .await;
+        cleanup_prepared_oauth_flow_with_timeout(&engine, &scope.resource, flow.id).await;
         cancel_result?;
         return Err(error);
     }
@@ -274,9 +285,7 @@ pub(super) async fn extension_oauth_start_handler(
                 .cancel_flow(&scope, response.flow_id),
         )
         .await;
-        engine
-            .cleanup_prepared_oauth_flow(&scope.resource, response.flow_id)
-            .await;
+        cleanup_prepared_oauth_flow_with_timeout(&engine, &scope.resource, response.flow_id).await;
         state
             .forget_pkce_verifier_everywhere(&scope, response.flow_id)
             .await;
