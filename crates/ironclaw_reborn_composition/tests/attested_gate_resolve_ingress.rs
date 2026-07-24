@@ -30,6 +30,7 @@ use ironclaw_attested_runtime::{
     RuntimeAttestedResumePort, approved_tx_hash_ref_hex,
 };
 use ironclaw_chain_signing::{ChainKeyId, SecretsKeyStore, recompute_approved_hash};
+use ironclaw_filesystem::InMemoryBackend;
 use ironclaw_host_api::{
     AgentId, InvocationId, ProjectId, ResourceScope, TenantId, ThreadId, UserId,
 };
@@ -49,7 +50,6 @@ use ironclaw_signing_provider::{
 use ironclaw_threads::{
     EnsureThreadRequest, InMemorySessionThreadService, SessionThreadService, ThreadScope,
 };
-use ironclaw_filesystem::InMemoryBackend;
 use ironclaw_turns::test_support::in_memory_turn_state_store;
 use ironclaw_turns::{
     AcceptedMessageRef, ApprovedTxHashRef, AttestedResumePort, BlockedReason,
@@ -157,7 +157,9 @@ fn lower_hex(bytes: &[u8]) -> String {
 
 /// Build the local-dev attested composition (the same wiring the reborn runtime
 /// assembles), exposed here so the test can register a gate and read the driver.
-fn build_composition(bindings: Arc<InMemoryAttestedGateBindingStore>) -> LocalDevAttestedComposition {
+fn build_composition(
+    bindings: Arc<InMemoryAttestedGateBindingStore>,
+) -> LocalDevAttestedComposition {
     use ironclaw_attestation::InMemorySealedGrantStore;
     use ironclaw_attested_runtime::{CustodialMainnetShipGate, ProviderRegistry};
     use ironclaw_wallet_external::InjectedSigningProvider;
@@ -169,9 +171,11 @@ fn build_composition(bindings: Arc<InMemoryAttestedGateBindingStore>) -> LocalDe
     let keystore = Arc::new(SecretsKeyStore::new(crypto));
     let ship_gate = CustodialMainnetShipGate::from_env().build_chain_ship_gate(None);
     let grants = Arc::new(InMemorySealedGrantStore::new());
-    let providers = ProviderRegistry::new().with_provider(Arc::new(InjectedSigningProvider::new(
-        Arc::clone(&grants) as Arc<dyn ironclaw_attestation::SealedGrantStore>,
-    )));
+    let providers =
+        ProviderRegistry::new()
+            .with_provider(Arc::new(InjectedSigningProvider::new(
+                Arc::clone(&grants) as Arc<dyn ironclaw_attestation::SealedGrantStore>
+            )));
     LocalDevAttestedComposition::new_in_memory(bindings, keystore, ship_gate, grants, providers)
 }
 
