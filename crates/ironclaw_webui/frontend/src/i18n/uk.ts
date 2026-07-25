@@ -98,6 +98,7 @@ registerPack("uk", {
   "chat.attachFiles": "Додати файли",
   "chat.attachmentRemove": "Видалити вкладення",
   "chat.attachmentDropHint": "Перетягніть файли, щоб додати",
+  "chat.commandMenu": "Команди",
   "chat.attachmentTooMany": "Можна додати щонайбільше {max} файлів на повідомлення.",
   "chat.attachmentTooLarge": "{name} завеликий (максимум {max} на файл).",
   "chat.attachmentTotalTooLarge": "Вкладення перевищують загальний ліміт {max}.",

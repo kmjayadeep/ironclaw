@@ -98,6 +98,7 @@ registerPack("es", {
   "chat.attachFiles": "Adjuntar archivos",
   "chat.attachmentRemove": "Quitar adjunto",
   "chat.attachmentDropHint": "Suelta los archivos para adjuntarlos",
+  "chat.commandMenu": "Comandos",
   "chat.attachmentTooMany": "Puedes adjuntar como máximo {max} archivos por mensaje.",
   "chat.attachmentTooLarge": "{name} es demasiado grande (máximo {max} por archivo).",
   "chat.attachmentTotalTooLarge": "Los adjuntos superan el límite total de {max}.",

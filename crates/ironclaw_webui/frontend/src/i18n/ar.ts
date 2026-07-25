@@ -98,6 +98,7 @@ registerPack("ar", {
   "chat.attachFiles": "إرفاق ملفات",
   "chat.attachmentRemove": "إزالة المرفق",
   "chat.attachmentDropHint": "أفلت الملفات لإرفاقها",
+  "chat.commandMenu": "الأوامر",
   "chat.attachmentTooMany": "يمكنك إرفاق {max} ملفات كحد أقصى لكل رسالة.",
   "chat.attachmentTooLarge": "{name} كبير جدًا (الحد الأقصى {max} لكل ملف).",
   "chat.attachmentTotalTooLarge": "تتجاوز المرفقات الحد الإجمالي {max}.",

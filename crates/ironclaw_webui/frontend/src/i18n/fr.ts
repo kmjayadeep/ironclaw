@@ -98,6 +98,7 @@ registerPack("fr", {
   "chat.attachFiles": "Joindre des fichiers",
   "chat.attachmentRemove": "Supprimer la pièce jointe",
   "chat.attachmentDropHint": "Déposez des fichiers pour les joindre",
+  "chat.commandMenu": "Commandes",
   "chat.attachmentTooMany": "Vous pouvez joindre au maximum {max} fichiers par message.",
   "chat.attachmentTooLarge": "{name} est trop volumineux (max {max} par fichier).",
   "chat.attachmentTotalTooLarge": "Les pièces jointes dépassent la limite totale de {max}.",

@@ -866,6 +866,7 @@ fn stream_events_ws_descriptor() -> IngressRouteDescriptor {
     )
 }
 
+// arch-exempt: large_file, canonical route-descriptor table grows one entry per route by design, plan #6175
 fn list_commands_descriptor() -> IngressRouteDescriptor {
     descriptor(
         WEBUI_V2_ROUTE_LIST_COMMANDS,
