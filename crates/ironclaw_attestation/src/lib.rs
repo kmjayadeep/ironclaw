@@ -32,7 +32,6 @@
 #![warn(unreachable_pub)]
 #![forbid(unsafe_code)]
 
-mod agent_key;
 mod approved_tx_hash;
 mod canonical;
 mod decoded_tx;
@@ -40,7 +39,6 @@ mod error;
 mod fields;
 mod intent;
 mod intent_review;
-mod intent_store;
 mod rendered;
 
 mod wire;
@@ -52,9 +50,17 @@ mod wire;
 // `ironclaw_attestation::ledger::contract` (the `#[macro_export]`ed
 // `*_contract_cases!` macros expand to `$crate::grant::contract::...` paths).
 #[cfg(not(feature = "contract-tests"))]
+mod agent_key;
+#[cfg(feature = "contract-tests")]
+pub mod agent_key;
+#[cfg(not(feature = "contract-tests"))]
 mod grant;
 #[cfg(feature = "contract-tests")]
 pub mod grant;
+#[cfg(not(feature = "contract-tests"))]
+mod intent_store;
+#[cfg(feature = "contract-tests")]
+pub mod intent_store;
 #[cfg(not(feature = "contract-tests"))]
 mod ledger;
 #[cfg(feature = "contract-tests")]

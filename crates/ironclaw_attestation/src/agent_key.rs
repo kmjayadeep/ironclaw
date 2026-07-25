@@ -295,21 +295,35 @@ impl AgentSigningKeyStore for InMemoryAgentSigningKeyStore {
     }
 }
 
-#[cfg(test)]
-mod tests {
+/// The canonical [`AgentSigningKeyStore`] behavioural contract.
+///
+/// Rotation and revocation are where a durable backend most plausibly drifts
+/// from the reference: an overlap window computed off the wrong column, or a
+/// revoked key that a `WHERE state <> 'revoked'` typo still hands out, is a
+/// live signing key an operator believes is dead. Every implementation runs
+/// these exact cases via [`agent_signing_key_store_contract_cases!`].
+#[cfg(any(test, feature = "contract-tests"))]
+pub mod contract {
+    // See the note in `grant::contract`.
+    #![cfg_attr(not(feature = "contract-tests"), allow(unreachable_pub))]
     use super::*;
 
-    const T0: i64 = 1_000_000;
+    /// A fixed clock origin, so every window assertion is exact.
+    pub const T0: i64 = 1_000_000;
 
-    fn tenant() -> TenantId {
+    /// The tenant every single-tenant case uses.
+    pub fn tenant() -> TenantId {
         TenantId::new("tenant-a")
     }
 
-    fn key_id(generation: u32) -> AgentKeyId {
+    /// `agent-1`'s key id at `generation`.
+    pub fn key_id(generation: u32) -> AgentKeyId {
         AgentKeyId::new(tenant(), "agent-1", generation)
     }
 
-    fn key(generation: u32, state: AgentKeyState) -> AgentSigningKey {
+    /// A key whose public bytes are `generation` repeated, so a case can tell
+    /// generations apart by value alone.
+    pub fn key(generation: u32, state: AgentKeyState) -> AgentSigningKey {
         AgentSigningKey {
             key_id: key_id(generation),
             public_key: [generation as u8; AGENT_PUBLIC_KEY_LEN],
@@ -319,17 +333,15 @@ mod tests {
         }
     }
 
-    async fn store_with(keys: Vec<AgentSigningKey>) -> InMemoryAgentSigningKeyStore {
-        let store = InMemoryAgentSigningKeyStore::new();
+    async fn seed(store: &impl AgentSigningKeyStore, keys: Vec<AgentSigningKey>) {
         for k in keys {
             store.register(k).await.expect("register");
         }
-        store
     }
 
-    #[tokio::test]
-    async fn an_active_key_signs_and_verifies() {
-        let store = store_with(vec![key(1, AgentKeyState::Active)]).await;
+    /// The base case: an active key both signs and verifies.
+    pub async fn an_active_key_signs_and_verifies(store: impl AgentSigningKeyStore) {
+        seed(&store, vec![key(1, AgentKeyState::Active)]).await;
         assert_eq!(
             store
                 .active_key(&tenant(), "agent-1")
@@ -346,9 +358,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn registration_is_insert_only() {
-        let store = store_with(vec![key(1, AgentKeyState::Active)]).await;
+    /// Registration is insert-only.
+    pub async fn registration_is_insert_only(store: impl AgentSigningKeyStore) {
+        seed(&store, vec![key(1, AgentKeyState::Active)]).await;
         assert_eq!(
             store.register(key(1, AgentKeyState::Active)).await,
             Err(AgentKeyError::AlreadyExists),
@@ -359,9 +371,10 @@ mod tests {
     /// The rotation contract: after rotating, the NEW generation signs while the
     /// old one still verifies — so an intent minted seconds before the rotation
     /// does not fail closed.
-    #[tokio::test]
-    async fn rotation_moves_signing_forward_while_the_old_key_still_verifies() {
-        let store = store_with(vec![key(1, AgentKeyState::Active)]).await;
+    pub async fn rotation_moves_signing_forward_while_the_old_key_still_verifies(
+        store: impl AgentSigningKeyStore,
+    ) {
+        seed(&store, vec![key(1, AgentKeyState::Active)]).await;
         store.retire(&key_id(1), T0).await.expect("retire");
         store
             .register(key(2, AgentKeyState::Active))
@@ -388,9 +401,8 @@ mod tests {
 
     /// The overlap window is measured from the retirement instant and is
     /// inclusive at its far edge, exactly like intent expiry.
-    #[tokio::test]
-    async fn the_overlap_window_closes_at_its_boundary() {
-        let store = store_with(vec![key(1, AgentKeyState::Active)]).await;
+    pub async fn the_overlap_window_closes_at_its_boundary(store: impl AgentSigningKeyStore) {
+        seed(&store, vec![key(1, AgentKeyState::Active)]).await;
         store.retire(&key_id(1), T0).await.expect("retire");
         let overlap = DEFAULT_ROTATION_OVERLAP_MS;
 
@@ -416,9 +428,8 @@ mod tests {
 
     /// Revocation is immediate and total — a revoked key gets NO overlap, since
     /// a key is revoked precisely because it may be compromised.
-    #[tokio::test]
-    async fn revocation_is_immediate_with_no_overlap() {
-        let store = store_with(vec![key(1, AgentKeyState::Active)]).await;
+    pub async fn revocation_is_immediate_with_no_overlap(store: impl AgentSigningKeyStore) {
+        seed(&store, vec![key(1, AgentKeyState::Active)]).await;
         store.revoke(&key_id(1)).await.expect("revoke");
         assert_eq!(
             store
@@ -444,9 +455,8 @@ mod tests {
     }
 
     /// A retiring key must never be handed out for SIGNING, only verification.
-    #[tokio::test]
-    async fn a_retiring_key_is_never_offered_for_signing() {
-        let store = store_with(vec![key(1, AgentKeyState::Active)]).await;
+    pub async fn a_retiring_key_is_never_offered_for_signing(store: impl AgentSigningKeyStore) {
+        seed(&store, vec![key(1, AgentKeyState::Active)]).await;
         store.retire(&key_id(1), T0).await.expect("retire");
         assert_eq!(
             store.active_key(&tenant(), "agent-1").await,
@@ -457,9 +467,8 @@ mod tests {
 
     /// Tenant isolation: the same agent name under another tenant is a
     /// different key and must not resolve.
-    #[tokio::test]
-    async fn keys_do_not_resolve_across_tenants() {
-        let store = store_with(vec![key(1, AgentKeyState::Active)]).await;
+    pub async fn keys_do_not_resolve_across_tenants(store: impl AgentSigningKeyStore) {
+        seed(&store, vec![key(1, AgentKeyState::Active)]).await;
         assert_eq!(
             store
                 .active_key(&TenantId::new("tenant-b"), "agent-1")
@@ -475,9 +484,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn an_unknown_key_is_not_found() {
-        let store = store_with(vec![]).await;
+    /// An unknown key is not found rather than admitted.
+    pub async fn an_unknown_key_is_not_found(store: impl AgentSigningKeyStore) {
         assert_eq!(
             store
                 .verifying_key(&key_id(9), T0, DEFAULT_ROTATION_OVERLAP_MS)
@@ -486,8 +494,76 @@ mod tests {
         );
     }
 
+    /// Expand the whole [`AgentSigningKeyStore`] contract against one factory.
+    ///
+    /// `$factory` is called fresh per case, so each gets an empty store.
+    #[macro_export]
+    macro_rules! agent_signing_key_store_contract_cases {
+        ($label:ident, $factory:expr) => {
+            mod $label {
+                #[tokio::test]
+                async fn an_active_key_signs_and_verifies() {
+                    $crate::agent_key::contract::an_active_key_signs_and_verifies($factory()).await;
+                }
+                #[tokio::test]
+                async fn registration_is_insert_only() {
+                    $crate::agent_key::contract::registration_is_insert_only($factory()).await;
+                }
+                #[tokio::test]
+                async fn rotation_moves_signing_forward_while_the_old_key_still_verifies() {
+                    $crate::agent_key::contract::rotation_moves_signing_forward_while_the_old_key_still_verifies(
+                        $factory(),
+                    )
+                    .await;
+                }
+                #[tokio::test]
+                async fn the_overlap_window_closes_at_its_boundary() {
+                    $crate::agent_key::contract::the_overlap_window_closes_at_its_boundary(
+                        $factory(),
+                    )
+                    .await;
+                }
+                #[tokio::test]
+                async fn revocation_is_immediate_with_no_overlap() {
+                    $crate::agent_key::contract::revocation_is_immediate_with_no_overlap($factory())
+                        .await;
+                }
+                #[tokio::test]
+                async fn a_retiring_key_is_never_offered_for_signing() {
+                    $crate::agent_key::contract::a_retiring_key_is_never_offered_for_signing(
+                        $factory(),
+                    )
+                    .await;
+                }
+                #[tokio::test]
+                async fn keys_do_not_resolve_across_tenants() {
+                    $crate::agent_key::contract::keys_do_not_resolve_across_tenants($factory())
+                        .await;
+                }
+                #[tokio::test]
+                async fn an_unknown_key_is_not_found() {
+                    $crate::agent_key::contract::an_unknown_key_is_not_found($factory()).await;
+                }
+            }
+        };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use contract::{T0, key};
+
+    // The in-memory reference impl is held to the same contract every durable
+    // backend is. Fully qualified: the macro expands into a nested module.
+    crate::agent_signing_key_store_contract_cases!(
+        in_memory,
+        crate::agent_key::InMemoryAgentSigningKeyStore::new
+    );
+
     /// A `Retiring` row with no retirement instant is a corrupt/partial write;
-    /// it must fail closed rather than grant an unbounded overlap.
+    /// it must fail closed rather than grant an unbounded overlap. This is a
+    /// pure-predicate case, so it lives outside the store contract.
     #[test]
     fn a_retiring_key_without_a_timestamp_fails_closed() {
         let mut corrupt = key(1, AgentKeyState::Retiring);

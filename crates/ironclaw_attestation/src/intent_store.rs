@@ -296,8 +296,20 @@ impl IntentStore for InMemoryIntentStore {
     }
 }
 
-#[cfg(test)]
-mod tests {
+/// The canonical [`IntentStore`] behavioural contract.
+///
+/// Every implementation — the in-memory reference below and each durable
+/// backend in `ironclaw_attested_store` — is driven through these exact cases
+/// via [`intent_store_contract_cases!`]. That is the point: a durable backend
+/// whose tenant qualification or one-shot projection drifts from the reference
+/// is a disclosure or a rewritten outcome, and a suite that lived only beside
+/// the in-memory impl would never have caught it.
+#[cfg(any(test, feature = "contract-tests"))]
+pub mod contract {
+    // See the note in `grant::contract`: these are `pub` for out-of-crate
+    // durable-backend crates, reachable only when `contract-tests` makes the
+    // parent module public.
+    #![cfg_attr(not(feature = "contract-tests"), allow(unreachable_pub))]
     use super::*;
     use crate::decoded_tx::{
         DecodedTransaction, EvmAddress, EvmTransaction, RenderingSchemaVersion,
@@ -305,11 +317,14 @@ mod tests {
     use crate::intent::{AgentKeyId, INTENT_SIGNATURE_LEN, UnsignedIntent};
     use ironclaw_signing_provider::{ApprovedTxHash, ChainId, UserId};
 
-    fn tenant_a() -> TenantId {
+    /// The tenant every single-tenant case uses.
+    pub fn tenant_a() -> TenantId {
         TenantId::new("tenant-a")
     }
 
-    fn record_for(tenant: &str, id: &str, token: &str) -> IntentRecord {
+    /// A pending record for `(tenant, id)` whose review token is `token` and
+    /// whose gate ref is derived from `id`.
+    pub fn record_for(tenant: &str, id: &str, token: &str) -> IntentRecord {
         let intent = UnsignedIntent {
             intent_id: IntentId::from_string(id),
             tenant: TenantId::new(tenant),
@@ -343,9 +358,9 @@ mod tests {
         )
     }
 
-    #[tokio::test]
-    async fn put_then_get_round_trips() {
-        let store = InMemoryIntentStore::new();
+    /// A record must survive the round trip byte-for-byte — the review page
+    /// renders the decoded transaction straight off it.
+    pub async fn put_then_get_round_trips(store: impl IntentStore) {
         let record = record_for("tenant-a", "intent-1", "tok-1");
         store.put(record.clone()).await.expect("put");
         assert_eq!(
@@ -357,9 +372,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn writes_are_insert_only() {
-        let store = InMemoryIntentStore::new();
+    /// Writes are insert-only.
+    pub async fn writes_are_insert_only(store: impl IntentStore) {
         store
             .put(record_for("tenant-a", "intent-1", "tok-1"))
             .await
@@ -373,9 +387,7 @@ mod tests {
 
     /// Tenant isolation on the id lookup: Phase C serves transaction detail off
     /// this record, so a cross-tenant read would be a disclosure.
-    #[tokio::test]
-    async fn an_intent_does_not_resolve_under_another_tenant() {
-        let store = InMemoryIntentStore::new();
+    pub async fn an_intent_does_not_resolve_under_another_tenant(store: impl IntentStore) {
         store
             .put(record_for("tenant-a", "intent-1", "tok-1"))
             .await
@@ -392,9 +404,7 @@ mod tests {
     }
 
     /// The same id under two tenants is two records, not a collision.
-    #[tokio::test]
-    async fn the_same_intent_id_is_distinct_per_tenant() {
-        let store = InMemoryIntentStore::new();
+    pub async fn the_same_intent_id_is_distinct_per_tenant(store: impl IntentStore) {
         store
             .put(record_for("tenant-a", "shared-id", "tok-a"))
             .await
@@ -414,9 +424,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_token_hash_resolves_its_intent_and_nothing_else() {
-        let store = InMemoryIntentStore::new();
+    /// The token hash reaches exactly its own intent.
+    pub async fn a_token_hash_resolves_its_intent_and_nothing_else(store: impl IntentStore) {
         store
             .put(record_for("tenant-a", "intent-1", "tok-1"))
             .await
@@ -438,33 +447,36 @@ mod tests {
         );
     }
 
-    /// The raw token must never be recoverable from what we store, and must not
-    /// leak through a debug/display rendering either.
-    #[tokio::test]
-    async fn the_raw_token_is_never_stored_or_rendered() {
+    /// The raw token must not be recoverable from a stored record, including
+    /// after a durable round trip — a backend that persisted the token itself
+    /// would turn a database read into a working approval credential.
+    pub async fn the_raw_token_is_never_stored_or_rendered(store: impl IntentStore) {
         let record = record_for("tenant-a", "intent-1", "super-secret-token");
-        let stored = format!("{:?}", record.review_token_hash);
+        store.put(record).await.expect("put");
+        let stored = store
+            .get(&tenant_a(), &IntentId::from_string("intent-1"))
+            .await
+            .expect("get");
+
         assert!(
-            !stored.contains("super-secret-token"),
-            "the raw token must not survive into the record"
+            !format!("{stored:?}").contains("super-secret-token"),
+            "the raw token must not survive into the persisted record"
         );
         assert_eq!(
-            record.review_token_hash.to_string(),
+            stored.review_token_hash.to_string(),
             "ReviewTokenHash(redacted)",
             "a token hash must not render into logs"
         );
-        // The stored value really is the hash of the token.
         assert_eq!(
-            record.review_token_hash,
-            ReviewTokenHash::of_token("super-secret-token")
+            stored.review_token_hash,
+            ReviewTokenHash::of_token("super-secret-token"),
+            "the stored value must still be the hash of the token"
         );
     }
 
     /// The projection is one-shot in the same sense the grant CAS is: a second
     /// resolve loses, so a late/duplicate outcome cannot rewrite history.
-    #[tokio::test]
-    async fn resolution_is_one_shot_and_terminal() {
-        let store = InMemoryIntentStore::new();
+    pub async fn resolution_is_one_shot_and_terminal(store: impl IntentStore) {
         store
             .put(record_for("tenant-a", "intent-1", "tok-1"))
             .await
@@ -494,9 +506,7 @@ mod tests {
     }
 
     /// A resolve from another tenant must not touch the record.
-    #[tokio::test]
-    async fn a_cross_tenant_resolve_is_not_found_and_changes_nothing() {
-        let store = InMemoryIntentStore::new();
+    pub async fn a_cross_tenant_resolve_is_not_found_and_changes_nothing(store: impl IntentStore) {
         store
             .put(record_for("tenant-a", "intent-1", "tok-1"))
             .await
@@ -517,9 +527,7 @@ mod tests {
 
     /// The projection's join: the resolve path holds a gate ref and must reach
     /// exactly the intent raised with it — and never another tenant's.
-    #[tokio::test]
-    async fn an_intent_is_reachable_by_its_gate_ref() {
-        let store = InMemoryIntentStore::new();
+    pub async fn an_intent_is_reachable_by_its_gate_ref(store: impl IntentStore) {
         store
             .put(record_for("tenant-a", "intent-1", "tok-1"))
             .await
@@ -548,6 +556,83 @@ mod tests {
             Err(IntentStoreError::NotFound)
         );
     }
+
+    /// Expand the whole [`IntentStore`] contract against one factory.
+    ///
+    /// `$factory` is called fresh per case, so each gets an empty store.
+    #[macro_export]
+    macro_rules! intent_store_contract_cases {
+        ($label:ident, $factory:expr) => {
+            mod $label {
+                #[tokio::test]
+                async fn put_then_get_round_trips() {
+                    $crate::intent_store::contract::put_then_get_round_trips($factory()).await;
+                }
+                #[tokio::test]
+                async fn writes_are_insert_only() {
+                    $crate::intent_store::contract::writes_are_insert_only($factory()).await;
+                }
+                #[tokio::test]
+                async fn an_intent_does_not_resolve_under_another_tenant() {
+                    $crate::intent_store::contract::an_intent_does_not_resolve_under_another_tenant(
+                        $factory(),
+                    )
+                    .await;
+                }
+                #[tokio::test]
+                async fn the_same_intent_id_is_distinct_per_tenant() {
+                    $crate::intent_store::contract::the_same_intent_id_is_distinct_per_tenant(
+                        $factory(),
+                    )
+                    .await;
+                }
+                #[tokio::test]
+                async fn a_token_hash_resolves_its_intent_and_nothing_else() {
+                    $crate::intent_store::contract::a_token_hash_resolves_its_intent_and_nothing_else(
+                        $factory(),
+                    )
+                    .await;
+                }
+                #[tokio::test]
+                async fn the_raw_token_is_never_stored_or_rendered() {
+                    $crate::intent_store::contract::the_raw_token_is_never_stored_or_rendered(
+                        $factory(),
+                    )
+                    .await;
+                }
+                #[tokio::test]
+                async fn resolution_is_one_shot_and_terminal() {
+                    $crate::intent_store::contract::resolution_is_one_shot_and_terminal($factory())
+                        .await;
+                }
+                #[tokio::test]
+                async fn a_cross_tenant_resolve_is_not_found_and_changes_nothing() {
+                    $crate::intent_store::contract::a_cross_tenant_resolve_is_not_found_and_changes_nothing(
+                        $factory(),
+                    )
+                    .await;
+                }
+                #[tokio::test]
+                async fn an_intent_is_reachable_by_its_gate_ref() {
+                    $crate::intent_store::contract::an_intent_is_reachable_by_its_gate_ref(
+                        $factory(),
+                    )
+                    .await;
+                }
+            }
+        };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The in-memory reference impl is held to the same contract every durable
+    // backend is.
+    // Fully qualified: the macro expands into a nested module, which does not
+    // inherit this one's imports.
+    crate::intent_store_contract_cases!(in_memory, crate::intent_store::InMemoryIntentStore::new);
 
     #[test]
     fn only_pending_is_non_terminal() {
