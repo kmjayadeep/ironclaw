@@ -12,15 +12,11 @@ use std::{
 use async_trait::async_trait;
 use ironclaw_host_api::{GateRecord, GateRef, ResourceScope};
 use ironclaw_observability::live_latency_started_at;
+use ironclaw_processes::ProcessTransitionPort;
 use ironclaw_run_state::GateRecordStorePort;
 use ironclaw_turns::{
     AgentLoopDriverError, AgentLoopDriverResumeRequest, AgentLoopDriverRunRequest, LoopBlocked,
-    LoopBlockedKind, LoopExit, TurnStatus,
-    run_profile::AgentLoopDriverHost,
-    runner::{
-        ClaimedTurnRun, RecordModelRouteSnapshotRequest, RecordRunnerFailureRequest,
-        TurnRunTransitionPort,
-    },
+    LoopBlockedKind, LoopExit, TurnError, TurnStatus, runner::ClaimedTurnRun,
 };
 use tracing::{debug, error, warn};
 
@@ -109,7 +105,6 @@ fn unknown_failure_error() -> &'static TurnRunExecutorError {
 enum DriverInvocationError {
     DriverNotFound { reason: String },
     HostCreationFailed { reason: String },
-    RouteSnapshotPersistenceFailed(ironclaw_turns::TurnError),
     DriverError(AgentLoopDriverError),
 }
 
@@ -118,9 +113,6 @@ impl std::fmt::Display for DriverInvocationError {
         match self {
             Self::DriverNotFound { reason } => write!(f, "driver not found: {reason}"),
             Self::HostCreationFailed { reason } => write!(f, "host creation failed: {reason}"),
-            Self::RouteSnapshotPersistenceFailed(err) => {
-                write!(f, "route snapshot persistence failed: {err}")
-            }
             Self::DriverError(err) => write!(f, "driver error: {err}"),
         }
     }
@@ -184,12 +176,12 @@ impl TurnRunExecutor for RebornTurnRunExecutor {
     async fn execute_claimed_run(
         &self,
         claimed: ClaimedTurnRun,
-        transitions: Arc<dyn TurnRunTransitionPort>,
+        _process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     ) -> Result<(), TurnRunExecutorError> {
         let started_at = live_latency_started_at();
-        match self.invoke_driver(&claimed, &transitions).await {
+        match self.invoke_driver(&claimed).await {
             Ok(exit) => {
-                let result = self.apply_exit(&claimed, exit, &transitions).await;
+                let result = self.apply_exit(&claimed, exit).await;
                 match result {
                     Ok(()) => {
                         trace_executor_latency_ok("execute_claimed_run", &claimed, started_at);
@@ -218,9 +210,6 @@ impl TurnRunExecutor for RebornTurnRunExecutor {
                     }
                     DriverInvocationError::HostCreationFailed { .. } => {
                         sanitized_failure("host_creation_failed")
-                    }
-                    DriverInvocationError::RouteSnapshotPersistenceFailed(_) => {
-                        sanitized_failure("route_snapshot_persistence_failed")
                     }
                     DriverInvocationError::DriverError(AgentLoopDriverError::InvalidRequest {
                         ..
@@ -252,7 +241,6 @@ impl RebornTurnRunExecutor {
     async fn invoke_driver(
         &self,
         claimed: &ClaimedTurnRun,
-        transitions: &Arc<dyn TurnRunTransitionPort>,
     ) -> Result<LoopExit, DriverInvocationError> {
         let descriptor = &claimed.resolved_run_profile.loop_driver;
         let registry_key =
@@ -292,25 +280,6 @@ impl RebornTurnRunExecutor {
                 });
             }
         };
-        let route_snapshot_started_at = live_latency_started_at();
-        if let Err(error) = self
-            .persist_model_route_snapshot(claimed, host.as_ref(), transitions)
-            .await
-        {
-            trace_executor_latency_error(
-                "persist_model_route_snapshot",
-                claimed,
-                route_snapshot_started_at,
-                &error,
-            );
-            return Err(error);
-        }
-        trace_executor_latency_ok(
-            "persist_model_route_snapshot",
-            claimed,
-            route_snapshot_started_at,
-        );
-
         let turn_id = claimed.state.turn_id;
         let run_id = claimed.state.run_id;
 
@@ -369,30 +338,6 @@ impl RebornTurnRunExecutor {
         driver_result
     }
 
-    async fn persist_model_route_snapshot(
-        &self,
-        claimed: &ClaimedTurnRun,
-        host: &(dyn AgentLoopDriverHost + Send + Sync),
-        transitions: &Arc<dyn TurnRunTransitionPort>,
-    ) -> Result<(), DriverInvocationError> {
-        let Some(snapshot) = host.run_context().resolved_model_route.clone() else {
-            return Ok(());
-        };
-        if claimed.state.resolved_model_route.as_ref() == Some(&snapshot) {
-            return Ok(());
-        }
-        transitions
-            .record_model_route_snapshot(RecordModelRouteSnapshotRequest {
-                run_id: claimed.state.run_id,
-                runner_id: claimed.runner_id,
-                lease_token: claimed.lease_token,
-                snapshot,
-            })
-            .await
-            .map(|_| ())
-            .map_err(DriverInvocationError::RouteSnapshotPersistenceFailed)
-    }
-
     /// Apply a `LoopExit` through the trusted applier.
     ///
     /// Returns:
@@ -402,12 +347,7 @@ impl RebornTurnRunExecutor {
     ///   `record_runner_failure` fail — a double-failure that leaves the run in
     ///   an unknown state. The caller (`execute_claimed_run`) converts this to a
     ///   `TurnRunExecutorError` so the scheduler can record a terminal failure.
-    async fn apply_exit(
-        &self,
-        claimed: &ClaimedTurnRun,
-        mut exit: LoopExit,
-        transitions: &Arc<dyn TurnRunTransitionPort>,
-    ) -> Result<(), ()> {
+    async fn apply_exit(&self, claimed: &ClaimedTurnRun, mut exit: LoopExit) -> Result<(), ()> {
         let started_at = live_latency_started_at();
         let run_id = claimed.state.run_id;
         let runner_id = claimed.runner_id;
@@ -428,9 +368,7 @@ impl RebornTurnRunExecutor {
             // unsubmittable (provider-null) auth gate. Record a terminal failure
             // instead — the scheduler surfaces it and the run is failed rather
             // than silently stranded.
-            return self
-                .record_exit_failure(claimed, transitions, failure_tag)
-                .await;
+            return self.record_exit_failure(claimed, failure_tag).await;
         }
 
         match self.loop_exit_applier.apply(claimed, exit).await {
@@ -483,7 +421,7 @@ impl RebornTurnRunExecutor {
                 // "unknown_failure" so the run always reaches a terminal state if
                 // the port cooperates; `Err(())` (double-failure) signals the
                 // caller so the scheduler can attempt its own recording.
-                self.record_exit_failure(claimed, transitions, "exit_application_failed")
+                self.record_exit_failure(claimed, "exit_application_failed")
                     .await
             }
         }
@@ -590,21 +528,15 @@ impl RebornTurnRunExecutor {
     async fn record_exit_failure(
         &self,
         claimed: &ClaimedTurnRun,
-        transitions: &Arc<dyn TurnRunTransitionPort>,
         failure_tag: &'static str,
     ) -> Result<(), ()> {
         let run_id = claimed.state.run_id;
         let runner_id = claimed.runner_id;
-        let lease_token = claimed.lease_token;
         let failure = sanitized_failure(failure_tag)
             .unwrap_or_else(|| unknown_failure_error().failure().clone());
-        match transitions
-            .record_runner_failure(RecordRunnerFailureRequest {
-                run_id,
-                runner_id,
-                lease_token,
-                failure,
-            })
+        match self
+            .loop_exit_applier
+            .record_runner_failure(claimed, failure)
             .await
         {
             Ok(_) => Ok(()),
@@ -652,12 +584,13 @@ mod tests {
 
     use async_trait::async_trait;
     use ironclaw_host_api::{TenantId, ThreadId};
+    use ironclaw_processes::ProcessTransitionPort;
     use ironclaw_turns::{
         AcceptedMessageRef, AgentLoopDriver, AgentLoopDriverDescriptor, AgentLoopDriverError,
-        AgentLoopDriverResumeRequest, AgentLoopDriverRunRequest, EventCursor, LoopCompleted,
-        LoopCompletionKind, LoopExit, LoopExitId, LoopMessageRef, ReplyTargetBindingRef,
-        RunProfileVersion, SourceBindingRef, TurnError, TurnId, TurnRunId, TurnRunState, TurnScope,
-        TurnStatus,
+        AgentLoopDriverResumeRequest, AgentLoopDriverRunRequest, AgentTurnProcessTransitionAdapter,
+        EventCursor, LoopCompleted, LoopCompletionKind, LoopExit, LoopExitId, LoopMessageRef,
+        ReplyTargetBindingRef, RunProfileVersion, SourceBindingRef, TurnError, TurnId, TurnRunId,
+        TurnRunState, TurnScope, TurnStatus,
         run_profile::{
             AgentLoopDriverHost, AgentLoopHostError, CheckpointSchemaId, LoopDriverId,
             LoopModelRouteSnapshot, LoopRunContext,
@@ -692,6 +625,16 @@ mod tests {
         fn fail_run_call_count(&self) -> usize {
             self.fail_run_calls.lock().unwrap().len()
         }
+    }
+
+    fn process_transitions_from_turn(
+        transitions: Arc<dyn TurnRunTransitionPort>,
+    ) -> Arc<dyn ProcessTransitionPort<Error = TurnError>> {
+        Arc::new(AgentTurnProcessTransitionAdapter::new(transitions))
+    }
+
+    fn dummy_process_transitions() -> Arc<dyn ProcessTransitionPort<Error = TurnError>> {
+        process_transitions_from_turn(Arc::new(RecordingTransitionPort::default()))
     }
 
     // Helper to build a minimal TurnRunState for a fake response.
@@ -925,10 +868,7 @@ mod tests {
         let transitions = Arc::new(RecordingTransitionPort::default());
 
         let result = executor
-            .execute_claimed_run(
-                test_claimed_run(),
-                transitions.clone() as Arc<dyn TurnRunTransitionPort>,
-            )
+            .execute_claimed_run(test_claimed_run(), dummy_process_transitions())
             .await;
 
         assert!(
@@ -1006,7 +946,7 @@ mod tests {
     }
 
     /// A `HostFactory` that succeeds and returns a stub host with a model route
-    /// snapshot set, so `persist_model_route_snapshot` is triggered.
+    /// snapshot set in the loop run context.
     struct SucceedingHostFactoryWithSnapshot;
 
     #[async_trait]
@@ -1176,87 +1116,6 @@ mod tests {
         }
     }
 
-    /// A `TurnRunTransitionPort` that returns `Err` from
-    /// `record_model_route_snapshot`, and records whether `fail_run` was called.
-    #[derive(Default)]
-    struct FailingSnapshotTransitionPort {
-        fail_run_calls: Mutex<Vec<FailRunRequest>>,
-    }
-
-    impl FailingSnapshotTransitionPort {
-        fn fail_run_call_count(&self) -> usize {
-            self.fail_run_calls.lock().unwrap().len()
-        }
-    }
-
-    #[async_trait]
-    impl TurnRunTransitionPort for FailingSnapshotTransitionPort {
-        async fn claim_next_run(
-            &self,
-            _request: ClaimRunRequest,
-        ) -> Result<Option<ClaimedTurnRun>, TurnError> {
-            Ok(None)
-        }
-
-        async fn heartbeat(&self, _request: HeartbeatRequest) -> Result<EventCursor, TurnError> {
-            Ok(EventCursor(0))
-        }
-
-        async fn recover_expired_leases(
-            &self,
-            _request: RecoverExpiredLeasesRequest,
-        ) -> Result<RecoverExpiredLeasesResponse, TurnError> {
-            Ok(RecoverExpiredLeasesResponse { recovered: vec![] })
-        }
-
-        async fn record_model_route_snapshot(
-            &self,
-            _request: RecordModelRouteSnapshotRequest,
-        ) -> Result<TurnRunState, TurnError> {
-            // Simulate a persistence failure.
-            Err(TurnError::Unavailable {
-                reason: "simulated snapshot persistence error".to_string(),
-            })
-        }
-
-        async fn block_run(&self, _request: BlockRunRequest) -> Result<TurnRunState, TurnError> {
-            Ok(fake_run_state())
-        }
-
-        async fn complete_run(
-            &self,
-            _request: CompleteRunRequest,
-        ) -> Result<TurnRunState, TurnError> {
-            Ok(fake_run_state())
-        }
-
-        async fn cancel_run(
-            &self,
-            _request: CancelRunCompletionRequest,
-        ) -> Result<TurnRunState, TurnError> {
-            Ok(fake_run_state())
-        }
-
-        async fn fail_run(&self, request: FailRunRequest) -> Result<TurnRunState, TurnError> {
-            self.fail_run_calls.lock().unwrap().push(request);
-            Ok(fake_run_state())
-        }
-
-        async fn relinquish_run(
-            &self,
-            _request: RelinquishRunRequest,
-        ) -> Result<TurnRunState, TurnError> {
-            Ok(fake_run_state())
-        }
-
-        async fn apply_validated_loop_exit(
-            &self,
-            _request: ApplyValidatedLoopExitRequest,
-        ) -> Result<TurnRunState, TurnError> {
-            Ok(fake_run_state())
-        }
-    }
-
     fn make_executor_with_driver(
         host_factory: Arc<dyn crate::turn_runner::HostFactory>,
     ) -> RebornTurnRunExecutor {
@@ -1373,10 +1232,7 @@ mod tests {
         });
         let transitions = Arc::new(RecordingTransitionPort::default());
         let result = executor
-            .execute_claimed_run(
-                test_claimed_run(),
-                transitions.clone() as Arc<dyn TurnRunTransitionPort>,
-            )
+            .execute_claimed_run(test_claimed_run(), dummy_process_transitions())
             .await;
 
         let err = result.expect_err("expected Err for InvalidRequest driver error");
@@ -1397,10 +1253,7 @@ mod tests {
         });
         let transitions = Arc::new(RecordingTransitionPort::default());
         let result = executor
-            .execute_claimed_run(
-                test_claimed_run(),
-                transitions.clone() as Arc<dyn TurnRunTransitionPort>,
-            )
+            .execute_claimed_run(test_claimed_run(), dummy_process_transitions())
             .await;
 
         let err = result.expect_err("expected Err for Unavailable driver error");
@@ -1430,10 +1283,7 @@ mod tests {
         });
         let transitions = Arc::new(RecordingTransitionPort::default());
         let result = executor
-            .execute_claimed_run(
-                test_claimed_run(),
-                transitions.clone() as Arc<dyn TurnRunTransitionPort>,
-            )
+            .execute_claimed_run(test_claimed_run(), dummy_process_transitions())
             .await;
 
         let err = result.expect_err("expected Err for driver Failed");
@@ -1460,10 +1310,7 @@ mod tests {
         let transitions = Arc::new(RecordingTransitionPort::default());
 
         let error = executor
-            .execute_claimed_run(
-                test_claimed_run(),
-                transitions.clone() as Arc<dyn TurnRunTransitionPort>,
-            )
+            .execute_claimed_run(test_claimed_run(), dummy_process_transitions())
             .await
             .expect_err("accounting failure must remain terminal and typed");
 
@@ -1560,10 +1407,7 @@ mod tests {
         let transitions = Arc::new(RecordingTransitionPort::default());
 
         let result = executor
-            .execute_claimed_run(
-                test_claimed_run(),
-                transitions.clone() as Arc<dyn TurnRunTransitionPort>,
-            )
+            .execute_claimed_run(test_claimed_run(), dummy_process_transitions())
             .await;
 
         let err = result.expect_err("expected Err for host creation failure");
@@ -1571,36 +1415,6 @@ mod tests {
             err.failure_category(),
             "host_creation_failed",
             "error category must be host_creation_failed"
-        );
-        assert_eq!(
-            transitions.fail_run_call_count(),
-            0,
-            "executor must NOT call fail_run; scheduler owns terminal failure recording"
-        );
-    }
-
-    /// When `persist_model_route_snapshot` fails (the transition port returns
-    /// `Err` from `record_model_route_snapshot`), `execute_claimed_run` must
-    /// return `Err(TurnRunExecutorError)` with category
-    /// `"route_snapshot_persistence_failed"`.
-    /// The executor must NOT itself call `fail_run` on this path.
-    #[tokio::test]
-    async fn model_route_snapshot_persistence_failure_returns_err_without_calling_fail_run() {
-        let executor = make_executor_with_driver(Arc::new(SucceedingHostFactoryWithSnapshot));
-        let transitions = Arc::new(FailingSnapshotTransitionPort::default());
-
-        let result = executor
-            .execute_claimed_run(
-                test_claimed_run(),
-                transitions.clone() as Arc<dyn TurnRunTransitionPort>,
-            )
-            .await;
-
-        let err = result.expect_err("expected Err for snapshot persistence failure");
-        assert_eq!(
-            err.failure_category(),
-            "route_snapshot_persistence_failed",
-            "error category must be route_snapshot_persistence_failed"
         );
         assert_eq!(
             transitions.fail_run_call_count(),
@@ -1723,7 +1537,9 @@ mod tests {
         let claimed = test_claimed_run();
         let claimed_run_id = claimed.state.run_id;
 
-        let result = executor.execute_claimed_run(claimed, transitions_arc).await;
+        let result = executor
+            .execute_claimed_run(claimed, dummy_process_transitions())
+            .await;
 
         // (a) Recovery succeeded: apply_exit returns Ok(()) → execute_claimed_run
         //     returns Ok(()).  The run is terminal via the fail_run path.
@@ -1768,7 +1584,7 @@ mod tests {
         );
 
         let result = executor
-            .execute_claimed_run(test_claimed_run(), transitions)
+            .execute_claimed_run(test_claimed_run(), dummy_process_transitions())
             .await;
 
         assert!(
@@ -1842,7 +1658,7 @@ mod tests {
             exit_id: LoopExitId::new("exit:test").expect("valid"),
         });
 
-        let result = executor.apply_exit(&claimed, exit, &transitions_arc).await;
+        let result = executor.apply_exit(&claimed, exit).await;
 
         // The exit is failed via a recorded terminal failure (Ok, not the
         // catastrophic double-failure Err), and the block is NOT applied.

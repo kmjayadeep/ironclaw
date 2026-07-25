@@ -23,9 +23,9 @@ use ironclaw_threads::{SessionThreadService, ThreadScope};
 use ironclaw_turns::{
     AgentLoopDriverError, CheckpointStateStorePort, DefaultTurnCoordinator,
     DefaultTurnLifecycleEventBus, LifecyclePublicationErrorPort, LifecyclePublishingTurnStateStore,
-    LoopCheckpointStore, ProcessBackedTurnRunTransitionPort, ProcessJournalStoreTurnAdapter,
-    RunProfileResolver, TurnCommittedEventObserver, TurnEventSink, TurnLifecycleEventBus,
-    TurnRunWakeNotifier, TurnSpawnTreePort, TurnSpawnTreeStateStore, TurnStateStore,
+    LoopCheckpointStore, ProcessJournalStoreTurnAdapter, RunProfileResolver,
+    TurnCommittedEventObserver, TurnEventSink, TurnLifecycleEventBus, TurnRunWakeNotifier,
+    TurnSpawnTreePort, TurnSpawnTreeStateStore, TurnStateStore,
     loop_exit::LoopExitEvidencePort,
     run_profile::{
         AgentLoopHostError, CommunicationContextProvider, InstructionSafetyContext,
@@ -919,15 +919,10 @@ where
     }
     let host_factory = Arc::new(host_factory);
 
-    let transition_port: Arc<dyn TurnRunTransitionPort> =
-        Arc::new(ProcessBackedTurnRunTransitionPort::new(
-            process_system.transitions(),
-            process_system.journal(),
-        ));
     let process_transition_port: Arc<dyn ProcessTransitionPort<Error = ironclaw_turns::TurnError>> =
         process_system.transitions();
     let loop_exit_applier = Arc::new(LoopExitApplier::new(
-        Arc::clone(&transition_port),
+        Arc::clone(&process_transition_port),
         parts.loop_exit_evidence,
     ));
     let mut executor = RebornTurnRunExecutor::new(
@@ -946,7 +941,6 @@ where
         .with_poll_interval(parts.config.poll_interval)
         .with_lease_recovery_interval(parts.config.lease_recovery_interval);
     let scheduler = TurnRunScheduler::new_with_process_transition(
-        Arc::clone(&transition_port),
         process_transition_port,
         executor,
         scheduler_config,

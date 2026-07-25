@@ -2,16 +2,21 @@ use std::{collections::HashSet, hash::Hash, sync::Arc};
 
 use async_trait::async_trait;
 use ironclaw_host_api::RuntimeCredentialAuthRequirement;
+use ironclaw_processes::{
+    FailProcessRequest, JournaledProcessSnapshot, ProcessCheckpointRef, ProcessLeaseRequest,
+    ProcessLeaseToken, ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort,
+    ProcessWorkerId, SuspendProcessRequest,
+};
 use serde::{Deserialize, Serialize, de};
 
+#[cfg(any(test, feature = "test-support"))]
+use crate::runner::TurnRunTransitionPort;
 use crate::{
     BlockedReason, CapabilityActivityId, GateKind, GateRef, LoopDiagnosticRef, LoopExitId,
     LoopGateRef, LoopMessageRef, LoopResultRef, ResolvedRunProfile, SanitizedFailure,
     TurnCheckpointId, TurnError, TurnId, TurnRunId, TurnRunState, TurnScope,
     run_profile::{LoopCheckpointKind, LoopCheckpointStateRef},
-    runner::{
-        ApplyValidatedLoopExitRequest, ClaimedTurnRun, TurnRunTransitionPort, TurnRunnerOutcome,
-    },
+    runner::{ClaimedTurnRun, TurnRunnerOutcome},
 };
 
 /// Evidence request for completion refs returned by a driver.
@@ -100,17 +105,45 @@ pub trait LoopExitEvidencePort: Send + Sync {
 /// drivers can submit `LoopExit` claims, but only host-owned evidence ports can
 /// mint the validation policy that maps those claims to state transitions.
 pub struct LoopExitApplier {
-    transition_port: Arc<dyn TurnRunTransitionPort>,
+    transition_port: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     evidence_port: Arc<dyn LoopExitEvidencePort>,
 }
 
+pub trait LoopExitTransitionInput {
+    fn into_process_transition_port(self) -> Arc<dyn ProcessTransitionPort<Error = TurnError>>;
+}
+
+impl LoopExitTransitionInput for Arc<dyn ProcessTransitionPort<Error = TurnError>> {
+    fn into_process_transition_port(self) -> Arc<dyn ProcessTransitionPort<Error = TurnError>> {
+        self
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl LoopExitTransitionInput for Arc<dyn TurnRunTransitionPort> {
+    fn into_process_transition_port(self) -> Arc<dyn ProcessTransitionPort<Error = TurnError>> {
+        Arc::new(crate::AgentTurnProcessTransitionAdapter::new(self))
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl<T> LoopExitTransitionInput for Arc<T>
+where
+    T: TurnRunTransitionPort + 'static,
+{
+    fn into_process_transition_port(self) -> Arc<dyn ProcessTransitionPort<Error = TurnError>> {
+        let transition: Arc<dyn TurnRunTransitionPort> = self;
+        Arc::new(crate::AgentTurnProcessTransitionAdapter::new(transition))
+    }
+}
+
 impl LoopExitApplier {
-    pub fn new(
-        transition_port: Arc<dyn TurnRunTransitionPort>,
-        evidence_port: Arc<dyn LoopExitEvidencePort>,
-    ) -> Self {
+    pub fn new<T>(transition_port: T, evidence_port: Arc<dyn LoopExitEvidencePort>) -> Self
+    where
+        T: LoopExitTransitionInput,
+    {
         Self {
-            transition_port,
+            transition_port: transition_port.into_process_transition_port(),
             evidence_port,
         }
     }
@@ -128,15 +161,33 @@ impl LoopExitApplier {
         // transition can persist it on the run record.
         let model_usage = exit.reported_model_usage();
         let decision = exit.validate(policy);
-        self.transition_port
-            .apply_validated_loop_exit(ApplyValidatedLoopExitRequest {
-                run_id: claimed.state.run_id,
-                runner_id: claimed.runner_id,
-                lease_token: claimed.lease_token,
-                mapping: decision.mapping,
-                model_usage,
+        let snapshot = apply_validated_process_loop_exit(
+            self.transition_port.as_ref(),
+            claimed,
+            decision.mapping,
+            model_usage,
+        )
+        .await?;
+        crate::turn_run_state_from_process_snapshot(snapshot)
+    }
+
+    pub async fn record_runner_failure(
+        &self,
+        claimed: &ClaimedTurnRun,
+        failure: SanitizedFailure,
+    ) -> Result<TurnRunState, TurnError> {
+        let snapshot = self
+            .transition_port
+            .fail_process(FailProcessRequest {
+                process_id: crate::process_journal::process_id_from_turn_run_id(
+                    claimed.state.run_id,
+                ),
+                worker_id: process_worker_id_from_turn_runner_id(claimed.runner_id),
+                lease_token: process_lease_token_from_turn(claimed.lease_token),
+                failure,
             })
-            .await
+            .await?;
+        crate::turn_run_state_from_process_snapshot(snapshot)
     }
 
     async fn derive_policy(
@@ -253,6 +304,98 @@ impl LoopExitApplier {
                 checkpoint_id,
             })
             .await
+    }
+}
+
+async fn apply_validated_process_loop_exit(
+    transition_port: &dyn ProcessTransitionPort<Error = TurnError>,
+    claimed: &ClaimedTurnRun,
+    mapping: LoopExitMapping,
+    _model_usage: Option<crate::run_profile::LoopModelUsage>,
+) -> Result<JournaledProcessSnapshot, TurnError> {
+    match mapping {
+        LoopExitMapping::RunnerOutcome(TurnRunnerOutcome::Completed) => {
+            transition_port
+                .complete_process(process_lease_request_from_claimed(claimed))
+                .await
+        }
+        LoopExitMapping::RunnerOutcome(TurnRunnerOutcome::Cancelled) => {
+            transition_port
+                .cancel_process(process_lease_request_from_claimed(claimed))
+                .await
+        }
+        LoopExitMapping::RunnerOutcome(TurnRunnerOutcome::Blocked {
+            checkpoint_id,
+            reason,
+            blocked_activity_id,
+            ..
+        }) => {
+            transition_port
+                .suspend_process(SuspendProcessRequest {
+                    process_id: crate::process_journal::process_id_from_turn_run_id(
+                        claimed.state.run_id,
+                    ),
+                    worker_id: process_worker_id_from_turn_runner_id(claimed.runner_id),
+                    lease_token: process_lease_token_from_turn(claimed.lease_token),
+                    checkpoint_ref: ProcessCheckpointRef::from_trusted(
+                        checkpoint_id.as_uuid().to_string(),
+                    ),
+                    suspension: process_suspension_from_blocked_reason(reason, blocked_activity_id),
+                })
+                .await
+        }
+        LoopExitMapping::RunnerOutcome(TurnRunnerOutcome::Failed { failure })
+        | LoopExitMapping::RecoveryRequired { failure } => {
+            transition_port
+                .fail_process(FailProcessRequest {
+                    process_id: crate::process_journal::process_id_from_turn_run_id(
+                        claimed.state.run_id,
+                    ),
+                    worker_id: process_worker_id_from_turn_runner_id(claimed.runner_id),
+                    lease_token: process_lease_token_from_turn(claimed.lease_token),
+                    failure,
+                })
+                .await
+        }
+    }
+}
+
+fn process_lease_request_from_claimed(claimed: &ClaimedTurnRun) -> ProcessLeaseRequest {
+    ProcessLeaseRequest {
+        process_id: crate::process_journal::process_id_from_turn_run_id(claimed.state.run_id),
+        worker_id: process_worker_id_from_turn_runner_id(claimed.runner_id),
+        lease_token: process_lease_token_from_turn(claimed.lease_token),
+    }
+}
+
+fn process_worker_id_from_turn_runner_id(runner_id: crate::TurnRunnerId) -> ProcessWorkerId {
+    ProcessWorkerId::from_trusted(runner_id.as_uuid().to_string())
+}
+
+fn process_lease_token_from_turn(lease_token: crate::TurnLeaseToken) -> ProcessLeaseToken {
+    ProcessLeaseToken::from_trusted(lease_token.as_uuid().to_string())
+}
+
+fn process_suspension_from_blocked_reason(
+    reason: BlockedReason,
+    blocked_activity_id: Option<CapabilityActivityId>,
+) -> ProcessSuspension {
+    ProcessSuspension {
+        kind: process_suspension_kind_from_gate_kind(reason.gate_kind()),
+        gate_ref: Some(reason.gate_ref().clone()),
+        activity_id: blocked_activity_id,
+        credential_requirements: reason.credential_requirements().to_vec(),
+        detail: None,
+    }
+}
+
+fn process_suspension_kind_from_gate_kind(kind: GateKind) -> ProcessSuspensionKind {
+    match kind {
+        GateKind::Approval => ProcessSuspensionKind::Approval,
+        GateKind::Auth => ProcessSuspensionKind::Authorization,
+        GateKind::Resource => ProcessSuspensionKind::Resource,
+        GateKind::AwaitDependentRun => ProcessSuspensionKind::AwaitingChildProcess,
+        GateKind::ExternalTool => ProcessSuspensionKind::ExternalTool,
     }
 }
 

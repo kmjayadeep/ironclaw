@@ -13,12 +13,14 @@ use ironclaw_authorization::GrantAuthorizer;
 use ironclaw_extensions::ExtensionRegistry;
 use ironclaw_filesystem::DiskFilesystem;
 use ironclaw_filesystem::InMemoryBackend;
-use ironclaw_host_api::{AgentId, ProjectId, TenantId, ThreadId, UserId};
+use ironclaw_host_api::{AgentId, ProcessId, ProjectId, TenantId, ThreadId, UserId};
 use ironclaw_host_runtime::{
     CapabilitySurfaceVersion, HostRuntimeServices, ProductionWiringComponent,
     ProductionWiringIssueKind,
 };
-use ironclaw_processes::ProcessServices;
+use ironclaw_processes::{
+    ProcessLeaseRequest, ProcessLeaseToken, ProcessServices, ProcessTransitionPort, ProcessWorkerId,
+};
 use ironclaw_resources::InMemoryResourceGovernor;
 use ironclaw_runner::turn_scheduler::{
     SchedulerTurnRunWakeNotifier, TurnRunExecutor, TurnRunExecutorError, TurnRunScheduler,
@@ -81,7 +83,7 @@ impl TurnRunExecutor for CompletingExecutor {
     async fn execute_claimed_run(
         &self,
         claimed: ClaimedTurnRun,
-        transitions: Arc<dyn TurnRunTransitionPort>,
+        process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     ) -> Result<(), TurnRunExecutorError> {
         let started = self.started.fetch_add(1, Ordering::SeqCst) + 1;
         self.notify_started.notify_waiters();
@@ -91,11 +93,13 @@ impl TurnRunExecutor for CompletingExecutor {
         {
             gate.notified().await;
         }
-        transitions
-            .complete_run(CompleteRunRequest {
-                run_id: claimed.state.run_id,
-                runner_id: claimed.runner_id,
-                lease_token: claimed.lease_token,
+        process_transitions
+            .complete_process(ProcessLeaseRequest {
+                process_id: ProcessId::from_uuid(claimed.state.run_id.as_uuid()),
+                worker_id: ProcessWorkerId::from_trusted(claimed.runner_id.as_uuid().to_string()),
+                lease_token: ProcessLeaseToken::from_trusted(
+                    claimed.lease_token.as_uuid().to_string(),
+                ),
             })
             .await
             .unwrap();
@@ -159,7 +163,7 @@ impl TurnRunExecutor for FailingExecutor {
     async fn execute_claimed_run(
         &self,
         _claimed: ClaimedTurnRun,
-        _transitions: Arc<dyn TurnRunTransitionPort>,
+        _process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     ) -> Result<(), TurnRunExecutorError> {
         self.started.fetch_add(1, Ordering::SeqCst);
         self.notify_started.notify_waiters();
@@ -184,7 +188,7 @@ impl TurnRunExecutor for PanickingExecutor {
     async fn execute_claimed_run(
         &self,
         _claimed: ClaimedTurnRun,
-        _transitions: Arc<dyn TurnRunTransitionPort>,
+        _process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     ) -> Result<(), TurnRunExecutorError> {
         self.started.fetch_add(1, Ordering::SeqCst);
         self.notify_started.notify_waiters();
@@ -561,7 +565,7 @@ impl TurnRunExecutor for HangingExecutor {
     async fn execute_claimed_run(
         &self,
         _claimed: ClaimedTurnRun,
-        _transitions: Arc<dyn TurnRunTransitionPort>,
+        _process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     ) -> Result<(), TurnRunExecutorError> {
         self.started.fetch_add(1, Ordering::SeqCst);
         self.notify_started.notify_waiters();

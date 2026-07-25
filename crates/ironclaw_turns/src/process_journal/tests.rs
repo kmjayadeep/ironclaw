@@ -1,13 +1,15 @@
 use chrono::Utc;
 use ironclaw_host_api::{AgentId, ProjectId, TenantId, ThreadId, UserId};
+use ironclaw_processes::GetProcessSnapshotRequest;
 use std::sync::Arc;
 
 use super::*;
 use crate::{
     AcceptedMessageRef, AdmissionRejection, CapabilityActivityId, EventCursor, GateRef,
-    IdempotencyKey, InMemoryRunProfileResolver, ReplyTargetBindingRef, RunProfileRequest,
-    RunProfileVersion, SourceBindingRef, SubmitTurnRequest, SubmitTurnResponse, TurnActor,
-    TurnAdmissionPolicy, TurnId, TurnRunProfile, TurnScope, TurnStateStore,
+    IdempotencyKey, InMemoryRunProfileResolver, LoopExitMapping, ReplyTargetBindingRef,
+    RunProfileRequest, RunProfileVersion, SourceBindingRef, SubmitTurnRequest, SubmitTurnResponse,
+    TurnActor, TurnAdmissionPolicy, TurnId, TurnRunProfile, TurnScope, TurnStateStore,
+    runner::ApplyValidatedLoopExitRequest,
 };
 
 struct AllowAllAdmissionPolicy;

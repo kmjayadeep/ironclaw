@@ -13,10 +13,12 @@ use ironclaw_processes::{
 };
 #[cfg(any(test, feature = "test-support"))]
 use ironclaw_turns::AgentTurnProcessTransitionAdapter;
+#[cfg(any(test, feature = "test-support"))]
+use ironclaw_turns::runner::TurnRunTransitionPort;
 use ironclaw_turns::{
     SanitizedFailure, TurnError, TurnLeaseToken, TurnRunId, TurnRunWake, TurnRunWakeNotifier,
     TurnRunWakeNotifyError, TurnRunnerId, TurnScope, claimed_turn_run_from_process_claim,
-    runner::{ClaimedTurnRun, TurnRunTransitionPort},
+    runner::ClaimedTurnRun,
 };
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore, mpsc},
@@ -206,12 +208,11 @@ pub trait TurnRunExecutor: Send + Sync {
     async fn execute_claimed_run(
         &self,
         claimed: ClaimedTurnRun,
-        transitions: Arc<dyn TurnRunTransitionPort>,
+        process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     ) -> Result<(), TurnRunExecutorError>;
 }
 
 pub struct TurnRunScheduler {
-    transitions: Arc<dyn TurnRunTransitionPort>,
     process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     executor: Arc<dyn TurnRunExecutor>,
     config: TurnRunSchedulerConfig,
@@ -228,17 +229,15 @@ impl TurnRunScheduler {
         let process_transitions = Arc::new(AgentTurnProcessTransitionAdapter::new(Arc::clone(
             &transitions,
         )));
-        Self::new_with_process_transition(transitions, process_transitions, executor, config)
+        Self::new_with_process_transition(process_transitions, executor, config)
     }
 
     pub fn new_with_process_transition(
-        transitions: Arc<dyn TurnRunTransitionPort>,
         process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
         executor: Arc<dyn TurnRunExecutor>,
         config: TurnRunSchedulerConfig,
     ) -> Self {
         Self {
-            transitions,
             process_transitions,
             executor,
             config,
@@ -270,7 +269,6 @@ impl TurnRunScheduler {
             command_rx,
             SchedulerLoopInit {
                 command_tx: command_tx.clone(),
-                transitions: self.transitions,
                 process_transitions: self.process_transitions,
                 executor: self.executor,
                 config: self.config,
@@ -434,7 +432,6 @@ struct ProcessClaimIdentity {
 
 struct SchedulerLoopInit {
     command_tx: mpsc::Sender<SchedulerCommand>,
-    transitions: Arc<dyn TurnRunTransitionPort>,
     process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     executor: Arc<dyn TurnRunExecutor>,
     config: TurnRunSchedulerConfig,
@@ -443,7 +440,6 @@ struct SchedulerLoopInit {
 }
 
 struct SchedulerDrainContext {
-    transitions: Arc<dyn TurnRunTransitionPort>,
     process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     executor: Arc<dyn TurnRunExecutor>,
     semaphore: Arc<Semaphore>,
@@ -487,7 +483,6 @@ async fn run_scheduler_loop(
 ) {
     let SchedulerLoopInit {
         command_tx,
-        transitions,
         process_transitions,
         executor,
         config,
@@ -503,7 +498,6 @@ async fn run_scheduler_loop(
     let mut recovery_tick = interval(config.lease_recovery_interval());
     recovery_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let context = SchedulerDrainContext {
-        transitions,
         process_transitions,
         executor,
         semaphore,
@@ -731,7 +725,6 @@ async fn drain_queued_runs(
                     };
                     spawn_executor_task(
                         claimed,
-                        Arc::clone(&context.transitions),
                         Arc::clone(&context.executor),
                         context.command_tx.clone(),
                         permit,
@@ -770,7 +763,6 @@ struct ExecutorTaskConfig {
 
 fn spawn_executor_task(
     claimed: ClaimedTurnRun,
-    transitions: Arc<dyn TurnRunTransitionPort>,
     executor: Arc<dyn TurnRunExecutor>,
     command_tx: mpsc::Sender<SchedulerCommand>,
     permit: tokio::sync::OwnedSemaphorePermit,
@@ -822,9 +814,11 @@ fn spawn_executor_task(
             // and prematurely terminate the executor task before the driver has a
             // chance to observe cancellation and write its reply to thread history.
             heartbeat_tick.tick().await;
-            let executor_result =
-                AssertUnwindSafe(executor.execute_claimed_run(claimed, Arc::clone(&transitions)))
-                    .catch_unwind();
+            let executor_result = AssertUnwindSafe(executor.execute_claimed_run(
+                claimed,
+                Arc::clone(&task_config.process_transitions),
+            ))
+            .catch_unwind();
             tokio::pin!(executor_result);
             let mut heartbeats = InFlightHeartbeat::new();
             let mut consecutive_heartbeat_failures = 0usize;

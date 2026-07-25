@@ -16,6 +16,7 @@ use std::{
 use async_trait::async_trait;
 use chrono::Utc;
 use ironclaw_host_api::{AgentId, ProjectId, TenantId, ThreadId, UserId};
+use ironclaw_processes::ProcessTransitionPort;
 use ironclaw_turns::{
     AcceptedMessageRef, EventCursor, InMemoryRunProfileResolver, ReplyTargetBindingRef,
     RunProfileId, RunProfileResolutionRequest, RunProfileResolver, RunProfileVersion,
@@ -111,7 +112,7 @@ impl TurnRunExecutor for NoopExecutor {
     async fn execute_claimed_run(
         &self,
         _claimed: ClaimedTurnRun,
-        _transitions: Arc<dyn TurnRunTransitionPort>,
+        _process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     ) -> Result<(), TurnRunExecutorError> {
         Ok(())
     }
@@ -250,7 +251,7 @@ impl TurnRunExecutor for CountingExecutor {
     async fn execute_claimed_run(
         &self,
         _claimed: ClaimedTurnRun,
-        _transitions: Arc<dyn TurnRunTransitionPort>,
+        _process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     ) -> Result<(), TurnRunExecutorError> {
         self.executed.fetch_add(1, Ordering::SeqCst);
         self.notify.notify_waiters();
@@ -357,7 +358,7 @@ impl TurnRunExecutor for LockHoldingExecutor {
     async fn execute_claimed_run(
         &self,
         _claimed: ClaimedTurnRun,
-        _transitions: Arc<dyn TurnRunTransitionPort>,
+        _process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     ) -> Result<(), TurnRunExecutorError> {
         let _guard = self.state_lock.lock().await;
         if let Some(tx) = self.locked_tx.lock().await.take() {
