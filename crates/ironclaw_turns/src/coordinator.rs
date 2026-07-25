@@ -550,6 +550,7 @@ where
     ) -> Result<SubmitTurnResponse, TurnError> {
         let started_at = live_latency_started_at();
         let child_scope = request.child_scope.clone();
+        let process_request = request.clone();
         let response = match self
             .store
             .submit_child_turn(
@@ -579,6 +580,18 @@ where
                 );
                 return Err(error);
             }
+        };
+        let SubmitTurnResponse::Accepted { run_id, .. } = response;
+        let response = match &self.process_runtime {
+            Some(runtime) => {
+                let record = self
+                    .store
+                    .get_run_record(&child_scope, run_id)
+                    .await?
+                    .ok_or(TurnError::ScopeNotFound)?;
+                runtime.submit_child_turn(&process_request, &record).await?
+            }
+            None => response,
         };
         let SubmitTurnResponse::Accepted { run_id, .. } = &response;
         let wake_started_at = live_latency_started_at();

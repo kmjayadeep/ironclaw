@@ -34,9 +34,9 @@ use crate::{
     AcceptedMessageRef, AdmissionRejection, AdmissionRejectionReason, BlockedReason, GateKind,
     GateResumeDisposition, ProductTurnContext, ReplyTargetBindingRef, ResolvedRunProfile,
     RunProfileId, RunProfileResolutionError, RunProfileResolutionRequest, RunProfileResolver,
-    RunProfileVersion, SourceBindingRef, TurnActor, TurnAdmissionPolicy, TurnCheckpointId,
-    TurnError, TurnEventKind, TurnId, TurnLifecycleEvent, TurnRunId, TurnRunProfile, TurnRunRecord,
-    TurnRunState, TurnRunnerId, TurnScope, TurnStatus,
+    RunProfileVersion, SourceBindingRef, SubmitChildRunRequest, TurnActor, TurnAdmissionPolicy,
+    TurnCheckpointId, TurnError, TurnEventKind, TurnId, TurnLifecycleEvent, TurnRunId,
+    TurnRunProfile, TurnRunRecord, TurnRunState, TurnRunnerId, TurnScope, TurnStatus,
     events::{
         EventCursor, TurnBlockedGateKind, TurnBlockedGateMetadata, TurnEventPage,
         TurnEventProjectionSource,
@@ -144,6 +144,59 @@ impl AgentTurnProcessRuntime {
                 root_process_id: None,
                 checkpoint_ref: None,
                 created_at: request.received_at,
+                metadata: json!({ "agent_turn": metadata }),
+            })
+            .await?;
+        let state = turn_run_state_from_process_snapshot(snapshot)?;
+        Ok(SubmitTurnResponse::Accepted {
+            turn_id: state.turn_id,
+            run_id: state.run_id,
+            status: state.status,
+            resolved_run_profile_id: state.resolved_run_profile_id,
+            resolved_run_profile_version: state.resolved_run_profile_version,
+            event_cursor: state.event_cursor,
+            accepted_message_ref: state.accepted_message_ref,
+            reply_target_binding_ref: state.reply_target_binding_ref,
+        })
+    }
+
+    pub async fn submit_child_turn(
+        &self,
+        request: &SubmitChildRunRequest,
+        record: &TurnRunRecord,
+    ) -> Result<SubmitTurnResponse, TurnError> {
+        let metadata = AgentTurnProcessStateMetadata {
+            turn_id: record.turn_id,
+            actor: Some(request.actor.clone()),
+            accepted_message_ref: record.accepted_message_ref.clone(),
+            source_binding_ref: record.source_binding_ref.clone(),
+            reply_target_binding_ref: record.reply_target_binding_ref.clone(),
+            resolved_run_profile_id: record.profile.id.clone(),
+            resolved_run_profile_version: record.profile.version,
+            resolved_run_profile: Some(record.profile.resolved.clone()),
+            resolved_model_route: record.resolved_model_route.clone(),
+            model_usage: record.model_usage,
+            product_context: record.product_context.clone(),
+            resume_disposition: record.resume_disposition.clone(),
+        };
+        let snapshot = self
+            .submission
+            .submit_process(SubmitProcessRequest {
+                process_id: process_id_from_turn_run_id(record.run_id),
+                process_kind: ProcessKind::AgentTurn,
+                scope: record.scope.to_resource_scope(),
+                exclusive_within_scope: true,
+                operation_id: Some(ProcessOperationId::from_trusted(format!(
+                    "child:{}",
+                    request.idempotency_key.as_str()
+                ))),
+                owner_user_id: Some(request.actor.user_id.clone()),
+                parent_process_id: record.parent_run_id.map(process_id_from_turn_run_id),
+                root_process_id: record
+                    .spawn_tree_root_run_id
+                    .map(process_id_from_turn_run_id),
+                checkpoint_ref: record.checkpoint_id.map(process_checkpoint_ref),
+                created_at: record.received_at,
                 metadata: json!({ "agent_turn": metadata }),
             })
             .await?;
