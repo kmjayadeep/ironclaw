@@ -2026,7 +2026,6 @@ async fn build_default_planned_runtime_wires_after_turn_memory_writer() {
     let composition = build_default_planned_runtime(DefaultPlannedRuntimeParts {
         attachment_read_port: None,
         gate_record_store: None,
-        turn_state: turn_store.clone(),
         process_system: ProcessRuntimeSystem::in_memory_ephemeral().expect("process system"),
         thread_service: fixture.thread_service.clone() as Arc<dyn SessionThreadService>,
         thread_scope: fixture.thread_scope.clone(),
@@ -4005,7 +4004,6 @@ async fn default_planned_runtime_composes_no_profile_coordinator_and_profiled_ho
     let composition = build_default_planned_runtime(DefaultPlannedRuntimeParts {
         attachment_read_port: None,
         gate_record_store: None,
-        turn_state: turn_store.clone(),
         process_system: process_system.clone(),
         thread_service: fixture.thread_service.clone() as Arc<dyn SessionThreadService>,
         thread_scope: fixture.thread_scope.clone(),
@@ -4195,7 +4193,6 @@ async fn pre_minted_scheduler_wake_wiring_drives_scheduler_on_coordinator_submit
     let composition = build_default_planned_runtime(DefaultPlannedRuntimeParts {
         attachment_read_port: None,
         gate_record_store: None,
-        turn_state: turn_store.clone(),
         process_system: ProcessRuntimeSystem::in_memory_ephemeral().expect("process system"),
         thread_service: fixture.thread_service.clone() as Arc<dyn SessionThreadService>,
         thread_scope: fixture.thread_scope.clone(),
@@ -4374,7 +4371,6 @@ async fn build_runtime_host_with_optional_hooks(
     let composition = build_default_planned_runtime(DefaultPlannedRuntimeParts {
         attachment_read_port: None,
         gate_record_store: None,
-        turn_state: turn_store.clone(),
         process_system: ProcessRuntimeSystem::in_memory_ephemeral().expect("process system"),
         thread_service: fixture.thread_service.clone(),
         thread_scope: fixture.thread_scope.clone(),
@@ -4733,7 +4729,6 @@ async fn product_live_runtime_builds_when_all_required_adapters_are_present() {
     let composition = build_product_live_planned_runtime(DefaultPlannedRuntimeParts {
         attachment_read_port: None,
         gate_record_store: None,
-        turn_state: turn_store.clone(),
         process_system: ProcessRuntimeSystem::in_memory_ephemeral().expect("process system"),
         thread_service: fixture.thread_service.clone() as Arc<dyn SessionThreadService>,
         thread_scope: fixture.thread_scope.clone(),
@@ -4865,7 +4860,6 @@ async fn product_live_parts_for_gate_test(
     DefaultPlannedRuntimeParts {
         attachment_read_port: None,
         gate_record_store: None,
-        turn_state: turn_store.clone(),
         process_system: ProcessRuntimeSystem::in_memory_ephemeral().expect("process system"),
         thread_service: fixture.thread_service.clone() as Arc<dyn SessionThreadService>,
         thread_scope: fixture.thread_scope.clone(),

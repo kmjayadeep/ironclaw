@@ -77,7 +77,7 @@ use ironclaw_runner::milestone_events::{
 };
 use ironclaw_runner::runtime::{
     DefaultPlannedRuntimeBuildError, DefaultPlannedRuntimeConfig, DefaultPlannedRuntimeParts,
-    ProcessRuntimeSystem, RuntimeSubagentGoalStore, RuntimeTurnStateStore, ToolDisclosureMode,
+    ProcessRuntimeSystem, RuntimeSubagentGoalStore, ToolDisclosureMode,
     build_default_planned_runtime,
 };
 use ironclaw_runner::subagent::await_edge::{
@@ -368,7 +368,7 @@ impl HostUserProfileSource for MemoryBackedUserProfileSourceAdapter {
 
 struct RuntimeStoreParts {
     scoped_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
-    turn_state_store: Arc<dyn RuntimeTurnStateStore>,
+    turn_state_store: Arc<dyn TurnSpawnTreeStateStore>,
     turn_state_flush: Arc<dyn TurnStateFlush>,
     processes: ProcessRuntimeSystem,
     checkpoint_state_store: Arc<dyn ironclaw_turns::CheckpointStateStorePort>,
@@ -455,7 +455,7 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
     )));
     RuntimeStoreParts {
         scoped_filesystem,
-        turn_state_store: Arc::clone(&turn_state) as Arc<dyn RuntimeTurnStateStore>,
+        turn_state_store: Arc::clone(&turn_state) as Arc<dyn TurnSpawnTreeStateStore>,
         turn_state_flush: Arc::clone(&turn_state) as Arc<dyn TurnStateFlush>,
         processes: ProcessRuntimeSystem::from_process_journal_store(process_journal_store),
         checkpoint_state_store,
@@ -4048,7 +4048,6 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     #[cfg(feature = "test-support")]
     let runtime_skill_context_source = skill_context_source.clone();
     let planned_runtime_parts = DefaultPlannedRuntimeParts {
-        turn_state: Arc::clone(&turn_state_store),
         process_system: processes.clone(),
         thread_service: Arc::clone(&thread_service),
         thread_scope: thread_scope.clone(),

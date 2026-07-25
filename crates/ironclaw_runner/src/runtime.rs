@@ -225,16 +225,6 @@ fn default_disabled_capability_ids() -> Vec<CapabilityId> {
     ]
 }
 
-pub trait RuntimeTurnStateStore:
-    TurnSpawnTreeStateStore + ironclaw_turns::TurnEventProjectionSource + Send + Sync
-{
-}
-
-impl<T> RuntimeTurnStateStore for T where
-    T: TurnSpawnTreeStateStore + ironclaw_turns::TurnEventProjectionSource + Send + Sync
-{
-}
-
 /// Opaque carrier for the scheduler's wake-pair (notifier + channel).
 ///
 /// Keeps substrate types ([`SchedulerTurnRunWakeNotifier`], [`TurnRunWakeChannel`])
@@ -419,7 +409,6 @@ pub struct DefaultPlannedRuntimeParts<G>
 where
     G: HostManagedModelGateway + ?Sized + Send + Sync + 'static,
 {
-    pub turn_state: Arc<dyn RuntimeTurnStateStore>,
     pub process_system: ProcessRuntimeSystem,
     pub thread_service: Arc<dyn SessionThreadService>,
     pub thread_scope: ThreadScope,

@@ -46,7 +46,7 @@ use ironclaw_runner::{
     },
     runtime::{
         DefaultPlannedRuntimeConfig, DefaultPlannedRuntimeParts, ProcessRuntimeSystem,
-        RebornRuntimeLoopComposition, RuntimeTurnStateStore, build_product_live_planned_runtime,
+        RebornRuntimeLoopComposition, build_product_live_planned_runtime,
     },
     subagent::await_edge::{
         boot_recovery::ScopeRecoveryDriver, resolver::AwaitEdgeResolver, store::AwaitEdgeStore,
@@ -361,7 +361,6 @@ impl ProductLiveAgentLoopHarness {
         );
         let capability_result_writer: Arc<dyn LoopCapabilityResultWriter> =
             Arc::new(ProductLiveCapabilityIo::default());
-        let turn_state_for_runtime: Arc<dyn RuntimeTurnStateStore> = turn_store.clone();
         let await_edge_mounts = MountView::new(vec![MountGrant::new(
             MountAlias::new("/turns").unwrap(),
             VirtualPath::new("/turns").unwrap(),
@@ -386,7 +385,6 @@ impl ProductLiveAgentLoopHarness {
         let composition = build_product_live_planned_runtime(DefaultPlannedRuntimeParts {
             attachment_read_port: None,
             gate_record_store: turn_executor_gate_store,
-            turn_state: turn_state_for_runtime,
             process_system: ProcessRuntimeSystem::in_memory_ephemeral().expect("process system"),
             thread_service: Arc::new(thread_service.clone()),
             thread_scope: thread_scope.clone(),
