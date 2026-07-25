@@ -138,6 +138,8 @@ function renderChat({
       removeEventListener: () => {},
     },
     useChat: () => hookState,
+    useChatCommands: () => [],
+    matchCommand: () => null,
     useInterfacePreferences: () => ({ showChatLogsShortcut }),
     useT: () => (key) => key,
   };

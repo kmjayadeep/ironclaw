@@ -20,6 +20,8 @@ import { RecoveryNotice } from "./components/recovery-notice";
 import { SuggestionChips } from "./components/suggestion-chips";
 import { TypingIndicator } from "./components/typing-indicator";
 import { useChat } from "./hooks/useChat";
+import { useChatCommands } from "./hooks/useChatCommands";
+import { matchCommand } from "./lib/chat-commands";
 import { channelConnectionDisplayName } from "../../lib/channel-connection-events";
 import { channelConnectionFromGate } from "./lib/gates";
 import { NEW_DRAFT_KEY } from "./lib/draft-store";
@@ -98,6 +100,7 @@ export function Chat({
     recoveryNotice,
     activeRun,
     send,
+    runCommand,
     cancelRun,
     retryMessage,
     approve,
@@ -108,6 +111,7 @@ export function Chat({
     startOnboardingOAuth,
     dismissOnboardingPairing,
   } = useChat(activeThreadId);
+  const chatCommands = useChatCommands();
 
   React.useEffect(() => {
     onConnectionStatusChange?.(sseStatus);
@@ -208,6 +212,12 @@ export function Chat({
         throw new Error(approvalSubmitWarning);
       }
       if (composerSendBlockedRef.current) return null;
+      // Slash text naming an inventory command executes as a product command
+      // (no turn); anything else — including unknown slash text — submits as
+      // an ordinary message, matching channel behavior.
+      if (attachments.length === 0 && matchCommand(content, chatCommands)) {
+        return await runCommand(content);
+      }
       const response = await send(content, {
         images,
         attachments,
@@ -224,8 +234,10 @@ export function Chat({
       activeThreadId,
       activeThreadHasGate,
       approvalSubmitWarning,
+      chatCommands,
       composerSendDisabled,
       onSelectThread,
+      runCommand,
       send,
     ]
   );
@@ -337,6 +349,7 @@ export function Chat({
           <EmptyState
             onSuggestion={handleSuggestion}
             onSend={handleSend}
+            commands={chatCommands}
             disabled={false}
             sendDisabled={composerSendDisabled}
             initialText={composerDraft}
@@ -453,6 +466,7 @@ export function Chat({
 
           <ChatInput
             onSend={handleSend}
+            commands={chatCommands}
             disabled={false}
             sendDisabled={composerSendDisabled}
             initialText={composerDraft}

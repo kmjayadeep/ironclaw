@@ -102,6 +102,7 @@ registerPack("en", {
   "chat.attachFiles": "Attach files",
   "chat.attachmentRemove": "Remove attachment",
   "chat.attachmentDropHint": "Drop files to attach",
+  "chat.commandMenu": "Commands",
   "chat.attachmentTooMany": "You can attach at most {max} files per message.",
   "chat.attachmentTooLarge": "{name} is too large (max {max} per file).",
   "chat.attachmentTotalTooLarge": "Attachments exceed the {max} total limit.",

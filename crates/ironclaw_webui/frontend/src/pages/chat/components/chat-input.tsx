@@ -5,6 +5,7 @@ import { useT } from "../../../lib/i18n";
 import { authScope } from "../../../lib/auth-scope";
 import { stageFiles } from "../lib/attachments";
 import { ATTACHMENTS_ONLY_CONTENT } from "../lib/attachment-sentinel";
+import { commandMenuMatches } from "../lib/chat-commands";
 import { useAttachmentConfig } from "../hooks/useAttachmentConfig";
 import {
   NEW_DRAFT_KEY,
@@ -18,6 +19,7 @@ import {
 
 export function ChatInput({
   onSend,
+  commands = [],
   onCancel,
   disabled,
   sendDisabled = disabled,
@@ -430,6 +432,34 @@ export function ChatInput({
             {t("chat.attachmentDropHint")}
           </div>
         )}
+        {commandMenuMatches(text, commands).length > 0 && (
+          <div
+            role="listbox"
+            aria-label={t("chat.commandMenu")}
+            className="mb-2 overflow-hidden rounded-md border border-iron-700 bg-iron-900/80 text-xs"
+          >
+            {commandMenuMatches(text, commands).map((command) => (
+              <button
+                key={command.name}
+                type="button"
+                role="option"
+                aria-selected={false}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  const next = `/${command.name} `;
+                  textRef.current = next;
+                  setText(next);
+                  textareaRef.current?.focus();
+                }}
+                className="flex w-full items-baseline gap-2 px-3 py-1.5 text-left hover:bg-iron-800"
+              >
+                <span className="font-medium text-iron-100">{command.usage}</span>
+                <span className="truncate text-iron-400">{command.description}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
         {attachmentError &&
         (
           <div

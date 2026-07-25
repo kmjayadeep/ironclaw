@@ -481,6 +481,28 @@ export function sendMessage({
   );
 }
 
+// --- Product commands ---
+
+// The standardized slash-command inventory (name/aliases/title/description/
+// usage) the composer menu and intercept derive from. No per-command
+// knowledge lives in the frontend.
+export function listChatCommands() {
+  return apiFetch(`${V2_BASE}/commands`);
+}
+
+// Execute composer slash text server-side; returns
+// `{ command, result?, rejection? }` where `result` is the generic
+// CommandResultView (title/fields/lines).
+export function executeChatCommand({ threadId, text }) {
+  return apiFetch(
+    `${V2_BASE}/threads/${encodeURIComponent(threadId ?? "")}/commands`,
+    {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    },
+  );
+}
+
 // --- Timeline ---
 
 export function fetchTimeline({ threadId, limit, cursor } = {}) {
