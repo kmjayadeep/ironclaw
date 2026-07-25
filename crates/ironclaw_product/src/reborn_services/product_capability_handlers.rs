@@ -5,6 +5,8 @@ pub(super) enum ProductCommandHandler {
     ProductLifecycleCommand,
     ProductModelCommand,
     ProductStatusCommand,
+    ProductCommandList,
+    ProductCommandExecute,
     CreateThread,
     SubmitTurn,
     CancelRun,
@@ -37,6 +39,8 @@ impl ProductCommandHandler {
             PRODUCT_LIFECYCLE_COMMAND_OPERATION_ID => Some(Self::ProductLifecycleCommand),
             PRODUCT_MODEL_COMMAND_OPERATION_ID => Some(Self::ProductModelCommand),
             PRODUCT_STATUS_COMMAND_OPERATION_ID => Some(Self::ProductStatusCommand),
+            PRODUCT_COMMAND_LIST_COMMAND_ID => Some(Self::ProductCommandList),
+            PRODUCT_COMMAND_EXECUTE_COMMAND_ID => Some(Self::ProductCommandExecute),
             CREATE_THREAD_COMMAND_ID => Some(Self::CreateThread),
             SUBMIT_TURN_COMMAND_ID => Some(Self::SubmitTurn),
             CANCEL_RUN_COMMAND_ID => Some(Self::CancelRun),
@@ -115,6 +119,14 @@ impl ProductCommandHandler {
                         .execute_product_status_command(caller, request)
                         .await?,
                 )
+            }
+            Self::ProductCommandList => {
+                let _request: EmptyProductCommandInput = product_command_input(input)?;
+                command_output(services.list_product_commands(caller).await?)
+            }
+            Self::ProductCommandExecute => {
+                let request: RebornExecuteProductCommandRequest = product_command_input(input)?;
+                command_output(services.execute_product_command(caller, request).await?)
             }
             Self::CreateThread => command_output(
                 services

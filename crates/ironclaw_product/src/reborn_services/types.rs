@@ -240,6 +240,48 @@ pub struct RebornCreateThreadResponse {
     pub thread: SessionThreadRecord,
 }
 
+/// One product-command descriptor projected for the WebUI slash menu.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RebornProductCommandInfo {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    pub title: String,
+    pub description: String,
+    pub usage: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RebornProductCommandListResponse {
+    pub commands: Vec<RebornProductCommandInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RebornExecuteProductCommandRequest {
+    pub thread_id: String,
+    /// The raw composer text (`/name args`). Parsed with the same shared
+    /// slash parser and typed command model the channel path uses.
+    pub text: String,
+}
+
+/// User-safe command rejection: a stable kind plus surface-composed text
+/// (inventory help for user-correctable rejections). Never carries the
+/// internal rejection reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RebornCommandRejection {
+    pub kind: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RebornExecuteProductCommandResponse {
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<crate::commands::CommandResultView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection: Option<RebornCommandRejection>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RebornDeleteThreadRequest {
     pub thread_id: String,

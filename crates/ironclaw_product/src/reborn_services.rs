@@ -194,17 +194,18 @@ pub use types::{
     RebornAutomationMutationResponse, RebornAutomationRecentRunInfo,
     RebornAutomationRecentRunStatus, RebornAutomationRequest, RebornAutomationRunStatus,
     RebornAutomationSource, RebornAutomationState, RebornCancelRunResponse,
-    RebornChannelConnectAction, RebornCreateThreadResponse, RebornDeleteThreadRequest,
-    RebornDeleteThreadResponse, RebornExtensionActionResponse, RebornExtensionCredentialSetup,
-    RebornExtensionInfo, RebornExtensionListResponse, RebornExtensionOnboardingPayload,
-    RebornExtensionOnboardingState, RebornExtensionRegistryEntry, RebornExtensionRegistryResponse,
-    RebornExtensionSetupField, RebornExtensionSetupSecret, RebornExtensionSurface,
-    RebornGetRunStateRequest, RebornGetRunStateResponse, RebornGlobalAutoApproveRequest,
-    RebornGlobalAutoApproveResponse, RebornListAutomationsResponse, RebornListThreadsResponse,
-    RebornLogEntry, RebornLogLevel, RebornLogQueryRequest, RebornLogQueryResponse,
-    RebornOperatorArea, RebornOperatorCommandPlaneResponse, RebornOperatorConfigDiagnostic,
-    RebornOperatorConfigDiagnosticSeverity, RebornOperatorConfigEntry,
-    RebornOperatorConfigGetResponse, RebornOperatorConfigListResponse,
+    RebornChannelConnectAction, RebornCommandRejection, RebornCreateThreadResponse,
+    RebornDeleteThreadRequest, RebornDeleteThreadResponse, RebornExecuteProductCommandRequest,
+    RebornExecuteProductCommandResponse, RebornExtensionActionResponse,
+    RebornExtensionCredentialSetup, RebornExtensionInfo, RebornExtensionListResponse,
+    RebornExtensionOnboardingPayload, RebornExtensionOnboardingState, RebornExtensionRegistryEntry,
+    RebornExtensionRegistryResponse, RebornExtensionSetupField, RebornExtensionSetupSecret,
+    RebornExtensionSurface, RebornGetRunStateRequest, RebornGetRunStateResponse,
+    RebornGlobalAutoApproveRequest, RebornGlobalAutoApproveResponse, RebornListAutomationsResponse,
+    RebornListThreadsResponse, RebornLogEntry, RebornLogLevel, RebornLogQueryRequest,
+    RebornLogQueryResponse, RebornOperatorArea, RebornOperatorCommandPlaneResponse,
+    RebornOperatorConfigDiagnostic, RebornOperatorConfigDiagnosticSeverity,
+    RebornOperatorConfigEntry, RebornOperatorConfigGetResponse, RebornOperatorConfigListResponse,
     RebornOperatorConfigSetProductRequest, RebornOperatorConfigSetRequest,
     RebornOperatorConfigValidateRequest, RebornOperatorConfigValidateResponse,
     RebornOperatorLogsQuery, RebornOperatorServiceLifecycleAction,
@@ -217,6 +218,7 @@ pub use types::{
     RebornOutboundDeliveryTargetId, RebornOutboundDeliveryTargetListResponse,
     RebornOutboundDeliveryTargetOption, RebornOutboundDeliveryTargetStatus,
     RebornOutboundDeliveryTargetSummary, RebornOutboundPreferencesResponse,
+    RebornProductCommandInfo, RebornProductCommandListResponse,
     RebornRenameAutomationProductRequest, RebornResolveGateResponse, RebornResumeGateResponse,
     RebornRetryRunResponse, RebornServiceLifecycleAction, RebornServiceLifecycleRequest,
     RebornServiceLifecycleResponse, RebornServiceLifecycleState,
@@ -439,6 +441,16 @@ pub const AUTOMATION_RENAME_COMMAND: ProductSurfaceCommandDescriptor<
     RebornRenameAutomationProductRequest,
     RebornAutomationMutationResponse,
 > = ProductSurfaceCommandDescriptor::new(AUTOMATION_RENAME_COMMAND_ID);
+pub const PRODUCT_COMMAND_LIST_COMMAND_ID: &str = "product.commands.list";
+pub const PRODUCT_COMMAND_LIST_COMMAND: ProductSurfaceCommandDescriptor<
+    EmptyProductCommandInput,
+    RebornProductCommandListResponse,
+> = ProductSurfaceCommandDescriptor::new(PRODUCT_COMMAND_LIST_COMMAND_ID);
+pub const PRODUCT_COMMAND_EXECUTE_COMMAND_ID: &str = "product.commands.execute";
+pub const PRODUCT_COMMAND_EXECUTE_COMMAND: ProductSurfaceCommandDescriptor<
+    RebornExecuteProductCommandRequest,
+    RebornExecuteProductCommandResponse,
+> = ProductSurfaceCommandDescriptor::new(PRODUCT_COMMAND_EXECUTE_COMMAND_ID);
 pub const AUTOMATION_DELETE_COMMAND_ID: &str = "automation.delete";
 pub const AUTOMATION_DELETE_COMMAND: ProductSurfaceCommandDescriptor<
     RebornAutomationRequest,
@@ -549,6 +561,22 @@ const OPERATOR_LOG_CONTEXT_TRUNCATED_SUFFIX: &str = " ... [truncated]";
 const NOTICE_BLOCKED_APPROVAL: &str = "An approval gate is open on this thread — resolve it (approve or deny) before continuing, then resend your message.";
 const NOTICE_BLOCKED_AUTH: &str = "An authentication gate is open on this thread — complete authentication before continuing, then resend your message.";
 const NOTICE_BUSY_GENERIC: &str = "Ironclaw is still working on a previous message — resend yours once the current task finishes.";
+
+/// User-safe rejection body for slash text that parsed but cannot execute on
+/// this surface (unknown, malformed, or not-yet-wired command families).
+fn command_rejection_response(command: impl Into<String>) -> RebornExecuteProductCommandResponse {
+    RebornExecuteProductCommandResponse {
+        command: command.into(),
+        result: None,
+        rejection: Some(RebornCommandRejection {
+            kind: "invalid_request".to_string(),
+            message: format!(
+                "That command isn't available here.\n{}",
+                crate::commands::command_help_text()
+            ),
+        }),
+    }
+}
 
 fn command_result_field(label: &str, value: impl Into<String>) -> CommandResultField {
     CommandResultField {
@@ -3150,6 +3178,84 @@ where
             fields,
             lines,
         })
+    }
+
+    /// The full command inventory for the WebUI slash menu. The browser is
+    /// the operator surface, so it sees every standardized command (channel
+    /// surfaces are additionally gated by their manifest declarations).
+    pub async fn list_product_commands(
+        &self,
+        _caller: ProductSurfaceCaller,
+    ) -> Result<RebornProductCommandListResponse, ProductSurfaceError> {
+        Ok(RebornProductCommandListResponse {
+            commands: crate::commands::product_command_descriptors()
+                .map(|descriptor| RebornProductCommandInfo {
+                    name: descriptor.name.to_string(),
+                    aliases: descriptor
+                        .aliases
+                        .iter()
+                        .map(|alias| alias.to_string())
+                        .collect(),
+                    title: descriptor.title.to_string(),
+                    description: descriptor.description.to_string(),
+                    usage: descriptor.usage.to_string(),
+                })
+                .collect(),
+        })
+    }
+
+    /// Execute composer slash text through the same shared parser, typed
+    /// command model, and handlers the channel dispatch uses. Rejections
+    /// return 200 with a user-safe body (kind + inventory help) so the
+    /// composer renders them like any command result.
+    pub async fn execute_product_command(
+        &self,
+        caller: ProductSurfaceCaller,
+        request: RebornExecuteProductCommandRequest,
+    ) -> Result<RebornExecuteProductCommandResponse, ProductSurfaceError> {
+        let invalid = || {
+            ProductSurfaceError::from_status(ProductSurfaceErrorCode::InvalidRequest, 400, false)
+        };
+        let payload = crate::parse_product_slash_command(
+            &request.text,
+            crate::ProductTriggerReason::DirectChat,
+        )
+        .map_err(|_| invalid())?
+        .ok_or_else(invalid)?;
+        let command = match crate::commands::ProductCommand::from_payload(&payload) {
+            Ok(command) => command,
+            Err(_) => return Ok(command_rejection_response(payload.command)),
+        };
+        let name = command.name().to_string();
+        match command {
+            crate::commands::ProductCommand::Model { action } => {
+                let result = self.execute_product_model_command(caller, action).await?;
+                Ok(RebornExecuteProductCommandResponse {
+                    command: name,
+                    result: Some(result),
+                    rejection: None,
+                })
+            }
+            crate::commands::ProductCommand::Status => {
+                let result = self
+                    .execute_product_status_command(
+                        caller,
+                        ProductStatusCommandInput {
+                            thread_id: request.thread_id,
+                        },
+                    )
+                    .await?;
+                Ok(RebornExecuteProductCommandResponse {
+                    command: name,
+                    result: Some(result),
+                    rejection: None,
+                })
+            }
+            crate::commands::ProductCommand::Lifecycle { .. }
+            | crate::commands::ProductCommand::Unknown { .. } => {
+                Ok(command_rejection_response(name))
+            }
+        }
     }
 
     pub async fn list_admin_users(
