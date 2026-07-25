@@ -151,9 +151,9 @@ pub trait AwaitEdgeSettler: Send + Sync {
         result_writer: Arc<dyn crate::LoopCapabilityResultWriter>,
     ) -> Result<(), TurnError>;
 
-    /// Adapter to the pre-existing `TurnCommittedEventObserver` seam
-    /// (`ironclaw_turns::TurnLifecycleEventBus::subscribe_required` needs a
-    /// `TurnCommittedEventObserver`, not this trait) — implemented as
+    /// Adapter to the turn projection observer seam
+    /// (the process journal observer needs a `TurnCommittedEventObserver`, not
+    /// this trait) — implemented as
     /// `Arc::clone(&self) as Arc<dyn TurnCommittedEventObserver>` inside the
     /// concrete type, where the concrete type is known and ordinary
     /// (non-upcasting) trait-object coercion applies.

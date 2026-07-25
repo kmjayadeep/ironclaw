@@ -2,7 +2,7 @@
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
         mpsc,
     },
     task::{Context, Poll},
@@ -14,26 +14,24 @@ use ironclaw_filesystem::InMemoryBackend;
 use ironclaw_host_api::{AgentId, ProjectId, TenantId, ThreadId, UserId};
 use ironclaw_turns::{
     AcceptedMessageRef, AdmissionRejection, AdmissionRejectionReason, AllowAllTurnAdmissionPolicy,
-    BlockedReason, CancelRunRequest, CancelRunResponse, DefaultTurnCoordinator,
-    DefaultTurnLifecycleEventBus, GateRef, GetRunStateRequest, IdempotencyKey,
-    InMemoryRunProfileResolver, InMemoryTurnEventSink, LifecyclePublicationErrorPort,
-    LifecyclePublishingTurnStateStore, LoopBlockedKind, LoopCheckpointStateRef, LoopExitMapping,
-    LoopGateRef, ProductTurnContext, ReplyTargetBindingRef, ResolvedRunProfile, ResumeTurnRequest,
-    RetryTurnRequest, RetryTurnResponse, RunOriginAdapter, RunProfileId, RunProfileRequest,
+    BlockedReason, CancelRunRequest, CancelRunResponse, DefaultTurnCoordinator, GateRef,
+    GetRunStateRequest, IdempotencyKey, InMemoryRunProfileResolver, InMemoryTurnEventSink,
+    LoopBlockedKind, LoopCheckpointStateRef, LoopExitMapping, LoopGateRef, ProductTurnContext,
+    ReplyTargetBindingRef, ResolvedRunProfile, ResumeTurnRequest, RetryTurnRequest,
+    RetryTurnResponse, RunOriginAdapter, RunProfileId, RunProfileRequest,
     RunProfileResolutionError, RunProfileResolutionRequest, RunProfileResolver, RunProfileVersion,
     SanitizedCancelReason, SanitizedFailure, SourceBindingRef, StaticTurnAdmissionLimitProvider,
     SubmitChildRunRequest, SubmitTurnRequest, SubmitTurnResponse, ThreadBusy, TurnActor,
     TurnAdmissionAxisKind, TurnAdmissionBucketKind, TurnAdmissionBucketScope,
     TurnAdmissionCapacityDenial, TurnAdmissionClass, TurnAdmissionPolicy, TurnCapacityResource,
-    TurnCheckpointId, TurnCommittedEventObserver, TurnCoordinator, TurnError, TurnErrorCategory,
-    TurnEventKind, TurnEventProjectionCursor, TurnEventProjectionError, TurnEventProjectionRequest,
+    TurnCheckpointId, TurnCoordinator, TurnError, TurnErrorCategory, TurnEventKind,
+    TurnEventProjectionCursor, TurnEventProjectionError, TurnEventProjectionRequest,
     TurnEventProjectionService, TurnEventSink, TurnIdempotencyErrorReplay,
     TurnIdempotencyOperationKind, TurnIdempotencyOutcomeKind, TurnIdempotencyRecord,
-    TurnIdempotencyReplay, TurnLeaseToken, TurnLifecycleEvent, TurnLifecycleEventBus,
-    TurnLockVersion, TurnOriginKind, TurnOwner, TurnRunId, TurnRunProfile, TurnRunState,
-    TurnRunWake, TurnRunWakeNotifier, TurnRunWakeNotifyError, TurnRunnerId, TurnScope,
-    TurnSpawnTreePort, TurnSpawnTreeStateStore, TurnStateRowStore, TurnStateStore,
-    TurnStateStoreLimits, TurnStatus, TurnSurfaceType,
+    TurnIdempotencyReplay, TurnLeaseToken, TurnLifecycleEvent, TurnLockVersion, TurnOriginKind,
+    TurnOwner, TurnRunId, TurnRunProfile, TurnRunState, TurnRunWake, TurnRunWakeNotifier,
+    TurnRunWakeNotifyError, TurnRunnerId, TurnScope, TurnSpawnTreePort, TurnSpawnTreeStateStore,
+    TurnStateRowStore, TurnStateStore, TurnStateStoreLimits, TurnStatus, TurnSurfaceType,
     events::EventCursor,
     run_profile::{LoopGateKind, LoopModelRouteSnapshot, LoopModelUsage},
     runner::{
@@ -1506,185 +1504,6 @@ async fn flush_persists_in_flight_non_blocked_run() {
     );
 }
 
-#[tokio::test]
-async fn default_turn_coordinator_publishes_lifecycle_events_to_sink() {
-    let store = Arc::new(in_memory_turn_state_store());
-    let sink = Arc::new(InMemoryTurnEventSink::default());
-    let store = lifecycle_publishing_store(store, None, Some(sink.clone()));
-    let coordinator = DefaultTurnCoordinator::new(store);
-    let response = coordinator
-        .submit_turn(submit_request("thread-event-sink", "idem-event-sink"))
-        .await
-        .unwrap();
-
-    let run_id = accepted_run_id(&response);
-    let events = sink.events();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].kind, TurnEventKind::Submitted);
-    assert_eq!(events[0].run_id, run_id);
-    assert_eq!(events[0].status, TurnStatus::Queued);
-}
-
-#[tokio::test]
-async fn default_turn_coordinator_dedupes_idempotency_replay_events_by_cursor() {
-    let store = Arc::new(in_memory_turn_state_store());
-    let sink = Arc::new(InMemoryTurnEventSink::default());
-    let publishing_store = lifecycle_publishing_store(store.clone(), None, Some(sink.clone()));
-    let coordinator = DefaultTurnCoordinator::new(publishing_store);
-
-    let submit = submit_request("thread-event-replay-submit", "idem-event-replay-submit");
-    coordinator.submit_turn(submit.clone()).await.unwrap();
-    coordinator.submit_turn(submit).await.unwrap();
-    assert_eq!(
-        sink.events()
-            .iter()
-            .filter(|event| event.kind == TurnEventKind::Submitted)
-            .count(),
-        1
-    );
-
-    let resume_run_id = accepted_run_id(
-        &coordinator
-            .submit_turn(submit_request(
-                "thread-event-replay-resume",
-                "idem-event-replay-resume-submit",
-            ))
-            .await
-            .unwrap(),
-    );
-    let resume_runner_id = TurnRunnerId::new();
-    let resume_lease = TurnLeaseToken::new();
-    store
-        .claim_next_run(ClaimRunRequest {
-            runner_id: resume_runner_id,
-            lease_token: resume_lease,
-            scope_filter: Some(scope("thread-event-replay-resume")),
-        })
-        .await
-        .unwrap()
-        .unwrap();
-    let resume_gate_ref = LoopGateRef::new("gate:event-replay-resume").unwrap();
-    apply_test_loop_exit(
-        store.as_ref(),
-        resume_run_id,
-        resume_runner_id,
-        resume_lease,
-        dependent_blocked_mapping(TurnCheckpointId::new(), block_state_ref(), &resume_gate_ref),
-    )
-    .await
-    .unwrap();
-    let resume = ResumeTurnRequest {
-        scope: scope("thread-event-replay-resume"),
-        actor: actor(),
-        run_id: resume_run_id,
-        gate_resolution_ref: GateRef::new(resume_gate_ref.as_str()).unwrap(),
-        source_binding_ref: SourceBindingRef::new("source-web-resumed").unwrap(),
-        reply_target_binding_ref: ReplyTargetBindingRef::new("reply-web-resumed").unwrap(),
-        idempotency_key: IdempotencyKey::new("idem-event-replay-resume").unwrap(),
-        precondition: ironclaw_turns::ResumeTurnPrecondition::BlockedDependentRunGate,
-        resume_disposition: None,
-    };
-    coordinator.resume_turn(resume.clone()).await.unwrap();
-    coordinator.resume_turn(resume).await.unwrap();
-    assert_eq!(
-        sink.events()
-            .iter()
-            .filter(|event| event.kind == TurnEventKind::Resumed)
-            .count(),
-        1
-    );
-
-    let cancel_run_id = accepted_run_id(
-        &coordinator
-            .submit_turn(submit_request(
-                "thread-event-replay-cancel",
-                "idem-event-replay-cancel-submit",
-            ))
-            .await
-            .unwrap(),
-    );
-    let cancel = cancel_request(
-        "thread-event-replay-cancel",
-        cancel_run_id,
-        "idem-event-replay-cancel",
-    );
-    coordinator.cancel_run(cancel.clone()).await.unwrap();
-    coordinator.cancel_run(cancel).await.unwrap();
-    assert_eq!(
-        sink.events()
-            .iter()
-            .filter(|event| event.kind == TurnEventKind::Cancelled)
-            .count(),
-        1
-    );
-}
-
-#[tokio::test]
-async fn default_turn_coordinator_does_not_publish_cancel_event_for_terminal_retry() {
-    let store = Arc::new(in_memory_turn_state_store());
-    let sink = Arc::new(InMemoryTurnEventSink::default());
-    let publishing_store = lifecycle_publishing_store(store.clone(), None, Some(sink.clone()));
-    let coordinator = DefaultTurnCoordinator::new(publishing_store);
-    let response = coordinator
-        .submit_turn(submit_request(
-            "thread-terminal-cancel-retry",
-            "idem-terminal-cancel-retry",
-        ))
-        .await
-        .unwrap();
-
-    let run_id = accepted_run_id(&response);
-    complete_queued_run(&store, run_id, "thread-terminal-cancel-retry").await;
-    let events_before_retry = sink.events();
-    let retry = coordinator
-        .cancel_run(cancel_request(
-            "thread-terminal-cancel-retry",
-            run_id,
-            "idem-terminal-cancel-retry",
-        ))
-        .await
-        .unwrap();
-
-    assert!(retry.already_terminal);
-    assert_eq!(retry.status, TurnStatus::Completed);
-    assert_eq!(sink.events(), events_before_retry);
-}
-
-#[tokio::test]
-async fn default_turn_coordinator_cancel_event_uses_committed_run_owner() {
-    let store = Arc::new(in_memory_turn_state_store());
-    let sink = Arc::new(InMemoryTurnEventSink::default());
-    let store = lifecycle_publishing_store(store, None, Some(sink.clone()));
-    let coordinator = DefaultTurnCoordinator::new(store);
-    let mut request = submit_request("thread-cancel-owner", "idem-cancel-owner-submit");
-    request.actor = TurnActor::new(UserId::new("user-run-owner").unwrap());
-    let run_id = accepted_run_id(&coordinator.submit_turn(request).await.unwrap());
-
-    coordinator
-        .cancel_run(CancelRunRequest {
-            scope: scope("thread-cancel-owner"),
-            actor: TurnActor::new(UserId::new("user-run-owner").unwrap()),
-            run_id,
-            reason: SanitizedCancelReason::OperatorRequested,
-            idempotency_key: IdempotencyKey::new("idem-cancel-owner").unwrap(),
-        })
-        .await
-        .unwrap();
-
-    let cancel_event = sink
-        .events()
-        .into_iter()
-        .find(|event| event.run_id == run_id && event.kind == TurnEventKind::Cancelled)
-        .expect("terminal cancel event should be published");
-    assert_eq!(
-        cancel_event
-            .owner_user_id
-            .as_ref()
-            .map(|user| user.as_str()),
-        Some("user-run-owner")
-    );
-}
-
 #[test]
 fn cancel_run_response_serialization_omits_internal_actor() {
     let response = CancelRunResponse {
@@ -1698,211 +1517,6 @@ fn cancel_run_response_serialization_omits_internal_actor() {
     let encoded = serde_json::to_value(&response).unwrap();
 
     assert!(encoded.get("actor").is_none());
-}
-
-#[tokio::test]
-async fn default_turn_coordinator_required_observer_sees_terminal_cancel() {
-    let store = Arc::new(in_memory_turn_state_store());
-    let observer = Arc::new(RecordingCommittedEventObserver::default());
-    let store = lifecycle_publishing_store(
-        store,
-        Some(Arc::clone(&observer) as Arc<dyn TurnCommittedEventObserver>),
-        None,
-    );
-    let coordinator = DefaultTurnCoordinator::new(store);
-    let mut request = submit_request(
-        "thread-required-cancel-observer",
-        "idem-required-cancel-observer-submit",
-    );
-    request.actor = TurnActor::new(UserId::new("user-run-owner").unwrap());
-    let run_id = accepted_run_id(&coordinator.submit_turn(request).await.unwrap());
-
-    coordinator
-        .cancel_run(CancelRunRequest {
-            scope: scope("thread-required-cancel-observer"),
-            actor: TurnActor::new(UserId::new("user-run-owner").unwrap()),
-            run_id,
-            reason: SanitizedCancelReason::OperatorRequested,
-            idempotency_key: IdempotencyKey::new("idem-required-cancel-observer").unwrap(),
-        })
-        .await
-        .unwrap();
-
-    let observed_events = observer.events();
-    assert_eq!(observed_events.len(), 1);
-    assert_eq!(observed_events[0].run_id, run_id);
-    assert_eq!(observed_events[0].kind, TurnEventKind::Cancelled);
-    assert_eq!(
-        observed_events[0]
-            .owner_user_id
-            .as_ref()
-            .map(|user| user.as_str()),
-        Some("user-run-owner")
-    );
-}
-
-#[tokio::test]
-async fn lifecycle_publishing_store_propagates_required_observer_error_on_submit() {
-    let raw_store = Arc::new(in_memory_turn_state_store());
-    let observer = Arc::new(FailFirstEventKindObserver::failing_on(
-        TurnEventKind::Submitted,
-    ));
-    let notifier = Arc::new(RecordingWakeNotifier::default());
-    let publishing_store = lifecycle_publishing_store(
-        Arc::clone(&raw_store),
-        Some(Arc::clone(&observer) as Arc<dyn TurnCommittedEventObserver>),
-        None,
-    );
-    let publication_error_port: Arc<dyn LifecyclePublicationErrorPort> = publishing_store.clone();
-    let coordinator = DefaultTurnCoordinator::new(publishing_store)
-        .with_wake_notifier(notifier.clone())
-        .with_lifecycle_publication_error_port(publication_error_port);
-
-    let error = coordinator
-        .submit_turn(submit_request(
-            "thread-required-submit-error",
-            "idem-required-submit-error",
-        ))
-        .await
-        .unwrap_err();
-
-    assert!(matches!(error, TurnError::Unavailable { .. }));
-    let observed_events = observer.events();
-    assert_eq!(observed_events.len(), 1);
-    assert_eq!(observed_events[0].kind, TurnEventKind::Submitted);
-    assert_eq!(
-        raw_store.persistence_snapshot().await.unwrap().runs.len(),
-        1
-    );
-    assert_eq!(
-        notifier.wakes().len(),
-        1,
-        "committed submit must wake runner before propagating observer failure",
-    );
-}
-
-#[tokio::test]
-async fn lifecycle_publishing_store_propagates_required_observer_error_on_resume() {
-    let raw_store = Arc::new(in_memory_turn_state_store());
-    let bus = Arc::new(DefaultTurnLifecycleEventBus::new());
-    let publishing_store = Arc::new(LifecyclePublishingTurnStateStore::new(
-        Arc::clone(&raw_store),
-        bus.clone(),
-    ));
-    let notifier = Arc::new(RecordingWakeNotifier::default());
-    let publication_error_port: Arc<dyn LifecyclePublicationErrorPort> = publishing_store.clone();
-    let coordinator = DefaultTurnCoordinator::new(Arc::clone(&publishing_store))
-        .with_wake_notifier(notifier.clone())
-        .with_lifecycle_publication_error_port(publication_error_port);
-    let run_id = accepted_run_id(
-        &coordinator
-            .submit_turn(submit_request(
-                "thread-required-resume-error",
-                "idem-required-resume-error-submit",
-            ))
-            .await
-            .unwrap(),
-    );
-    let runner_id = TurnRunnerId::new();
-    let lease_token = TurnLeaseToken::new();
-    raw_store
-        .claim_next_run(ClaimRunRequest {
-            runner_id,
-            lease_token,
-            scope_filter: Some(scope("thread-required-resume-error")),
-        })
-        .await
-        .unwrap()
-        .unwrap();
-    let gate_ref = LoopGateRef::new("gate:required-resume-error").unwrap();
-    apply_test_loop_exit(
-        raw_store.as_ref(),
-        run_id,
-        runner_id,
-        lease_token,
-        dependent_blocked_mapping(TurnCheckpointId::new(), block_state_ref(), &gate_ref),
-    )
-    .await
-    .unwrap();
-
-    let observer = Arc::new(FailFirstEventKindObserver::failing_on(
-        TurnEventKind::Resumed,
-    ));
-    bus.subscribe_required(Arc::clone(&observer) as Arc<dyn TurnCommittedEventObserver>)
-        .unwrap();
-    notifier.clear();
-    let error = coordinator
-        .resume_turn(ResumeTurnRequest {
-            scope: scope("thread-required-resume-error"),
-            actor: actor(),
-            run_id,
-            gate_resolution_ref: GateRef::new(gate_ref.as_str()).unwrap(),
-            source_binding_ref: SourceBindingRef::new("source-web-resumed").unwrap(),
-            reply_target_binding_ref: ReplyTargetBindingRef::new("reply-web-resumed").unwrap(),
-            idempotency_key: IdempotencyKey::new("idem-required-resume-error").unwrap(),
-            precondition: ironclaw_turns::ResumeTurnPrecondition::BlockedDependentRunGate,
-            resume_disposition: None,
-        })
-        .await
-        .unwrap_err();
-
-    assert!(matches!(error, TurnError::Unavailable { .. }));
-    let observed_events = observer.events();
-    assert_eq!(observed_events.len(), 1);
-    assert_eq!(observed_events[0].kind, TurnEventKind::Resumed);
-    let resumed = raw_store
-        .get_run_state(GetRunStateRequest {
-            scope: scope("thread-required-resume-error"),
-            run_id,
-        })
-        .await
-        .unwrap();
-    assert_eq!(resumed.status, TurnStatus::Queued);
-    assert_eq!(
-        notifier.wakes().len(),
-        1,
-        "committed resume must wake runner before propagating observer failure",
-    );
-}
-
-#[tokio::test]
-async fn lifecycle_publishing_store_publishes_child_submit_event() {
-    let raw_store = Arc::new(in_memory_turn_state_store());
-    let sink = Arc::new(InMemoryTurnEventSink::default());
-    let publishing_store = lifecycle_publishing_store(raw_store, None, Some(sink.clone()));
-    let coordinator = DefaultTurnCoordinator::new(publishing_store);
-    let parent = accepted_run_id(
-        &coordinator
-            .submit_turn(submit_request(
-                "thread-lifecycle-child-parent",
-                "idem-lifecycle-child-parent",
-            ))
-            .await
-            .unwrap(),
-    );
-    let child_id = coordinator
-        .prepare_turn(scope("thread-lifecycle-child"))
-        .await
-        .unwrap();
-
-    coordinator
-        .submit_child_run(child_run_request(
-            scope("thread-lifecycle-child-parent"),
-            parent,
-            "thread-lifecycle-child",
-            child_id,
-            "idem-lifecycle-child",
-            2,
-        ))
-        .await
-        .unwrap();
-
-    assert!(sink.events().iter().any(|event| {
-        event.run_id == child_id
-            && event.kind == TurnEventKind::Submitted
-            && event.scope == scope("thread-lifecycle-child")
-            && event.status == TurnStatus::Queued
-    }));
 }
 
 #[tokio::test]
@@ -6483,21 +6097,6 @@ fn coordinator_no_crash_retries() -> (DefaultTurnCoordinator<TurnStore>, Arc<Tur
     (DefaultTurnCoordinator::new(store.clone()), store)
 }
 
-fn lifecycle_publishing_store(
-    store: Arc<TurnStore>,
-    required_observer: Option<Arc<dyn TurnCommittedEventObserver>>,
-    best_effort_sink: Option<Arc<dyn TurnEventSink>>,
-) -> Arc<LifecyclePublishingTurnStateStore<TurnStore>> {
-    let bus = Arc::new(DefaultTurnLifecycleEventBus::new());
-    if let Some(observer) = required_observer {
-        bus.subscribe_required(observer).unwrap();
-    }
-    if let Some(sink) = best_effort_sink {
-        bus.subscribe_best_effort(sink).unwrap();
-    }
-    Arc::new(LifecyclePublishingTurnStateStore::new(store, bus))
-}
-
 async fn complete_queued_run(store: &TurnStore, run_id: TurnRunId, thread: &str) {
     let runner_id = TurnRunnerId::new();
     let lease_token = TurnLeaseToken::new();
@@ -6699,103 +6298,6 @@ impl TurnRunWakeNotifier for FailingWakeNotifier {
     fn notify_queued_run(&self, _wake: TurnRunWake) -> Result<(), TurnRunWakeNotifyError> {
         Err(TurnRunWakeNotifyError::DeliveryUnavailable)
     }
-}
-
-#[derive(Default)]
-struct RecordingCommittedEventObserver {
-    events: Mutex<Vec<TurnLifecycleEvent>>,
-}
-
-impl RecordingCommittedEventObserver {
-    fn events(&self) -> Vec<TurnLifecycleEvent> {
-        self.events.lock().unwrap().clone()
-    }
-}
-
-#[async_trait::async_trait]
-impl TurnCommittedEventObserver for RecordingCommittedEventObserver {
-    fn observes_state(&self, state: &TurnRunState) -> bool {
-        state.status.is_terminal()
-    }
-
-    fn observes_event(&self, event: &TurnLifecycleEvent) -> bool {
-        event.status.is_terminal()
-    }
-
-    async fn observe_committed_state(&self, state: TurnRunState) -> Result<(), TurnError> {
-        self.events
-            .lock()
-            .unwrap()
-            .push(event_from_state_for_recording(&state));
-        Ok(())
-    }
-
-    async fn observe_committed_event(&self, event: TurnLifecycleEvent) -> Result<(), TurnError> {
-        self.events.lock().unwrap().push(event);
-        Ok(())
-    }
-}
-
-struct FailFirstEventKindObserver {
-    events: Mutex<Vec<TurnLifecycleEvent>>,
-    failed: AtomicBool,
-    fail_kind: TurnEventKind,
-}
-
-impl FailFirstEventKindObserver {
-    fn failing_on(fail_kind: TurnEventKind) -> Self {
-        Self {
-            events: Mutex::new(Vec::new()),
-            failed: AtomicBool::new(false),
-            fail_kind,
-        }
-    }
-
-    fn events(&self) -> Vec<TurnLifecycleEvent> {
-        self.events.lock().unwrap().clone()
-    }
-}
-
-#[async_trait::async_trait]
-impl TurnCommittedEventObserver for FailFirstEventKindObserver {
-    fn observes_event(&self, event: &TurnLifecycleEvent) -> bool {
-        event.kind == self.fail_kind
-    }
-
-    async fn observe_committed_state(&self, _state: TurnRunState) -> Result<(), TurnError> {
-        Ok(())
-    }
-
-    async fn observe_committed_event(&self, event: TurnLifecycleEvent) -> Result<(), TurnError> {
-        self.events.lock().unwrap().push(event);
-        if !self.failed.swap(true, Ordering::SeqCst) {
-            return Err(TurnError::Unavailable {
-                reason: "test committed event observer failed".to_string(),
-            });
-        }
-        Ok(())
-    }
-}
-
-fn event_from_state_for_recording(state: &TurnRunState) -> TurnLifecycleEvent {
-    let kind = match state.status {
-        TurnStatus::Running => TurnEventKind::RunnerClaimed,
-        TurnStatus::BlockedApproval
-        | TurnStatus::BlockedAuth
-        | TurnStatus::BlockedResource
-        | TurnStatus::BlockedDependentRun
-        | TurnStatus::BlockedExternalTool => TurnEventKind::Blocked,
-        TurnStatus::Completed => TurnEventKind::Completed,
-        TurnStatus::Cancelled => TurnEventKind::Cancelled,
-        TurnStatus::Failed => TurnEventKind::Failed,
-        TurnStatus::RecoveryRequired => TurnEventKind::RecoveryRequired,
-        TurnStatus::Queued | TurnStatus::CancelRequested => TurnEventKind::RunnerHeartbeat,
-    };
-    let sanitized_reason = state
-        .failure
-        .as_ref()
-        .map(|failure| failure.category().to_string());
-    TurnLifecycleEvent::from_run_state(state, kind, sanitized_reason)
 }
 
 struct PanickingWakeNotifier;

@@ -202,11 +202,9 @@ impl Inner {
                     self.update_active_lock(&record, request.now);
                     self.queued_runs.push_back(record.run_id);
                     let state = record.state();
-                    // Running → Queued mirrors relinquish's lifecycle event
-                    // (`RunnerHeartbeat`); the `LifecyclePublishingTurnStateStore`
-                    // wrapper independently classifies the recovered `Queued`
-                    // state the same way (`event_kind_for_state`), so the internal
-                    // event log and the published stream agree.
+                    // Running -> Queued mirrors relinquish's journal event
+                    // (`RunnerHeartbeat`), so recovery and normal relinquish
+                    // project the same state.
                     self.push_event(&record, TurnEventKind::RunnerHeartbeat, None, None);
                     recovered.push(state);
                     self.records.insert(run_id, record);

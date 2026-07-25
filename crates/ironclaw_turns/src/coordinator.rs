@@ -60,9 +60,7 @@ use crate::{
     InMemoryRunProfileResolver, ResumeTurnRequest, ResumeTurnResponse, RetryTurnRequest,
     RetryTurnResponse, RunProfileResolver, SubmitChildRunRequest, SubmitTurnRequest,
     SubmitTurnResponse, TurnCapacityResource, TurnError, TurnRunId, TurnRunState, TurnScope,
-    TurnSpawnTreeStateStore, TurnStateStore, TurnStatus,
-    events::EventCursor,
-    lifecycle::{LifecyclePublicationErrorPort, NoopLifecyclePublicationErrorPort},
+    TurnSpawnTreeStateStore, TurnStateStore, TurnStatus, events::EventCursor,
     process_journal::AgentTurnProcessRuntime,
 };
 
@@ -161,7 +159,6 @@ pub struct DefaultTurnCoordinator<S: ?Sized> {
     admission_policy: Arc<dyn TurnAdmissionPolicy>,
     run_profile_resolver: Arc<dyn RunProfileResolver>,
     wake_notifier: Arc<dyn TurnRunWakeNotifier>,
-    publication_error_port: Arc<dyn LifecyclePublicationErrorPort>,
     process_runtime: Option<AgentTurnProcessRuntime>,
     // Per-coordinator binding of run ids handed out by `prepare_turn` to the
     // scope they were prepared under. `submit_turn` consumes the reservation
@@ -180,7 +177,6 @@ where
             admission_policy: Arc::new(AllowAllTurnAdmissionPolicy),
             run_profile_resolver: Arc::new(InMemoryRunProfileResolver::default()),
             wake_notifier: Arc::new(NoopTurnRunWakeNotifier),
-            publication_error_port: Arc::new(NoopLifecyclePublicationErrorPort),
             process_runtime: None,
             prepared_run_id_scopes: Mutex::new(HashMap::new()),
         }
@@ -198,14 +194,6 @@ where
 
     pub fn with_wake_notifier(mut self, notifier: Arc<dyn TurnRunWakeNotifier>) -> Self {
         self.wake_notifier = notifier;
-        self
-    }
-
-    pub fn with_lifecycle_publication_error_port(
-        mut self,
-        port: Arc<dyn LifecyclePublicationErrorPort>,
-    ) -> Self {
-        self.publication_error_port = port;
         self
     }
 
@@ -262,11 +250,6 @@ fn submit_wake(scope: TurnScope, response: &SubmitTurnResponse) -> TurnRunWake {
     wake_from(scope, *run_id, *status, *event_cursor)
 }
 
-fn submit_event_cursor(response: &SubmitTurnResponse) -> EventCursor {
-    let SubmitTurnResponse::Accepted { event_cursor, .. } = response;
-    *event_cursor
-}
-
 fn resume_wake(scope: TurnScope, response: &ResumeTurnResponse) -> TurnRunWake {
     wake_from(
         scope,
@@ -299,16 +282,6 @@ fn notify_queued_run_best_effort(notifier: &dyn TurnRunWakeNotifier, wake: TurnR
         Ok(Ok(())) => {}
         Ok(Err(error)) => debug!(error = %error, "turn run wake notification failed"),
         Err(_) => debug!("turn run wake notifier panicked"),
-    }
-}
-
-fn deferred_publication_error(
-    port: &dyn LifecyclePublicationErrorPort,
-    cursor: EventCursor,
-) -> Result<(), TurnError> {
-    match port.take_lifecycle_publication_error(cursor) {
-        Some(error) => Err(error),
-        None => Ok(()),
     }
 }
 
@@ -410,10 +383,6 @@ where
             submit_wake(scope.clone(), &response),
         );
         trace_coordinator_latency_ok("notify_queued_run", &scope, Some(*run_id), wake_started_at);
-        deferred_publication_error(
-            self.publication_error_port.as_ref(),
-            submit_event_cursor(&response),
-        )?;
         Ok(response)
     }
 
@@ -459,7 +428,6 @@ where
             Some(response.run_id),
             wake_started_at,
         );
-        deferred_publication_error(self.publication_error_port.as_ref(), response.event_cursor)?;
         Ok(response)
     }
 
@@ -473,7 +441,6 @@ where
             self.wake_notifier.as_ref(),
             retry_wake(scope.clone(), &response),
         );
-        deferred_publication_error(self.publication_error_port.as_ref(), response.event_cursor)?;
         Ok(response)
     }
 
@@ -521,12 +488,6 @@ where
                 Some(response.run_id),
                 wake_started_at,
             );
-        }
-        if !response.already_terminal {
-            deferred_publication_error(
-                self.publication_error_port.as_ref(),
-                response.event_cursor,
-            )?;
         }
         Ok(response)
     }
@@ -605,10 +566,6 @@ where
             Some(*run_id),
             wake_started_at,
         );
-        deferred_publication_error(
-            self.publication_error_port.as_ref(),
-            submit_event_cursor(&response),
-        )?;
         Ok(response)
     }
 }

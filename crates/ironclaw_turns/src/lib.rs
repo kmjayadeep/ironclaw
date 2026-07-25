@@ -13,7 +13,6 @@ mod coordinator;
 pub mod events;
 mod external_tool_catalog;
 mod ids;
-mod lifecycle;
 pub mod loop_exit;
 mod origin;
 pub mod process_journal;
@@ -68,10 +67,6 @@ pub use ids::{
 };
 pub use ironclaw_host_api::{
     ModelInvalidOutputDetailReason, SanitizedCancelReason, SanitizedFailure, TurnOwner,
-};
-pub use lifecycle::{
-    DefaultTurnLifecycleEventBus, LifecyclePublicationErrorPort, LifecyclePublishingTurnStateStore,
-    NoopLifecyclePublicationErrorPort, TurnLifecycleEventBus,
 };
 pub use loop_exit::{
     BlockedEvidenceRequest, CompletionEvidenceRequest, FailureEvidenceRequest,
