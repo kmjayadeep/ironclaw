@@ -1,7 +1,7 @@
 // arch-exempt: large_file, channel attachment fetch/validate/land orchestration + caller-level tests, plan #6364
 //! InboundTurnService — the user-message turn submission path.
 //!
-//! This is the narrower user-message subset of [`ProductWorkflow`]. It
+//! This is the narrower user-message subset of [`ProductSurface`]. It
 //! resolves product adapter envelopes into a thread-bound accepted message, then
 //! hands off to the accepted-message turn submission seam. Keeping replay and
 //! submit/deferred handling behind that seam prevents adapter-specific binding
@@ -37,8 +37,11 @@ use crate::binding::{
     ProductConversationRouteKind, ResolveBindingRequest, ResolvedBinding,
     binding_profile_for_trigger,
 };
-use crate::binding_ref::{DEFAULT_BINDING_REF_RAW_MAX_BYTES, bounded_idempotency_key};
-use crate::error::ProductWorkflowError;
+use crate::binding_ref::{
+    DEFAULT_BINDING_REF_RAW_MAX_BYTES, bounded_idempotency_key, bounded_reply_target_binding_ref,
+    bounded_source_binding_ref,
+};
+use crate::error::ProductSurfaceFailure;
 use crate::policy::{
     BeforeInboundPolicy, BeforeInboundPolicyOutcome, BeforeInboundPolicyRequest,
     NoopBeforeInboundPolicy,
@@ -54,18 +57,18 @@ const BEFORE_INBOUND_POLICY_TIMEOUT: Duration = Duration::from_millis(10);
 ///
 /// The timeout keeps slow policy backends from holding an idempotency
 /// fingerprint in-flight indefinitely. A timed-out policy maps to a transient,
-/// non-permanent [`ProductWorkflowError::BeforeInboundPolicyFailed`] so the
+/// non-permanent [`ProductSurfaceFailure::BeforeInboundPolicyFailed`] so the
 /// workflow releases the fingerprint and lets the same inbound action retry.
 pub(crate) async fn check_before_inbound_policy(
     before_inbound_policy: &dyn BeforeInboundPolicy,
     request: BeforeInboundPolicyRequest,
-) -> Result<BeforeInboundPolicyOutcome, ProductWorkflowError> {
+) -> Result<BeforeInboundPolicyOutcome, ProductSurfaceFailure> {
     tokio::time::timeout(
         BEFORE_INBOUND_POLICY_TIMEOUT,
         before_inbound_policy.check_user_message(request),
     )
     .await
-    .map_err(|_| ProductWorkflowError::BeforeInboundPolicyFailed {
+    .map_err(|_| ProductSurfaceFailure::BeforeInboundPolicyFailed {
         reason: "before-inbound policy timed out".into(),
         permanent: false,
     })?
@@ -116,7 +119,7 @@ impl InboundTurnOutcome {
 
 /// Result of running replay, before-inbound policy, and fresh user-message acceptance.
 pub enum InboundUserMessageDispatch {
-    Accepted(Box<InboundTurnOutcome>),
+    Accepted(InboundTurnOutcome),
     Rejected(ProductRejection),
 }
 
@@ -153,20 +156,20 @@ pub trait InboundTurnService: Send + Sync {
     async fn replay_accepted_user_message(
         &self,
         envelope: &ProductInboundEnvelope,
-    ) -> Result<Option<InboundTurnOutcome>, ProductWorkflowError>;
+    ) -> Result<Option<InboundTurnOutcome>, ProductSurfaceFailure>;
 
     /// Accept a user message envelope: resolve binding, stage message, submit turn.
     async fn accept_user_message(
         &self,
         envelope: &ProductInboundEnvelope,
-    ) -> Result<InboundTurnOutcome, ProductWorkflowError>;
+    ) -> Result<InboundTurnOutcome, ProductSurfaceFailure>;
 
     /// Accept a user message while preserving the replay-before-policy ordering.
     async fn accept_user_message_with_before_policy(
         &self,
         envelope: &ProductInboundEnvelope,
         before_inbound_policy: &dyn BeforeInboundPolicy,
-    ) -> Result<InboundUserMessageDispatch, ProductWorkflowError>;
+    ) -> Result<InboundUserMessageDispatch, ProductSurfaceFailure>;
 
     /// Accept a user message together with host-staged inline attachment bytes.
     ///
@@ -186,9 +189,9 @@ pub trait InboundTurnService: Send + Sync {
         envelope: &ProductInboundEnvelope,
         before_inbound_policy: &dyn BeforeInboundPolicy,
         attachments: Vec<InboundAttachment>,
-    ) -> Result<InboundUserMessageDispatch, ProductWorkflowError> {
+    ) -> Result<InboundUserMessageDispatch, ProductSurfaceFailure> {
         if !attachments.is_empty() {
-            return Err(ProductWorkflowError::TurnSubmissionRejected {
+            return Err(ProductSurfaceFailure::TurnSubmissionRejected {
                 reason: "inbound attachments are not supported by this turn service".into(),
             });
         }
@@ -204,7 +207,7 @@ pub trait InboundTurnService: Send + Sync {
         before_inbound_policy: &dyn BeforeInboundPolicy,
         _channel_adapter: Arc<dyn ChannelAdapter>,
         _channel_egress: Arc<dyn RestrictedEgress>,
-    ) -> Result<InboundUserMessageDispatch, ProductWorkflowError> {
+    ) -> Result<InboundUserMessageDispatch, ProductSurfaceFailure> {
         if !envelope.channel_attachment_refs().is_empty() {
             return Err(permanent_attachment_failure(
                 "channel attachment transfer is not supported by this turn service",
@@ -261,7 +264,7 @@ where
     async fn replay_accepted_user_message(
         &self,
         envelope: &ProductInboundEnvelope,
-    ) -> Result<Option<InboundTurnOutcome>, ProductWorkflowError> {
+    ) -> Result<Option<InboundTurnOutcome>, ProductSurfaceFailure> {
         let prepared = self.prepare_user_message(envelope).await?;
         self.replay_prepared_user_message(envelope, &prepared).await
     }
@@ -269,15 +272,15 @@ where
     async fn accept_user_message(
         &self,
         envelope: &ProductInboundEnvelope,
-    ) -> Result<InboundTurnOutcome, ProductWorkflowError> {
+    ) -> Result<InboundTurnOutcome, ProductSurfaceFailure> {
         let policy = NoopBeforeInboundPolicy;
         match self
             .accept_user_message_with_before_policy(envelope, &policy)
             .await?
         {
-            InboundUserMessageDispatch::Accepted(outcome) => Ok(*outcome),
+            InboundUserMessageDispatch::Accepted(outcome) => Ok(outcome),
             InboundUserMessageDispatch::Rejected(_) => {
-                Err(ProductWorkflowError::TurnSubmissionRejected {
+                Err(ProductSurfaceFailure::TurnSubmissionRejected {
                     reason: "noop before-inbound policy unexpectedly rejected message".into(),
                 })
             }
@@ -288,7 +291,7 @@ where
         &self,
         envelope: &ProductInboundEnvelope,
         before_inbound_policy: &dyn BeforeInboundPolicy,
-    ) -> Result<InboundUserMessageDispatch, ProductWorkflowError> {
+    ) -> Result<InboundUserMessageDispatch, ProductSurfaceFailure> {
         self.accept_with_before_policy_inner(
             envelope,
             before_inbound_policy,
@@ -304,7 +307,7 @@ where
         envelope: &ProductInboundEnvelope,
         before_inbound_policy: &dyn BeforeInboundPolicy,
         attachments: Vec<InboundAttachment>,
-    ) -> Result<InboundUserMessageDispatch, ProductWorkflowError> {
+    ) -> Result<InboundUserMessageDispatch, ProductSurfaceFailure> {
         self.accept_with_before_policy_inner(
             envelope,
             before_inbound_policy,
@@ -321,7 +324,7 @@ where
         before_inbound_policy: &dyn BeforeInboundPolicy,
         channel_adapter: Arc<dyn ChannelAdapter>,
         channel_egress: Arc<dyn RestrictedEgress>,
-    ) -> Result<InboundUserMessageDispatch, ProductWorkflowError> {
+    ) -> Result<InboundUserMessageDispatch, ProductSurfaceFailure> {
         self.accept_with_before_policy_inner(
             envelope,
             before_inbound_policy,
@@ -346,9 +349,9 @@ where
         attachments: Vec<InboundAttachment>,
         pinned_channel_adapter: Option<Arc<dyn ChannelAdapter>>,
         pinned_channel_egress: Option<Arc<dyn RestrictedEgress>>,
-    ) -> Result<InboundUserMessageDispatch, ProductWorkflowError> {
+    ) -> Result<InboundUserMessageDispatch, ProductSurfaceFailure> {
         let ProductInboundPayload::UserMessage(payload) = envelope.payload() else {
-            return Err(ProductWorkflowError::UnsupportedActionKind {
+            return Err(ProductSurfaceFailure::UnsupportedActionKind {
                 kind: "non_user_message".into(),
             });
         };
@@ -358,7 +361,7 @@ where
             .replay_prepared_user_message(envelope, &prepared)
             .await?
         {
-            return Ok(InboundUserMessageDispatch::Accepted(Box::new(outcome)));
+            return Ok(InboundUserMessageDispatch::Accepted(outcome));
         }
 
         let policy_outcome = check_before_inbound_policy(
@@ -373,7 +376,7 @@ where
                 let rewritten_trigger = payload.trigger;
                 dispatch_envelope =
                     envelope.with_rewritten_user_message(payload).map_err(|_| {
-                        ProductWorkflowError::TurnSubmissionRejected {
+                        ProductSurfaceFailure::TurnSubmissionRejected {
                             reason: "invalid policy-rewritten user message".into(),
                         }
                     })?;
@@ -400,7 +403,6 @@ where
 
         self.accept_prepared_user_message(prepared_for_turn, envelope_for_turn, attachments)
             .await
-            .map(Box::new)
             .map(InboundUserMessageDispatch::Accepted)
     }
 
@@ -410,9 +412,9 @@ where
         inline_attachments: Vec<InboundAttachment>,
         pinned_channel_adapter: Option<&dyn ChannelAdapter>,
         pinned_channel_egress: Option<&dyn RestrictedEgress>,
-    ) -> Result<Vec<InboundAttachment>, ProductWorkflowError> {
+    ) -> Result<Vec<InboundAttachment>, ProductSurfaceFailure> {
         let ProductInboundPayload::UserMessage(payload) = envelope.payload() else {
-            return Err(ProductWorkflowError::UnsupportedActionKind {
+            return Err(ProductSurfaceFailure::UnsupportedActionKind {
                 kind: "non_user_message".into(),
             });
         };
@@ -471,7 +473,7 @@ where
             if let Some(declared_size) = source.descriptor.size_bytes
                 && declared_size != attachment.bytes.len() as u64
             {
-                return Err(ProductWorkflowError::InboundAttachmentFailed {
+                return Err(ProductSurfaceFailure::InboundAttachmentFailed {
                     reason: "fetched attachment size does not match its descriptor".into(),
                     retryable: true,
                 });
@@ -490,9 +492,9 @@ where
     async fn prepare_user_message(
         &self,
         envelope: &ProductInboundEnvelope,
-    ) -> Result<PreparedUserMessage, ProductWorkflowError> {
+    ) -> Result<PreparedUserMessage, ProductSurfaceFailure> {
         let ProductInboundPayload::UserMessage(payload) = envelope.payload() else {
-            return Err(ProductWorkflowError::UnsupportedActionKind {
+            return Err(ProductSurfaceFailure::UnsupportedActionKind {
                 kind: "non_user_message".into(),
             });
         };
@@ -538,7 +540,7 @@ where
         &self,
         envelope: &ProductInboundEnvelope,
         prepared: &PreparedUserMessage,
-    ) -> Result<Option<InboundTurnOutcome>, ProductWorkflowError> {
+    ) -> Result<Option<InboundTurnOutcome>, ProductSurfaceFailure> {
         let Some(replay) = self
             .thread_service
             .replay_accepted_inbound_message(ReplayAcceptedInboundMessageRequest {
@@ -548,7 +550,7 @@ where
                 external_event_id: envelope.external_event_id().as_str().to_string(),
             })
             .await
-            .map_err(|e| ProductWorkflowError::Transient {
+            .map_err(|e| ProductSurfaceFailure::Transient {
                 reason: format!("failed to replay accepted inbound message: {e}"),
             })?
         else {
@@ -572,9 +574,9 @@ where
         prepared: PreparedUserMessage,
         envelope: &ProductInboundEnvelope,
         attachments: Vec<InboundAttachment>,
-    ) -> Result<InboundTurnOutcome, ProductWorkflowError> {
+    ) -> Result<InboundTurnOutcome, ProductSurfaceFailure> {
         let ProductInboundPayload::UserMessage(payload) = envelope.payload() else {
-            return Err(ProductWorkflowError::UnsupportedActionKind {
+            return Err(ProductSurfaceFailure::UnsupportedActionKind {
                 kind: "non_user_message".into(),
             });
         };
@@ -587,7 +589,7 @@ where
                 metadata_json: None,
             })
             .await
-            .map_err(|e| ProductWorkflowError::Transient {
+            .map_err(|e| ProductSurfaceFailure::Transient {
                 reason: format!("failed to ensure thread: {e}"),
             })?;
 
@@ -599,7 +601,7 @@ where
             MessageContent::text(payload.text.clone())
         } else {
             let lander = self.inbound_attachments.as_ref().ok_or_else(|| {
-                ProductWorkflowError::TurnSubmissionRejected {
+                ProductSurfaceFailure::TurnSubmissionRejected {
                     reason: "inbound attachment lander not configured".into(),
                 }
             })?;
@@ -610,7 +612,7 @@ where
                     attachments,
                 )
                 .await
-                .map_err(|e| ProductWorkflowError::Transient {
+                .map_err(|e| ProductSurfaceFailure::Transient {
                     reason: format!("failed to land inbound attachments: {e}"),
                 })?;
             MessageContent::with_attachments(payload.text.clone(), refs)
@@ -629,7 +631,7 @@ where
                 content,
             })
             .await
-            .map_err(|e| ProductWorkflowError::Transient {
+            .map_err(|e| ProductSurfaceFailure::Transient {
                 reason: format!("failed to accept inbound message: {e}"),
             })?;
 
@@ -637,6 +639,8 @@ where
             binding: prepared.binding,
             thread_scope: prepared.thread_scope,
             message_id: accepted.message_id,
+            source_binding_id: prepared.source_binding_id,
+            reply_target_binding_id,
             idempotency_key_raw: prepared.submit_idempotency_key,
             received_at: envelope.received_at(),
             adapter_id: prepared.adapter_id,
@@ -652,7 +656,7 @@ where
 fn validate_attachment_sources(
     descriptors: &[crate::ProductAttachmentDescriptor],
     sources: &[ChannelAttachmentRef],
-) -> Result<(), ProductWorkflowError> {
+) -> Result<(), ProductSurfaceFailure> {
     if descriptors.len() != sources.len() {
         return Err(permanent_attachment_failure(
             "channel attachment references do not match message descriptors",
@@ -692,10 +696,10 @@ fn validate_attachment_sources(
     Ok(())
 }
 
-fn channel_attachment_error(error: ChannelError) -> ProductWorkflowError {
+fn channel_attachment_error(error: ChannelError) -> ProductSurfaceFailure {
     match error {
         ChannelError::AttachmentTransfer { retryable, .. } => {
-            ProductWorkflowError::InboundAttachmentFailed {
+            ProductSurfaceFailure::InboundAttachmentFailed {
                 reason: "channel attachment transfer failed".into(),
                 retryable,
             }
@@ -711,8 +715,8 @@ fn channel_attachment_error(error: ChannelError) -> ProductWorkflowError {
     }
 }
 
-fn permanent_attachment_failure(reason: impl Into<String>) -> ProductWorkflowError {
-    ProductWorkflowError::InboundAttachmentFailed {
+fn permanent_attachment_failure(reason: impl Into<String>) -> ProductSurfaceFailure {
+    ProductSurfaceFailure::InboundAttachmentFailed {
         reason: reason.into(),
         retryable: false,
     }
@@ -725,7 +729,7 @@ async fn submit_or_replay_accepted_message<T, C>(
     submit_idempotency_key: String,
     received_at: DateTime<Utc>,
     prepared: &PreparedUserMessage,
-) -> Result<InboundTurnOutcome, ProductWorkflowError>
+) -> Result<InboundTurnOutcome, ProductSurfaceFailure>
 where
     T: SessionThreadService,
     C: TurnCoordinator,
@@ -761,11 +765,11 @@ impl ProductInboundTurnHandoff {
         submit_idempotency_key: String,
         received_at: DateTime<Utc>,
         adapter_id: ProductAdapterId,
-    ) -> Result<Self, ProductWorkflowError> {
+    ) -> Result<Self, ProductSurfaceFailure> {
         let binding = binding_from_replay(&replay)?;
         let thread_scope = replay.scope.clone();
         let source_channel = ProductSourceChannel::new(adapter_id.as_str()).map_err(|e| {
-            ProductWorkflowError::TurnSubmissionRejected {
+            ProductSurfaceFailure::TurnSubmissionRejected {
                 reason: format!("invalid source channel: {e}"),
             }
         })?;
@@ -789,7 +793,7 @@ impl ProductInboundTurnHandoff {
         submit_idempotency_key: String,
         received_at: DateTime<Utc>,
         prepared: &PreparedUserMessage,
-    ) -> Result<Self, ProductWorkflowError> {
+    ) -> Result<Self, ProductSurfaceFailure> {
         Self::from_replay_parts(
             replay,
             submit_idempotency_key,
@@ -809,7 +813,7 @@ impl ProductInboundTurnHandoff {
         submit_idempotency_key: String,
         received_at: DateTime<Utc>,
         context: ReplaySubmissionContext,
-    ) -> Result<Self, ProductWorkflowError> {
+    ) -> Result<Self, ProductSurfaceFailure> {
         let ReplaySubmissionContext {
             binding,
             thread_scope,
@@ -821,13 +825,13 @@ impl ProductInboundTurnHandoff {
 
         if replay.status == MessageStatus::Submitted {
             let Some(turn_run_id) = replay.turn_run_id.as_deref() else {
-                return Err(ProductWorkflowError::TurnSubmissionRejected {
+                return Err(ProductSurfaceFailure::TurnSubmissionRejected {
                     reason: "submitted replay missing turn_run_id".into(),
                 });
             };
             let submitted_run_id = Uuid::parse_str(turn_run_id)
                 .map(TurnRunId::from_uuid)
-                .map_err(|e| ProductWorkflowError::TurnSubmissionRejected {
+                .map_err(|e| ProductSurfaceFailure::TurnSubmissionRejected {
                     reason: format!("invalid submitted turn_run_id: {e}"),
                 })?;
             return Ok(Self::AlreadySubmitted {
@@ -843,7 +847,7 @@ impl ProductInboundTurnHandoff {
                 .as_deref()
                 .map(|s| {
                     Uuid::parse_str(s).map(TurnRunId::from_uuid).map_err(|e| {
-                        ProductWorkflowError::TurnSubmissionRejected {
+                        ProductSurfaceFailure::TurnSubmissionRejected {
                             reason: format!("invalid rejected busy turn_run_id: {e}"),
                         }
                     })
@@ -860,7 +864,7 @@ impl ProductInboundTurnHandoff {
             replay.status,
             MessageStatus::Accepted | MessageStatus::DeferredBusy
         ) {
-            return Err(ProductWorkflowError::TurnSubmissionRejected {
+            return Err(ProductSurfaceFailure::TurnSubmissionRejected {
                 reason: format!(
                     "cannot resubmit inbound message replay in {:?} status",
                     replay.status
@@ -868,11 +872,24 @@ impl ProductInboundTurnHandoff {
             });
         }
 
+        let source_binding_id = replay.source_binding_id.clone().ok_or_else(|| {
+            ProductSurfaceFailure::TurnSubmissionRejected {
+                reason: "accepted replay missing source_binding_id".into(),
+            }
+        })?;
+        let reply_target_binding_id = replay.reply_target_binding_id.clone().ok_or_else(|| {
+            ProductSurfaceFailure::TurnSubmissionRejected {
+                reason: "accepted replay missing reply_target_binding_id".into(),
+            }
+        })?;
+
         Ok(Self::NeedsSubmission(Box::new(
             AcceptedProductInboundTurn {
                 binding,
                 thread_scope,
                 message_id: replay.message_id,
+                source_binding_id,
+                reply_target_binding_id,
                 idempotency_key_raw: submit_idempotency_key,
                 received_at,
                 adapter_id,
@@ -890,7 +907,7 @@ impl ProductInboundTurnHandoff {
         self,
         thread_service: &T,
         turn_coordinator: &C,
-    ) -> Result<InboundTurnOutcome, ProductWorkflowError>
+    ) -> Result<InboundTurnOutcome, ProductSurfaceFailure>
     where
         T: SessionThreadService,
         C: TurnCoordinator,
@@ -925,6 +942,8 @@ struct AcceptedProductInboundTurn {
     binding: ResolvedBinding,
     thread_scope: ThreadScope,
     message_id: ThreadMessageId,
+    source_binding_id: String,
+    reply_target_binding_id: String,
     idempotency_key_raw: String,
     received_at: DateTime<Utc>,
     adapter_id: ProductAdapterId,
@@ -938,7 +957,7 @@ impl AcceptedProductInboundTurn {
         self,
         thread_service: &T,
         turn_coordinator: &C,
-    ) -> Result<InboundTurnOutcome, ProductWorkflowError>
+    ) -> Result<InboundTurnOutcome, ProductSurfaceFailure>
     where
         T: SessionThreadService,
         C: TurnCoordinator,
@@ -947,6 +966,8 @@ impl AcceptedProductInboundTurn {
             binding,
             thread_scope,
             message_id,
+            source_binding_id,
+            reply_target_binding_id,
             idempotency_key_raw,
             received_at,
             adapter_id,
@@ -962,26 +983,40 @@ impl AcceptedProductInboundTurn {
             thread_scope.owner_user_id.clone(),
         );
         let actor = TurnActor::new(binding.actor_user_id.clone());
-        let source_binding_ref = binding.source_binding_ref.clone();
+        let source_binding_ref = bounded_source_binding_ref(
+            "src",
+            &source_binding_id,
+            DEFAULT_BINDING_REF_RAW_MAX_BYTES,
+        )
+        .map_err(|e| ProductSurfaceFailure::TurnSubmissionRejected {
+            reason: format!("invalid src ref: {e}"),
+        })?;
         let accepted_message_ref = accepted_message_ref(message_id)?;
-        let reply_target_binding_ref = binding.reply_target_binding_ref.clone();
+        let reply_target_binding_ref = bounded_reply_target_binding_ref(
+            "reply",
+            &reply_target_binding_id,
+            DEFAULT_BINDING_REF_RAW_MAX_BYTES,
+        )
+        .map_err(|e| ProductSurfaceFailure::TurnSubmissionRejected {
+            reason: format!("invalid reply ref: {e}"),
+        })?;
         let idempotency_key = bounded_idempotency_key(
             "turn",
             &idempotency_key_raw,
             DEFAULT_BINDING_REF_RAW_MAX_BYTES,
         )
-        .map_err(|e| ProductWorkflowError::TurnSubmissionRejected {
+        .map_err(|e| ProductSurfaceFailure::TurnSubmissionRejected {
             reason: format!("invalid turn ref: {e}"),
         })?;
 
         let run_adapter =
             ironclaw_turns::RunOriginAdapter::new(adapter_id.as_str()).map_err(|e| {
-                ProductWorkflowError::TurnSubmissionRejected {
+                ProductSurfaceFailure::TurnSubmissionRejected {
                     reason: e.to_string(),
                 }
             })?;
         let run_source_channel = ironclaw_turns::RunOriginAdapter::new(source_channel.as_str())
-            .map_err(|e| ProductWorkflowError::TurnSubmissionRejected {
+            .map_err(|e| ProductSurfaceFailure::TurnSubmissionRejected {
                 reason: e.to_string(),
             })?;
         let product_context = ironclaw_turns::product_context::resolve_inbound_with_source_channel(
@@ -1021,7 +1056,7 @@ impl AcceptedProductInboundTurn {
                         run_id.to_string(),
                     )
                     .await
-                    .map_err(|e| ProductWorkflowError::Transient {
+                    .map_err(|e| ProductSurfaceFailure::Transient {
                         reason: format!("failed to mark message submitted: {e}"),
                     })?;
                 Ok(InboundTurnOutcome::Submitted {
@@ -1034,7 +1069,7 @@ impl AcceptedProductInboundTurn {
                 thread_service
                     .mark_message_rejected_busy(&thread_scope, &binding.thread_id, message_id)
                     .await
-                    .map_err(|e| ProductWorkflowError::Transient {
+                    .map_err(|e| ProductSurfaceFailure::Transient {
                         reason: format!("failed to mark message rejected: {e}"),
                     })?;
                 Ok(InboundTurnOutcome::RejectedBusy {
@@ -1043,16 +1078,16 @@ impl AcceptedProductInboundTurn {
                     binding,
                 })
             }
-            Err(error) => Err(ProductWorkflowError::TurnSubmissionFailed { error }),
+            Err(error) => Err(ProductSurfaceFailure::TurnSubmissionFailed { error }),
         }
     }
 }
 
 fn accepted_message_ref(
     message_id: ThreadMessageId,
-) -> Result<AcceptedMessageRef, ProductWorkflowError> {
+) -> Result<AcceptedMessageRef, ProductSurfaceFailure> {
     AcceptedMessageRef::new(format!("msg:{message_id}")).map_err(|e| {
-        ProductWorkflowError::TurnSubmissionRejected {
+        ProductSurfaceFailure::TurnSubmissionRejected {
             reason: format!("invalid accepted message ref: {e}"),
         }
     })
@@ -1061,15 +1096,15 @@ fn accepted_message_ref(
 #[cfg(test)]
 fn binding_from_replay(
     replay: &AcceptedInboundMessageReplay,
-) -> Result<ResolvedBinding, ProductWorkflowError> {
+) -> Result<ResolvedBinding, ProductSurfaceFailure> {
     let actor_user_id = match replay.actor_id.as_deref() {
         Some(actor_id) => {
-            UserId::new(actor_id).map_err(|e| ProductWorkflowError::BindingResolutionFailed {
+            UserId::new(actor_id).map_err(|e| ProductSurfaceFailure::BindingResolutionFailed {
                 reason: format!("invalid replay actor user id: {e}"),
             })?
         }
         None => replay.scope.owner_user_id.clone().ok_or_else(|| {
-            ProductWorkflowError::BindingResolutionFailed {
+            ProductSurfaceFailure::BindingResolutionFailed {
                 reason: "accepted replay missing actor user id and owner user id".into(),
             }
         })?,
@@ -1078,15 +1113,6 @@ fn binding_from_replay(
         tenant_id: replay.scope.tenant_id.clone(),
         actor_user_id,
         subject_user_id: replay.scope.owner_user_id.clone(),
-        source_binding_ref: ironclaw_turns::SourceBindingRef::new("source:test-replay").map_err(
-            |e| ProductWorkflowError::BindingResolutionFailed {
-                reason: e.to_string(),
-            },
-        )?,
-        reply_target_binding_ref: ironclaw_turns::ReplyTargetBindingRef::new("reply:test-replay")
-            .map_err(|e| ProductWorkflowError::BindingResolutionFailed {
-            reason: e.to_string(),
-        })?,
         thread_id: replay.thread_id.clone(),
         agent_id: Some(replay.scope.agent_id.clone()),
         project_id: replay.scope.project_id.clone(),
@@ -1095,9 +1121,9 @@ fn binding_from_replay(
 
 fn thread_scope_from_binding(
     binding: &ResolvedBinding,
-) -> Result<ThreadScope, ProductWorkflowError> {
+) -> Result<ThreadScope, ProductSurfaceFailure> {
     let Some(agent_id) = binding.agent_id.clone() else {
-        return Err(ProductWorkflowError::BindingResolutionFailed {
+        return Err(ProductSurfaceFailure::BindingResolutionFailed {
             reason: "resolved binding missing agent_id required for thread scope".into(),
         });
     };
@@ -1479,7 +1505,7 @@ mod tests {
         async fn check_user_message(
             &self,
             _request: BeforeInboundPolicyRequest,
-        ) -> Result<BeforeInboundPolicyOutcome, ProductWorkflowError> {
+        ) -> Result<BeforeInboundPolicyOutcome, ProductSurfaceFailure> {
             pending().await
         }
     }
@@ -1492,7 +1518,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            ProductWorkflowError::BeforeInboundPolicyFailed {
+            ProductSurfaceFailure::BeforeInboundPolicyFailed {
                 permanent: false,
                 ..
             }
@@ -1623,12 +1649,6 @@ mod tests {
                 tenant_id: tenant_id(),
                 actor_user_id: user_id(),
                 subject_user_id: Some(subject_user_id.clone()),
-                source_binding_ref: ironclaw_turns::SourceBindingRef::new("source:test-prepared")
-                    .unwrap(),
-                reply_target_binding_ref: ironclaw_turns::ReplyTargetBindingRef::new(
-                    "reply:test-prepared",
-                )
-                .unwrap(),
                 thread_id: thread_id(),
                 agent_id: Some(AgentId::new("agent:alpha").unwrap()),
                 project_id: None,
@@ -1680,12 +1700,6 @@ mod tests {
                 tenant_id: tenant_id(),
                 actor_user_id: user_id(),
                 subject_user_id: Some(user_id()),
-                source_binding_ref: ironclaw_turns::SourceBindingRef::new("source:test-shared")
-                    .unwrap(),
-                reply_target_binding_ref: ironclaw_turns::ReplyTargetBindingRef::new(
-                    "reply:test-shared",
-                )
-                .unwrap(),
                 thread_id: thread_id(),
                 agent_id: Some(AgentId::new("agent:alpha").unwrap()),
                 project_id: None,
@@ -1828,17 +1842,11 @@ mod tests {
         async fn resolve_binding(
             &self,
             _request: ResolveBindingRequest,
-        ) -> Result<ResolvedBinding, ProductWorkflowError> {
+        ) -> Result<ResolvedBinding, ProductSurfaceFailure> {
             Ok(ResolvedBinding {
                 tenant_id: tenant_id(),
                 actor_user_id: user_id(),
                 subject_user_id: Some(user_id()),
-                source_binding_ref: ironclaw_turns::SourceBindingRef::new("source:test-landing")
-                    .unwrap(),
-                reply_target_binding_ref: ironclaw_turns::ReplyTargetBindingRef::new(
-                    "reply:test-landing",
-                )
-                .unwrap(),
                 thread_id: thread_id(),
                 agent_id: Some(AgentId::new("agent:alpha").unwrap()),
                 project_id: None,
@@ -1848,7 +1856,7 @@ mod tests {
         async fn lookup_binding(
             &self,
             request: ResolveBindingRequest,
-        ) -> Result<ResolvedBinding, ProductWorkflowError> {
+        ) -> Result<ResolvedBinding, ProductSurfaceFailure> {
             self.resolve_binding(request).await
         }
     }
@@ -2168,7 +2176,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                Err(ProductWorkflowError::TurnSubmissionRejected { .. })
+                Err(ProductSurfaceFailure::TurnSubmissionRejected { .. })
             ));
             assert_eq!(adapter.fetch_count(), 0);
         }
@@ -2185,7 +2193,7 @@ mod tests {
         envelope: &ProductInboundEnvelope,
         policy: &dyn BeforeInboundPolicy,
         adapter: Arc<FetchingChannelAdapter>,
-    ) -> Result<InboundUserMessageDispatch, ProductWorkflowError> {
+    ) -> Result<InboundUserMessageDispatch, ProductSurfaceFailure> {
         service
             .accept_user_message_with_before_policy_and_channel_transfer(
                 envelope,
@@ -2206,7 +2214,7 @@ mod tests {
         async fn check_user_message(
             &self,
             _request: BeforeInboundPolicyRequest,
-        ) -> Result<BeforeInboundPolicyOutcome, ProductWorkflowError> {
+        ) -> Result<BeforeInboundPolicyOutcome, ProductSurfaceFailure> {
             assert_eq!(
                 self.adapter.fetch_count(),
                 0,
@@ -2356,7 +2364,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            ProductWorkflowError::InboundAttachmentFailed {
+            ProductSurfaceFailure::InboundAttachmentFailed {
                 retryable: false,
                 ..
             }
@@ -2399,7 +2407,7 @@ mod tests {
         .await;
         assert!(matches!(
             first,
-            Err(ProductWorkflowError::InboundAttachmentFailed {
+            Err(ProductSurfaceFailure::InboundAttachmentFailed {
                 retryable: true,
                 ref reason,
             }) if reason == "channel attachment transfer failed"
@@ -2438,7 +2446,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(ProductWorkflowError::InboundAttachmentFailed {
+            Err(ProductSurfaceFailure::InboundAttachmentFailed {
                 retryable: false,
                 ..
             })
@@ -2474,7 +2482,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(ProductWorkflowError::InboundAttachmentFailed {
+            Err(ProductSurfaceFailure::InboundAttachmentFailed {
                 retryable: false,
                 ..
             })
@@ -2522,7 +2530,7 @@ mod tests {
 
             assert!(matches!(
                 result,
-                Err(ProductWorkflowError::InboundAttachmentFailed {
+                Err(ProductSurfaceFailure::InboundAttachmentFailed {
                     retryable: false,
                     ..
                 })
@@ -2559,7 +2567,7 @@ mod tests {
         .await;
         assert!(matches!(
             per_file_result,
-            Err(ProductWorkflowError::InboundAttachmentFailed {
+            Err(ProductSurfaceFailure::InboundAttachmentFailed {
                 retryable: false,
                 ..
             })
@@ -2604,7 +2612,7 @@ mod tests {
         .await;
         assert!(matches!(
             total_result,
-            Err(ProductWorkflowError::InboundAttachmentFailed {
+            Err(ProductSurfaceFailure::InboundAttachmentFailed {
                 retryable: false,
                 ..
             })
@@ -2683,7 +2691,7 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(ProductWorkflowError::TurnSubmissionRejected { .. })
+                Err(ProductSurfaceFailure::TurnSubmissionRejected { .. })
             ),
             "a missing lander must reject the turn, never silently drop the attachment"
         );
@@ -2700,15 +2708,15 @@ mod tests {
         async fn replay_accepted_user_message(
             &self,
             _envelope: &ProductInboundEnvelope,
-        ) -> Result<Option<InboundTurnOutcome>, ProductWorkflowError> {
+        ) -> Result<Option<InboundTurnOutcome>, ProductSurfaceFailure> {
             Ok(None)
         }
 
         async fn accept_user_message(
             &self,
             _envelope: &ProductInboundEnvelope,
-        ) -> Result<InboundTurnOutcome, ProductWorkflowError> {
-            Err(ProductWorkflowError::Transient {
+        ) -> Result<InboundTurnOutcome, ProductSurfaceFailure> {
+            Err(ProductSurfaceFailure::Transient {
                 reason: "delegated".into(),
             })
         }
@@ -2717,8 +2725,8 @@ mod tests {
             &self,
             _envelope: &ProductInboundEnvelope,
             _before_inbound_policy: &dyn BeforeInboundPolicy,
-        ) -> Result<InboundUserMessageDispatch, ProductWorkflowError> {
-            Err(ProductWorkflowError::Transient {
+        ) -> Result<InboundUserMessageDispatch, ProductSurfaceFailure> {
+            Err(ProductSurfaceFailure::Transient {
                 reason: "delegated".into(),
             })
         }
@@ -2747,7 +2755,7 @@ mod tests {
         assert!(
             matches!(
                 rejected,
-                Err(ProductWorkflowError::TurnSubmissionRejected { .. })
+                Err(ProductSurfaceFailure::TurnSubmissionRejected { .. })
             ),
             "the default must fail closed on inline bytes, never silently drop them"
         );
@@ -2760,7 +2768,7 @@ mod tests {
             )
             .await;
         assert!(
-            matches!(delegated, Err(ProductWorkflowError::Transient { .. })),
+            matches!(delegated, Err(ProductSurfaceFailure::Transient { .. })),
             "with no attachments the default must delegate to the normal path"
         );
     }
@@ -2786,7 +2794,7 @@ mod tests {
         };
 
         match err {
-            ProductWorkflowError::TurnSubmissionRejected { reason } => {
+            ProductSurfaceFailure::TurnSubmissionRejected { reason } => {
                 assert!(
                     reason.contains("invalid rejected busy turn_run_id"),
                     "expected reason to contain 'invalid rejected busy turn_run_id', got: {reason}"

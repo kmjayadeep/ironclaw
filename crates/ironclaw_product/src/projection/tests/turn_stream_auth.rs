@@ -1,10 +1,6 @@
 use super::*;
 
-use crate::{
-    AuthChallengeProvider, AuthChallengeView, AuthPromptChallengeKind,
-    ChannelConnectionRequirement, ChannelPairingCode, ChannelPairingIssue,
-    PairingAuthChallengeView, RebornChannelConnectStrategy,
-};
+use crate::{AuthChallengeProvider, AuthChallengeView, AuthPromptChallengeKind};
 use ironclaw_auth::{AuthProviderId, OAuthAuthorizationUrl};
 use ironclaw_host_api::{
     RuntimeCredentialAccountSetup, RuntimeCredentialAuthRequirement, VendorId,
@@ -45,7 +41,6 @@ impl AuthChallengeProvider for FakeAuthChallengeProvider {
                     .unwrap(),
             ),
             expires_at: Some(chrono::Utc::now() + chrono::Duration::minutes(10)),
-            pairing: None,
         }))
     }
 }
@@ -80,22 +75,6 @@ impl AuthChallengeProvider for FakePairingAuthChallengeProvider {
             account_label: None,
             authorization_url: None,
             expires_at: None,
-            pairing: Some(PairingAuthChallengeView {
-                issue: ChannelPairingIssue {
-                    code: ChannelPairingCode::new("ABCDEFGH").unwrap(),
-                    deep_link: Some("https://t.me/ironclaw_bot?start=ABCDEFGH".to_string()),
-                    expires_at: chrono::Utc::now() + chrono::Duration::minutes(15),
-                },
-                connection: ChannelConnectionRequirement {
-                    channel: "telegram".to_string(),
-                    display_name: "Telegram".to_string(),
-                    strategy: RebornChannelConnectStrategy::WebGeneratedCode,
-                    instructions: "Send the generated code to the Telegram bot.".to_string(),
-                    input_placeholder: String::new(),
-                    submit_label: "Open pairing".to_string(),
-                    error_message: "Telegram pairing failed.".to_string(),
-                },
-            }),
         }))
     }
 }
@@ -191,7 +170,7 @@ async fn product_event_stream_enriches_auth_prompt_through_projection_stream() {
 }
 
 #[tokio::test]
-async fn product_event_stream_projects_pairing_prompt_without_text_input_placeholder() {
+async fn product_event_stream_does_not_invent_pairing_prompt_context() {
     let tenant_id = TenantId::new("webui-events-tenant").unwrap();
     let user_id = UserId::new("webui-events-user").unwrap();
     let agent_id = AgentId::new("webui-events-agent").unwrap();
@@ -269,18 +248,8 @@ async fn product_event_stream_projects_pairing_prompt_without_text_input_placeho
         Some(AuthPromptChallengeKind::Pairing)
     );
     assert_eq!(prompt.provider.as_deref(), Some("telegram"));
-    assert_eq!(
-        prompt
-            .connection
-            .as_ref()
-            .expect("connection context")
-            .input_placeholder,
-        None
-    );
-    assert_eq!(
-        prompt.pairing.as_ref().expect("pairing context").code,
-        "ABCDEFGH"
-    );
+    assert!(prompt.connection.is_none());
+    assert!(prompt.pairing.is_none());
 
     let auth_context = events
         .iter()
@@ -298,22 +267,8 @@ async fn product_event_stream_projects_pairing_prompt_without_text_input_placeho
             _ => None,
         })
         .expect("projected pairing auth context");
-    assert_eq!(
-        auth_context
-            .connection
-            .as_ref()
-            .expect("projected connection context")
-            .input_placeholder,
-        None
-    );
-    assert_eq!(
-        auth_context
-            .pairing
-            .as_ref()
-            .expect("projected pairing context")
-            .code,
-        "ABCDEFGH"
-    );
+    assert!(auth_context.connection.is_none());
+    assert!(auth_context.pairing.is_none());
 }
 
 #[tokio::test]
@@ -636,6 +591,127 @@ async fn product_event_stream_surfaces_auth_challenge_lookup_failure() {
 
     assert!(matches!(
         error,
-        ProductAdapterError::WorkflowTransient { .. }
+        ProductAdapterError::SurfaceTransient { .. }
     ));
+}
+
+#[tokio::test]
+async fn product_event_stream_creates_vendor_oauth_prompt_for_runtime_credential_gate() {
+    struct VendorOAuthChallengeProvider;
+
+    #[async_trait]
+    impl AuthChallengeProvider for VendorOAuthChallengeProvider {
+        async fn challenge_for_gate(
+            &self,
+            _scope: &TurnScope,
+            _owner_user_id: &UserId,
+            _run_id: TurnRunId,
+            _gate_ref: &str,
+            credential_requirements: &[RuntimeCredentialAuthRequirement],
+        ) -> Result<Option<AuthChallengeView>, ironclaw_auth::AuthProductError> {
+            let Some(requirement) = credential_requirements.first() else {
+                return Ok(None);
+            };
+            if requirement.provider.as_str() != "vendorco"
+                || requirement.provider_scopes != ["items:read"]
+            {
+                return Ok(None);
+            }
+            Ok(Some(AuthChallengeView {
+                kind: AuthPromptChallengeKind::OAuthUrl,
+                provider: AuthProviderId::new("vendorco".to_string()).unwrap(),
+                account_label: None,
+                authorization_url: Some(
+                    OAuthAuthorizationUrl::new(
+                        "https://auth.vendorco.example/authorize?scope=items%3Aread".to_string(),
+                    )
+                    .unwrap(),
+                ),
+                expires_at: Some(chrono::Utc::now() + chrono::Duration::minutes(10)),
+            }))
+        }
+    }
+
+    let tenant_id = TenantId::new("webui-events-tenant").unwrap();
+    let user_id = UserId::new("webui-events-user").unwrap();
+    let agent_id = AgentId::new("webui-events-agent").unwrap();
+    let thread_id = ThreadId::new("webui-events-vendor-auth-thread").unwrap();
+    let turn_run = TurnRunId::new();
+    let gate_ref = "gate:auth-required";
+    let scope = TurnScope::new(
+        tenant_id.clone(),
+        Some(agent_id.clone()),
+        None,
+        thread_id.clone(),
+    );
+    let credential_requirements = vec![RuntimeCredentialAuthRequirement {
+        provider: VendorId::new("vendorco").unwrap(),
+        setup: ironclaw_host_api::RuntimeCredentialAccountSetup::OAuth {
+            scopes: vec!["items:read".to_string()],
+        },
+        requester_extension: ExtensionId::new("vendorco-tools").unwrap(),
+        provider_scopes: vec!["items:read".to_string()],
+    }];
+
+    let event_log_dyn: Arc<dyn DurableEventLog> = Arc::new(InMemoryDurableEventLog::new());
+    let services = build_reborn_projection_services(
+        event_log_dyn,
+        ReplyTargetBindingRef::new("webui-events-reply").unwrap(),
+    )
+    .with_turn_events(
+        Arc::new(FakeTurnEventSource {
+            events: vec![TurnLifecycleEvent {
+                cursor: TurnEventCursor(1),
+                scope: scope.clone(),
+                occurred_at: Some(chrono::Utc::now()),
+                owner_user_id: Some(user_id.clone()),
+                run_id: turn_run,
+                status: TurnStatus::BlockedAuth,
+                kind: TurnEventKind::Blocked,
+                blocked_gate: Some(TurnBlockedGateMetadata {
+                    gate_ref: GateRef::new(gate_ref).unwrap(),
+                    gate_kind: TurnBlockedGateKind::Auth,
+                    activity_id: None,
+                    credential_requirements: credential_requirements.clone(),
+                }),
+                sanitized_reason: Some("Vendor authentication required".to_string()),
+                detail: None,
+                retryable: None,
+            }],
+        }),
+        Arc::new(FakeTurnCoordinator {
+            state: TurnRunState {
+                credential_requirements,
+                ..turn_run_state(&scope, &user_id, turn_run, TurnEventCursor(1))
+            },
+        }),
+    )
+    .with_auth_challenges(Arc::new(VendorOAuthChallengeProvider));
+
+    let events = services
+        .product_event_stream()
+        .drain(ProjectionSubscriptionRequest {
+            actor: TurnActor::new(user_id),
+            scope,
+            after_cursor: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        events.iter().any(|event| matches!(
+            event.payload(),
+            ProductOutboundPayload::AuthPrompt(prompt)
+                if prompt.turn_run_id == turn_run
+                    && prompt.auth_request_ref == gate_ref
+                    && prompt.challenge_kind == Some(AuthPromptChallengeKind::OAuthUrl)
+                    && prompt.provider.as_deref() == Some("vendorco")
+                    && prompt.authorization_url.as_deref().is_some_and(|url|
+                        url.starts_with("https://auth.vendorco.example/authorize")
+                            && url.contains("items%3Aread")
+                    )
+                    && prompt.account_label.is_none()
+        )),
+        "events: {events:#?}"
+    );
 }

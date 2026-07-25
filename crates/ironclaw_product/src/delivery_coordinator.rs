@@ -32,10 +32,9 @@ use async_trait::async_trait;
 use ironclaw_attachments::{DEFAULT_ATTACHMENT_BUDGETS, extract_workspace_attachment_paths};
 use ironclaw_host_api::RestrictedEgress;
 use ironclaw_outbound::{
-    ClaimDeliveryAttemptForSendRequest, CommunicationPreferenceRepository, DeliveryFailureKind,
-    OutboundDeliveryAttempt, OutboundDeliveryDecision, OutboundDeliveryStatus,
-    OutboundPolicyService, OutboundPushCandidate, OutboundPushKind, OutboundStateStorePort,
-    PrepareCommunicationDeliveryRequest, RecoverInterruptedDeliveryRequest,
+    CommunicationPreferenceRepository, DeliveryFailureKind, OutboundDeliveryAttempt,
+    OutboundDeliveryDecision, OutboundDeliveryStatus, OutboundPolicyService, OutboundPushCandidate,
+    OutboundPushKind, OutboundStateStorePort, PrepareCommunicationDeliveryRequest,
     UpdateDeliveryStatusRequest, ValidatedReplyTargetBinding,
 };
 use ironclaw_threads::ThreadScope;
@@ -44,13 +43,13 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tracing::debug;
 
-use crate::ProductWorkflowError;
+use crate::ProductSurfaceFailure;
 use crate::outbound_delivery::{
     ProductOutboundTargetResolver, VerifiedProductOutboundTargetMetadata,
 };
 use crate::{ProjectFilesystemReader, ProjectFsEntryKind, ProjectFsError};
 
-/// Semantic delivery intents (§5.4). Emitters express *what* is being
+/// The nine semantic intents (§5.4). Emitters express *what* is being
 /// communicated; the coordinator decides targeting, persistence, and retry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryIntent {
@@ -68,12 +67,6 @@ pub enum DeliveryIntent {
     ConnectionStatus,
     /// A transient "working on it" indicator.
     Working,
-    /// A run-scoped working indicator delivered only after the sealed reply
-    /// target is revalidated.
-    RunProgress,
-    /// A run-scoped failure/auth-unavailable notice delivered only after the
-    /// sealed reply target is revalidated.
-    RunFailureNotice,
     /// Remove an earlier delivery (e.g. delete the working indicator).
     Cleanup,
     /// A routine/heartbeat-initiated delivery to a preference target.
@@ -87,12 +80,7 @@ impl DeliveryIntent {
     pub fn runs_outbound_policy(self) -> bool {
         matches!(
             self,
-            Self::FinalReply
-                | Self::GatePrompt
-                | Self::AuthPrompt
-                | Self::RunProgress
-                | Self::RunFailureNotice
-                | Self::TriggeredDelivery
+            Self::FinalReply | Self::GatePrompt | Self::AuthPrompt | Self::TriggeredDelivery
         )
     }
 
@@ -112,8 +100,6 @@ impl DeliveryIntent {
             Self::ConnectRequired => "connect-required",
             Self::ConnectionStatus => "connection-status",
             Self::Working => "working",
-            Self::RunProgress => "run-progress",
-            Self::RunFailureNotice => "run-failure-notice",
             Self::Cleanup => "cleanup",
             Self::TriggeredDelivery => "triggered-delivery",
         }
@@ -225,11 +211,6 @@ pub enum CoordinatedDeliveryOutcome {
     NoDelivery,
     /// Policy rejected the candidate; the attempt records the rejection.
     Rejected { attempt: OutboundDeliveryAttempt },
-    /// The same durable delivery fact was already claimed or settled. No
-    /// vendor egress occurred for this replay.
-    DuplicateSuppressed {
-        delivery_id: ironclaw_outbound::OutboundDeliveryId,
-    },
     /// The adapter reported every part sent.
     Delivered {
         attempt: OutboundDeliveryAttempt,
@@ -251,9 +232,11 @@ pub enum CoordinatedDeliveryError {
     #[error("outbound policy failed: {0}")]
     Outbound(#[from] ironclaw_outbound::OutboundError),
     #[error("product workflow failed: {0}")]
-    Workflow(#[from] ProductWorkflowError),
+    Workflow(#[from] ProductSurfaceFailure),
     #[error("no active channel for extension `{extension_id}`")]
     ChannelUnavailable { extension_id: String },
+    #[error("delivery is already in flight for this attempt")]
+    AlreadyInFlight,
     #[error("intent {intent:?} does not belong to this delivery path")]
     IntentClassMismatch { intent: DeliveryIntent },
     #[error("notice request is invalid: {reason}")]
@@ -290,6 +273,8 @@ pub struct DeliveryCoordinator {
     resolver: Arc<dyn ChannelDeliveryResolver>,
     reply_context: Arc<dyn DeliveryReplyContextSource>,
     retry: DeliveryRetryPolicy,
+    /// Per-delivery single-flight: a delivery id enters once.
+    in_flight: Mutex<HashSet<ironclaw_outbound::OutboundDeliveryId>>,
     /// Scopes whose interrupted (`Sending`) attempts from prior lifetimes
     /// have been reconciled this lifetime. The store enumerates attempts per
     /// scope only, so recovery runs lazily before a scope's first delivery.
@@ -311,6 +296,7 @@ impl DeliveryCoordinator {
             resolver,
             reply_context,
             retry,
+            in_flight: Mutex::new(HashSet::new()),
             recovered_scopes: Mutex::new(HashSet::new()),
         }
     }
@@ -347,24 +333,19 @@ impl DeliveryCoordinator {
         let attempts = self.store.list_delivery_attempts(scope.clone()).await?;
         let mut recovered = 0usize;
         for attempt in attempts {
-            // The list is a point-in-time snapshot; between reading it and
-            // acting, another worker may have completed egress and written a
-            // terminal result. The guarded store transition re-verifies
-            // `Sending` under CAS and no-ops otherwise, so a stale snapshot can
-            // never clobber a durable `Delivered`/`Failed` back to `Unknown`.
             if attempt.status != OutboundDeliveryStatus::Sending {
                 continue;
             }
-            if self
-                .store
-                .recover_interrupted_delivery_attempt(RecoverInterruptedDeliveryRequest {
+            self.store
+                .update_delivery_status(UpdateDeliveryStatusRequest {
                     delivery_id: attempt.delivery_id,
                     scope: scope.clone(),
+                    status: OutboundDeliveryStatus::Unknown,
+                    updated_at: chrono::Utc::now(),
+                    failure_kind: None,
                 })
-                .await?
-            {
-                recovered += 1;
-            }
+                .await?;
+            recovered += 1;
         }
         if recovered > 0 {
             debug!(
@@ -411,35 +392,40 @@ impl DeliveryCoordinator {
             }
         };
 
-        if !self
-            .store
-            .claim_delivery_attempt_for_send(ClaimDeliveryAttemptForSendRequest {
-                delivery_id: attempt.delivery_id,
-                scope: attempt.scope.clone(),
-            })
-            .await?
+        // Single-flight per delivery id.
+        let delivery_id = attempt.delivery_id;
         {
-            return Ok(CoordinatedDeliveryOutcome::DuplicateSuppressed {
-                delivery_id: attempt.delivery_id,
-            });
+            let mut in_flight = self
+                .in_flight
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !in_flight.insert(delivery_id) {
+                return Err(CoordinatedDeliveryError::AlreadyInFlight);
+            }
         }
-        self.drive_authorized(
-            target_resolver,
-            attempt,
-            AuthorizedDeliveryTarget {
-                binding: target,
-                require_direct_message: request.require_direct_message_target,
-                thread_anchor: request.thread_anchor,
-            },
-            request.parts,
-            request.extension_id,
-            WorkspaceMaterialization {
-                intent: request.intent,
-                project_filesystem,
-                thread_scope: request.thread_scope,
-            },
-        )
-        .await
+        let result = self
+            .drive_authorized(
+                target_resolver,
+                attempt,
+                AuthorizedDeliveryTarget {
+                    binding: target,
+                    require_direct_message: request.require_direct_message_target,
+                    thread_anchor: request.thread_anchor,
+                },
+                request.parts,
+                request.extension_id,
+                WorkspaceMaterialization {
+                    intent: request.intent,
+                    project_filesystem,
+                    thread_scope: request.thread_scope,
+                },
+            )
+            .await;
+        self.in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&delivery_id);
+        result
     }
 
     /// Deliver one notice-class intent to its source conversation, under the
@@ -490,27 +476,32 @@ impl DeliveryCoordinator {
             failure_kind: None,
         };
         self.store.record_delivery_attempt(attempt.clone()).await?;
-        if !self
-            .store
-            .claim_delivery_attempt_for_send(ClaimDeliveryAttemptForSendRequest {
-                delivery_id: attempt.delivery_id,
-                scope: attempt.scope.clone(),
-            })
-            .await?
-        {
-            return Ok(CoordinatedDeliveryOutcome::DuplicateSuppressed {
-                delivery_id: attempt.delivery_id,
-            });
-        }
 
-        self.drive_resolved(
-            attempt,
-            request.extension_id,
-            request.conversation,
-            request.thread_anchor,
-            request.parts,
-        )
-        .await
+        // Single-flight per delivery id (uniform with the policy path).
+        let delivery_id = attempt.delivery_id;
+        {
+            let mut in_flight = self
+                .in_flight
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !in_flight.insert(delivery_id) {
+                return Err(CoordinatedDeliveryError::AlreadyInFlight);
+            }
+        }
+        let result = self
+            .drive_resolved(
+                attempt,
+                request.extension_id,
+                request.conversation,
+                request.thread_anchor,
+                request.parts,
+            )
+            .await;
+        self.in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&delivery_id);
+        result
     }
 
     async fn drive_authorized(
@@ -533,7 +524,7 @@ impl DeliveryCoordinator {
             Ok(metadata) => metadata,
             Err(error) => {
                 let kind =
-                    crate::outbound_delivery::delivery_failure_kind_for_workflow_error(&error);
+                    crate::outbound_delivery::delivery_failure_kind_for_surface_error(&error);
                 self.mark_terminal(&attempt, OutboundDeliveryStatus::Failed, Some(kind))
                     .await;
                 return Err(CoordinatedDeliveryError::Workflow(error));
@@ -649,9 +640,17 @@ impl DeliveryCoordinator {
             reply_context,
         };
 
-        // 5. The caller atomically persisted `Prepared -> Sending` before
-        // resolving this envelope, so only its durable claim can reach vendor
-        // egress (OUT-3 and replay-safe at-most-once dispatch).
+        // 5. Persist Sending BEFORE any vendor egress (OUT-3).
+        self.store
+            .update_delivery_status(UpdateDeliveryStatusRequest {
+                delivery_id: attempt.delivery_id,
+                scope: attempt.scope.clone(),
+                status: OutboundDeliveryStatus::Sending,
+                updated_at: chrono::Utc::now(),
+                failure_kind: None,
+            })
+            .await
+            .map_err(CoordinatedDeliveryError::Outbound)?;
 
         // 6. Drive the adapter with bounded retries. Once any part has been
         //    sent, a later retryable failure is terminal (OUT-7).

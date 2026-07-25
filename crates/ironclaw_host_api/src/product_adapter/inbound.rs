@@ -757,7 +757,7 @@ impl TrustedInboundContext {
     }
 }
 
-/// Trusted inbound envelope handed to the workflow facade.
+/// Trusted inbound envelope handed to the workflow service.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProductInboundEnvelope {
     adapter_id: ProductAdapterId,

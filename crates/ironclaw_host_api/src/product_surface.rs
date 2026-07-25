@@ -91,7 +91,7 @@ pub trait ChannelInboundProductSurface: Send + Sync {
         if request.message.attachments.is_empty() {
             return self.admit_channel_inbound(request).await;
         }
-        ChannelInboundSurfaceOutcome::Invalid(ProductAdapterError::WorkflowTransient {
+        ChannelInboundSurfaceOutcome::Invalid(ProductAdapterError::SurfaceTransient {
             reason: RedactedString::new(
                 "channel attachment transfer is not supported by this product surface",
             ),

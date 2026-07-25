@@ -19,7 +19,8 @@ use ironclaw_host_api::{
 };
 use ironclaw_host_runtime::{HostRuntime, RuntimeCapabilityOutcome, RuntimeFailureKind};
 use ironclaw_product::{
-    EXTENSION_INSTALL_CAPABILITY_ID, EXTENSION_REMOVE_CAPABILITY_ID, ProductCapabilityInvoker,
+    EXTENSION_ACTIVATE_CAPABILITY_ID, EXTENSION_INSTALL_CAPABILITY_ID,
+    EXTENSION_REMOVE_CAPABILITY_ID, ProductCapabilityInvoker,
     SKILL_AUTO_ACTIVATE_SET_CAPABILITY_ID, SKILL_INSTALL_CAPABILITY_ID, SKILL_REMOVE_CAPABILITY_ID,
     SKILL_UPDATE_CAPABILITY_ID,
 };
@@ -298,10 +299,11 @@ fn is_skill_management_capability(capability: &CapabilityId) -> bool {
 }
 
 fn is_extension_lifecycle_capability(capability: &CapabilityId) -> bool {
-    // #6520 removed the separate activate capability; install drives readiness.
     matches!(
         capability.as_str(),
-        EXTENSION_INSTALL_CAPABILITY_ID | EXTENSION_REMOVE_CAPABILITY_ID
+        EXTENSION_INSTALL_CAPABILITY_ID
+            | EXTENSION_ACTIVATE_CAPABILITY_ID
+            | EXTENSION_REMOVE_CAPABILITY_ID
     )
 }
 
@@ -651,6 +653,7 @@ mod tests {
         let skill_mount_resolver = |_scope: &ResourceScope| Ok(MountView::default());
         for capability in [
             EXTENSION_INSTALL_CAPABILITY_ID,
+            EXTENSION_ACTIVATE_CAPABILITY_ID,
             EXTENSION_REMOVE_CAPABILITY_ID,
         ] {
             let descriptor = descriptor_with_id(capability);

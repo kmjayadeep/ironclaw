@@ -1126,12 +1126,8 @@ const ALLOWLIST: &[(&str, &str)] = &[
         "google-calendar",
     ),
     (
-        "crates/ironclaw_reborn_composition/src/extension_host/available_extensions.rs",
+        "crates/ironclaw_extension_host/src/available_extensions.rs",
         "google",
-    ),
-    (
-        "crates/ironclaw_reborn_composition/src/extension_host/extension_lifecycle.rs",
-        "slack",
     ),
     (
         "crates/ironclaw_product/src/projection/display_preview.rs",
@@ -1141,24 +1137,40 @@ const ALLOWLIST: &[(&str, &str)] = &[
     // (Google API hosts) and web-access (Exa MCP) egress it no longer
     // special-cases — the code routes purely on manifest-declared targets.
     (
-        "crates/ironclaw_reborn_composition/src/runtime/extension_surface.rs",
+        "crates/ironclaw_reborn_composition/src/runtime/local_dev/extension_surface.rs",
         "google",
     ),
     (
-        "crates/ironclaw_reborn_composition/src/runtime/extension_surface.rs",
+        "crates/ironclaw_reborn_composition/src/runtime/local_dev/extension_surface.rs",
         "web-access",
     ),
-    // lane-4: nearai-slice — the last catalog package (nearai_mcp) still assembled in composition because [mcp].server is patched from llm_admin config; DEFERRED — finish per the handoff (move static data to first_party_extensions::packages::nearai_mcp, inject the URL through the with_channel_extension_bindings-style seam)
+    // lane-4: nearai-slice — the last catalog package (nearai_mcp) is still
+    // patched from LLM-admin bootstrap config; it now lives with the generic
+    // available-extension catalog in ironclaw_extension_host.
     (
-        "crates/ironclaw_reborn_composition/src/extension_host/available_extensions.rs",
+        "crates/ironclaw_extension_host/src/available_extensions.rs",
         "nearai-mcp",
     ),
     (
-        "crates/ironclaw_reborn_composition/src/extension_host/available_extensions.rs",
+        "crates/ironclaw_extension_host/src/available_extensions.rs",
         "nearai_mcp",
     ),
     (
-        "crates/ironclaw_reborn_composition/src/extension_host/available_extensions.rs",
+        "crates/ironclaw_extension_host/src/available_extensions.rs",
+        "nearaimcp",
+    ),
+    ("crates/ironclaw_extension_host/src/lib.rs", "nearai_mcp"),
+    ("crates/ironclaw_extension_host/src/lib.rs", "nearaimcp"),
+    (
+        "crates/ironclaw_extension_host/src/lifecycle_restore.rs",
+        "slack",
+    ),
+    (
+        "crates/ironclaw_extension_host/src/nearai_mcp.rs",
+        "nearai_mcp",
+    ),
+    (
+        "crates/ironclaw_extension_host/src/nearai_mcp.rs",
         "nearaimcp",
     ),
     (
@@ -1206,7 +1218,7 @@ const ALLOWLIST: &[(&str, &str)] = &[
         "nearaimcp",
     ),
     (
-        "crates/ironclaw_reborn_composition/src/product_auth/api/auth.rs",
+        "crates/ironclaw_auth/src/product_auth/api/auth.rs",
         "nearai_mcp",
     ),
     (
@@ -1215,14 +1227,6 @@ const ALLOWLIST: &[(&str, &str)] = &[
     ),
     // lane-4: migration — one-time forward-migration call sites naming the v1 vocabulary they fold forward — correct-by-design (same pattern the retired-taxonomy gate sanctions); would become a SANCTIONED_PATHS carve if the sites move into a dedicated migration module
     ("crates/ironclaw_reborn_composition/src/factory.rs", "slack"),
-    // DEL-7: the `google_oauth_configured` build-time signal on the neutral
-    // first-party registrar context (a field name, not an extension branch —
-    // the concrete GSuite handler lives in the binary). `nearaimcp` is the
-    // deferred nearai-slice concern above, folded forward in factory wiring.
-    (
-        "crates/ironclaw_reborn_composition/src/extension_host/first_party.rs",
-        "google",
-    ),
     (
         "crates/ironclaw_reborn_composition/src/factory.rs",
         "nearaimcp",
@@ -1266,16 +1270,6 @@ const ALLOWLIST: &[(&str, &str)] = &[
         "google",
     ),
     ("crates/ironclaw_reborn_composition/src/lib.rs", "google"),
-    // Merge-relocated pre-existing debt: the generic-ingress test module
-    // drives the real Slack/Telegram adapters through the shared sink.
-    (
-        "crates/ironclaw_reborn_composition/src/extension_host/extension_ingress.rs",
-        "slack",
-    ),
-    (
-        "crates/ironclaw_reborn_composition/src/extension_host/extension_ingress.rs",
-        "telegram",
-    ),
     (
         "crates/ironclaw_operator/src/llm_admin/nearai_login_serve.rs",
         "github",
@@ -1284,20 +1278,14 @@ const ALLOWLIST: &[(&str, &str)] = &[
         "crates/ironclaw_operator/src/llm_admin/nearai_login_serve.rs",
         "google",
     ),
+    ("crates/ironclaw_auth/src/product_auth/api/auth.rs", "slack"),
     (
-        "crates/ironclaw_product/src/reborn_services/outbound_delivery_capability_surface.rs",
-        "slack",
-    ),
-    (
-        "crates/ironclaw_reborn_composition/src/product_auth/api/auth.rs",
-        "slack",
-    ),
-    (
-        "crates/ironclaw_reborn_composition/src/product_auth/credentials/runtime_credentials.rs",
+        "crates/ironclaw_auth/src/product_auth/credentials/runtime_credentials.rs",
         "google",
     ),
+    ("crates/ironclaw_webui/src/product_auth/mod.rs", "slack"),
     (
-        "crates/ironclaw_reborn_composition/src/product_auth/serve/mod.rs",
+        "crates/ironclaw_product/src/reborn_services/outbound_delivery_capability_surface.rs",
         "slack",
     ),
     ("crates/ironclaw_product/src/projection.rs", "slack"),
@@ -1335,7 +1323,6 @@ const ALLOWLIST: &[(&str, &str)] = &[
     // for the production-shaped channel-host E2E suite; the scanner sees the
     // crate names in Cargo.toml even though Rust test sources are excluded.
     ("crates/ironclaw_reborn_composition/Cargo.toml", "slack"),
-    ("crates/ironclaw_reborn_composition/Cargo.toml", "telegram"),
     // lane-4: branch — the provider catalog names github_copilot (an LLM
     // provider id, not the github extension); degenericize with the catalog
     // slice.
@@ -1737,7 +1724,7 @@ fn term_collision_carve_outs_stay_documented_and_narrow() {
         .collect();
     for fragment in &carved_paths {
         assert!(
-            !fragment.contains("composition") && !fragment.contains("product_workflow"),
+            !fragment.contains("composition") && !fragment.contains("product_surface"),
             "carve-outs must never cover the product assembly/workflow crates — those are \
              debt, not collisions: {fragment}"
         );
