@@ -93,6 +93,7 @@ pub use process_journal::{
     KernelProcessSuspensionKind, KernelProcessWorkerId, KernelRecordModelRouteRequest,
     KernelRecoverExpiredLeasesRequest, KernelRecoverExpiredLeasesResponse,
     KernelSuspendProcessRequest, TurnEventProjectionFromProcessJournal,
+    claimed_turn_run_from_process_claim, turn_run_state_from_process_snapshot,
 };
 pub use request::{
     CancelRunRequest, GateResumeDisposition, GetRunStateRequest, ResumeTurnPrecondition,

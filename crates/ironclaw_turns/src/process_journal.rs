@@ -25,7 +25,7 @@ use ironclaw_processes::{
 use crate::{
     AcceptedMessageRef, BlockedReason, GateKind, GateResumeDisposition, GetRunStateRequest,
     LoopExitMapping, ProductTurnContext, ReplyTargetBindingRef, ResolvedRunProfile, RunProfileId,
-    RunProfileVersion, SourceBindingRef, TurnCheckpointId, TurnError, TurnEventKind,
+    RunProfileVersion, SourceBindingRef, TurnActor, TurnCheckpointId, TurnError, TurnEventKind,
     TurnLifecycleEvent, TurnRunId, TurnRunRecord, TurnRunState, TurnRunnerId, TurnScope,
     TurnStatus,
     events::{
@@ -110,11 +110,15 @@ impl AgentTurnProcessMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTurnProcessStateMetadata {
     pub turn_id: crate::TurnId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<TurnActor>,
     pub accepted_message_ref: AcceptedMessageRef,
     pub source_binding_ref: SourceBindingRef,
     pub reply_target_binding_ref: ReplyTargetBindingRef,
     pub resolved_run_profile_id: RunProfileId,
     pub resolved_run_profile_version: RunProfileVersion,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_run_profile: Option<ResolvedRunProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_model_route: Option<LoopModelRouteSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -133,15 +137,24 @@ impl AgentTurnProcessStateMetadata {
     fn from_state(state: &TurnRunState) -> Self {
         Self {
             turn_id: state.turn_id,
+            actor: state.actor.clone(),
             accepted_message_ref: state.accepted_message_ref.clone(),
             source_binding_ref: state.source_binding_ref.clone(),
             reply_target_binding_ref: state.reply_target_binding_ref.clone(),
             resolved_run_profile_id: state.resolved_run_profile_id.clone(),
             resolved_run_profile_version: state.resolved_run_profile_version,
+            resolved_run_profile: None,
             resolved_model_route: state.resolved_model_route.clone(),
             model_usage: state.model_usage,
             product_context: state.product_context.clone(),
             resume_disposition: state.resume_disposition.clone(),
+        }
+    }
+
+    fn from_claimed(claimed: &ClaimedTurnRun) -> Self {
+        Self {
+            resolved_run_profile: Some(claimed.resolved_run_profile.clone()),
+            ..Self::from_state(&claimed.state)
         }
     }
 }
@@ -367,6 +380,94 @@ fn turn_run_id_from_process_id(process_id: ProcessId) -> TurnRunId {
     TurnRunId::from_uuid(process_id.as_uuid())
 }
 
+fn turn_checkpoint_id_from_process_ref(
+    checkpoint_ref: ProcessCheckpointRef,
+) -> Result<TurnCheckpointId, TurnError> {
+    Uuid::parse_str(checkpoint_ref.as_str())
+        .map(TurnCheckpointId::from_uuid)
+        .map_err(|error| TurnError::InvalidRequest {
+            reason: format!("invalid process checkpoint ref: {error}"),
+        })
+}
+
+fn agent_turn_metadata_from_process_snapshot(
+    snapshot: &JournaledProcessSnapshot,
+) -> Result<AgentTurnProcessStateMetadata, TurnError> {
+    let Some(metadata) = snapshot.metadata.get("agent_turn") else {
+        return Err(TurnError::InvalidRequest {
+            reason: "agent-turn process snapshot missing agent_turn metadata".to_string(),
+        });
+    };
+    serde_json::from_value(metadata.clone()).map_err(|error| TurnError::InvalidRequest {
+        reason: format!("invalid agent-turn process metadata: {error}"),
+    })
+}
+
+pub fn turn_run_state_from_process_snapshot(
+    snapshot: JournaledProcessSnapshot,
+) -> Result<TurnRunState, TurnError> {
+    if snapshot.process_kind != ProcessKind::AgentTurn {
+        return Err(TurnError::InvalidRequest {
+            reason: "process snapshot is not an agent turn".to_string(),
+        });
+    }
+    let metadata = agent_turn_metadata_from_process_snapshot(&snapshot)?;
+    let status = turn_status_from_process_status(snapshot.status, snapshot.suspension.as_ref())?;
+    Ok(TurnRunState {
+        scope: turn_scope_from_process_scope(snapshot.scope)?,
+        actor: metadata.actor,
+        turn_id: metadata.turn_id,
+        run_id: turn_run_id_from_process_id(snapshot.process_id),
+        status,
+        accepted_message_ref: metadata.accepted_message_ref,
+        source_binding_ref: metadata.source_binding_ref,
+        reply_target_binding_ref: metadata.reply_target_binding_ref,
+        resolved_run_profile_id: metadata.resolved_run_profile_id,
+        resolved_run_profile_version: metadata.resolved_run_profile_version,
+        resolved_model_route: metadata.resolved_model_route,
+        model_usage: metadata.model_usage,
+        received_at: snapshot.created_at,
+        checkpoint_id: snapshot
+            .checkpoint_ref
+            .map(turn_checkpoint_id_from_process_ref)
+            .transpose()?,
+        gate_ref: snapshot
+            .suspension
+            .as_ref()
+            .and_then(|suspension| suspension.gate_ref.clone()),
+        blocked_activity_id: snapshot
+            .suspension
+            .as_ref()
+            .and_then(|suspension| suspension.activity_id),
+        credential_requirements: snapshot
+            .suspension
+            .map(|suspension| suspension.credential_requirements)
+            .unwrap_or_default(),
+        failure: snapshot.failure,
+        event_cursor: EventCursor(snapshot.journal_cursor.0),
+        product_context: metadata.product_context,
+        resume_disposition: metadata.resume_disposition,
+    })
+}
+
+pub fn claimed_turn_run_from_process_claim(
+    claimed: ClaimedProcess,
+) -> Result<ClaimedTurnRun, TurnError> {
+    let metadata = agent_turn_metadata_from_process_snapshot(&claimed.state)?;
+    let Some(resolved_run_profile) = metadata.resolved_run_profile else {
+        return Err(TurnError::InvalidRequest {
+            reason: "claimed agent-turn process missing resolved_run_profile metadata".to_string(),
+        });
+    };
+    let state = turn_run_state_from_process_snapshot(claimed.state)?;
+    Ok(ClaimedTurnRun {
+        state,
+        resolved_run_profile,
+        runner_id: turn_runner_id_from_worker(&claimed.worker_id)?,
+        lease_token: turn_lease_token_from_process(&claimed.lease_token)?,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KernelClaimedProcess {
     pub state: JournaledProcessSnapshot,
@@ -377,8 +478,11 @@ pub struct KernelClaimedProcess {
 
 impl From<&ClaimedTurnRun> for KernelClaimedProcess {
     fn from(claimed: &ClaimedTurnRun) -> Self {
+        let mut state = claimed.state.to_process_state_snapshot();
+        state.metadata =
+            json!({ "agent_turn": AgentTurnProcessStateMetadata::from_claimed(claimed) });
         Self {
-            state: claimed.state.to_process_state_snapshot(),
+            state,
             resolved_run_profile: claimed.resolved_run_profile.clone(),
             worker_id: ProcessWorkerId::from_trusted(claimed.runner_id.to_wire_string()),
             lease_token: ProcessLeaseToken::from_trusted(claimed.lease_token.to_wire_string()),
@@ -388,8 +492,11 @@ impl From<&ClaimedTurnRun> for KernelClaimedProcess {
 
 impl From<&ClaimedTurnRun> for ClaimedProcess {
     fn from(claimed: &ClaimedTurnRun) -> Self {
+        let mut state = claimed.state.to_process_state_snapshot();
+        state.metadata =
+            json!({ "agent_turn": AgentTurnProcessStateMetadata::from_claimed(claimed) });
         Self {
-            state: claimed.state.to_process_state_snapshot(),
+            state,
             worker_id: ProcessWorkerId::from_trusted(claimed.runner_id.to_wire_string()),
             lease_token: ProcessLeaseToken::from_trusted(claimed.lease_token.to_wire_string()),
         }
@@ -1370,6 +1477,53 @@ mod tests {
         assert_eq!(
             process.state.metadata["agent_turn"]["turn_id"],
             json!(state.turn_id)
+        );
+    }
+
+    #[test]
+    fn claimed_process_round_trips_to_turn_executor_view() {
+        let state = crate::TurnRunState {
+            scope: scope(),
+            actor: Some(TurnActor::new(UserId::new("user:process").expect("user"))),
+            turn_id: TurnId::new(),
+            run_id: TurnRunId::new(),
+            status: TurnStatus::Running,
+            accepted_message_ref: AcceptedMessageRef::new("accepted-process-journal")
+                .expect("accepted"),
+            source_binding_ref: SourceBindingRef::new("source-process-journal").expect("source"),
+            reply_target_binding_ref: ReplyTargetBindingRef::new("reply-process-journal")
+                .expect("reply"),
+            resolved_run_profile_id: RunProfileId::default_profile(),
+            resolved_run_profile_version: RunProfileVersion::new(1),
+            resolved_model_route: None,
+            model_usage: None,
+            received_at: Utc::now(),
+            checkpoint_id: None,
+            gate_ref: None,
+            blocked_activity_id: None,
+            credential_requirements: Vec::new(),
+            failure: None,
+            event_cursor: EventCursor(12),
+            product_context: None,
+            resume_disposition: None,
+        };
+        let claimed = ClaimedTurnRun {
+            state: state.clone(),
+            resolved_run_profile: profile().resolved,
+            runner_id: TurnRunnerId::new(),
+            lease_token: crate::TurnLeaseToken::new(),
+        };
+        let process_claim = ClaimedProcess::from(&claimed);
+
+        let round_trip =
+            claimed_turn_run_from_process_claim(process_claim).expect("claimed turn view");
+
+        assert_eq!(round_trip.state, state);
+        assert_eq!(round_trip.runner_id, claimed.runner_id);
+        assert_eq!(round_trip.lease_token, claimed.lease_token);
+        assert_eq!(
+            round_trip.resolved_run_profile,
+            claimed.resolved_run_profile
         );
     }
 

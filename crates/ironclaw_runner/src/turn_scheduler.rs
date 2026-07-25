@@ -8,13 +8,14 @@ use futures_util::FutureExt;
 use ironclaw_host_api::ProcessId;
 use ironclaw_observability::live_latency_started_at;
 use ironclaw_processes::{
-    FailProcessRequest, ProcessLeaseRequest, ProcessLeaseToken, ProcessTransitionPort,
-    ProcessWorkerId, RecoverExpiredProcessLeasesRequest,
+    ClaimProcessesRequest, FailProcessRequest, ProcessLeaseRequest, ProcessLeaseToken,
+    ProcessTransitionPort, ProcessWorkerId, RecoverExpiredProcessLeasesRequest,
 };
 use ironclaw_turns::{
     AgentTurnProcessTransitionAdapter, SanitizedFailure, TurnError, TurnLeaseToken, TurnRunId,
     TurnRunWake, TurnRunWakeNotifier, TurnRunWakeNotifyError, TurnRunnerId, TurnScope,
-    runner::{ClaimRunsRequest, ClaimedTurnRun, TurnRunTransitionPort},
+    claimed_turn_run_from_process_claim,
+    runner::{ClaimedTurnRun, TurnRunTransitionPort},
 };
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore, mpsc},
@@ -630,7 +631,7 @@ async fn run_scheduler_loop(
 /// `false` otherwise.
 ///
 /// The `shutdown_token` is checked at the TOP of each iteration — before
-/// starting a new `claim_next_run` call — so that any in-flight claim always
+/// starting a new process claim call — so that any in-flight claim always
 /// finishes and its result is properly inserted into `active_runs` (or handled
 /// as an error) before we bail out.  This shape is leak-proof: a claimed-but-
 /// untracked run cannot occur because we never abandon an in-progress claim;
@@ -659,16 +660,45 @@ async fn drain_queued_runs(
         let claim_started_at = live_latency_started_at();
         let scope_filter_fields = latency::scope_fields(claim_started_at, scope_filter.as_ref());
         let claim = context
-            .transitions
-            .claim_next_runs(ClaimRunsRequest {
-                runner_id: context.runner_id,
-                scope_filter: scope_filter.clone(),
-                max_runs: permits.len(),
+            .process_transitions
+            .claim_next_processes(ClaimProcessesRequest {
+                worker_id: process_worker_id_from_turn_runner_id(context.runner_id),
+                scope_filter: scope_filter.clone().map(|scope| scope.to_resource_scope()),
+                max_processes: permits.len(),
             })
             .await;
         match claim {
-            Ok(claimed_runs) if claimed_runs.is_empty() => return false,
-            Ok(claimed_runs) => {
+            Ok(process_claims) if process_claims.is_empty() => return false,
+            Ok(process_claims) => {
+                let mut claimed_runs = Vec::with_capacity(process_claims.len());
+                for process_claim in process_claims {
+                    let relinquish_request = ProcessLeaseRequest {
+                        process_id: process_claim.state.process_id,
+                        worker_id: process_claim.worker_id.clone(),
+                        lease_token: process_claim.lease_token.clone(),
+                    };
+                    match claimed_turn_run_from_process_claim(process_claim) {
+                        Ok(claimed) => claimed_runs.push(claimed),
+                        Err(error) => {
+                            debug!(
+                                error = %error,
+                                process_id = %relinquish_request.process_id,
+                                "turn run scheduler could not convert process claim to agent-turn claim"
+                            );
+                            if let Err(relinquish_error) = context
+                                .process_transitions
+                                .relinquish_process(relinquish_request)
+                                .await
+                            {
+                                debug!(
+                                    error = %relinquish_error,
+                                    "turn run scheduler failed to relinquish invalid process claim"
+                                );
+                            }
+                            return true;
+                        }
+                    }
+                }
                 latency::claim_next_runs_result(
                     scope_filter_fields.as_ref(),
                     claim_started_at,

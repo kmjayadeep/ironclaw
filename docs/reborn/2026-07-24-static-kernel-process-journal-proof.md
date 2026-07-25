@@ -54,16 +54,18 @@ scheduler.
 `ironclaw_runner::TurnRunScheduler` now carries a process transition port and
 uses it for scheduler-owned lifecycle maintenance:
 
+- batch claim for queued work;
 - heartbeat for claimed work;
 - expired lease recovery;
 - shutdown relinquish;
 - scheduler terminal failure recording.
 
-The scheduler still claims `ClaimedTurnRun` through `TurnRunTransitionPort`
-because the executor contract currently requires turn-specific run profile
-payloads (`ResolvedRunProfile`, loop driver context, and turn scope). That is
-the next hard boundary: full claim migration needs either an agent-turn process
-claim payload or post-claim profile resolution behind the executor adapter.
+Process claims for `AgentTurn` now carry enough typed `agent_turn` metadata to
+reconstruct the current executor's `ClaimedTurnRun` view, including the resolved
+run profile. The scheduler claims through `ProcessTransitionPort` and converts
+to the turn executor view only at the executor boundary. The remaining turn-run
+executor dependency is therefore an adapter/view concern, not scheduler kernel
+state.
 
 ## Read-Side Journal Slice
 
