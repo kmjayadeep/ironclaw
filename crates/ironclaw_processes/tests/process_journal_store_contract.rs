@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use chrono::Utc;
 use ironclaw_filesystem::{InMemoryBackend, ScopedFilesystem};
 use ironclaw_host_api::{
@@ -7,14 +8,72 @@ use ironclaw_host_api::{
 use ironclaw_processes::{
     CancelProcessRequest, ClaimProcessesRequest, GetProcessSnapshotRequest, KillProcessRequest,
     ProcessCheckpointRef, ProcessControlPort, ProcessGateOwnerMatch, ProcessGateQuery,
-    ProcessGateQuerySource, ProcessJournalCursor, ProcessJournalSource, ProcessJournalStore,
-    ProcessKind, ProcessLeaseRequest, ProcessLeaseToken, ProcessLifecycleLookupBatchRequest,
-    ProcessLifecycleLookupRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,
-    ProcessLifecycleStatus, ProcessStateTransitionRequest, ProcessSubmissionPort,
-    ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort, ProcessWorkerId,
-    ResumeProcessRequest, StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
+    ProcessGateQuerySource, ProcessJournalCommit, ProcessJournalCommitObserver,
+    ProcessJournalCursor, ProcessJournalObserverRegistry, ProcessJournalSource,
+    ProcessJournalStore, ProcessKind, ProcessLeaseRequest, ProcessLeaseToken,
+    ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupRequest,
+    ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
+    ProcessOperationId, ProcessStateTransitionRequest, ProcessSubmissionPort, ProcessSuspension,
+    ProcessSuspensionKind, ProcessTransitionPort, ProcessWorkerId, ResumeProcessRequest,
+    StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
 };
 use serde_json::json;
+use std::sync::{Arc, Mutex};
+
+#[derive(Default)]
+struct RecordingProcessObserver {
+    commits: Mutex<Vec<ProcessJournalCommit>>,
+}
+
+#[async_trait]
+impl ProcessJournalCommitObserver for RecordingProcessObserver {
+    async fn observe_process_commit(&self, commit: ProcessJournalCommit) -> Result<(), String> {
+        self.commits
+            .lock()
+            .map_err(|_| "observer mutex poisoned".to_string())?
+            .push(commit);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn process_observer_receives_commits_once_not_idempotency_replays() {
+    let store = ProcessJournalStore::new(in_memory_backed_processes_filesystem());
+    let observer = Arc::new(RecordingProcessObserver::default());
+    store
+        .subscribe_process_observer(observer.clone())
+        .expect("subscribe observer");
+    let scope = scope();
+    let request = SubmitProcessRequest {
+        process_id: ProcessId::new(),
+        process_kind: ProcessKind::Internal,
+        scope: scope.clone(),
+        exclusive_within_scope: false,
+        operation_id: Some(ProcessOperationId::from_trusted("submit-once")),
+        owner_user_id: Some(scope.user_id.clone()),
+        parent_process_id: None,
+        root_process_id: None,
+        checkpoint_ref: None,
+        created_at: Utc::now(),
+        metadata: serde_json::Value::Null,
+    };
+
+    store
+        .submit_process(request.clone())
+        .await
+        .expect("submit process");
+    store
+        .submit_process(request)
+        .await
+        .expect("replay process submission");
+
+    let commits = observer.commits.lock().expect("observer commits");
+    assert_eq!(commits.len(), 1);
+    assert_eq!(
+        commits[0].kind,
+        ironclaw_processes::ProcessJournalKind::Submitted
+    );
+}
 
 #[tokio::test]
 async fn process_journal_store_owns_lifecycle_and_gate_projection() {

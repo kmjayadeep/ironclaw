@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
 
@@ -20,13 +20,14 @@ use crate::journal::{
     CancelProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
     GetProcessSnapshotRequest, JournaledProcessSnapshot, KillProcessRequest, ProcessControlPort,
     ProcessControlResult, ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource,
-    ProcessGateRecord, ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind,
-    ProcessJournalPage, ProcessJournalSource, ProcessLeaseRequest, ProcessLeaseSnapshot,
-    ProcessLeaseToken, ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult,
-    ProcessLifecycleLookupSource, ProcessLifecycleStatus, ProcessOperationId,
-    ProcessSubmissionPort, ProcessSuspension, ProcessTransitionPort, ProcessWorkerId,
-    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, ResumeProcessRequest,
-    StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
+    ProcessGateRecord, ProcessJournalCommit, ProcessJournalCommitObserver, ProcessJournalCursor,
+    ProcessJournalEntry, ProcessJournalKind, ProcessJournalObserverRegistry, ProcessJournalPage,
+    ProcessJournalSource, ProcessLeaseRequest, ProcessLeaseSnapshot, ProcessLeaseToken,
+    ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,
+    ProcessLifecycleStatus, ProcessOperationId, ProcessSubmissionPort, ProcessSuspension,
+    ProcessTransitionPort, ProcessWorkerId, RecoverExpiredProcessLeasesRequest,
+    RecoverExpiredProcessLeasesResponse, ResumeProcessRequest, StopProcessRequest,
+    SubmitProcessRequest, SuspendProcessRequest,
 };
 use crate::types::{invalid_path, same_scope_owner};
 
@@ -73,6 +74,8 @@ pub enum ProcessJournalStoreError {
     Serialization(String),
     #[error("deserialization error: {0}")]
     Deserialization(String),
+    #[error("process journal observer error: {0}")]
+    Observer(String),
 }
 
 pub struct ProcessJournalStore<F>
@@ -81,6 +84,7 @@ where
 {
     filesystem: Arc<ScopedFilesystem<F>>,
     mutation_lock: Mutex<()>,
+    observers: StdMutex<Vec<Arc<dyn ProcessJournalCommitObserver>>>,
     lease_duration: Duration,
 }
 
@@ -92,6 +96,7 @@ where
         Self {
             filesystem,
             mutation_lock: Mutex::new(()),
+            observers: StdMutex::new(Vec::new()),
             lease_duration: DEFAULT_LEASE_DURATION,
         }
     }
@@ -104,7 +109,7 @@ where
     async fn submit_process_inner(
         &self,
         request: SubmitProcessRequest,
-    ) -> Result<JournaledProcessSnapshot, ProcessJournalStoreError> {
+    ) -> Result<(JournaledProcessSnapshot, bool), ProcessJournalStoreError> {
         let replay_key = request
             .operation_id
             .as_ref()
@@ -125,7 +130,7 @@ where
                 .as_ref()
                 .and_then(|key| state.submission_idempotency.get(key))
             {
-                return Ok(snapshot.clone());
+                return Ok((snapshot.clone(), false));
             }
             if state.processes.contains_key(&request.process_id) {
                 return Err(ProcessJournalStoreError::ProcessAlreadyExists {
@@ -173,9 +178,38 @@ where
                 .processes
                 .insert(snapshot.process_id, snapshot.clone());
             state.remember_submission_result(replay_key.clone(), snapshot.clone());
-            Ok(snapshot)
+            Ok((snapshot, true))
         })
         .await
+    }
+
+    async fn notify_process_commit(
+        &self,
+        state: JournaledProcessSnapshot,
+        kind: ProcessJournalKind,
+        sanitized_reason: Option<String>,
+    ) -> Result<(), ProcessJournalStoreError> {
+        let observers = self
+            .observers
+            .lock()
+            .map_err(|_| {
+                ProcessJournalStoreError::Observer(
+                    "process journal observer registry mutex poisoned".to_string(),
+                )
+            })?
+            .clone();
+        let commit = ProcessJournalCommit {
+            state,
+            kind,
+            sanitized_reason,
+        };
+        for observer in observers {
+            observer
+                .observe_process_commit(commit.clone())
+                .await
+                .map_err(ProcessJournalStoreError::Observer)?;
+        }
+        Ok(())
     }
 
     async fn mutate<T>(
@@ -257,7 +291,12 @@ where
         &self,
         request: SubmitProcessRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
-        self.submit_process_inner(request).await
+        let (snapshot, changed) = self.submit_process_inner(request).await?;
+        if changed {
+            self.notify_process_commit(snapshot.clone(), ProcessJournalKind::Submitted, None)
+                .await?;
+        }
+        Ok(snapshot)
     }
 }
 
@@ -272,109 +311,132 @@ where
         &self,
         request: ClaimProcessesRequest,
     ) -> Result<Vec<ClaimedProcess>, Self::Error> {
-        let _guard = self.mutation_lock.lock().await;
-        self.mutate(|state| {
-            let mut claimed = Vec::new();
-            let process_ids = state.claimable_process_ids(request.scope_filter.as_ref());
-            for process_id in process_ids.into_iter().take(request.max_processes) {
-                let now = Utc::now();
-                let cursor = state.next_cursor();
-                let Some(snapshot) = state.processes.get_mut(&process_id) else {
-                    continue;
-                };
-                snapshot.status = ProcessLifecycleStatus::Running;
-                snapshot.suspension = None;
-                snapshot.lease = Some(ProcessLeaseSnapshot {
-                    worker_id: request.worker_id.clone(),
-                    lease_token: ProcessLeaseToken::from_trusted(
-                        ProcessId::new().as_uuid().to_string(),
-                    ),
-                    lease_expires_at: chrono::Duration::from_std(self.lease_duration)
-                        .ok()
-                        .map(|duration| now + duration),
-                    last_heartbeat_at: Some(now),
-                    claim_count: snapshot
-                        .lease
-                        .as_ref()
-                        .map(|lease| lease.claim_count)
-                        .unwrap_or(0)
-                        .saturating_add(1),
-                });
-                snapshot.journal_cursor = cursor;
-                let snapshot = snapshot.clone();
-                state.push_entry(ProcessJournalEntry::from_snapshot(
-                    &snapshot,
-                    cursor,
-                    ProcessJournalKind::Claimed,
-                ));
-                let Some(lease) = snapshot.lease.clone() else {
-                    continue;
-                };
-                claimed.push(ClaimedProcess {
-                    state: snapshot,
-                    worker_id: lease.worker_id,
-                    lease_token: lease.lease_token,
-                });
-            }
-            Ok(claimed)
-        })
-        .await
+        let claimed = {
+            let _guard = self.mutation_lock.lock().await;
+            self.mutate(|state| {
+                let mut claimed = Vec::new();
+                let process_ids = state.claimable_process_ids(request.scope_filter.as_ref());
+                for process_id in process_ids.into_iter().take(request.max_processes) {
+                    let now = Utc::now();
+                    let cursor = state.next_cursor();
+                    let Some(snapshot) = state.processes.get_mut(&process_id) else {
+                        continue;
+                    };
+                    snapshot.status = ProcessLifecycleStatus::Running;
+                    snapshot.suspension = None;
+                    snapshot.lease = Some(ProcessLeaseSnapshot {
+                        worker_id: request.worker_id.clone(),
+                        lease_token: ProcessLeaseToken::from_trusted(
+                            ProcessId::new().as_uuid().to_string(),
+                        ),
+                        lease_expires_at: chrono::Duration::from_std(self.lease_duration)
+                            .ok()
+                            .map(|duration| now + duration),
+                        last_heartbeat_at: Some(now),
+                        claim_count: snapshot
+                            .lease
+                            .as_ref()
+                            .map(|lease| lease.claim_count)
+                            .unwrap_or(0)
+                            .saturating_add(1),
+                    });
+                    snapshot.journal_cursor = cursor;
+                    let snapshot = snapshot.clone();
+                    state.push_entry(ProcessJournalEntry::from_snapshot(
+                        &snapshot,
+                        cursor,
+                        ProcessJournalKind::Claimed,
+                    ));
+                    let Some(lease) = snapshot.lease.clone() else {
+                        continue;
+                    };
+                    claimed.push(ClaimedProcess {
+                        state: snapshot,
+                        worker_id: lease.worker_id,
+                        lease_token: lease.lease_token,
+                    });
+                }
+                Ok(claimed)
+            })
+            .await?
+        };
+        for process in &claimed {
+            self.notify_process_commit(process.state.clone(), ProcessJournalKind::Claimed, None)
+                .await?;
+        }
+        Ok(claimed)
     }
 
     async fn heartbeat_process(
         &self,
         request: ProcessLeaseRequest,
     ) -> Result<ProcessJournalCursor, Self::Error> {
-        let _guard = self.mutation_lock.lock().await;
-        self.mutate(|state| {
-            let now = Utc::now();
-            let cursor = state.next_cursor();
-            let snapshot = state.process_mut(request.process_id)?;
-            ensure_transition(snapshot, ProcessLifecycleStatus::Running)?;
-            ensure_lease(snapshot, &request.worker_id, &request.lease_token)?;
-            if let Some(lease) = &mut snapshot.lease {
-                lease.last_heartbeat_at = Some(now);
-                lease.lease_expires_at = chrono::Duration::from_std(self.lease_duration)
-                    .ok()
-                    .map(|duration| now + duration);
-            }
-            snapshot.journal_cursor = cursor;
-            let entry_snapshot = snapshot.clone();
-            state.push_entry(ProcessJournalEntry::from_snapshot(
-                &entry_snapshot,
-                cursor,
-                ProcessJournalKind::Heartbeat,
-            ));
-            Ok(cursor)
-        })
-        .await
+        let snapshot = {
+            let _guard = self.mutation_lock.lock().await;
+            self.mutate(|state| {
+                let now = Utc::now();
+                let cursor = state.next_cursor();
+                let snapshot = state.process_mut(request.process_id)?;
+                ensure_transition(snapshot, ProcessLifecycleStatus::Running)?;
+                ensure_lease(snapshot, &request.worker_id, &request.lease_token)?;
+                if let Some(lease) = &mut snapshot.lease {
+                    lease.last_heartbeat_at = Some(now);
+                    lease.lease_expires_at = chrono::Duration::from_std(self.lease_duration)
+                        .ok()
+                        .map(|duration| now + duration);
+                }
+                snapshot.journal_cursor = cursor;
+                let snapshot = snapshot.clone();
+                state.push_entry(ProcessJournalEntry::from_snapshot(
+                    &snapshot,
+                    cursor,
+                    ProcessJournalKind::Heartbeat,
+                ));
+                Ok(snapshot)
+            })
+            .await?
+        };
+        self.notify_process_commit(snapshot.clone(), ProcessJournalKind::Heartbeat, None)
+            .await?;
+        Ok(snapshot.journal_cursor)
     }
 
     async fn recover_expired_process_leases(
         &self,
         request: RecoverExpiredProcessLeasesRequest,
     ) -> Result<RecoverExpiredProcessLeasesResponse, Self::Error> {
-        let _guard = self.mutation_lock.lock().await;
-        self.mutate(|state| {
-            let expired = state.expired_process_ids(request.scope_filter.as_ref(), request.now);
-            let mut recovered = Vec::new();
-            for process_id in expired {
-                let cursor = state.next_cursor();
-                let snapshot = state.process_mut(process_id)?;
-                snapshot.status = ProcessLifecycleStatus::RecoveryRequired;
-                snapshot.lease = None;
-                snapshot.journal_cursor = cursor;
-                let snapshot = snapshot.clone();
-                state.push_entry(ProcessJournalEntry::from_snapshot(
-                    &snapshot,
-                    cursor,
-                    ProcessJournalKind::RecoveryRequired,
-                ));
-                recovered.push(snapshot);
-            }
-            Ok(RecoverExpiredProcessLeasesResponse { recovered })
-        })
-        .await
+        let response = {
+            let _guard = self.mutation_lock.lock().await;
+            self.mutate(|state| {
+                let expired = state.expired_process_ids(request.scope_filter.as_ref(), request.now);
+                let mut recovered = Vec::new();
+                for process_id in expired {
+                    let cursor = state.next_cursor();
+                    let snapshot = state.process_mut(process_id)?;
+                    snapshot.status = ProcessLifecycleStatus::RecoveryRequired;
+                    snapshot.lease = None;
+                    snapshot.journal_cursor = cursor;
+                    let snapshot = snapshot.clone();
+                    state.push_entry(ProcessJournalEntry::from_snapshot(
+                        &snapshot,
+                        cursor,
+                        ProcessJournalKind::RecoveryRequired,
+                    ));
+                    recovered.push(snapshot);
+                }
+                Ok(RecoverExpiredProcessLeasesResponse { recovered })
+            })
+            .await?
+        };
+        for snapshot in &response.recovered {
+            self.notify_process_commit(
+                snapshot.clone(),
+                ProcessJournalKind::RecoveryRequired,
+                None,
+            )
+            .await?;
+        }
+        Ok(response)
     }
 
     async fn suspend_process(
@@ -599,89 +661,97 @@ where
             ProcessJournalStoreError,
         >,
     ) -> Result<ProcessControlResult, ProcessJournalStoreError> {
-        let _guard = self.mutation_lock.lock().await;
-        self.mutate(|state| {
-            let replay_key = mutation.operation_id.as_ref().map(|id| {
-                format!(
-                    "{}:{}:{}",
-                    mutation.operation,
-                    mutation.process_id,
-                    id.as_str()
-                )
-            });
-            if let Some(result) = replay_key
-                .as_ref()
-                .and_then(|key| state.control_idempotency.get(key))
-            {
-                if !process_scope_visible(&result.state.scope, &mutation.scope) {
+        let reason = mutation.reason.clone();
+        let (result, committed_kind) = {
+            let _guard = self.mutation_lock.lock().await;
+            self.mutate(|state| {
+                let replay_key = mutation.operation_id.as_ref().map(|id| {
+                    format!(
+                        "{}:{}:{}",
+                        mutation.operation,
+                        mutation.process_id,
+                        id.as_str()
+                    )
+                });
+                if let Some(result) = replay_key
+                    .as_ref()
+                    .and_then(|key| state.control_idempotency.get(key))
+                {
+                    if !process_scope_visible(&result.state.scope, &mutation.scope) {
+                        return Err(ProcessJournalStoreError::UnknownProcess {
+                            process_id: mutation.process_id,
+                        });
+                    }
+                    return Ok((result.clone(), None));
+                }
+                let snapshot = state.process_mut(mutation.process_id)?;
+                if !process_scope_visible(&snapshot.scope, &mutation.scope) {
                     return Err(ProcessJournalStoreError::UnknownProcess {
                         process_id: mutation.process_id,
                     });
                 }
-                return Ok(result.clone());
-            }
-            let snapshot = state.process_mut(mutation.process_id)?;
-            if !process_scope_visible(&snapshot.scope, &mutation.scope) {
-                return Err(ProcessJournalStoreError::UnknownProcess {
-                    process_id: mutation.process_id,
-                });
-            }
-            if let Some(expected) = mutation.expected_cursor
-                && expected != snapshot.journal_cursor
-            {
-                return Err(ProcessJournalStoreError::StaleSnapshot {
-                    process_id: mutation.process_id,
-                    expected,
-                    actual: snapshot.journal_cursor,
-                });
-            }
-            let already_terminal = snapshot.status.is_terminal();
-            let Some((status, kind)) = decide(snapshot)? else {
+                if let Some(expected) = mutation.expected_cursor
+                    && expected != snapshot.journal_cursor
+                {
+                    return Err(ProcessJournalStoreError::StaleSnapshot {
+                        process_id: mutation.process_id,
+                        expected,
+                        actual: snapshot.journal_cursor,
+                    });
+                }
+                let already_terminal = snapshot.status.is_terminal();
+                let Some((status, kind)) = decide(snapshot)? else {
+                    let result = ProcessControlResult {
+                        state: snapshot.clone(),
+                        changed: false,
+                        already_terminal,
+                    };
+                    state.remember_control_result(replay_key, result.clone());
+                    return Ok((result, None));
+                };
+                if status == snapshot.status {
+                    let result = ProcessControlResult {
+                        state: snapshot.clone(),
+                        changed: false,
+                        already_terminal,
+                    };
+                    state.remember_control_result(replay_key, result.clone());
+                    return Ok((result, None));
+                }
+                let cursor = state.next_cursor();
+                let snapshot = state.process_mut(mutation.process_id)?;
+                snapshot.status = status;
+                snapshot.suspension = None;
+                if mutation.checkpoint_ref.is_some() {
+                    snapshot.checkpoint_ref = mutation.checkpoint_ref.clone();
+                }
+                if let Some(metadata) = mutation.metadata.clone() {
+                    snapshot.metadata = metadata;
+                }
+                snapshot.failure = None;
+                if status != ProcessLifecycleStatus::CancelRequested {
+                    snapshot.lease = None;
+                }
+                snapshot.journal_cursor = cursor;
+                let snapshot = snapshot.clone();
+                let mut entry = ProcessJournalEntry::from_snapshot(&snapshot, cursor, kind);
+                entry.sanitized_reason = mutation.reason.clone();
+                state.push_entry(entry);
                 let result = ProcessControlResult {
-                    state: snapshot.clone(),
-                    changed: false,
+                    state: snapshot,
+                    changed: true,
                     already_terminal,
                 };
                 state.remember_control_result(replay_key, result.clone());
-                return Ok(result);
-            };
-            if status == snapshot.status {
-                let result = ProcessControlResult {
-                    state: snapshot.clone(),
-                    changed: false,
-                    already_terminal,
-                };
-                state.remember_control_result(replay_key, result.clone());
-                return Ok(result);
-            }
-            let cursor = state.next_cursor();
-            let snapshot = state.process_mut(mutation.process_id)?;
-            snapshot.status = status;
-            snapshot.suspension = None;
-            if mutation.checkpoint_ref.is_some() {
-                snapshot.checkpoint_ref = mutation.checkpoint_ref.clone();
-            }
-            if let Some(metadata) = mutation.metadata.clone() {
-                snapshot.metadata = metadata;
-            }
-            snapshot.failure = None;
-            if status != ProcessLifecycleStatus::CancelRequested {
-                snapshot.lease = None;
-            }
-            snapshot.journal_cursor = cursor;
-            let snapshot = snapshot.clone();
-            let mut entry = ProcessJournalEntry::from_snapshot(&snapshot, cursor, kind);
-            entry.sanitized_reason = mutation.reason.clone();
-            state.push_entry(entry);
-            let result = ProcessControlResult {
-                state: snapshot,
-                changed: true,
-                already_terminal,
-            };
-            state.remember_control_result(replay_key, result.clone());
-            Ok(result)
-        })
-        .await
+                Ok((result, Some(kind)))
+            })
+            .await?
+        };
+        if let Some(kind) = committed_kind {
+            self.notify_process_commit(result.state.clone(), kind, reason)
+                .await?;
+        }
+        Ok(result)
     }
 
     async fn leased_transition(
@@ -689,34 +759,53 @@ where
         request: ProcessLeaseRequest,
         mutation: ProcessTransitionMutation,
     ) -> Result<JournaledProcessSnapshot, ProcessJournalStoreError> {
-        let _guard = self.mutation_lock.lock().await;
-        self.mutate(|state| {
-            let cursor = state.next_cursor();
-            let snapshot = state.process_mut(request.process_id)?;
-            ensure_lease(snapshot, &request.worker_id, &request.lease_token)?;
-            ensure_transition(snapshot, mutation.status)?;
-            snapshot.status = mutation.status;
-            snapshot.suspension = mutation.suspension.clone();
-            if mutation.checkpoint_ref.is_some() {
-                snapshot.checkpoint_ref = mutation.checkpoint_ref.clone();
-            }
-            snapshot.failure = mutation.failure.clone();
-            if let Some(metadata) = mutation.metadata.clone() {
-                snapshot.metadata = metadata;
-            }
-            if mutation.status != ProcessLifecycleStatus::Running {
-                snapshot.lease = None;
-            }
-            snapshot.journal_cursor = cursor;
-            let snapshot = snapshot.clone();
-            state.push_entry(ProcessJournalEntry::from_snapshot(
-                &snapshot,
-                cursor,
-                mutation.kind,
-            ));
-            Ok(snapshot)
-        })
-        .await
+        let kind = mutation.kind;
+        let snapshot = {
+            let _guard = self.mutation_lock.lock().await;
+            self.mutate(|state| {
+                let cursor = state.next_cursor();
+                let snapshot = state.process_mut(request.process_id)?;
+                ensure_lease(snapshot, &request.worker_id, &request.lease_token)?;
+                ensure_transition(snapshot, mutation.status)?;
+                snapshot.status = mutation.status;
+                snapshot.suspension = mutation.suspension.clone();
+                if mutation.checkpoint_ref.is_some() {
+                    snapshot.checkpoint_ref = mutation.checkpoint_ref.clone();
+                }
+                snapshot.failure = mutation.failure.clone();
+                if let Some(metadata) = mutation.metadata.clone() {
+                    snapshot.metadata = metadata;
+                }
+                if mutation.status != ProcessLifecycleStatus::Running {
+                    snapshot.lease = None;
+                }
+                snapshot.journal_cursor = cursor;
+                let snapshot = snapshot.clone();
+                state.push_entry(ProcessJournalEntry::from_snapshot(&snapshot, cursor, kind));
+                Ok(snapshot)
+            })
+            .await?
+        };
+        self.notify_process_commit(snapshot.clone(), kind, None)
+            .await?;
+        Ok(snapshot)
+    }
+}
+
+impl<F> ProcessJournalObserverRegistry for ProcessJournalStore<F>
+where
+    F: RootFilesystem + Send + Sync + 'static,
+{
+    fn subscribe_process_observer(
+        &self,
+        observer: Arc<dyn ProcessJournalCommitObserver>,
+    ) -> Result<(), String> {
+        let mut observers = self
+            .observers
+            .lock()
+            .map_err(|_| "process journal observer registry mutex poisoned".to_string())?;
+        observers.push(observer);
+        Ok(())
     }
 }
 

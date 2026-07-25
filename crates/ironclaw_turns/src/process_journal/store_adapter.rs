@@ -289,7 +289,8 @@ pub fn turn_error_from_process_journal_store_error(error: ProcessJournalStoreErr
         | ProcessJournalStoreError::InvalidPath(_)
         | ProcessJournalStoreError::Filesystem(_)
         | ProcessJournalStoreError::Serialization(_)
-        | ProcessJournalStoreError::Deserialization(_) => TurnError::Unavailable {
+        | ProcessJournalStoreError::Deserialization(_)
+        | ProcessJournalStoreError::Observer(_) => TurnError::Unavailable {
             reason: error.to_string(),
         },
     }

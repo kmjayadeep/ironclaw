@@ -13,6 +13,7 @@ use ironclaw_host_api::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,6 +262,26 @@ pub struct ProcessJournalEntry {
     pub detail: Option<String>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub metadata: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProcessJournalCommit {
+    pub state: JournaledProcessSnapshot,
+    pub kind: ProcessJournalKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sanitized_reason: Option<String>,
+}
+
+#[async_trait]
+pub trait ProcessJournalCommitObserver: Send + Sync {
+    async fn observe_process_commit(&self, commit: ProcessJournalCommit) -> Result<(), String>;
+}
+
+pub trait ProcessJournalObserverRegistry: Send + Sync {
+    fn subscribe_process_observer(
+        &self,
+        observer: Arc<dyn ProcessJournalCommitObserver>,
+    ) -> Result<(), String>;
 }
 
 /// Scope-bound process journal cursor.
