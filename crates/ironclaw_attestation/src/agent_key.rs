@@ -26,7 +26,7 @@
 //!
 //! [`DEFAULT_ROTATION_OVERLAP_MS`] is **24 hours** (Q7, ratified 2026-07-25).
 //! That is far longer than the 30-minute intent TTL strictly requires, and it
-//! is chosen for operational slack: a rotation can happen without anyone
+//! is chosen for operational headroom: a rotation can happen without anyone
 //! timing it against in-flight work, and an operator does not have to reason
 //! about clock skew, retries, or a queue backing up.
 //!
@@ -56,7 +56,7 @@ pub const DEFAULT_INTENT_TTL_MS: i64 = 30 * 60 * 1_000;
 
 /// How long a `Retiring` key keeps verifying after it stopped signing.
 ///
-/// 24 hours (Q7, ratified 2026-07-25) — operational slack, so a rotation never
+/// 24 hours (Q7, ratified 2026-07-25) — operational headroom, so a rotation never
 /// has to be timed against in-flight work. See the module header for why a
 /// window this much longer than [`DEFAULT_INTENT_TTL_MS`] is safe: revocation
 /// is the immediate, no-overlap lever for a key believed compromised, and this
@@ -72,10 +72,9 @@ pub const DEFAULT_ROTATION_OVERLAP_MS: i64 = 24 * 60 * 60 * 1_000;
 /// could fail closed mid-flight. A future tightening of
 /// [`DEFAULT_ROTATION_OVERLAP_MS`] that crossed this floor would fail the
 /// build rather than a test.
-const _: () = assert!(
-    DEFAULT_ROTATION_OVERLAP_MS >= DEFAULT_INTENT_TTL_MS,
-    "the rotation overlap must cover at least one full intent lifetime"
-);
+// Evaluated during const-eval: a violation fails the BUILD, so it can never
+// reach a running system.
+const _: () = assert!(DEFAULT_ROTATION_OVERLAP_MS >= DEFAULT_INTENT_TTL_MS); // safety: compile-time invariant, not a runtime panic
 
 /// Lifecycle state of one agent signing key generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

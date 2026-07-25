@@ -39,6 +39,7 @@ mod decoded_tx;
 mod error;
 mod fields;
 mod intent;
+mod intent_store;
 mod rendered;
 
 mod wire;
@@ -78,6 +79,10 @@ pub use grant::{
 pub use intent::{
     AGENT_PUBLIC_KEY_LEN, AgentKeyId, INTENT_SIGNATURE_LEN, IntentError, IntentId, IntentSigner,
     IntentSignerError, SignedIntent, UnsignedIntent,
+};
+pub use intent_store::{
+    InMemoryIntentStore, IntentRecord, IntentState, IntentStore, IntentStoreError,
+    REVIEW_TOKEN_HASH_LEN, ReviewTokenHash,
 };
 pub use ledger::{
     InMemorySigningLedger, LedgerError, LedgerKey, SigningLedger, SigningLedgerState,
