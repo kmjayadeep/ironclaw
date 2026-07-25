@@ -3,7 +3,7 @@
 //! they are composed under the manifest-declared file endpoint.
 
 use ironclaw_attachments::DEFAULT_ATTACHMENT_BUDGETS;
-use ironclaw_host_api::product_adapter::{AttachmentRef, ChannelError, PartDeliveryOutcome};
+use ironclaw_host_api::product_adapter::{ChannelAttachmentRef, ChannelError, PartDeliveryOutcome};
 use ironclaw_host_api::{
     InboundAttachment, NetworkMethod, RestrictedEgress, RestrictedEgressRequest, SecretHandle,
     WorkspaceFile,
@@ -31,12 +31,19 @@ pub(crate) const TELEGRAM_MULTIPART_OVERHEAD_BYTES: u64 = 64 * 1024;
 
 /// The binding per-file bound: the channel's declared transfer limit and the
 /// host-wide attachment budget both apply, tightest wins.
+/// The declared bot-token handle. Constructed in one place: a `None` here
+/// would ship a request with an unsubstituted `{telegram_bot_token}`
+/// placeholder, so the failure mode is worth having a single site for.
+fn bot_token_handle() -> Option<SecretHandle> {
+    SecretHandle::new(TELEGRAM_BOT_TOKEN_HANDLE).ok()
+}
+
 fn max_transfer_bytes() -> u64 {
     TELEGRAM_MAX_TRANSFER_BYTES.min(DEFAULT_ATTACHMENT_BUDGETS.max_file_bytes as u64)
 }
 
 pub(super) async fn fetch_attachment(
-    attachment: &AttachmentRef,
+    attachment: &ChannelAttachmentRef,
     egress: &dyn RestrictedEgress,
 ) -> Result<InboundAttachment, ChannelError> {
     let max_file_bytes = max_transfer_bytes();
@@ -61,8 +68,13 @@ pub(super) async fn fetch_attachment(
     if !(200..300).contains(&lookup.status) {
         return Err(status_error(lookup.status));
     }
-    let lookup: TelegramGetFileResponse = serde_json::from_slice(&lookup.body)
-        .map_err(|_| transfer_error("telegram returned an invalid file response", true))?;
+    let lookup: TelegramGetFileResponse =
+        serde_json::from_slice(&lookup.body).map_err(|error| {
+            // The cause stays server-side; the user-facing reason is a fixed
+            // literal so no provider body fragment crosses the boundary.
+            tracing::debug!(%error, "telegram getFile response failed to parse");
+            transfer_error("telegram returned an invalid file response", true)
+        })?;
     if !lookup.ok {
         return Err(status_error(lookup.error_code.unwrap_or(400)));
     }
@@ -241,7 +253,7 @@ fn file_download_request(file_path: &str) -> Result<RestrictedEgressRequest, Cha
         ),
         headers: Vec::new(),
         body: None,
-        credential: SecretHandle::new(TELEGRAM_BOT_TOKEN_HANDLE).ok(),
+        credential: bot_token_handle(),
         body_credentials: Vec::new(),
     })
 }
@@ -260,7 +272,7 @@ fn bot_api_request(method: &str, body: serde_json::Value) -> RestrictedEgressReq
         url: format!("https://{TELEGRAM_API_HOST}/bot{{{TELEGRAM_TOKEN_PLACEHOLDER}}}/{method}"),
         headers: vec![("content-type".to_string(), "application/json".to_string())],
         body: Some(body.to_string().into_bytes()),
-        credential: SecretHandle::new(TELEGRAM_BOT_TOKEN_HANDLE).ok(),
+        credential: bot_token_handle(),
         body_credentials: Vec::new(),
     }
 }
@@ -329,7 +341,7 @@ fn document_request(
             format!("multipart/form-data; boundary={boundary}"),
         )],
         body: Some(body),
-        credential: SecretHandle::new(TELEGRAM_BOT_TOKEN_HANDLE).ok(),
+        credential: bot_token_handle(),
         body_credentials: Vec::new(),
     })
 }

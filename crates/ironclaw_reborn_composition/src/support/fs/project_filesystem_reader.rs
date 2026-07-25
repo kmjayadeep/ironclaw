@@ -33,8 +33,10 @@ const DEFAULT_OCTET_STREAM: &str = "application/octet-stream";
 pub(crate) struct ProjectScopedFilesystemReader<F: RootFilesystem> {
     filesystem: Arc<ScopedFilesystem<F>>,
     workspace_alias: String,
-    /// Upper bound on a single download. Shares the inbound attachment ceiling
-    /// so generated files and uploads observe the same 25 MiB limit.
+    /// Upper bound on a single read through this reader. Defaults to the
+    /// browse/download ceiling; the delivery-scoped instance is constructed
+    /// with the tighter outbound attachment budget instead, so the two are
+    /// deliberately not the same number.
     max_read_bytes: u64,
 }
 

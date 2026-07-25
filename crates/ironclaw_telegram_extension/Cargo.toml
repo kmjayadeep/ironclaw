@@ -16,8 +16,9 @@ layer = "products"
 [dependencies]
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
-# Production deps only. `tracing` was previously listed here with no call
-# sites in `src/` and has been dropped (Copilot #4). `uuid` is back here
+# Production deps only. `tracing` is here for one purpose: the attachment
+# transfer path must retain the cause of a provider parse failure server-side
+# while the user-facing reason stays a fixed literal. `uuid` is here
 # because the multipart boundary must be unpredictable: the payload is
 # attacker-authored, so a boundary derived from it lets a sender force
 # unbounded rescans. `ironclaw_wasm_product_adapters` stays in dev-deps
@@ -31,6 +32,7 @@ ironclaw_telegram_v2_adapter = { path = "../ironclaw_telegram_v2_adapter", versi
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]

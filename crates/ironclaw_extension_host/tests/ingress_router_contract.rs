@@ -29,7 +29,7 @@ use ironclaw_extension_host::{
 };
 use ironclaw_host_api::SecretHandle;
 use ironclaw_product::{
-    AttachmentRef, ChannelAdapter, ChannelError, DeliveryReport, ExternalActorRef,
+    ChannelAdapter, ChannelAttachmentRef, ChannelError, DeliveryReport, ExternalActorRef,
     ExternalConversationRef, ExternalEventId, ImmediateResponse, InboundOutcome,
     NormalizedInboundMessage, OutboundEnvelope, ProductAttachmentDescriptor, ProductAttachmentKind,
     ProductTriggerReason, VerifiedInbound,
@@ -912,10 +912,9 @@ impl ChannelAdapter for GenerationChannelAdapter {
             event_id: ExternalEventId::new(format!("event-{}", self.generation)).expect("event"),
             text: "attachment".to_string(),
             trigger: ProductTriggerReason::DirectChat,
-            attachments: vec![AttachmentRef {
+            attachments: vec![ChannelAttachmentRef {
                 descriptor,
                 vendor_ref: self.generation.to_string(),
-                mime_hint: Some("image/png".to_string()),
             }],
             reply_context: None,
         }]))
@@ -923,7 +922,7 @@ impl ChannelAdapter for GenerationChannelAdapter {
 
     async fn fetch_attachment(
         &self,
-        attachment: &AttachmentRef,
+        attachment: &ChannelAttachmentRef,
         egress: &dyn ironclaw_host_api::RestrictedEgress,
     ) -> Result<ironclaw_host_api::InboundAttachment, ChannelError> {
         egress

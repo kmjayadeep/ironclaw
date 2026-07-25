@@ -755,7 +755,6 @@ fn channel_attachment_ref(id: &str, size_bytes: Option<u64>) -> ChannelAttachmen
         )
         .expect("attachment descriptor"),
         vendor_ref: format!("vendor:{id}"),
-        mime_hint: Some("image/png".to_string()),
     }
 }
 
@@ -1078,7 +1077,6 @@ async fn declared_mime_parameters_do_not_reject_a_matching_attachment() {
         )
         .expect("attachment descriptor"),
         vendor_ref: "vendor:channel-text-0".to_string(),
-        mime_hint: None,
     };
     let adapter = Arc::new(FetchingChannelAdapter::new([Ok(InboundAttachment {
         id: source.descriptor.external_file_id.clone(),
@@ -1130,7 +1128,6 @@ async fn adapter_recovered_filename_survives_when_the_descriptor_has_none() {
         )
         .expect("attachment descriptor"),
         vendor_ref: "vendor:channel-photo-0".to_string(),
-        mime_hint: None,
     };
     let adapter = Arc::new(FetchingChannelAdapter::new([Ok(InboundAttachment {
         id: source.descriptor.external_file_id.clone(),

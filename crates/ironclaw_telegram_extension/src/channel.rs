@@ -10,7 +10,7 @@
 
 use async_trait::async_trait;
 use ironclaw_host_api::product_adapter::{
-    AdapterInstallationId, AttachmentRef, ChannelAdapter, ChannelContext, ChannelError,
+    AdapterInstallationId, ChannelAdapter, ChannelAttachmentRef, ChannelContext, ChannelError,
     DeliveryReport, InboundOutcome, OutboundEnvelope, OutboundPart, PartDeliveryOutcome,
     VerifiedInbound, render_channel_auth_prompt,
 };
@@ -143,7 +143,7 @@ impl ChannelAdapter for TelegramChannelAdapter {
 
     async fn fetch_attachment(
         &self,
-        attachment: &AttachmentRef,
+        attachment: &ChannelAttachmentRef,
         egress: &dyn RestrictedEgress,
     ) -> Result<InboundAttachment, ChannelError> {
         crate::attachment_transfer::fetch_attachment(attachment, egress).await

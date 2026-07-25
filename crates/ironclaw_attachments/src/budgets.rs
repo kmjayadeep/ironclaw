@@ -1,5 +1,8 @@
 /// Attachment-count and decoded-byte budgets shared by every product surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Serde-capable so wire DTOs can embed it with `#[serde(flatten)]` instead of
+/// re-declaring the same three fields and hand-copying them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AttachmentBudgets {
     pub max_count: usize,
     pub max_file_bytes: usize,

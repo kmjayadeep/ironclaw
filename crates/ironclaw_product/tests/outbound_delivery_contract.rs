@@ -458,36 +458,8 @@ impl ProjectFilesystemReader for OrderedProjectFilesystem {
     }
 }
 
-struct NoProjectFilesystem;
-
-#[async_trait]
-impl ProjectFilesystemReader for NoProjectFilesystem {
-    async fn list_dir(
-        &self,
-        _thread_scope: &ThreadScope,
-        _path: &str,
-    ) -> Result<Vec<ProjectFsEntry>, ProjectFsError> {
-        Err(ProjectFsError::NotFound)
-    }
-
-    async fn read_file(
-        &self,
-        _thread_scope: &ThreadScope,
-        _path: &str,
-    ) -> Result<WorkspaceFile, ProjectFsError> {
-        Err(ProjectFsError::NotFound)
-    }
-
-    async fn stat(
-        &self,
-        _thread_scope: &ThreadScope,
-        _path: &str,
-    ) -> Result<ProjectFsStat, ProjectFsError> {
-        Err(ProjectFsError::NotFound)
-    }
-}
-
-static NO_PROJECT_FILESYSTEM: NoProjectFilesystem = NoProjectFilesystem;
+static NO_PROJECT_FILESYSTEM: ironclaw_product::NoProjectFilesystem =
+    ironclaw_product::NoProjectFilesystem;
 
 #[derive(Default)]
 struct ScriptedProjectFilesystem {

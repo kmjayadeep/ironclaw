@@ -8,7 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::product_adapter::auth::{ProtocolAuthEvidence, VerifiedAuthClaim};
-use crate::product_adapter::channel_adapter::AttachmentRef;
+use crate::product_adapter::channel_adapter::ChannelAttachmentRef;
 use crate::product_adapter::error::ProductAdapterError;
 use crate::product_adapter::external::{
     ExternalActorRef, ExternalConversationRef, ExternalEventId, ProductAttachmentDescriptor,
@@ -773,7 +773,7 @@ pub struct ProductInboundEnvelope {
     /// refs survive only long enough for accepted workflow intake to fetch
     /// bytes through restricted egress.
     #[serde(skip)]
-    channel_attachment_refs: Vec<AttachmentRef>,
+    channel_attachment_refs: Vec<ChannelAttachmentRef>,
 }
 
 impl ProductInboundEnvelope {
@@ -835,7 +835,7 @@ impl ProductInboundEnvelope {
     /// to the user-message descriptors already present in this envelope.
     pub fn with_channel_attachment_refs(
         mut self,
-        channel_attachment_refs: Vec<AttachmentRef>,
+        channel_attachment_refs: Vec<ChannelAttachmentRef>,
     ) -> Result<Self, ProductAdapterError> {
         let ProductInboundPayload::UserMessage(payload) = &self.payload else {
             if channel_attachment_refs.is_empty() {
@@ -864,7 +864,7 @@ impl ProductInboundEnvelope {
     }
 
     /// Host-only transient provider references for deferred attachment fetch.
-    pub fn channel_attachment_refs(&self) -> &[AttachmentRef] {
+    pub fn channel_attachment_refs(&self) -> &[ChannelAttachmentRef] {
         &self.channel_attachment_refs
     }
 

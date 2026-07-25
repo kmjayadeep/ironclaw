@@ -58,7 +58,7 @@ pub trait ChannelAdapter: Send + Sync {
     /// lands the returned bytes through the canonical project filesystem path.
     async fn fetch_attachment(
         &self,
-        _attachment: &AttachmentRef,
+        _attachment: &ChannelAttachmentRef,
         _egress: &dyn RestrictedEgress,
     ) -> Result<InboundAttachment, ChannelError> {
         Err(ChannelError::Unsupported)
@@ -127,7 +127,7 @@ pub struct NormalizedInboundMessage {
     /// thread reply, …). The workflow's user-message payload requires it, so
     /// any host sink mapping normalized messages into the workflow needs it.
     pub trigger: ProductTriggerReason,
-    pub attachments: Vec<AttachmentRef>,
+    pub attachments: Vec<ChannelAttachmentRef>,
     /// Opaque per-message context (≤ 4 KiB) the host stores server-side and
     /// hands back at delivery time (reply routing). Never interpreted by the
     /// host.
@@ -137,14 +137,18 @@ pub struct NormalizedInboundMessage {
 /// Maximum size of an inbound message's opaque `reply_context`.
 pub const MAX_REPLY_CONTEXT_BYTES: usize = 4 * 1024;
 
-/// An attachment reference — the vendor URL/id plus a mime hint. Bytes are
+/// A transient vendor attachment reference: the descriptor the message
+/// declares plus the opaque provider handle used to fetch it. Bytes are
 /// fetched host-side through restricted egress with the channel credential
 /// only when a consumer needs them, keeping `inbound` pure.
+///
+/// Named distinctly from `ironclaw_common::ChannelAttachmentRef`, which is the
+/// durable byte-free transcript reference — a different concept that used to
+/// share this name and forced import aliases wherever both appeared.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AttachmentRef {
+pub struct ChannelAttachmentRef {
     pub descriptor: ProductAttachmentDescriptor,
     pub vendor_ref: String,
-    pub mime_hint: Option<String>,
 }
 
 /// A bounded immediate response (returned after verification, before any

@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use ironclaw_host_api::product_adapter::{
-    AttachmentRef, ProductAttachmentDescriptor, ProductAttachmentKind,
+    ChannelAttachmentRef, ProductAttachmentDescriptor, ProductAttachmentKind,
 };
 use ironclaw_host_api::{RestrictedEgressError, RestrictedEgressResponse};
 
@@ -47,8 +47,8 @@ impl RestrictedEgress for ScriptedEgress {
     }
 }
 
-fn attachment(size_bytes: Option<u64>) -> AttachmentRef {
-    AttachmentRef {
+fn attachment(size_bytes: Option<u64>) -> ChannelAttachmentRef {
+    ChannelAttachmentRef {
         descriptor: ProductAttachmentDescriptor::new(
             "descriptor-file-id",
             "text/plain",
@@ -58,7 +58,6 @@ fn attachment(size_bytes: Option<u64>) -> AttachmentRef {
         )
         .expect("descriptor"),
         vendor_ref: "vendor-file-id".to_string(),
-        mime_hint: Some("application/octet-stream".to_string()),
     }
 }
 

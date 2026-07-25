@@ -28,4 +28,4 @@ pub use landing::{
     ATTACHMENTS_DIR, AttachmentLanding, AttachmentLandingError, DEFAULT_MAX_ATTACHMENT_BYTES,
     attachment_scoped_path, land_attachment,
 };
-pub use workspace_refs::extract_workspace_attachment_paths;
+pub use workspace_refs::{WORKSPACE_ALIAS, extract_workspace_attachment_paths};

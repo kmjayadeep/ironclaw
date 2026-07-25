@@ -123,35 +123,6 @@ impl ironclaw_product::InboundAttachmentLander for InertAttachmentLander {
     }
 }
 
-struct NoProjectFilesystem;
-
-#[async_trait::async_trait]
-impl ironclaw_product::ProjectFilesystemReader for NoProjectFilesystem {
-    async fn list_dir(
-        &self,
-        _thread_scope: &ironclaw_threads::ThreadScope,
-        _path: &str,
-    ) -> Result<Vec<ironclaw_product::ProjectFsEntry>, ironclaw_product::ProjectFsError> {
-        Err(ironclaw_product::ProjectFsError::NotFound)
-    }
-
-    async fn read_file(
-        &self,
-        _thread_scope: &ironclaw_threads::ThreadScope,
-        _path: &str,
-    ) -> Result<ironclaw_host_api::WorkspaceFile, ironclaw_product::ProjectFsError> {
-        Err(ironclaw_product::ProjectFsError::NotFound)
-    }
-
-    async fn stat(
-        &self,
-        _thread_scope: &ironclaw_threads::ThreadScope,
-        _path: &str,
-    ) -> Result<ironclaw_product::ProjectFsStat, ironclaw_product::ProjectFsError> {
-        Err(ironclaw_product::ProjectFsError::NotFound)
-    }
-}
-
 const TENANT: &str = "tenant:slack";
 const AGENT: &str = "agent:slack";
 const PROJECT: &str = "project:slack";
@@ -480,7 +451,7 @@ async fn build_harness_with_options(options: HarnessOptions) -> Harness {
             outbound_store,
             route_store: Arc::clone(&route_store),
             communication_preferences: preferences,
-            project_filesystem: Arc::new(NoProjectFilesystem),
+            project_filesystem: Arc::new(ironclaw_product::NoProjectFilesystem),
             approval_context: None,
             blocked_auth_prompts: options.auth_challenges.map(|provider| {
                 Arc::new(ProductAuthBlockedAuthPromptSource::new(Some(provider)))
@@ -1310,7 +1281,7 @@ async fn triggered_approval_prompt_route_resolves_dm_approve_on_foreign_scope() 
     let fixture = triggered_delivery_fixture(Arc::clone(&outbound_store)).await;
     let driver_egress = fixture.driver_egress.clone();
     let services = RunDeliveryServices {
-        project_filesystem: Arc::new(NoProjectFilesystem),
+        project_filesystem: Arc::new(ironclaw_product::NoProjectFilesystem),
         binding_service: Arc::new(NoopTriggeredBindingService),
         thread_service: Arc::new(threads),
         turn_coordinator: coordinator,
@@ -1600,7 +1571,7 @@ async fn triggered_auth_prompt_route_delivers_dm_setup_link_on_foreign_scope() {
     let fixture = triggered_delivery_fixture(Arc::clone(&outbound_store)).await;
     let driver_egress = fixture.driver_egress.clone();
     let services = RunDeliveryServices {
-        project_filesystem: Arc::new(NoProjectFilesystem),
+        project_filesystem: Arc::new(ironclaw_product::NoProjectFilesystem),
         binding_service: Arc::new(NoopTriggeredBindingService),
         thread_service: Arc::new(threads),
         turn_coordinator: coordinator,
@@ -1733,7 +1704,7 @@ async fn triggered_auth_prompt_oauth_target_not_dm_suppresses_setup_link_and_can
     let fixture = triggered_delivery_fixture(Arc::clone(&outbound_store)).await;
     let driver_egress = fixture.driver_egress.clone();
     let services = RunDeliveryServices {
-        project_filesystem: Arc::new(NoProjectFilesystem),
+        project_filesystem: Arc::new(ironclaw_product::NoProjectFilesystem),
         binding_service: Arc::new(NoopTriggeredBindingService),
         thread_service: Arc::new(threads),
         turn_coordinator: Arc::clone(&coordinator) as Arc<dyn TurnCoordinator>,

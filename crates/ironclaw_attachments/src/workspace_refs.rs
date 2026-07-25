@@ -2,6 +2,15 @@ use std::collections::HashSet;
 
 use ironclaw_host_api::ScopedPath;
 
+/// The mount alias every workspace file reference is rooted at.
+///
+/// One definition, because two consumers must agree: extraction decides which
+/// paths in model text become egress attachments, and mount composition
+/// decides which paths are readable at all. If those drift, the result is
+/// either a file that silently never delivers or a path that is extracted but
+/// not confined — so composition imports this rather than declaring its own.
+pub const WORKSPACE_ALIAS: &str = "/workspace";
+
 const WORKSPACE_PREFIX: &str = "/workspace/";
 
 /// Extract workspace file references using the same recognition rules as the
@@ -246,6 +255,14 @@ fn find_byte(bytes: &[u8], needle: u8, from: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    /// `WORKSPACE_PREFIX` is what extraction matches on; `WORKSPACE_ALIAS` is
+    /// what composition mounts. They are one concept, so a change to either
+    /// must move the other.
+    #[test]
+    fn workspace_prefix_is_the_alias_plus_a_separator() {
+        assert_eq!(WORKSPACE_PREFIX, format!("{WORKSPACE_ALIAS}/"));
+    }
+
     use super::*;
 
     #[test]

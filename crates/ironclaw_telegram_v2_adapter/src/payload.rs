@@ -15,7 +15,7 @@
 //! out-of-band `None` path.
 
 use ironclaw_host_api::product_adapter::{
-    AdapterInstallationId, AttachmentRef, ExternalActorRef, ExternalConversationRef,
+    AdapterInstallationId, ChannelAttachmentRef, ExternalActorRef, ExternalConversationRef,
     ExternalEventId, InboundCommandPayload, NormalizedInboundMessage, ParsedProductInbound,
     ProductAdapterError, ProductAttachmentDescriptor, ProductAttachmentKind, ProductInboundPayload,
     ProductTriggerReason, ProtocolAuthEvidence, UserMessagePayload,
@@ -434,9 +434,8 @@ pub fn normalize_telegram_update(
     );
     let attachments = attachments
         .into_iter()
-        .map(|descriptor| AttachmentRef {
+        .map(|descriptor| ChannelAttachmentRef {
             vendor_ref: descriptor.external_file_id.clone(),
-            mime_hint: Some(descriptor.mime_type.clone()),
             descriptor,
         })
         .collect();

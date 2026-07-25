@@ -5,8 +5,8 @@ use ironclaw_host_api::{
     RestrictedEgress, RestrictedEgressError, RestrictedEgressRequest, RestrictedEgressResponse,
 };
 use ironclaw_product::{
-    AttachmentRef, ChannelAdapter, ExternalActorRef, ExternalConversationRef, ExternalEventId,
-    ParsedProductInbound, ProductAttachmentDescriptor, ProductAttachmentKind,
+    ChannelAdapter, ChannelAttachmentRef, ExternalActorRef, ExternalConversationRef,
+    ExternalEventId, ParsedProductInbound, ProductAttachmentDescriptor, ProductAttachmentKind,
     ProductInboundPayload, ProductTriggerReason, TrustedInboundContext, UserMessagePayload,
 };
 use ironclaw_product::{ChannelInboundSurfaceAdmission, ChannelInboundSurfaceOutcome};
@@ -164,7 +164,7 @@ fn admission_for(text: &str) -> InboundAdmission {
 
 fn admission_with_attachment() -> InboundAdmission {
     let mut admission = admission_for("review the attached report");
-    admission.message.attachments.push(AttachmentRef {
+    admission.message.attachments.push(ChannelAttachmentRef {
         descriptor: ProductAttachmentDescriptor::new(
             "file-1",
             "application/pdf",
@@ -174,7 +174,6 @@ fn admission_with_attachment() -> InboundAdmission {
         )
         .expect("attachment descriptor"),
         vendor_ref: "opaque-provider-file-reference".to_string(),
-        mime_hint: Some("application/pdf".to_string()),
     });
     admission.channel_egress = Some(Arc::new(TestRestrictedEgress));
     admission

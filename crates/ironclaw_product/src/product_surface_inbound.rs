@@ -4,7 +4,7 @@
 //! canonical Reborn commands without depending on route handlers, protocol auth
 //! evidence, WASM, or adapter registries.
 
-use ironclaw_attachments::DEFAULT_ATTACHMENT_BUDGETS;
+use ironclaw_attachments::{AttachmentBudgets, DEFAULT_ATTACHMENT_BUDGETS};
 use ironclaw_host_api::InboundAttachment;
 use ironclaw_host_api::{
     ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceValidationCode, ThreadId, TurnActor,
@@ -35,12 +35,11 @@ pub struct ProductAttachmentCapabilities {
     /// ".pdf"]` — never `image/*` wildcards (which would advertise unsupported
     /// formats, and which break folder navigation in the native macOS picker).
     pub accept: Vec<String>,
-    /// Maximum number of attachments per message.
-    pub max_count: usize,
-    /// Maximum decoded byte size of a single attachment.
-    pub max_file_bytes: usize,
-    /// Maximum combined decoded byte size of all attachments in one message.
-    pub max_total_bytes: usize,
+    /// The count/byte budgets `decode_attachments` enforces. Flattened, so the
+    /// wire shape is unchanged and a new budget field reaches the browser
+    /// without an intermediate edit here.
+    #[serde(flatten)]
+    pub budgets: AttachmentBudgets,
 }
 
 /// The inline-attachment contract advertised to browsers. Generated from the
@@ -49,9 +48,7 @@ pub struct ProductAttachmentCapabilities {
 pub fn product_attachment_capabilities() -> ProductAttachmentCapabilities {
     ProductAttachmentCapabilities {
         accept: ironclaw_common::accept_tokens(),
-        max_count: DEFAULT_ATTACHMENT_BUDGETS.max_count,
-        max_file_bytes: DEFAULT_ATTACHMENT_BUDGETS.max_file_bytes,
-        max_total_bytes: DEFAULT_ATTACHMENT_BUDGETS.max_total_bytes,
+        budgets: DEFAULT_ATTACHMENT_BUDGETS,
     }
 }
 

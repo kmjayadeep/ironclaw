@@ -190,10 +190,9 @@ fn channel_attachment_refs_must_match_descriptors_and_stay_transient() {
         crate::product_adapter::external::ProductAttachmentKind::Document,
     )
     .expect("descriptor");
-    let source = AttachmentRef {
+    let source = ChannelAttachmentRef {
         descriptor: descriptor.clone(),
         vendor_ref: "opaque-provider-file-reference".to_string(),
-        mime_hint: Some("application/pdf".to_string()),
     };
     let payload = ProductInboundPayload::UserMessage(
         UserMessagePayload::new(
@@ -205,7 +204,7 @@ fn channel_attachment_refs_must_match_descriptors_and_stay_transient() {
     );
 
     // Mismatched refs fail closed before any transfer authority exists.
-    let mismatched = AttachmentRef {
+    let mismatched = ChannelAttachmentRef {
         descriptor: crate::product_adapter::external::ProductAttachmentDescriptor::new(
             "other-file",
             "application/pdf",
@@ -215,7 +214,6 @@ fn channel_attachment_refs_must_match_descriptors_and_stay_transient() {
         )
         .expect("descriptor"),
         vendor_ref: "other".to_string(),
-        mime_hint: None,
     };
     let envelope =
         ProductInboundEnvelope::from_trusted_parse(sample_context(), sample_parsed(payload))

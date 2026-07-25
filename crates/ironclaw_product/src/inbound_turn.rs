@@ -10,9 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{
-    AttachmentRef as ChannelAttachmentRef, ChannelAdapter, ChannelError, ProductAdapterId,
-    ProductInboundAck, ProductInboundEnvelope, ProductInboundPayload, ProductRejection,
-    ProductSourceChannel,
+    ChannelAdapter, ChannelAttachmentRef, ChannelError, ProductAdapterId, ProductInboundAck,
+    ProductInboundEnvelope, ProductInboundPayload, ProductRejection, ProductSourceChannel,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
