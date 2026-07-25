@@ -108,9 +108,11 @@ pub use command_dispatch::{
     RejectingProductCommandAdmissionService,
 };
 pub use commands::{
-    PRODUCT_LIFECYCLE_COMMAND_OPERATION_ID, PRODUCT_MODEL_COMMAND_OPERATION_ID, ProductCommand,
+    CommandResultField, CommandResultView, PRODUCT_LIFECYCLE_COMMAND_OPERATION_ID,
+    PRODUCT_MODEL_COMMAND_OPERATION_ID, PRODUCT_STATUS_COMMAND_OPERATION_ID, ProductCommand,
     ProductLifecycleCommandInput, ProductModelCommand, ProductModelCommandInput,
-    product_command_descriptors,
+    ProductStatusCommandInput, command_help_text, product_command_descriptors,
+    render_command_result_text,
 };
 pub use conversation_binding::{
     ProductActorBindingPolicy, ProductActorUserResolutionRequest, ProductActorUserResolver,

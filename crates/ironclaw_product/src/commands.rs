@@ -19,6 +19,7 @@ use crate::lifecycle::{
 
 pub const PRODUCT_LIFECYCLE_COMMAND_OPERATION_ID: &str = "product.lifecycle.command";
 pub const PRODUCT_MODEL_COMMAND_OPERATION_ID: &str = "product.model.command";
+pub const PRODUCT_STATUS_COMMAND_OPERATION_ID: &str = "product.status.command";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProductLifecycleCommandInput {
@@ -28,6 +29,58 @@ pub struct ProductLifecycleCommandInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProductModelCommandInput {
     pub action: ProductModelCommand,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProductStatusCommandInput {
+    /// Thread whose activity to report — filled from the resolved
+    /// conversation binding (channels) or the browser's bound thread (WebUI),
+    /// never from external input.
+    pub thread_id: String,
+}
+
+/// Standardized presentational command result. Every command handler returns
+/// this shape so channels and the WebUI render any command's outcome with one
+/// generic renderer — command-specific payloads never leak to a surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandResultView {
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<CommandResultField>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandResultField {
+    pub label: String,
+    pub value: String,
+}
+
+/// Generic help derived from the canonical inventory — the reply for unknown
+/// or unadmitted commands on every surface.
+pub fn command_help_text() -> String {
+    let mut help = String::from("Available commands:");
+    for descriptor in PRODUCT_COMMANDS {
+        help.push_str(&format!(
+            "\n{} — {}",
+            descriptor.usage, descriptor.description
+        ));
+    }
+    help
+}
+
+/// Render a result view as plain text for channels without rich formatting.
+pub fn render_command_result_text(view: &CommandResultView) -> String {
+    let mut text = view.title.clone();
+    for field in &view.fields {
+        text.push_str(&format!("\n{}: {}", field.label, field.value));
+    }
+    for line in &view.lines {
+        text.push('\n');
+        text.push_str(line);
+    }
+    text
 }
 
 /// One behavior binding per canonical inventory descriptor. The metadata
@@ -391,6 +444,39 @@ mod tests {
         assert_eq!(
             inventory, behaviors,
             "host_api PRODUCT_COMMANDS and product behavior tables diverged"
+        );
+    }
+
+    #[test]
+    fn help_text_lists_every_command_with_usage_and_description() {
+        let help = command_help_text();
+        for descriptor in PRODUCT_COMMANDS {
+            assert!(
+                help.contains(descriptor.usage),
+                "missing {}",
+                descriptor.usage
+            );
+            assert!(
+                help.contains(descriptor.description),
+                "missing description for {}",
+                descriptor.name
+            );
+        }
+    }
+
+    #[test]
+    fn result_view_renders_title_fields_and_lines_in_order() {
+        let view = CommandResultView {
+            title: "Status".to_string(),
+            fields: vec![CommandResultField {
+                label: "State".to_string(),
+                value: "running".to_string(),
+            }],
+            lines: vec!["since 12:00".to_string()],
+        };
+        assert_eq!(
+            render_command_result_text(&view),
+            "Status\nState: running\nsince 12:00"
         );
     }
 

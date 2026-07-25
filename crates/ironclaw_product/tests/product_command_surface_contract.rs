@@ -239,6 +239,70 @@ async fn lifecycle_command_uses_lifecycle_product_surface_operation() {
 }
 
 #[tokio::test]
+async fn status_command_maps_to_its_operation_with_the_bound_thread() {
+    let inbound = Arc::new(FakeInboundTurnService::new());
+    let ledger = Arc::new(FakeIdempotencyLedger::new());
+    let binding = Arc::new(FakeConversationBindingService::new());
+    let admission_service = Arc::new(RecordingProductCommandAdmissionService::allowing());
+    let command_surface = Arc::new(RecordingCommandSurface::output(serde_json::json!({
+        "title": "Status"
+    })));
+    let workflow = DefaultProductSurface::new(inbound.clone(), ledger, binding)
+        .with_product_command_admission_service(admission_service)
+        .with_product_command_surface(command_surface.clone());
+    let envelope = sample_command_envelope("command-status", "status", "");
+
+    let ack = workflow.submit_inbound(envelope).await.expect("accept");
+
+    let ProductInboundAck::CommandResult { command, .. } = ack else {
+        panic!("expected status command result ack");
+    };
+    assert_eq!(command, "status");
+    let invokes = command_surface.invokes();
+    assert_eq!(invokes.len(), 1);
+    assert_eq!(
+        invokes[0].request.operation_id.as_str(),
+        ironclaw_product::PRODUCT_STATUS_COMMAND_OPERATION_ID
+    );
+    // The thread comes from the resolved conversation binding — never from
+    // external input.
+    let thread_id = invokes[0]
+        .request
+        .input
+        .get("thread_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("status input carries the bound thread");
+    assert!(!thread_id.is_empty());
+}
+
+#[tokio::test]
+async fn unknown_command_rejects_with_inventory_help() {
+    let inbound = Arc::new(FakeInboundTurnService::new());
+    let ledger = Arc::new(FakeIdempotencyLedger::new());
+    let binding = Arc::new(FakeConversationBindingService::new());
+    let admission_service = Arc::new(RecordingProductCommandAdmissionService::allowing());
+    let command_surface = Arc::new(RecordingCommandSurface::output(serde_json::json!({})));
+    let workflow = DefaultProductSurface::new(inbound.clone(), ledger.clone(), binding)
+        .with_product_command_admission_service(admission_service)
+        .with_product_command_surface(command_surface.clone());
+    let envelope = sample_command_envelope("command-unknown", "notacommand", "");
+
+    let ack = workflow.submit_inbound(envelope).await.expect("accept");
+
+    let ProductInboundAck::Rejected(rejection) = ack else {
+        panic!("expected unknown command rejection");
+    };
+    // InvalidRequest is the contract downstream feedback keys on to compose
+    // the inventory help (the reason string itself is redacted).
+    assert_eq!(
+        rejection.kind,
+        ironclaw_product::ProductRejectionKind::InvalidRequest
+    );
+    assert!(command_surface.invokes().is_empty());
+    assert_eq!(inbound.accepted_count(), 0);
+}
+
+#[tokio::test]
 async fn malformed_known_lifecycle_command_rejects_before_admission() {
     let inbound = Arc::new(FakeInboundTurnService::new());
     let ledger = Arc::new(FakeIdempotencyLedger::new());
@@ -283,7 +347,13 @@ async fn command_admission_receives_authority_context_and_action_metadata() {
 
     let ack = workflow.submit_inbound(envelope).await.expect("accept");
 
-    assert!(matches!(ack, ProductInboundAck::Rejected(_)));
+    // `/status` executes as its capability operation since
+    // `product.status.command`; admission still runs first with the full
+    // authority context.
+    assert!(matches!(
+        &ack,
+        ProductInboundAck::CommandResult { command, .. } if command == "status"
+    ));
     let records = admission_service.records();
     assert_eq!(records.len(), 1);
     let (context, command) = &records[0];
