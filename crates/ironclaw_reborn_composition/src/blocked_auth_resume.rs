@@ -33,11 +33,9 @@ use ironclaw_auth::{
 };
 use ironclaw_turns::{
     IdempotencyKey, ResumeTurnPrecondition, ResumeTurnRequest, TurnCoordinator,
-    TurnPersistenceSnapshot, TurnRunId, TurnStatus,
+    TurnPersistenceSnapshot, TurnRunId, TurnStateRowStore, TurnStatus,
 };
 use uuid::Uuid;
-
-use crate::turn_run_snapshot::TurnRunSnapshotSource;
 
 /// Source of the durable turn-state snapshot the fan-out scans. Split out so
 /// tests can hand-build snapshots without a filesystem-backed store.
@@ -47,12 +45,12 @@ pub(crate) trait BlockedAuthSnapshotSource: Send + Sync {
 }
 
 #[async_trait]
-impl<T> BlockedAuthSnapshotSource for T
+impl<F> BlockedAuthSnapshotSource for TurnStateRowStore<F>
 where
-    T: TurnRunSnapshotSource + ?Sized,
+    F: ironclaw_filesystem::RootFilesystem + Send + Sync + 'static,
 {
     async fn snapshot(&self) -> Option<TurnPersistenceSnapshot> {
-        match self.turn_run_snapshot().await {
+        match self.persistence_snapshot().await {
             Ok(snapshot) => Some(snapshot),
             Err(error) => {
                 tracing::debug!(

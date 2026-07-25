@@ -17,6 +17,39 @@ pub(crate) struct SnapshotActiveRunLookup {
     lifecycle_source: Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
 }
 
+pub(crate) struct RebindableProcessLifecycleLookupSource {
+    inner: std::sync::Arc<
+        std::sync::RwLock<std::sync::Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>>,
+    >,
+}
+
+impl RebindableProcessLifecycleLookupSource {
+    pub(crate) fn new(
+        inner: std::sync::Arc<
+            std::sync::RwLock<std::sync::Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>>,
+        >,
+    ) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl ProcessLifecycleLookupSource for RebindableProcessLifecycleLookupSource {
+    type Error = TurnError;
+
+    async fn process_lifecycle_states(
+        &self,
+        request: ProcessLifecycleLookupBatchRequest,
+    ) -> Vec<Result<ProcessLifecycleLookupResult, Self::Error>> {
+        let source = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        source.process_lifecycle_states(request).await
+    }
+}
+
 impl SnapshotActiveRunLookup {
     pub(crate) fn new(
         lifecycle_source: Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,

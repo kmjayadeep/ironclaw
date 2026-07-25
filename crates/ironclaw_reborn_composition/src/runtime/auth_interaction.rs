@@ -11,9 +11,9 @@ use ironclaw_product::{
     ListPendingAuthInteractionsResponse, ProductSurfaceFailure, ResolveAuthInteractionRequest,
     ResolveAuthInteractionResponse,
 };
-use ironclaw_turns::{GateRef, TurnPersistenceSnapshot, TurnRunId, TurnScope, TurnStatus};
-
-use crate::turn_run_snapshot::TurnRunSnapshotSource;
+use ironclaw_turns::{
+    GateRef, TurnPersistenceSnapshot, TurnRunId, TurnScope, TurnStateRowStore, TurnStatus,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BlockedAuthRun {
@@ -21,12 +21,13 @@ struct BlockedAuthRun {
     gate_ref: GateRef,
 }
 
-pub(super) struct SnapshotAuthInteractionReadModel {
-    /// A trait object (not a concrete row-store type) so a
-    /// caller can substitute a different turn-state store's snapshot view —
-    /// see `turn_run_snapshot::TurnRunSnapshotSource` and
-    /// `build_webui_auth_interaction_service_with_turn_run_source`.
-    turn_state: Arc<dyn TurnRunSnapshotSource>,
+pub(super) struct SnapshotAuthInteractionReadModel<F>
+where
+    F: ironclaw_filesystem::RootFilesystem + Send + Sync + 'static,
+{
+    /// Generic over the row-store filesystem backend so test-support harnesses
+    /// can substitute the store their own runs execute against.
+    turn_state: Arc<TurnStateRowStore<F>>,
     flow_records: Arc<dyn AuthFlowRecordSource>,
 }
 
@@ -49,9 +50,12 @@ impl AuthInteractionService for UnavailableAuthInteractionService {
     }
 }
 
-impl SnapshotAuthInteractionReadModel {
+impl<F> SnapshotAuthInteractionReadModel<F>
+where
+    F: ironclaw_filesystem::RootFilesystem + Send + Sync + 'static,
+{
     pub(super) fn new(
-        turn_state: Arc<dyn TurnRunSnapshotSource>,
+        turn_state: Arc<TurnStateRowStore<F>>,
         flow_records: Arc<dyn AuthFlowRecordSource>,
     ) -> Self {
         Self {
@@ -61,13 +65,16 @@ impl SnapshotAuthInteractionReadModel {
     }
 
     async fn snapshot(&self) -> Result<TurnPersistenceSnapshot, ProductSurfaceFailure> {
-        self.turn_state.turn_run_snapshot().await.map_err(|error| {
-            tracing::debug!(
-                %error,
-                "auth interaction read model could not read turn persistence snapshot"
-            );
-            auth_read_model_unavailable()
-        })
+        self.turn_state
+            .persistence_snapshot()
+            .await
+            .map_err(|error| {
+                tracing::debug!(
+                    %error,
+                    "auth interaction read model could not read turn persistence snapshot"
+                );
+                auth_read_model_unavailable()
+            })
     }
 
     async fn blocked_auth_runs(
@@ -216,7 +223,10 @@ fn matching_flow_for_run(
         .cloned())
 }
 
-impl SnapshotAuthInteractionReadModel {
+impl<F> SnapshotAuthInteractionReadModel<F>
+where
+    F: ironclaw_filesystem::RootFilesystem + Send + Sync + 'static,
+{
     async fn owner_flows(
         &self,
         scope: &AuthInteractionScope,
@@ -226,7 +236,10 @@ impl SnapshotAuthInteractionReadModel {
 }
 
 #[async_trait]
-impl AuthInteractionReadModel for SnapshotAuthInteractionReadModel {
+impl<F> AuthInteractionReadModel for SnapshotAuthInteractionReadModel<F>
+where
+    F: ironclaw_filesystem::RootFilesystem + Send + Sync + 'static,
+{
     async fn auth_gates(
         &self,
         scope: &AuthInteractionScope,

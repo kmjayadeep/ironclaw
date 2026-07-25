@@ -4733,9 +4733,9 @@ async fn build_backend_production(
         >));
     let trigger_active_run_lookup: Arc<dyn TriggerActiveRunLookup> = Arc::new(
         crate::automation::trigger_poller::SnapshotActiveRunLookup::new(Arc::new(
-            crate::turn_run_snapshot::RebindableProcessLifecycleLookupSource::new(Arc::clone(
-                &trigger_source_turn_state,
-            )),
+            crate::automation::trigger_poller::RebindableProcessLifecycleLookupSource::new(
+                Arc::clone(&trigger_source_turn_state),
+            ),
         )
             as Arc<
                 dyn ironclaw_processes::ProcessLifecycleLookupSource<
@@ -4874,8 +4874,8 @@ async fn build_backend_production(
             // Blocked-auth fan-out over this builder's own durable turn-state
             // store: a completed connect resumes every run the same owner has
             // parked on the same provider, matching the local-dev builder. The
-            // blanket `TurnRunSnapshotSource` impl covers the generic
-            // filesystem store directly.
+            // `BlockedAuthSnapshotSource` is implemented directly for the
+            // generic filesystem-backed turn store.
             blocked_auth_snapshot_source: Some(Arc::clone(&turn_state)
                 as Arc<dyn crate::blocked_auth_resume::BlockedAuthSnapshotSource>),
             provider_composition,

@@ -7,11 +7,14 @@
 
 use super::*;
 
-fn build_approval_interaction_service_with_parts(
+fn build_approval_interaction_service_with_parts<F>(
     parts: &InteractionServiceTestParts,
     turn_coordinator: Arc<dyn TurnCoordinator>,
-    turn_run_source: Arc<dyn crate::turn_run_snapshot::TurnRunSnapshotSource>,
-) -> Result<Arc<dyn ApprovalInteractionService>, RebornRuntimeError> {
+    turn_run_source: Arc<ironclaw_turns::TurnStateRowStore<F>>,
+) -> Result<Arc<dyn ApprovalInteractionService>, RebornRuntimeError>
+where
+    F: ironclaw_filesystem::RootFilesystem + Send + Sync + 'static,
+{
     let approval_turn_runs = Arc::new(SnapshotApprovalTurnRunLocator::new(turn_run_source));
     let approval_read_model = Arc::new(RunStateApprovalInteractionReadModel::new(
         parts.approval_requests.clone(),
@@ -67,7 +70,7 @@ impl RebornRuntime {
         build_approval_interaction_service_with_parts(
             parts,
             turn_coordinator,
-            Arc::clone(&self.turn_run_snapshot_source),
+            Arc::clone(&self.interaction_turn_state),
         )
         .map(Some)
     }
@@ -82,21 +85,20 @@ impl RebornRuntime {
     ) -> Option<Arc<dyn AuthInteractionService>> {
         Some(build_webui_auth_interaction_service_with_turn_run_source(
             self.product_auth.as_ref(),
-            Arc::clone(&self.turn_run_snapshot_source),
+            Arc::clone(&self.interaction_turn_state),
             turn_coordinator,
         ))
     }
 
     /// Like [`local_dev_approval_interaction_service_for_test`], but lets
-    /// the caller substitute the turn-run snapshot source the interaction
+    /// the caller substitute the turn-state store the interaction
     /// service's approval locator reads from — for harnesses whose real runs
     /// live in a DIFFERENT `TurnStateStore` composition than this
     /// this runtime's own turn state (e.g.
     /// `RebornIntegrationGroup`, whose runs execute against its own
     /// `shared.turn_store` via a separate `build_default_planned_runtime`).
     /// Generic over `F` so any `TurnStateRowStore<F>`-backed store can be
-    /// passed directly, without this crate exposing `TurnRunSnapshotSource`
-    /// outside itself.
+    /// passed directly.
     ///
     /// For tests only -- gated behind `test-support`, ships zero bytes in
     /// production builds.
@@ -114,12 +116,7 @@ impl RebornRuntime {
         let Some(parts) = self.interaction_service_test_parts.as_ref() else {
             return Ok(None);
         };
-        build_approval_interaction_service_with_parts(
-            parts,
-            turn_coordinator,
-            turn_state as Arc<dyn crate::turn_run_snapshot::TurnRunSnapshotSource>,
-        )
-        .map(Some)
+        build_approval_interaction_service_with_parts(parts, turn_coordinator, turn_state).map(Some)
     }
 
     /// Auth-side counterpart of
@@ -141,7 +138,7 @@ impl RebornRuntime {
     {
         Some(build_webui_auth_interaction_service_with_turn_run_source(
             self.product_auth.as_ref(),
-            turn_state as Arc<dyn crate::turn_run_snapshot::TurnRunSnapshotSource>,
+            turn_state,
             turn_coordinator,
         ))
     }

@@ -39,7 +39,9 @@ pub trait PostSubmitDeliveryHook: Send + Sync {
 }
 
 mod active_run_lookup;
-pub(crate) use active_run_lookup::SnapshotActiveRunLookup;
+pub(crate) use active_run_lookup::{
+    RebindableProcessLifecycleLookupSource, SnapshotActiveRunLookup,
+};
 
 pub(crate) const TRIGGER_POLLER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 

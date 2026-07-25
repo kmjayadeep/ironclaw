@@ -140,7 +140,6 @@ use crate::outbound::{
     outbound_delivery_synthetic_provider,
 };
 use crate::root::default_system_prompt::DefaultSystemPromptIdentitySource;
-use crate::turn_run_snapshot::TurnRunSnapshotSource;
 use ironclaw_extension_host::AdminConfigurationCatalogUse;
 use ironclaw_product::projection::{RebornProjectionServices, build_reborn_projection_services};
 use ironclaw_secrets::SecretStorePort;
@@ -399,7 +398,7 @@ struct RuntimeStoreParts {
     /// Unified turn-run snapshot source for approval/auth locators that still
     /// need richer turn-specific state.
     #[cfg(feature = "test-support")]
-    turn_run_snapshot_source: Arc<dyn TurnRunSnapshotSource>,
+    interaction_turn_state: Arc<TurnStateRowStore<CompositeRootFilesystem>>,
     admin_secret_provisioner: Arc<dyn crate::admin_secrets::AdminSecretProvisioner>,
     project_service: Arc<dyn ironclaw_product::ProjectService>,
     trigger_conversation_services: Option<RebornFilesystemConversationServices>,
@@ -484,7 +483,7 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
         subagent_await_edge_evidence,
         trigger_repository: Arc::clone(&services.trigger_repository),
         #[cfg(feature = "test-support")]
-        turn_run_snapshot_source: turn_state as Arc<dyn TurnRunSnapshotSource>,
+        interaction_turn_state: turn_state,
         admin_secret_provisioner,
         project_service,
         trigger_conversation_services: Some(services.trigger_conversation_services.clone()),
@@ -803,7 +802,7 @@ pub struct RebornRuntime {
     pub(crate) process_lifecycle_lookup_source:
         Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
     #[cfg(feature = "test-support")]
-    pub(crate) turn_run_snapshot_source: Arc<dyn TurnRunSnapshotSource>,
+    pub(crate) interaction_turn_state: Arc<TurnStateRowStore<CompositeRootFilesystem>>,
     turn_tree_store: Arc<dyn TurnSpawnTreeStateStore>,
     thread_service: Arc<dyn SessionThreadService>,
     thread_scope: ThreadScope,
@@ -921,7 +920,7 @@ pub(crate) fn build_approval_interaction_service(
         builtin_capability_policy,
         turn_coordinator,
         audit_sink,
-        Arc::clone(&runtime.turn_state) as Arc<dyn TurnRunSnapshotSource>,
+        Arc::clone(&runtime.turn_state),
     )
 }
 
@@ -935,13 +934,16 @@ pub(crate) fn build_approval_interaction_service(
 /// production entry point and is a thin wrapper over this function with
 /// `local_runtime.turn_state` as the source, so production behavior is
 /// unchanged.
-pub(crate) fn build_approval_interaction_service_with_turn_run_source(
+pub(crate) fn build_approval_interaction_service_with_turn_run_source<F>(
     runtime: &RebornRuntimeStores,
     builtin_capability_policy: Arc<BuiltinCapabilityPolicy>,
     turn_coordinator: Arc<dyn TurnCoordinator>,
     audit_sink: Option<Arc<dyn ironclaw_events::AuditSink>>,
-    turn_run_source: Arc<dyn TurnRunSnapshotSource>,
-) -> Result<Arc<dyn ApprovalInteractionService>, RebornRuntimeError> {
+    turn_run_source: Arc<TurnStateRowStore<F>>,
+) -> Result<Arc<dyn ApprovalInteractionService>, RebornRuntimeError>
+where
+    F: RootFilesystem + Send + Sync + 'static,
+{
     let approval_requests = &runtime.approval_requests;
     let capability_leases = &runtime.capability_leases;
     let extension_registry = &runtime.extension_registry;
@@ -1178,29 +1180,36 @@ fn poller_user_directory(
     )
 }
 
-struct SnapshotApprovalTurnRunLocator {
-    /// A trait object (not a concrete row-store type) so a
-    /// caller can substitute a different turn-state store's snapshot view —
-    /// see `turn_run_snapshot::TurnRunSnapshotSource` and
-    /// `build_approval_interaction_service_with_turn_run_source`.
-    turn_state: Arc<dyn TurnRunSnapshotSource>,
+struct SnapshotApprovalTurnRunLocator<F>
+where
+    F: RootFilesystem + Send + Sync + 'static,
+{
+    /// Generic over the row-store filesystem backend so test-support harnesses
+    /// can substitute the store their own runs execute against.
+    turn_state: Arc<TurnStateRowStore<F>>,
 }
 
-impl SnapshotApprovalTurnRunLocator {
-    fn new(turn_state: Arc<dyn TurnRunSnapshotSource>) -> Self {
+impl<F> SnapshotApprovalTurnRunLocator<F>
+where
+    F: RootFilesystem + Send + Sync + 'static,
+{
+    fn new(turn_state: Arc<TurnStateRowStore<F>>) -> Self {
         Self { turn_state }
     }
 
     async fn snapshot(
         &self,
     ) -> Result<TurnPersistenceSnapshot, ironclaw_product::ProductSurfaceFailure> {
-        self.turn_state.turn_run_snapshot().await.map_err(|error| {
-            tracing::debug!(
-                %error,
-                "approval turn-run locator could not read turn persistence snapshot"
-            );
-            approval_turn_locator_unavailable()
-        })
+        self.turn_state
+            .persistence_snapshot()
+            .await
+            .map_err(|error| {
+                tracing::debug!(
+                    %error,
+                    "approval turn-run locator could not read turn persistence snapshot"
+                );
+                approval_turn_locator_unavailable()
+            })
     }
 }
 
@@ -1330,7 +1339,10 @@ fn approval_request_id_from_gate_ref(gate_ref: &LoopGateRef) -> Option<ApprovalR
 }
 
 #[async_trait::async_trait]
-impl ApprovalTurnRunLocator for SnapshotApprovalTurnRunLocator {
+impl<F> ApprovalTurnRunLocator for SnapshotApprovalTurnRunLocator<F>
+where
+    F: RootFilesystem + Send + Sync + 'static,
+{
     async fn blocked_approval_runs(
         &self,
         scope: &ApprovalInteractionScope,
@@ -3636,7 +3648,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         subagent_await_edge_evidence,
         trigger_repository,
         #[cfg(feature = "test-support")]
-        turn_run_snapshot_source,
+        interaction_turn_state,
         admin_secret_provisioner,
         project_service,
         trigger_conversation_services,
@@ -4768,7 +4780,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         _channel_host_assembly: channel_host_assembly,
         turn_state_flush,
         #[cfg(feature = "test-support")]
-        turn_run_snapshot_source,
+        interaction_turn_state,
         turn_tree_store: turn_state_store,
         thread_service,
         thread_scope,
@@ -4821,7 +4833,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
 
 /// Thin wrapper over
 /// `build_webui_auth_interaction_service_with_turn_run_source` using
-/// `turn_state_store` as the turn-run snapshot source.
+/// `turn_state_store` as the turn-run state source.
 fn build_webui_auth_interaction_service(
     product_auth: &RebornProductAuthServices,
     turn_state_store: Arc<TurnStateRowStore<CompositeRootFilesystem>>,
@@ -4829,7 +4841,7 @@ fn build_webui_auth_interaction_service(
 ) -> Arc<dyn AuthInteractionService> {
     build_webui_auth_interaction_service_with_turn_run_source(
         product_auth,
-        turn_state_store as Arc<dyn TurnRunSnapshotSource>,
+        turn_state_store,
         turn_coordinator,
     )
 }
@@ -4839,11 +4851,14 @@ fn build_webui_auth_interaction_service(
 /// concrete row-store type. See
 /// `build_approval_interaction_service_with_turn_run_source`'s doc
 /// for why this seam exists.
-fn build_webui_auth_interaction_service_with_turn_run_source(
+fn build_webui_auth_interaction_service_with_turn_run_source<F>(
     product_auth: &RebornProductAuthServices,
-    turn_run_source: Arc<dyn TurnRunSnapshotSource>,
+    turn_run_source: Arc<TurnStateRowStore<F>>,
     turn_coordinator: Arc<dyn TurnCoordinator>,
-) -> Arc<dyn AuthInteractionService> {
+) -> Arc<dyn AuthInteractionService>
+where
+    F: RootFilesystem + Send + Sync + 'static,
+{
     // `AuthFlowRecordSource` is optional on the product-auth bundle because
     // production may supply a durable read projection that is not the flow
     // manager itself. Local-dev can render pending WebUI auth interactions only
