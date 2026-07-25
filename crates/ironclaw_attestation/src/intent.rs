@@ -160,7 +160,17 @@ pub enum IntentError {
 /// the unsigned form a distinct type makes "signed something other than what we
 /// built" unrepresentable: the pre-image and the sealed record are derived from
 /// the same value.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The serde impls exist so a durable backend can persist the intent body as a
+/// single JSON column, alongside its signature, and reconstruct it with
+/// [`SignedIntent::from_parts`]. Deserializing is *transport*, not trust: it
+/// asserts nothing about the signature, and a record read back from storage is
+/// still subject to [`SignedIntent::verify`] and
+/// [`SignedIntent::verify_binds_transaction`] before anything acts on it.
+/// `deny_unknown_fields` keeps a future field from being silently dropped on
+/// the way through a round trip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UnsignedIntent {
     /// Identity of this intent.
     pub intent_id: IntentId,
