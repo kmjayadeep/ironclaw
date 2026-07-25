@@ -49,6 +49,7 @@
 #![forbid(unsafe_code)]
 
 mod alpaca;
+mod alpaca_uds;
 mod binding;
 mod driver;
 mod intent_signer;
@@ -69,6 +70,7 @@ pub use alpaca::{
     AlpacaError, AlpacaPort, BroadcastRequest, CombineRequest, CraftRequest, CurrencyId,
     RecordingAlpacaPort, SharedAlpacaPort, UnconfiguredAlpacaPort,
 };
+pub use alpaca_uds::UdsAlpacaPort;
 pub use binding::{
     AttestedGateBinding, AttestedGateBindingStore, BindingError, BindingKey,
     InMemoryAttestedGateBindingStore, SyncBindingRead, validate_binding, validate_binding_key,

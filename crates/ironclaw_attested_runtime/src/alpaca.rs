@@ -142,6 +142,11 @@ pub trait AlpacaPort: Send + Sync {
 
 /// Recording test double.
 ///
+/// Lock access recovers from poisoning rather than panicking: a poisoned mutex
+/// here only means a previous test panicked while holding it, the recorded data
+/// is still sound, and a recorder that panics turns one failing test into a
+/// cascade of confusing ones.
+///
 /// Captures EVERY argument of every call (the mock-hygiene rule): a test must
 /// be able to assert that `combine`/`broadcast` received exactly the
 /// binding-derived bytes, and a double that dropped fields could not show that.
@@ -177,13 +182,19 @@ impl RecordingAlpacaPort {
 
     /// Script the craft response (including a failure).
     pub fn with_craft_response(self, response: Result<String, AlpacaError>) -> Self {
-        *self.craft_response.lock().expect("craft response lock") = response;
+        *self
+            .craft_response
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = response;
         self
     }
 
     /// Script the combine response.
     pub fn with_combine_response(self, response: Result<String, AlpacaError>) -> Self {
-        *self.combine_response.lock().expect("combine response lock") = response;
+        *self
+            .combine_response
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = response;
         self
     }
 
@@ -192,63 +203,84 @@ impl RecordingAlpacaPort {
         *self
             .broadcast_response
             .lock()
-            .expect("broadcast response lock") = response;
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = response;
         self
     }
 
     /// Script the health probe.
     pub fn with_healthy(self, healthy: bool) -> Self {
-        *self.healthy.lock().expect("healthy lock") = healthy;
+        *self
+            .healthy
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = healthy;
         self
     }
 
     /// Every craft request received, in order.
     pub fn crafts(&self) -> Vec<CraftRequest> {
-        self.crafts.lock().expect("crafts lock").clone()
+        self.crafts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// Every combine request received, in order.
     pub fn combines(&self) -> Vec<CombineRequest> {
-        self.combines.lock().expect("combines lock").clone()
+        self.combines
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// Every broadcast request received, in order.
     pub fn broadcasts(&self) -> Vec<BroadcastRequest> {
-        self.broadcasts.lock().expect("broadcasts lock").clone()
+        self.broadcasts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 }
 
 #[async_trait]
 impl AlpacaPort for RecordingAlpacaPort {
     async fn craft_transaction(&self, request: CraftRequest) -> Result<String, AlpacaError> {
-        self.crafts.lock().expect("crafts lock").push(request);
+        self.crafts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(request);
         self.craft_response
             .lock()
-            .expect("craft response lock")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
 
     async fn combine(&self, request: CombineRequest) -> Result<String, AlpacaError> {
-        self.combines.lock().expect("combines lock").push(request);
+        self.combines
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(request);
         self.combine_response
             .lock()
-            .expect("combine response lock")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
 
     async fn broadcast(&self, request: BroadcastRequest) -> Result<String, AlpacaError> {
         self.broadcasts
             .lock()
-            .expect("broadcasts lock")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(request);
         self.broadcast_response
             .lock()
-            .expect("broadcast response lock")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
 
     async fn healthy(&self) -> bool {
-        *self.healthy.lock().expect("healthy lock")
+        *self
+            .healthy
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
