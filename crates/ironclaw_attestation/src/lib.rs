@@ -39,6 +39,7 @@ mod decoded_tx;
 mod error;
 mod fields;
 mod intent;
+mod intent_review;
 mod intent_store;
 mod rendered;
 
@@ -79,6 +80,10 @@ pub use grant::{
 pub use intent::{
     AGENT_PUBLIC_KEY_LEN, AgentKeyId, INTENT_SIGNATURE_LEN, IntentError, IntentId, IntentSigner,
     IntentSignerError, SignedIntent, UnsignedIntent,
+};
+pub use intent_review::{
+    ReviewCaller, ReviewRejection, TokenLanding, authorize_proof_submission, authorize_view,
+    resolve_token_landing,
 };
 pub use intent_store::{
     InMemoryIntentStore, IntentRecord, IntentState, IntentStore, IntentStoreError,
