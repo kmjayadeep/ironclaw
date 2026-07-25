@@ -1049,15 +1049,15 @@ pub(crate) struct RebornRuntimeStores {
             >,
         >,
     >,
-    /// Sibling rebindable slot, `TurnStateStore`-typed, read by the trigger
-    /// delivery-target service; repointed together with the snapshot slot.
+    /// Sibling read-only reply-target projection; repointed together with the
+    /// snapshot slot by test-support harnesses.
     #[cfg(any(test, feature = "test-support"))]
     #[allow(
         dead_code,
         reason = "held for test-support rebinding after runtime construction"
     )]
-    pub(crate) trigger_source_turn_state_store:
-        Arc<std::sync::RwLock<Arc<dyn ironclaw_turns::TurnStateStore>>>,
+    pub(crate) trigger_source_reply_target:
+        Arc<std::sync::RwLock<Arc<dyn TriggerSourceReplyTarget>>>,
     pub(crate) extension_management: Arc<RebornLocalExtensionManagementPort>,
     pub(crate) admin_configuration: Arc<ComposedAdminConfigurationService>,
     pub(crate) admin_configuration_uses: Arc<Vec<AdminConfigurationCatalogUse>>,
@@ -1674,91 +1674,40 @@ async fn validate_trigger_delivery_target_against_registry(
     }
 }
 
-/// Late-rebindable [`TurnStateStore`] the trigger delivery-target service
-/// reads. Production installs the runtime's own turn-state store and never
-/// repoints it; a `test-support` harness repoints it (alongside the sibling
-/// snapshot slot) so trigger creation can see runs recorded in the harness's
-/// own store (#6520 delivery-target inheritance).
-#[cfg(any(test, feature = "test-support"))]
-#[allow(
-    dead_code,
-    reason = "constructed only by downstream test-support harnesses that rebind trigger stores"
-)]
-struct LateBoundTriggerSourceTurnStateStore {
-    source_turn_state: Arc<std::sync::RwLock<Arc<dyn ironclaw_turns::TurnStateStore>>>,
-}
-
-#[cfg(any(test, feature = "test-support"))]
-#[allow(
-    dead_code,
-    reason = "methods are used when the late-bound test-support store is installed"
-)]
-impl LateBoundTriggerSourceTurnStateStore {
-    fn current(
-        &self,
-    ) -> Result<Arc<dyn ironclaw_turns::TurnStateStore>, ironclaw_turns::TurnError> {
-        self.source_turn_state
-            .read()
-            .map(|source| Arc::clone(&*source))
-            .map_err(|error| {
-                tracing::warn!(
-                    target = "ironclaw::reborn::trigger_create",
-                    error = ?error,
-                    "source turn-state resolver lock is unavailable"
-                );
-                ironclaw_turns::TurnError::Unavailable {
-                    reason: "source turn-state resolver unavailable".to_string(),
-                }
-            })
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
 #[async_trait::async_trait]
-impl ironclaw_turns::TurnStateStore for LateBoundTriggerSourceTurnStateStore {
-    async fn submit_turn(
+pub(crate) trait TriggerSourceReplyTarget: Send + Sync {
+    async fn reply_target(
         &self,
-        request: ironclaw_turns::SubmitTurnRequest,
-        admission_policy: &dyn ironclaw_turns::TurnAdmissionPolicy,
-        run_profile_resolver: &dyn ironclaw_turns::RunProfileResolver,
-    ) -> Result<ironclaw_turns::SubmitTurnResponse, ironclaw_turns::TurnError> {
-        self.current()?
-            .submit_turn(request, admission_policy, run_profile_resolver)
+        request: GetRunStateRequest,
+    ) -> Result<ironclaw_turns::ReplyTargetBindingRef, ironclaw_turns::TurnError>;
+}
+
+pub(crate) struct TurnStateTriggerSourceReplyTarget {
+    turn_state: Arc<dyn TurnStateStore>,
+}
+
+impl TurnStateTriggerSourceReplyTarget {
+    pub(crate) fn new(turn_state: Arc<dyn TurnStateStore>) -> Self {
+        Self { turn_state }
+    }
+}
+
+#[async_trait::async_trait]
+impl TriggerSourceReplyTarget for TurnStateTriggerSourceReplyTarget {
+    async fn reply_target(
+        &self,
+        request: GetRunStateRequest,
+    ) -> Result<ironclaw_turns::ReplyTargetBindingRef, ironclaw_turns::TurnError> {
+        self.turn_state
+            .get_run_state(request)
             .await
-    }
-
-    async fn resume_turn(
-        &self,
-        request: ironclaw_turns::ResumeTurnRequest,
-    ) -> Result<ironclaw_turns::ResumeTurnResponse, ironclaw_turns::TurnError> {
-        self.current()?.resume_turn(request).await
-    }
-
-    async fn retry_turn(
-        &self,
-        request: ironclaw_turns::RetryTurnRequest,
-    ) -> Result<ironclaw_turns::RetryTurnResponse, ironclaw_turns::TurnError> {
-        self.current()?.retry_turn(request).await
-    }
-
-    async fn request_cancel(
-        &self,
-        request: ironclaw_turns::CancelRunRequest,
-    ) -> Result<ironclaw_turns::CancelRunResponse, ironclaw_turns::TurnError> {
-        self.current()?.request_cancel(request).await
-    }
-
-    async fn get_run_state(
-        &self,
-        request: ironclaw_turns::GetRunStateRequest,
-    ) -> Result<ironclaw_turns::TurnRunState, ironclaw_turns::TurnError> {
-        self.current()?.get_run_state(request).await
+            .map(|state| state.reply_target_binding_ref)
     }
 }
 
 struct LocalRuntimeTriggerCreatorPairingHook {
     outbound_delivery_targets: Arc<crate::outbound::MutableOutboundDeliveryTargetRegistry>,
-    source_turn_state: Arc<dyn TurnStateStore>,
+    source_reply_target: Arc<std::sync::RwLock<Arc<dyn TriggerSourceReplyTarget>>>,
     scoped_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
     conversations: tokio::sync::OnceCell<RebornFilesystemConversationServices>,
 }
@@ -1771,7 +1720,7 @@ impl TriggerCreateHook for LocalRuntimeTriggerCreatorPairingHook {
         run_id: Option<RunId>,
     ) -> Result<Option<ironclaw_triggers::TriggerDeliveryTargetId>, TriggerError> {
         resolve_current_run_delivery_target(
-            self.source_turn_state.as_ref(),
+            &self.source_reply_target,
             &self.outbound_delivery_targets,
             scope,
             run_id,
@@ -1808,7 +1757,7 @@ impl TriggerCreateHook for LocalRuntimeTriggerCreatorPairingHook {
 }
 
 async fn resolve_current_run_delivery_target(
-    turn_state: &dyn TurnStateStore,
+    source_reply_target: &std::sync::RwLock<Arc<dyn TriggerSourceReplyTarget>>,
     registry: &crate::outbound::MutableOutboundDeliveryTargetRegistry,
     scope: &ResourceScope,
     run_id: Option<RunId>,
@@ -1826,8 +1775,21 @@ async fn resolve_current_run_delivery_target(
         thread_id,
         Some(scope.user_id.clone()),
     );
-    let run_state = turn_state
-        .get_run_state(GetRunStateRequest {
+    let source_reply_target = source_reply_target
+        .read()
+        .map(|source| Arc::clone(&*source))
+        .map_err(|error| {
+            tracing::warn!(
+                target = "ironclaw::reborn::trigger_create",
+                error = ?error,
+                "source reply-target resolver lock is unavailable"
+            );
+            TriggerError::Backend {
+                reason: "source reply-target resolver unavailable".to_string(),
+            }
+        })?;
+    let reply_target = source_reply_target
+        .reply_target(GetRunStateRequest {
             scope: turn_scope,
             run_id: ironclaw_turns::TurnRunId::from_uuid(run_id.as_uuid()),
         })
@@ -1849,7 +1811,7 @@ async fn resolve_current_run_delivery_target(
     );
     use crate::outbound::OutboundDeliveryTargetProvider as _;
     let entry = registry
-        .resolve_reply_target_binding(&caller, &run_state.reply_target_binding_ref)
+        .resolve_reply_target_binding(&caller, &reply_target)
         .await
         .map_err(|error| {
             tracing::warn!(
@@ -4655,25 +4617,15 @@ async fn build_backend_production(
         test_turn_state_filesystem,
         turn_state_store_limits,
     ));
-    // Rebindable source-turn-state slot for the trigger delivery-target
-    // service — same repoint seam as the sibling snapshot slot below.
-    #[cfg(any(test, feature = "test-support"))]
-    let trigger_source_turn_state_store: Arc<
-        std::sync::RwLock<Arc<dyn ironclaw_turns::TurnStateStore>>,
-    > = Arc::new(std::sync::RwLock::new(
-        Arc::clone(&process_turn_state) as Arc<dyn ironclaw_turns::TurnStateStore>
-    ));
-    #[cfg(any(test, feature = "test-support"))]
-    let trigger_create_source_turn_state: Arc<dyn ironclaw_turns::TurnStateStore> =
-        Arc::new(LateBoundTriggerSourceTurnStateStore {
-            source_turn_state: Arc::clone(&trigger_source_turn_state_store),
-        });
-    #[cfg(not(any(test, feature = "test-support")))]
-    let trigger_create_source_turn_state: Arc<dyn ironclaw_turns::TurnStateStore> =
-        Arc::clone(&process_turn_state) as Arc<dyn ironclaw_turns::TurnStateStore>;
+    let trigger_source_reply_target: Arc<std::sync::RwLock<Arc<dyn TriggerSourceReplyTarget>>> =
+        Arc::new(std::sync::RwLock::new(Arc::new(
+            TurnStateTriggerSourceReplyTarget::new(
+                Arc::clone(&process_turn_state) as Arc<dyn ironclaw_turns::TurnStateStore>
+            ),
+        )));
     let trigger_create_hook = Arc::new(LocalRuntimeTriggerCreatorPairingHook {
         outbound_delivery_targets: Arc::clone(&outbound_delivery_targets),
-        source_turn_state: trigger_create_source_turn_state,
+        source_reply_target: Arc::clone(&trigger_source_reply_target),
         scoped_filesystem: Arc::clone(&stores.scoped_filesystem),
         conversations: tokio::sync::OnceCell::new(),
     });
@@ -5611,7 +5563,7 @@ async fn build_backend_production(
         #[cfg(any(test, feature = "test-support"))]
         trigger_source_turn_state,
         #[cfg(any(test, feature = "test-support"))]
-        trigger_source_turn_state_store,
+        trigger_source_reply_target,
         extension_management,
         admin_configuration,
         admin_configuration_uses: Arc::new(admin_configuration_uses),

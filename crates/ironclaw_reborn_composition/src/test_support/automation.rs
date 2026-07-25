@@ -12,6 +12,7 @@ use ironclaw_triggers::{TriggerActiveRunLookup, TriggerRepository};
 use ironclaw_turns::{TurnError, TurnStateRowStore, TurnStateStore};
 
 use crate::automation::trigger_poller::SnapshotActiveRunLookup;
+use crate::factory::TurnStateTriggerSourceReplyTarget;
 
 /// Build the production `RebornAutomationProductService` over
 /// `trigger_repository` plus the harness's own turn-state store, for
@@ -71,16 +72,18 @@ where
 {
     let lifecycle_source =
         Arc::clone(&turn_state) as Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>;
-    let state_store = turn_state as Arc<dyn TurnStateStore>;
+    let reply_target = Arc::new(TurnStateTriggerSourceReplyTarget::new(
+        turn_state as Arc<dyn TurnStateStore>,
+    ));
     *runtime
         .trigger_source_turn_state
         .write()
         .map_err(|error| format!("trigger source lifecycle lock unavailable: {error}"))? =
         lifecycle_source;
     *runtime
-        .trigger_source_turn_state_store
+        .trigger_source_reply_target
         .write()
-        .map_err(|error| format!("trigger source turn-state lock unavailable: {error}"))? =
-        state_store;
+        .map_err(|error| format!("trigger source reply-target lock unavailable: {error}"))? =
+        reply_target;
     Ok(())
 }

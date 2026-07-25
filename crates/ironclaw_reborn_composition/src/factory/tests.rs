@@ -462,7 +462,9 @@ async fn local_runtime_trigger_create_hook_maps_conversation_init_error_to_backe
     .expect("local-dev services build");
     let hook = LocalRuntimeTriggerCreatorPairingHook {
         outbound_delivery_targets: Arc::clone(&services.outbound_delivery_targets),
-        source_turn_state: services.turn_state.clone(),
+        source_reply_target: Arc::new(std::sync::RwLock::new(Arc::new(
+            TurnStateTriggerSourceReplyTarget::new(services.turn_state.clone()),
+        ))),
         scoped_filesystem: failing_trigger_conversation_filesystem(),
         conversations: tokio::sync::OnceCell::new(),
     };
