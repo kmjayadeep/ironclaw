@@ -112,6 +112,10 @@ async fn local_dev_build_input_carries_resolved_runtime_policy() {
     let runtime = build_reborn_runtime(input)
         .await
         .expect("local-dev build input carries a resolved runtime policy");
+    assert!(
+        runtime.command_surface_is_filled_for_test(),
+        "construction must fill the shared channel command surface"
+    );
     runtime.shutdown().await.expect("runtime shutdown");
 }
 

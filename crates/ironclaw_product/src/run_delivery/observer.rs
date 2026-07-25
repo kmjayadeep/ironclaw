@@ -828,8 +828,12 @@ impl RunDeliveryObserver {
                     "Commands can only be used in a direct conversation with the assistant."
                         .to_string()
                 }
-                // Other rejection families (e.g. binding-required) have their
-                // own feedback paths; transport retries replay as Duplicate.
+                // First-contact commands from unbound actors reject with
+                // BindingRequired — the connect nudge below owns that
+                // feedback, exactly as for a first-contact user message.
+                ProductRejectionKind::BindingRequired => return false,
+                // Remaining rejection families settle without user feedback;
+                // transport retries replay as Duplicate.
                 _ => return true,
             },
             _ => return true,

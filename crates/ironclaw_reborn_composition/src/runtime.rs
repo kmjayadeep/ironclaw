@@ -1622,6 +1622,14 @@ impl RebornRuntime {
         self.delivery_coordinator.clone()
     }
 
+    /// Test-only mirror of the production fill at the end of
+    /// `build_reborn_runtime`: whether the shared channel command-execution
+    /// surface was filled during construction. Tests only.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn command_surface_is_filled_for_test(&self) -> bool {
+        self.command_surface.is_filled()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn start_channel_host_assembly_for_test(
         &self,

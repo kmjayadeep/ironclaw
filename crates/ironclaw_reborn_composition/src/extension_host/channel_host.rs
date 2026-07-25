@@ -232,6 +232,12 @@ impl SharedCommandSurface {
     pub(crate) fn set(&self, surface: Arc<dyn ironclaw_host_api::ProductSurface>) {
         let _ = self.cell.set(surface);
     }
+
+    /// Test-only observability: whether construction filled the handle.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn is_filled(&self) -> bool {
+        self.cell.get().is_some()
+    }
 }
 
 #[async_trait]

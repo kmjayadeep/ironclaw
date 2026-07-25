@@ -143,6 +143,9 @@ const SLACK_EVENTS_PATH: &str = "/webhooks/extensions/slack/events";
 
 struct Harness {
     mount: PublicRouteMount,
+    /// Records every command-operation invoke the workflow dispatches; the
+    /// stub result is a fixed CommandResultView so delivery is assertable.
+    command_executions: Arc<RecordingCommandExecutionSurface>,
     /// The generic ingress registry: `drain()` settles every route-owned
     /// in-flight task (the assembly registered the sink's drain with it).
     ingress: ExtensionIngressParts,
@@ -409,8 +412,12 @@ async fn build_harness_with_options(options: HarnessOptions) -> Harness {
     )]));
 
     let channel_config = configured_channel_config().await;
+    let command_executions = Arc::new(RecordingCommandExecutionSurface::default());
+    let command_surface = super::SharedCommandSurface::default();
+    command_surface
+        .set(Arc::clone(&command_executions) as Arc<dyn ironclaw_host_api::ProductSurface>);
     let deps = GenericChannelHostDeps {
-        command_surface: super::SharedCommandSurface::default(),
+        command_surface,
         watch: host.snapshot_watch(),
         deployment_channels: Arc::new(ironclaw_extension_host::DeploymentChannelRegistry::default()),
         registry: Arc::clone(&ingress.registry),
@@ -472,6 +479,7 @@ async fn build_harness_with_options(options: HarnessOptions) -> Harness {
 
     Harness {
         mount,
+        command_executions,
         ingress,
         egress,
         coordinator: Arc::new(coordinator),
@@ -3200,6 +3208,70 @@ impl AuthInteractionService for RecordingAuthInteractionService {
 /// Records every policy-approved channel egress call and synthesizes Slack
 /// Web API responses — the transport-seam analog of the old protocol-egress
 /// recorder.
+/// Recording stand-in for the runtime `ProductSurface` the channel host's
+/// SharedCommandSurface is filled with in production. Returns a fixed
+/// CommandResultView so the observer's rendered delivery is deterministic.
+#[derive(Default)]
+struct RecordingCommandExecutionSurface {
+    invokes: Mutex<Vec<(String, String, serde_json::Value)>>,
+}
+
+impl RecordingCommandExecutionSurface {
+    fn invokes(&self) -> Vec<(String, String, serde_json::Value)> {
+        self.invokes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+#[async_trait]
+impl ironclaw_host_api::ProductSurface for RecordingCommandExecutionSurface {
+    async fn invoke(
+        &self,
+        caller: ironclaw_host_api::ProductSurfaceCaller,
+        request: ironclaw_host_api::ProductSurfaceInvokeRequest,
+    ) -> Result<
+        ironclaw_host_api::ProductSurfaceInvokeResponse,
+        ironclaw_host_api::ProductSurfaceError,
+    > {
+        self.invokes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((
+                request.operation_id.as_str().to_string(),
+                caller.user_id.as_str().to_string(),
+                request.input,
+            ));
+        Ok(ironclaw_host_api::ProductSurfaceInvokeResponse {
+            output: serde_json::json!({
+                "title": "Model",
+                "fields": [{"label": "Provider", "value": "stub-provider"}],
+            }),
+        })
+    }
+
+    async fn query(
+        &self,
+        _caller: ironclaw_host_api::ProductSurfaceCaller,
+        _request: ironclaw_host_api::ProductSurfaceQueryRequest,
+    ) -> Result<ironclaw_host_api::ProductSurfaceQueryPage, ironclaw_host_api::ProductSurfaceError>
+    {
+        Err(ironclaw_host_api::ProductSurfaceError::internal())
+    }
+
+    async fn stream_events(
+        &self,
+        _caller: ironclaw_host_api::ProductSurfaceCaller,
+        _request: ironclaw_host_api::ProductSurfaceStreamRequest,
+    ) -> Result<
+        ironclaw_host_api::ProductSurfaceStreamResponse,
+        ironclaw_host_api::ProductSurfaceError,
+    > {
+        Err(ironclaw_host_api::ProductSurfaceError::internal())
+    }
+}
+
 #[derive(Clone, Default)]
 struct RecordingEgress {
     requests: Arc<Mutex<Vec<ApprovedChannelEgress>>>,
@@ -3405,6 +3477,30 @@ const DM_FINAL: &str = r#"{
   "event_id":"Ev-final",
 	  "event":{"type":"message","channel_type":"im","user":"U123","channel":"D123","text":"hello","ts":"1710000000.000001"}
 	}"#;
+
+const DM_COMMAND: &str = r#"{
+  "type":"event_callback",
+  "team_id":"T-A",
+  "api_app_id":"A-slack",
+  "event_id":"Ev-command",
+	  "event":{"type":"message","channel_type":"im","user":"U123","channel":"D123","text":"/model","ts":"1710000000.000021"}
+	}"#;
+
+const DM_UNKNOWN_COMMAND: &str = r#"{
+  "type":"event_callback",
+  "team_id":"T-A",
+  "api_app_id":"A-slack",
+  "event_id":"Ev-command-unknown",
+	  "event":{"type":"message","channel_type":"im","user":"U123","channel":"D123","text":"/notacommand hello","ts":"1710000000.000022"}
+	}"#;
+
+const APP_MENTION_COMMAND: &str = r#"{
+  "type":"event_callback",
+  "team_id":"T-A",
+  "api_app_id":"A-slack",
+  "event_id":"Ev-command-channel",
+  "event":{"type":"app_mention","user":"U123","channel":"C123","text":"<@UBOT> /model","ts":"1710000000.000023"}
+}"#;
 
 const DM_APPROVAL: &str = r#"{
   "type":"event_callback",
@@ -4500,3 +4596,98 @@ async fn generic_triggered_hook_honors_per_trigger_target_without_global_default
     );
 }
 // arch-exempt: large_file, channel host end-to-end coverage remains centralized, plan #6175
+
+// ── Product slash commands through the production channel graph ────────────
+
+/// A declared slash command in a DM classifies at the sink, passes the
+/// DM-only admission, executes as its capability operation through the shared
+/// command surface, and the observer delivers the rendered result back to the
+/// source conversation. No turn is submitted.
+#[tokio::test]
+async fn dm_slash_command_executes_and_delivers_rendered_result() {
+    let harness = build_harness(TurnMode::Complete {
+        assistant_text: "unused".to_string(),
+    })
+    .await;
+
+    // Establish the conversation binding first: commands execute with the
+    // bound user's authority, so a first-contact command rejects with
+    // BindingRequired (covered by the connect-nudge path) rather than
+    // executing.
+    let seed = harness.post_event(DM_FINAL).await;
+    assert_eq!(seed.status(), StatusCode::OK);
+    harness.drain().await;
+
+    let response = harness.post_event(DM_COMMAND).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    harness.drain().await;
+
+    let invokes = harness.command_executions.invokes();
+    assert_eq!(invokes.len(), 1, "exactly one command operation invoke");
+    assert_eq!(invokes[0].0, "product.model.command");
+    assert_eq!(invokes[0].1, USER, "caller is the bound identity");
+
+    let feedback =
+        wait_for_post_messages_matching(&harness.egress, "rendered command result", |payload| {
+            payload["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("Model") && text.contains("stub-provider"))
+        })
+        .await;
+    assert_eq!(feedback[0]["channel"], "D123");
+    assert_eq!(
+        harness.coordinator.submitted_turn_count(),
+        1,
+        "only the seeding message submitted a turn — commands are not turns"
+    );
+}
+
+/// Slash text that is not a standardized command stays an ordinary user
+/// message: it submits a turn and never reaches the command surface.
+#[tokio::test]
+async fn unknown_slash_text_stays_an_ordinary_user_turn() {
+    let harness = build_harness(TurnMode::Complete {
+        assistant_text: "unused".to_string(),
+    })
+    .await;
+
+    let response = harness.post_event(DM_UNKNOWN_COMMAND).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    harness.drain().await;
+
+    assert_eq!(harness.command_executions.invokes().len(), 0);
+    assert_eq!(
+        harness.coordinator.submitted_turn_count(),
+        1,
+        "unknown slash text submits a normal turn"
+    );
+}
+
+/// A declared command in a shared channel (bot mention) is rejected by the
+/// DM-only admission; the observer posts the direct-conversation notice and
+/// nothing executes.
+#[tokio::test]
+async fn shared_channel_slash_command_is_denied_with_notice() {
+    let harness = build_harness(TurnMode::Complete {
+        assistant_text: "unused".to_string(),
+    })
+    .await;
+
+    let response = harness.post_event(APP_MENTION_COMMAND).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    harness.drain().await;
+
+    assert_eq!(harness.command_executions.invokes().len(), 0);
+    let notices = wait_for_post_messages_matching(
+        &harness.egress,
+        "direct-conversation denial notice",
+        |payload| {
+            payload["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("direct conversation"))
+        },
+    )
+    .await;
+    assert_eq!(notices[0]["channel"], "C123");
+    assert_eq!(harness.coordinator.submitted_turn_count(), 0);
+}
