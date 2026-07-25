@@ -87,7 +87,7 @@ impl RebornReadinessDiagnostic {
 /// deployment selects a substrate, it does not *have a mode that implies one*.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeSubstrate {
-    /// No runtime is assembled — the facades report disabled.
+    /// No runtime is assembled — the services report disabled.
     None,
     /// The production-shaped substrate (libSQL or PostgreSQL store graph).
     ProductionShaped,
@@ -254,7 +254,7 @@ pub struct DeploymentConfig {
     /// Late-overridable via [`DeploymentConfig::with_owner_id`] (WebChat serve
     /// pins the authenticated user after the disclosure gate is built).
     pub(crate) owner_id: String,
-    pub(crate) local_runtime_identity: Option<crate::input::RuntimeOwnerIdentity>,
+    pub(crate) local_runtime_identity: Option<crate::input::RebornLocalRuntimeIdentity>,
     /// Resolved runtime policy. Populated late (the yolo host-access disclosure
     /// is not known at preset-construction time); the profile→bindings bridge
     /// installs the accurate value.
@@ -265,8 +265,7 @@ pub struct DeploymentConfig {
     pub(crate) nearai_mcp_bootstrap_config:
         Option<ironclaw_operator::llm_admin::nearai_mcp::NearAiMcpBootstrapConfig>,
     pub(crate) account_setup_descriptors: Vec<ironclaw_product::ExtensionAccountSetupDescriptor>,
-    pub(crate) first_party_bundles:
-        Vec<crate::extension_host::first_party::FirstPartyPackageBundle>,
+    pub(crate) first_party_bundles: Vec<ironclaw_extension_host::FirstPartyPackageBundle>,
 }
 
 impl DeploymentConfig {

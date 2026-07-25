@@ -107,15 +107,16 @@ fn map_auth_error(error: RebornAuthProductError) -> ProductSurfaceError {
             403,
             false,
         ),
-        AuthErrorCode::BackendUnavailable | AuthErrorCode::MalformedConfig => services_error(
+        AuthErrorCode::BackendUnavailable
+        | AuthErrorCode::MalformedConfig
+        | AuthErrorCode::LifecycleActivationFailed => services_error(
             ProductSurfaceErrorCode::Unavailable,
             ProductSurfaceErrorKind::ServiceUnavailable,
             503,
             error.retryable,
         ),
         AuthErrorCode::AccountSelectionRequired
-        | AuthErrorCode::ProviderIdentityAlreadyConnected
-        | AuthErrorCode::LifecycleActivationFailed => services_error(
+        | AuthErrorCode::ProviderIdentityAlreadyConnected => services_error(
             ProductSurfaceErrorCode::Conflict,
             ProductSurfaceErrorKind::BlockedAuthentication,
             409,

@@ -46,7 +46,7 @@ impl FirstPartyHandlerRegistrar for GsuiteFirstPartyRegistrar {
                     context.product_auth_runtime_ports.clone(),
                 )),
             ),
-            google_oauth_configured: context.google_oauth_configured,
+            google_oauth_configured: context.oauth_backend_configured,
         });
         for package in gsuite_package_specs() {
             for capability in package.capabilities {
