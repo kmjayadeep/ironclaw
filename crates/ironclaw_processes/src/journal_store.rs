@@ -328,41 +328,48 @@ where
                 worker_id: request.worker_id,
                 lease_token: request.lease_token,
             },
-            ProcessLifecycleStatus::Suspended,
-            ProcessJournalKind::Suspended,
-            Some(request.suspension),
-            Some(request.checkpoint_ref),
-            None,
+            ProcessTransitionMutation {
+                status: ProcessLifecycleStatus::Suspended,
+                kind: ProcessJournalKind::Suspended,
+                suspension: Some(request.suspension),
+                checkpoint_ref: Some(request.checkpoint_ref),
+                failure: None,
+                metadata: request.metadata,
+            },
         )
         .await
     }
 
     async fn complete_process(
         &self,
-        request: ProcessLeaseRequest,
+        request: crate::ProcessStateTransitionRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
         self.leased_transition(
-            request,
-            ProcessLifecycleStatus::Completed,
-            ProcessJournalKind::Completed,
-            None,
-            None,
-            None,
+            request.lease,
+            ProcessTransitionMutation {
+                metadata: request.metadata,
+                ..ProcessTransitionMutation::new(
+                    ProcessLifecycleStatus::Completed,
+                    ProcessJournalKind::Completed,
+                )
+            },
         )
         .await
     }
 
     async fn cancel_process(
         &self,
-        request: ProcessLeaseRequest,
+        request: crate::ProcessStateTransitionRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
         self.leased_transition(
-            request,
-            ProcessLifecycleStatus::Cancelled,
-            ProcessJournalKind::Cancelled,
-            None,
-            None,
-            None,
+            request.lease,
+            ProcessTransitionMutation {
+                metadata: request.metadata,
+                ..ProcessTransitionMutation::new(
+                    ProcessLifecycleStatus::Cancelled,
+                    ProcessJournalKind::Cancelled,
+                )
+            },
         )
         .await
     }
@@ -377,11 +384,14 @@ where
                 worker_id: request.worker_id,
                 lease_token: request.lease_token,
             },
-            ProcessLifecycleStatus::Failed,
-            ProcessJournalKind::Failed,
-            None,
-            None,
-            Some(request.failure),
+            ProcessTransitionMutation {
+                failure: Some(request.failure),
+                metadata: request.metadata,
+                ..ProcessTransitionMutation::new(
+                    ProcessLifecycleStatus::Failed,
+                    ProcessJournalKind::Failed,
+                )
+            },
         )
         .await
     }
@@ -392,11 +402,10 @@ where
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
         self.leased_transition(
             request,
-            ProcessLifecycleStatus::Queued,
-            ProcessJournalKind::Heartbeat,
-            None,
-            None,
-            None,
+            ProcessTransitionMutation::new(
+                ProcessLifecycleStatus::Queued,
+                ProcessJournalKind::Heartbeat,
+            ),
         )
         .await
     }
@@ -409,33 +418,58 @@ where
     async fn leased_transition(
         &self,
         request: ProcessLeaseRequest,
-        status: ProcessLifecycleStatus,
-        kind: ProcessJournalKind,
-        suspension: Option<ProcessSuspension>,
-        checkpoint_ref: Option<crate::ProcessCheckpointRef>,
-        failure: Option<ironclaw_host_api::SanitizedFailure>,
+        mutation: ProcessTransitionMutation,
     ) -> Result<JournaledProcessSnapshot, ProcessJournalStoreError> {
         let _guard = self.mutation_lock.lock().await;
         self.mutate(|state| {
             let cursor = state.next_cursor();
             let snapshot = state.process_mut(request.process_id)?;
             ensure_lease(snapshot, &request.worker_id, &request.lease_token)?;
-            ensure_transition(snapshot, status)?;
-            snapshot.status = status;
-            snapshot.suspension = suspension.clone();
-            if checkpoint_ref.is_some() {
-                snapshot.checkpoint_ref = checkpoint_ref.clone();
+            ensure_transition(snapshot, mutation.status)?;
+            snapshot.status = mutation.status;
+            snapshot.suspension = mutation.suspension.clone();
+            if mutation.checkpoint_ref.is_some() {
+                snapshot.checkpoint_ref = mutation.checkpoint_ref.clone();
             }
-            snapshot.failure = failure.clone();
-            if status != ProcessLifecycleStatus::Running {
+            snapshot.failure = mutation.failure.clone();
+            if let Some(metadata) = mutation.metadata.clone() {
+                snapshot.metadata = metadata;
+            }
+            if mutation.status != ProcessLifecycleStatus::Running {
                 snapshot.lease = None;
             }
             snapshot.journal_cursor = cursor;
             let snapshot = snapshot.clone();
-            state.push_entry(ProcessJournalEntry::from_snapshot(&snapshot, cursor, kind));
+            state.push_entry(ProcessJournalEntry::from_snapshot(
+                &snapshot,
+                cursor,
+                mutation.kind,
+            ));
             Ok(snapshot)
         })
         .await
+    }
+}
+
+struct ProcessTransitionMutation {
+    status: ProcessLifecycleStatus,
+    kind: ProcessJournalKind,
+    suspension: Option<ProcessSuspension>,
+    checkpoint_ref: Option<crate::ProcessCheckpointRef>,
+    failure: Option<ironclaw_host_api::SanitizedFailure>,
+    metadata: Option<serde_json::Value>,
+}
+
+impl ProcessTransitionMutation {
+    fn new(status: ProcessLifecycleStatus, kind: ProcessJournalKind) -> Self {
+        Self {
+            status,
+            kind,
+            suspension: None,
+            checkpoint_ref: None,
+            failure: None,
+            metadata: None,
+        }
     }
 }
 

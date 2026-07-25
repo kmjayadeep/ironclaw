@@ -98,12 +98,17 @@ impl TurnRunExecutor for CompletingExecutor {
             gate.notified().await;
         }
         process_transitions
-            .complete_process(ProcessLeaseRequest {
-                process_id: ProcessId::from_uuid(claimed.state.run_id.as_uuid()),
-                worker_id: ProcessWorkerId::from_trusted(claimed.runner_id.as_uuid().to_string()),
-                lease_token: ProcessLeaseToken::from_trusted(
-                    claimed.lease_token.as_uuid().to_string(),
-                ),
+            .complete_process(ironclaw_processes::ProcessStateTransitionRequest {
+                lease: ProcessLeaseRequest {
+                    process_id: ProcessId::from_uuid(claimed.state.run_id.as_uuid()),
+                    worker_id: ProcessWorkerId::from_trusted(
+                        claimed.runner_id.as_uuid().to_string(),
+                    ),
+                    lease_token: ProcessLeaseToken::from_trusted(
+                        claimed.lease_token.as_uuid().to_string(),
+                    ),
+                },
+                metadata: None,
             })
             .await
             .unwrap();

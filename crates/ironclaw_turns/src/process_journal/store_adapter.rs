@@ -7,8 +7,8 @@ use ironclaw_processes::{
     JournaledProcessSnapshot, ProcessGateQuery, ProcessGateQuerySource, ProcessGateRecord,
     ProcessJournalCursor, ProcessJournalPage, ProcessJournalSource, ProcessJournalStoreError,
     ProcessLeaseRequest, ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult,
-    ProcessLifecycleLookupSource, ProcessTransitionPort, RecoverExpiredProcessLeasesRequest,
-    RecoverExpiredProcessLeasesResponse, SuspendProcessRequest,
+    ProcessLifecycleLookupSource, ProcessStateTransitionRequest, ProcessTransitionPort,
+    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, SuspendProcessRequest,
 };
 
 use crate::TurnError;
@@ -82,7 +82,7 @@ impl ProcessTransitionPort for ProcessJournalStoreTurnAdapter {
 
     async fn complete_process(
         &self,
-        request: ProcessLeaseRequest,
+        request: ProcessStateTransitionRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
         self.transitions
             .complete_process(request)
@@ -92,7 +92,7 @@ impl ProcessTransitionPort for ProcessJournalStoreTurnAdapter {
 
     async fn cancel_process(
         &self,
-        request: ProcessLeaseRequest,
+        request: ProcessStateTransitionRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
         self.transitions
             .cancel_process(request)

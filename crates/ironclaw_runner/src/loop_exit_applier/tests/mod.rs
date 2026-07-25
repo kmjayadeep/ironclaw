@@ -14,7 +14,7 @@ use ironclaw_turns::{
     LoopCheckpointStateRef, LoopCheckpointStore, LoopCompleted, LoopCompletionKind, LoopExit,
     LoopFailed, LoopFailureKind, LoopGateRef, LoopMessageRef, LoopResultRef,
     PutCheckpointStateRequest, PutLoopCheckpointRequest, TurnActor, TurnCheckpointId, TurnError,
-    TurnId, TurnRunId, TurnScope, TurnStateStore, TurnStatus,
+    TurnId, TurnRunId, TurnScope, TurnStateStore, TurnStatus, run_profile::LoopModelUsage,
 };
 
 use super::{
@@ -116,6 +116,33 @@ async fn result_only_completion_uses_verified_result_refs_without_no_reply_permi
         .expect("applied");
 
     assert_eq!(state.status, TurnStatus::Completed);
+}
+
+#[tokio::test]
+async fn completed_exit_persists_model_usage_in_process_projection_metadata() {
+    let usage = LoopModelUsage {
+        input_tokens: 144,
+        output_tokens: 21,
+        cache_read_input_tokens: 34,
+        cache_creation_input_tokens: 8,
+    };
+    let fixture = Fixture::new(InMemoryLoopExitEvidencePort::all_verified());
+    let exit = LoopExit::Completed(LoopCompleted {
+        completion_kind: LoopCompletionKind::ResultOnly,
+        reply_message_refs: vec![],
+        result_refs: vec![LoopResultRef::new("result:usage").expect("valid")],
+        final_checkpoint_id: None,
+        model_usage: Some(usage),
+        exit_id: test_exit_id(),
+    });
+
+    let state = fixture
+        .applier
+        .apply(&fixture.claimed, exit)
+        .await
+        .expect("applied");
+
+    assert_eq!(state.model_usage, Some(usage));
 }
 
 #[tokio::test]

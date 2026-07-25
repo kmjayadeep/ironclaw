@@ -399,10 +399,13 @@ async fn process_transition_adapter_drives_real_turn_store_transitions() {
     assert!(cursor.0 >= claimed.state.journal_cursor.0);
 
     let completed = adapter
-        .complete_process(ProcessLeaseRequest {
-            process_id: claimed.state.process_id,
-            worker_id,
-            lease_token,
+        .complete_process(ProcessStateTransitionRequest {
+            lease: ProcessLeaseRequest {
+                process_id: claimed.state.process_id,
+                worker_id,
+                lease_token,
+            },
+            metadata: None,
         })
         .await
         .expect("complete process");

@@ -433,6 +433,13 @@ pub struct ProcessLeaseRequest {
     pub lease_token: ProcessLeaseToken,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProcessStateTransitionRequest {
+    pub lease: ProcessLeaseRequest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SuspendProcessRequest {
     pub process_id: ProcessId,
@@ -440,6 +447,8 @@ pub struct SuspendProcessRequest {
     pub lease_token: ProcessLeaseToken,
     pub checkpoint_ref: ProcessCheckpointRef,
     pub suspension: ProcessSuspension,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -469,6 +478,8 @@ pub struct FailProcessRequest {
     pub worker_id: ProcessWorkerId,
     pub lease_token: ProcessLeaseToken,
     pub failure: SanitizedFailure,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -527,12 +538,12 @@ pub trait ProcessTransitionPort: Send + Sync {
 
     async fn complete_process(
         &self,
-        request: ProcessLeaseRequest,
+        request: ProcessStateTransitionRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error>;
 
     async fn cancel_process(
         &self,
-        request: ProcessLeaseRequest,
+        request: ProcessStateTransitionRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error>;
 
     async fn fail_process(

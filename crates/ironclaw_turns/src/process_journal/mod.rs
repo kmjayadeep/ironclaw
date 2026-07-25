@@ -13,7 +13,9 @@ use uuid::Uuid;
 
 use ironclaw_host_api::{ProcessId, ResourceScope, SYSTEM_RESERVED_ID};
 #[cfg(feature = "test-support")]
-use ironclaw_processes::{ClaimProcessesRequest, ProcessTransitionPort};
+use ironclaw_processes::{
+    ClaimProcessesRequest, ProcessStateTransitionRequest, ProcessTransitionPort,
+};
 use ironclaw_processes::{
     ClaimedProcess, FailProcessRequest, JournaledProcessSnapshot, ProcessCheckpointRef,
     ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind, ProcessJournalPage,
@@ -138,6 +140,17 @@ impl AgentTurnProcessStateMetadata {
             ..Self::from_state(&claimed.state)
         }
     }
+}
+
+pub(crate) fn agent_turn_metadata_from_claimed(
+    claimed: &ClaimedTurnRun,
+    model_usage: Option<LoopModelUsage>,
+) -> Value {
+    let mut metadata = AgentTurnProcessStateMetadata::from_claimed(claimed);
+    if model_usage.is_some() {
+        metadata.model_usage = model_usage;
+    }
+    json!({ "agent_turn": metadata })
 }
 
 pub trait TurnRunProcessExt {
@@ -622,22 +635,22 @@ impl ProcessTransitionPort for AgentTurnProcessTransitionAdapter {
 
     async fn complete_process(
         &self,
-        request: ProcessLeaseRequest,
+        request: ProcessStateTransitionRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
         let state = self
             .inner
-            .complete_run(CompleteRunRequest::try_from(request)?)
+            .complete_run(CompleteRunRequest::try_from(request.lease)?)
             .await?;
         Ok(state.to_process_state_snapshot())
     }
 
     async fn cancel_process(
         &self,
-        request: ProcessLeaseRequest,
+        request: ProcessStateTransitionRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
         let state = self
             .inner
-            .cancel_run(CancelRunCompletionRequest::try_from(request)?)
+            .cancel_run(CancelRunCompletionRequest::try_from(request.lease)?)
             .await?;
         Ok(state.to_process_state_snapshot())
     }

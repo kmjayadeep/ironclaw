@@ -10,8 +10,8 @@ use ironclaw_processes::{
     ProcessJournalStore, ProcessKind, ProcessLeaseRequest, ProcessLeaseToken,
     ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupRequest,
     ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
-    ProcessSubmissionPort, ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort,
-    ProcessWorkerId, SubmitProcessRequest, SuspendProcessRequest,
+    ProcessStateTransitionRequest, ProcessSubmissionPort, ProcessSuspension, ProcessSuspensionKind,
+    ProcessTransitionPort, ProcessWorkerId, SubmitProcessRequest, SuspendProcessRequest,
 };
 use serde_json::json;
 
@@ -81,6 +81,7 @@ async fn process_journal_store_owns_lifecycle_and_gate_projection() {
                 credential_requirements: Vec::new(),
                 detail: None,
             },
+            metadata: None,
         })
         .await
         .expect("suspend process");
@@ -174,15 +175,19 @@ async fn process_journal_store_completes_claimed_process() {
         .expect("claim process");
     let claim = claimed.pop().expect("claimed process");
     let completed = store
-        .complete_process(ProcessLeaseRequest {
-            process_id,
-            worker_id: claim.worker_id,
-            lease_token: claim.lease_token,
+        .complete_process(ProcessStateTransitionRequest {
+            lease: ProcessLeaseRequest {
+                process_id,
+                worker_id: claim.worker_id,
+                lease_token: claim.lease_token,
+            },
+            metadata: Some(json!({"projection": {"usage": 42}})),
         })
         .await
         .expect("complete process");
     assert_eq!(completed.status, ProcessLifecycleStatus::Completed);
     assert!(completed.lease.is_none());
+    assert_eq!(completed.metadata["projection"]["usage"], 42);
 }
 
 #[tokio::test]
@@ -267,10 +272,15 @@ async fn process_journal_store_rejects_wrong_lease() {
         .expect("claim process");
     let claim = claimed.pop().expect("claimed process");
     let error = store
-        .complete_process(ProcessLeaseRequest {
-            process_id,
-            worker_id: claim.worker_id,
-            lease_token: ProcessLeaseToken::from_trusted(ProcessId::new().as_uuid().to_string()),
+        .complete_process(ProcessStateTransitionRequest {
+            lease: ProcessLeaseRequest {
+                process_id,
+                worker_id: claim.worker_id,
+                lease_token: ProcessLeaseToken::from_trusted(
+                    ProcessId::new().as_uuid().to_string(),
+                ),
+            },
+            metadata: None,
         })
         .await
         .expect_err("wrong lease must fail");

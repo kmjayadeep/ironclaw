@@ -1031,6 +1031,7 @@ async fn record_terminal_failure(
                 worker_id: identity.worker_id.clone(),
                 lease_token: identity.lease_token.clone(),
                 failure: failure.clone(),
+                metadata: None,
             })
             .await;
         match result {

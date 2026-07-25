@@ -4,9 +4,9 @@ use async_trait::async_trait;
 use ironclaw_host_api::{ProcessId, TenantId, ThreadId};
 use ironclaw_processes::{
     ClaimProcessesRequest, ClaimedProcess, FailProcessRequest, JournaledProcessSnapshot,
-    ProcessJournalCursor, ProcessLeaseRequest, ProcessLifecycleStatus, ProcessSuspension,
-    ProcessTransitionPort, RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse,
-    SuspendProcessRequest,
+    ProcessJournalCursor, ProcessLeaseRequest, ProcessLifecycleStatus,
+    ProcessStateTransitionRequest, ProcessSuspension, ProcessTransitionPort,
+    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, SuspendProcessRequest,
 };
 use ironclaw_threads::{
     AppendToolResultReferenceRequest, InMemorySessionThreadService, SessionThreadService,
@@ -533,30 +533,38 @@ impl ProcessTransitionPort for RecordingTransitionPort {
 
     async fn complete_process(
         &self,
-        request: ProcessLeaseRequest,
+        request: ProcessStateTransitionRequest,
     ) -> Result<JournaledProcessSnapshot, TurnError> {
         *self.apply_calls.lock().expect("lock") += 1;
-        Ok(process_state_for_mapping(
+        let mut snapshot = process_state_for_mapping(
             ProcessLifecycleStatus::Completed,
-            request.process_id,
+            request.lease.process_id,
             None,
             None,
             None,
-        ))
+        );
+        if let Some(metadata) = request.metadata {
+            snapshot.metadata = metadata;
+        }
+        Ok(snapshot)
     }
 
     async fn cancel_process(
         &self,
-        request: ProcessLeaseRequest,
+        request: ProcessStateTransitionRequest,
     ) -> Result<JournaledProcessSnapshot, TurnError> {
         *self.apply_calls.lock().expect("lock") += 1;
-        Ok(process_state_for_mapping(
+        let mut snapshot = process_state_for_mapping(
             ProcessLifecycleStatus::Cancelled,
-            request.process_id,
+            request.lease.process_id,
             None,
             None,
             None,
-        ))
+        );
+        if let Some(metadata) = request.metadata {
+            snapshot.metadata = metadata;
+        }
+        Ok(snapshot)
     }
 
     async fn fail_process(

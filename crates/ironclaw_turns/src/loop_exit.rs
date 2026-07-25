@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use ironclaw_host_api::RuntimeCredentialAuthRequirement;
 use ironclaw_processes::{
     FailProcessRequest, JournaledProcessSnapshot, ProcessCheckpointRef, ProcessLeaseRequest,
-    ProcessLeaseToken, ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort,
-    ProcessWorkerId, SuspendProcessRequest,
+    ProcessLeaseToken, ProcessStateTransitionRequest, ProcessSuspension, ProcessSuspensionKind,
+    ProcessTransitionPort, ProcessWorkerId, SuspendProcessRequest,
 };
 use serde::{Deserialize, Serialize, de};
 
@@ -155,6 +155,10 @@ impl LoopExitApplier {
                 worker_id: process_worker_id_from_turn_runner_id(claimed.runner_id),
                 lease_token: process_lease_token_from_turn(claimed.lease_token),
                 failure,
+                metadata: Some(crate::process_journal::agent_turn_metadata_from_claimed(
+                    claimed,
+                    claimed.state.model_usage,
+                )),
             })
             .await?;
         crate::turn_run_state_from_process_snapshot(snapshot)
@@ -281,17 +285,23 @@ async fn apply_validated_process_loop_exit(
     transition_port: &dyn ProcessTransitionPort<Error = TurnError>,
     claimed: &ClaimedTurnRun,
     mapping: LoopExitMapping,
-    _model_usage: Option<crate::run_profile::LoopModelUsage>,
+    model_usage: Option<crate::run_profile::LoopModelUsage>,
 ) -> Result<JournaledProcessSnapshot, TurnError> {
     match mapping {
         LoopExitMapping::RunnerOutcome(TurnRunnerOutcome::Completed) => {
             transition_port
-                .complete_process(process_lease_request_from_claimed(claimed))
+                .complete_process(process_state_transition_request_from_claimed(
+                    claimed,
+                    model_usage,
+                ))
                 .await
         }
         LoopExitMapping::RunnerOutcome(TurnRunnerOutcome::Cancelled) => {
             transition_port
-                .cancel_process(process_lease_request_from_claimed(claimed))
+                .cancel_process(process_state_transition_request_from_claimed(
+                    claimed,
+                    model_usage,
+                ))
                 .await
         }
         LoopExitMapping::RunnerOutcome(TurnRunnerOutcome::Blocked {
@@ -311,6 +321,10 @@ async fn apply_validated_process_loop_exit(
                         checkpoint_id.as_uuid().to_string(),
                     ),
                     suspension: process_suspension_from_blocked_reason(reason, blocked_activity_id),
+                    metadata: Some(crate::process_journal::agent_turn_metadata_from_claimed(
+                        claimed,
+                        model_usage,
+                    )),
                 })
                 .await
         }
@@ -324,6 +338,10 @@ async fn apply_validated_process_loop_exit(
                     worker_id: process_worker_id_from_turn_runner_id(claimed.runner_id),
                     lease_token: process_lease_token_from_turn(claimed.lease_token),
                     failure,
+                    metadata: Some(crate::process_journal::agent_turn_metadata_from_claimed(
+                        claimed,
+                        model_usage,
+                    )),
                 })
                 .await
         }
@@ -335,6 +353,19 @@ fn process_lease_request_from_claimed(claimed: &ClaimedTurnRun) -> ProcessLeaseR
         process_id: crate::process_journal::process_id_from_turn_run_id(claimed.state.run_id),
         worker_id: process_worker_id_from_turn_runner_id(claimed.runner_id),
         lease_token: process_lease_token_from_turn(claimed.lease_token),
+    }
+}
+
+fn process_state_transition_request_from_claimed(
+    claimed: &ClaimedTurnRun,
+    model_usage: Option<crate::run_profile::LoopModelUsage>,
+) -> ProcessStateTransitionRequest {
+    ProcessStateTransitionRequest {
+        lease: process_lease_request_from_claimed(claimed),
+        metadata: Some(crate::process_journal::agent_turn_metadata_from_claimed(
+            claimed,
+            model_usage,
+        )),
     }
 }
 
