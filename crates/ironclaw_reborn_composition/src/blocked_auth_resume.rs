@@ -31,15 +31,16 @@ use async_trait::async_trait;
 use ironclaw_auth::{
     AuthContinuationEvent, AuthContinuationRef, AuthProductError, RebornAuthContinuationDispatcher,
 };
-use ironclaw_host_api::SYSTEM_RESERVED_ID;
 use ironclaw_processes::{
     ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource, ProcessSuspensionKind,
 };
 use ironclaw_turns::{
     IdempotencyKey, ReplyTargetBindingRef, ResumeTurnPrecondition, ResumeTurnRequest,
-    SourceBindingRef, TurnActor, TurnCoordinator, TurnError, TurnRunId, TurnScope,
+    SourceBindingRef, TurnActor, TurnCoordinator, TurnError, TurnRunId,
 };
 use uuid::Uuid;
+
+use crate::process_gate_turn_view::{turn_run_id_from_process_id, turn_scope_from_process_gate};
 
 /// Decorates the single-run continuation dispatcher with the caller-wide
 /// blocked-run fan-out described in the module docs.
@@ -99,7 +100,7 @@ impl BlockedAuthResumeFanout {
             if run.scope.tenant_id != *tenant_id || run.owner_user_id.as_ref() != Some(user_id) {
                 continue;
             }
-            let run_id = TurnRunId::from_uuid(run.process_id.as_uuid());
+            let run_id = turn_run_id_from_process_id(run.process_id);
             if primary_run_id == Some(run_id) {
                 // The inner dispatcher already resumed (or reported on) the
                 // run the completed flow was pinned to.
@@ -190,22 +191,6 @@ impl BlockedAuthResumeFanout {
         }
         Ok(())
     }
-}
-
-fn turn_scope_from_process_gate(scope: &ironclaw_host_api::ResourceScope) -> Option<TurnScope> {
-    let thread_id = scope.thread_id.clone()?;
-    let owner = if scope.user_id.as_str() == SYSTEM_RESERVED_ID {
-        None
-    } else {
-        Some(scope.user_id.clone())
-    };
-    Some(TurnScope::new_with_owner(
-        scope.tenant_id.clone(),
-        scope.agent_id.clone(),
-        scope.project_id.clone(),
-        thread_id,
-        owner,
-    ))
 }
 
 fn primary_run_id(continuation: &AuthContinuationRef) -> Option<TurnRunId> {

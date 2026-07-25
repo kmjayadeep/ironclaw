@@ -16,11 +16,7 @@ use ironclaw_product::{
 };
 use ironclaw_turns::{GateRef, TurnRunId, TurnScope};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct BlockedAuthRun {
-    run_id: TurnRunId,
-    gate_ref: GateRef,
-}
+use crate::process_gate_turn_view::{current_turn_gate_runs, first_turn_run_for_gate};
 
 pub(super) struct ProcessGateAuthInteractionReadModel {
     gates: Arc<dyn ProcessGateQuerySource<Error = ironclaw_turns::TurnError>>,
@@ -85,20 +81,10 @@ impl ProcessGateAuthInteractionReadModel {
     async fn blocked_auth_runs(
         &self,
         scope: &AuthInteractionScope,
-    ) -> Result<Vec<BlockedAuthRun>, ProductSurfaceFailure> {
-        let mut runs = self
-            .query(scope, None, false)
-            .await?
-            .into_iter()
-            .filter_map(|record| {
-                record.suspension.gate_ref.map(|gate_ref| BlockedAuthRun {
-                    run_id: turn_run_id_from_process_id(record.process_id),
-                    gate_ref,
-                })
-            })
-            .collect::<Vec<_>>();
-        runs.sort_by_key(|run| run.run_id.as_uuid());
-        Ok(runs)
+    ) -> Result<Vec<(TurnRunId, GateRef)>, ProductSurfaceFailure> {
+        Ok(current_turn_gate_runs(
+            self.query(scope, None, false).await?,
+        ))
     }
 
     async fn auth_run_for_gate(
@@ -106,20 +92,9 @@ impl ProcessGateAuthInteractionReadModel {
         scope: &AuthInteractionScope,
         gate_ref: &GateRef,
     ) -> Result<Option<TurnRunId>, ProductSurfaceFailure> {
-        let mut runs = self
-            .query(scope, Some(gate_ref.clone()), true)
-            .await?
-            .into_iter()
-            .map(|record| {
-                (
-                    record.historical,
-                    turn_run_id_from_process_id(record.process_id),
-                )
-            })
-            .collect::<Vec<_>>();
-        runs.sort_by_key(|(historical, run_id)| (*historical, run_id.as_uuid()));
-        runs.dedup_by_key(|(_, run_id)| *run_id);
-        Ok(runs.into_iter().map(|(_, run_id)| run_id).next())
+        Ok(first_turn_run_for_gate(
+            self.query(scope, Some(gate_ref.clone()), true).await?,
+        ))
     }
 
     async fn flow_for_gate(
@@ -199,10 +174,6 @@ fn matching_flow_for_run(
         .cloned())
 }
 
-fn turn_run_id_from_process_id(process_id: ironclaw_host_api::ProcessId) -> TurnRunId {
-    TurnRunId::from_uuid(process_id.as_uuid())
-}
-
 impl ProcessGateAuthInteractionReadModel {
     async fn owner_flows(
         &self,
@@ -220,9 +191,9 @@ impl AuthInteractionReadModel for ProcessGateAuthInteractionReadModel {
     ) -> Result<Vec<AuthGateRecord>, ProductSurfaceFailure> {
         let mut gates = Vec::new();
         let flows = self.owner_flows(scope).await?;
-        for run in self.blocked_auth_runs(scope).await? {
-            if let Some(flow) = matching_flow_for_run(&flows, scope, run.run_id, &run.gate_ref)? {
-                gates.push(AuthGateRecord::new(run.run_id, run.gate_ref, flow)?);
+        for (run_id, gate_ref) in self.blocked_auth_runs(scope).await? {
+            if let Some(flow) = matching_flow_for_run(&flows, scope, run_id, &gate_ref)? {
+                gates.push(AuthGateRecord::new(run_id, gate_ref, flow)?);
             }
         }
         Ok(gates)

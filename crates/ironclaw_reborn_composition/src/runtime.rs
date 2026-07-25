@@ -140,6 +140,7 @@ use crate::outbound::{
     OutboundDeliveryTargetProvider, RebornOutboundPreferencesService,
     outbound_delivery_synthetic_provider,
 };
+use crate::process_gate_turn_view::{current_turn_gate_runs, first_turn_run_for_gate};
 use crate::root::default_system_prompt::DefaultSystemPromptIdentitySource;
 use ironclaw_extension_host::AdminConfigurationCatalogUse;
 use ironclaw_product::projection::{RebornProjectionServices, build_reborn_projection_services};
@@ -1344,21 +1345,10 @@ impl ApprovalTurnRunLocator for ProcessGateApprovalTurnRunLocator {
         &self,
         scope: &ApprovalInteractionScope,
     ) -> Result<Vec<ApprovalBlockedTurnRun>, ironclaw_product::ProductSurfaceFailure> {
-        let mut runs = self
-            .query(scope, None, false)
-            .await?
+        let runs = current_turn_gate_runs(self.query(scope, None, false).await?)
             .into_iter()
-            .filter_map(|record| {
-                record
-                    .suspension
-                    .gate_ref
-                    .map(|gate_ref| ApprovalBlockedTurnRun {
-                        run_id: turn_run_id_from_process_id(record.process_id),
-                        gate_ref,
-                    })
-            })
+            .map(|(run_id, gate_ref)| ApprovalBlockedTurnRun { run_id, gate_ref })
             .collect::<Vec<_>>();
-        runs.sort_by_key(|run| run.run_id.as_uuid());
         Ok(runs)
     }
 
@@ -1367,25 +1357,10 @@ impl ApprovalTurnRunLocator for ProcessGateApprovalTurnRunLocator {
         scope: &ApprovalInteractionScope,
         gate_ref: &ironclaw_turns::GateRef,
     ) -> Result<Option<TurnRunId>, ironclaw_product::ProductSurfaceFailure> {
-        let mut runs = self
-            .query(scope, Some(gate_ref.clone()), true)
-            .await?
-            .into_iter()
-            .map(|record| {
-                (
-                    record.historical,
-                    turn_run_id_from_process_id(record.process_id),
-                )
-            })
-            .collect::<Vec<_>>();
-        runs.sort_by_key(|(historical, run_id)| (*historical, run_id.as_uuid()));
-        runs.dedup_by_key(|(_, run_id)| *run_id);
-        Ok(runs.into_iter().map(|(_, run_id)| run_id).next())
+        Ok(first_turn_run_for_gate(
+            self.query(scope, Some(gate_ref.clone()), true).await?,
+        ))
     }
-}
-
-fn turn_run_id_from_process_id(process_id: ironclaw_host_api::ProcessId) -> TurnRunId {
-    TurnRunId::from_uuid(process_id.as_uuid())
 }
 
 fn approval_turn_locator_unavailable() -> ironclaw_product::ProductSurfaceFailure {
