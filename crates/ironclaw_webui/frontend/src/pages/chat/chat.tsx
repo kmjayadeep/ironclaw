@@ -214,8 +214,15 @@ export function Chat({
       if (composerSendBlockedRef.current) return null;
       // Slash text naming an inventory command executes as a product command
       // (no turn); anything else — including unknown slash text — submits as
-      // an ordinary message, matching channel behavior.
-      if (attachments.length === 0 && matchCommand(content, chatCommands)) {
+      // an ordinary message, matching channel behavior. Commands need an
+      // existing conversation (the execute route is thread-scoped), so on
+      // the landing view slash text simply opens the thread as a message —
+      // the same first-contact semantics channels have.
+      if (
+        activeThreadId &&
+        attachments.length === 0 &&
+        matchCommand(content, chatCommands)
+      ) {
         return await runCommand(content);
       }
       const response = await send(content, {
@@ -349,7 +356,7 @@ export function Chat({
           <EmptyState
             onSuggestion={handleSuggestion}
             onSend={handleSend}
-            commands={chatCommands}
+            commands={activeThreadId ? chatCommands : []}
             disabled={false}
             sendDisabled={composerSendDisabled}
             initialText={composerDraft}
@@ -466,7 +473,7 @@ export function Chat({
 
           <ChatInput
             onSend={handleSend}
-            commands={chatCommands}
+            commands={activeThreadId ? chatCommands : []}
             disabled={false}
             sendDisabled={composerSendDisabled}
             initialText={composerDraft}
