@@ -25,11 +25,10 @@ use ironclaw_processes::{
 };
 
 use crate::{
-    AcceptedMessageRef, BlockedReason, GateKind, GateResumeDisposition, GetRunStateRequest,
-    LoopExitMapping, ProductTurnContext, ReplyTargetBindingRef, ResolvedRunProfile, RunProfileId,
-    RunProfileVersion, SourceBindingRef, TurnActor, TurnCheckpointId, TurnError, TurnEventKind,
-    TurnLifecycleEvent, TurnRunId, TurnRunRecord, TurnRunState, TurnRunnerId, TurnScope,
-    TurnStatus,
+    AcceptedMessageRef, BlockedReason, GateKind, GateResumeDisposition, LoopExitMapping,
+    ProductTurnContext, ReplyTargetBindingRef, ResolvedRunProfile, RunProfileId, RunProfileVersion,
+    SourceBindingRef, TurnActor, TurnCheckpointId, TurnError, TurnEventKind, TurnLifecycleEvent,
+    TurnRunId, TurnRunRecord, TurnRunState, TurnRunnerId, TurnScope, TurnStatus,
     events::{
         EventCursor, TurnBlockedGateKind, TurnBlockedGateMetadata, TurnEventPage,
         TurnEventProjectionSource,
@@ -42,7 +41,6 @@ use crate::{
         RecoverExpiredLeasesRequest, RecoverExpiredLeasesResponse, RelinquishRunRequest,
         TurnRunTransitionPort, TurnRunnerOutcome,
     },
-    store::TurnStateStore,
 };
 
 pub type KernelProcessId = ProcessId;
@@ -971,70 +969,6 @@ impl AgentTurnProcessTransitionAdapter {
 
     pub fn inner(&self) -> &Arc<dyn TurnRunTransitionPort> {
         &self.inner
-    }
-}
-
-#[derive(Clone)]
-pub struct AgentTurnProcessJournalAdapter {
-    state: Arc<dyn TurnStateStore>,
-    events: Arc<dyn TurnEventProjectionSource>,
-}
-
-impl AgentTurnProcessJournalAdapter {
-    pub fn new(state: Arc<dyn TurnStateStore>, events: Arc<dyn TurnEventProjectionSource>) -> Self {
-        Self { state, events }
-    }
-}
-
-#[async_trait]
-impl ProcessJournalSource for AgentTurnProcessJournalAdapter {
-    type Error = TurnError;
-
-    async fn get_process_snapshot(
-        &self,
-        request: GetProcessSnapshotRequest,
-    ) -> Result<JournaledProcessSnapshot, Self::Error> {
-        let scope = turn_scope_from_process_scope(request.scope)?;
-        let state = self
-            .state
-            .get_run_state(GetRunStateRequest {
-                scope,
-                run_id: turn_run_id_from_process_id(request.process_id),
-            })
-            .await?;
-        Ok(state.to_process_state_snapshot())
-    }
-
-    async fn read_process_journal_after(
-        &self,
-        scope: &ResourceScope,
-        owner_user_id: Option<&ironclaw_host_api::UserId>,
-        after: Option<ProcessJournalCursor>,
-        limit: usize,
-    ) -> Result<ProcessJournalPage, Self::Error> {
-        let scope = turn_scope_from_process_scope(scope.clone())?;
-        let page = self
-            .events
-            .read_turn_events_after(
-                &scope,
-                owner_user_id,
-                after.map(|cursor| EventCursor(cursor.0)),
-                limit,
-            )
-            .await?;
-        Ok(process_journal_page_from_turn(page))
-    }
-
-    async fn read_process_journal_log_after(
-        &self,
-        after: Option<ProcessJournalCursor>,
-        limit: usize,
-    ) -> Result<ProcessJournalPage, Self::Error> {
-        let page = self
-            .events
-            .read_turn_event_log_after(after.map(|cursor| EventCursor(cursor.0)), limit)
-            .await?;
-        Ok(process_journal_page_from_turn(page))
     }
 }
 
@@ -2045,75 +1979,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_journal_source_reads_real_turn_store_as_process_journal() {
-        let store = Arc::new(crate::test_support::in_memory_turn_state_store());
-        let source = AgentTurnProcessJournalAdapter::new(
-            store.clone() as Arc<dyn TurnStateStore>,
-            store.clone() as Arc<dyn TurnEventProjectionSource>,
-        );
-        let run_id = TurnRunId::new();
-        let response = store
-            .submit_turn(
-                submit_request(run_id),
-                &AllowAllAdmissionPolicy,
-                &InMemoryRunProfileResolver::default(),
-            )
-            .await
-            .expect("submit turn");
-        let SubmitTurnResponse::Accepted {
-            run_id: accepted_run_id,
-            ..
-        } = response;
-        assert_eq!(accepted_run_id, run_id);
-
-        let process_scope = scope().to_resource_scope();
-        let snapshot = source
-            .get_process_snapshot(GetProcessSnapshotRequest {
-                scope: process_scope.clone(),
-                process_id: process_id_from_turn_run_id(run_id),
-            })
-            .await
-            .expect("process snapshot");
-        assert_eq!(snapshot.process_id, process_id_from_turn_run_id(run_id));
-        assert_eq!(snapshot.process_kind, ProcessKind::AgentTurn);
-        assert_eq!(snapshot.status, ProcessLifecycleStatus::Queued);
-
-        let page = source
-            .read_process_journal_after(&process_scope, None, None, 10)
-            .await
-            .expect("process journal page");
-        assert_eq!(page.entries.len(), 1);
-        assert_eq!(
-            page.entries[0].process_id,
-            process_id_from_turn_run_id(run_id)
-        );
-        assert_eq!(page.entries[0].kind, ProcessJournalKind::Submitted);
-        assert_eq!(page.next_cursor, page.entries[0].cursor);
-    }
-
-    #[tokio::test]
     async fn turn_event_projection_can_be_a_view_over_process_journal() {
-        let store = Arc::new(crate::test_support::in_memory_turn_state_store());
-        let process_source: Arc<dyn ProcessJournalSource<Error = TurnError>> =
-            Arc::new(AgentTurnProcessJournalAdapter::new(
-                store.clone() as Arc<dyn TurnStateStore>,
-                store.clone() as Arc<dyn TurnEventProjectionSource>,
-            ));
-        let turn_view = TurnEventProjectionFromProcessJournal::new(process_source);
         let run_id = TurnRunId::new();
-        let response = store
-            .submit_turn(
-                submit_request(run_id),
-                &AllowAllAdmissionPolicy,
-                &InMemoryRunProfileResolver::default(),
-            )
-            .await
-            .expect("submit turn");
-        let SubmitTurnResponse::Accepted {
-            run_id: accepted_run_id,
-            ..
-        } = response;
-        assert_eq!(accepted_run_id, run_id);
+        let process_source: Arc<dyn ProcessJournalSource<Error = TurnError>> =
+            Arc::new(FakeProcessJournalSource {
+                page: ProcessJournalPage {
+                    entries: vec![ProcessJournalEntry {
+                        cursor: ProcessJournalCursor(1),
+                        process_id: process_id_from_turn_run_id(run_id),
+                        process_kind: ProcessKind::AgentTurn,
+                        scope: scope().to_resource_scope(),
+                        occurred_at: Some(Utc::now()),
+                        owner_user_id: None,
+                        status: ProcessLifecycleStatus::Queued,
+                        kind: ProcessJournalKind::Submitted,
+                        suspension: None,
+                        sanitized_reason: None,
+                        retryable: None,
+                        detail: None,
+                        metadata: Value::Null,
+                    }],
+                    next_cursor: ProcessJournalCursor(1),
+                    truncated: false,
+                    rebase_required: None,
+                },
+            });
+        let turn_view = TurnEventProjectionFromProcessJournal::new(process_source);
 
         let page = turn_view
             .read_turn_events_after(&scope(), None, None, 10)
@@ -2123,6 +2014,42 @@ mod tests {
         assert_eq!(page.entries[0].run_id, run_id);
         assert_eq!(page.entries[0].kind, TurnEventKind::Submitted);
         assert_eq!(page.entries[0].status, TurnStatus::Queued);
+    }
+
+    struct FakeProcessJournalSource {
+        page: ProcessJournalPage,
+    }
+
+    #[async_trait]
+    impl ProcessJournalSource for FakeProcessJournalSource {
+        type Error = TurnError;
+
+        async fn get_process_snapshot(
+            &self,
+            _request: GetProcessSnapshotRequest,
+        ) -> Result<JournaledProcessSnapshot, Self::Error> {
+            Err(TurnError::InvalidRequest {
+                reason: "fake process journal source does not serve snapshots".to_string(),
+            })
+        }
+
+        async fn read_process_journal_after(
+            &self,
+            _scope: &ResourceScope,
+            _owner_user_id: Option<&ironclaw_host_api::UserId>,
+            _after: Option<ProcessJournalCursor>,
+            _limit: usize,
+        ) -> Result<ProcessJournalPage, Self::Error> {
+            Ok(self.page.clone())
+        }
+
+        async fn read_process_journal_log_after(
+            &self,
+            _after: Option<ProcessJournalCursor>,
+            _limit: usize,
+        ) -> Result<ProcessJournalPage, Self::Error> {
+            Ok(self.page.clone())
+        }
     }
 
     #[test]
