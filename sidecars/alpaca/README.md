@@ -25,10 +25,30 @@ generates and passes on stdin. Every request must carry the token. No inbound
 port on any external interface, ever. Localhost TCP is the Windows/dev fallback
 with the same token requirement.
 
+## The stdin link
+
+Stdin carries two things over one pipe, and the parent keeps its write end open
+for the child's whole life:
+
+1. **The token**, as the first newline-terminated line — stdin rather than argv
+   (visible in `ps`) or the environment (visible in a crash dump).
+2. **Liveness.** EOF means the parent is gone, by clean exit, panic, or SIGKILL
+   alike. It is the only signal that survives a parent the OS killed without
+   warning, and it is why the token is a *line*: reading to EOF would spend the
+   signal at startup. On EOF the sidecar unlinks its socket and exits, so it can
+   never outlive the process that vouched for it and sit holding the signing
+   socket as an orphan.
+
 ## Running it
 
-The Rust parent spawns and supervises it. Standalone, for development:
+The Rust parent spawns and supervises it (`ATTESTED_ALPACA_SIDECAR=managed`).
+Standalone, for development — note the FIFO rather than a here-string, so the
+pipe stays open and the sidecar does not immediately see EOF and exit:
 
 ```sh
-ALPACA_SOCKET_PATH=/tmp/alpaca.sock node --experimental-strip-types src/server.ts <<< "$TOKEN"
+mkfifo /tmp/alpaca.stdin
+ALPACA_SOCKET_PATH=/tmp/alpaca.sock \
+  node --experimental-strip-types src/server.ts < /tmp/alpaca.stdin &
+exec 3> /tmp/alpaca.stdin   # holding fd 3 open holds the sidecar up
+echo "$TOKEN" >&3
 ```

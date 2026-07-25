@@ -40,7 +40,9 @@ serde_json = "1"
 # serves with Node's stdlib http and no framework; this is the symmetric
 # choice). `net` + `io-util` + `time` cover connect/read/write/timeout — no
 # hyper + UDS-connector dependency family for a protocol we own both ends of.
-tokio = { version = "1", features = ["net", "io-util", "time", "rt"] }
+# `process` + `sync` additionally cover the managed-sidecar supervisor: spawn
+# the child, hold its stdin as the parent-liveness link, and signal shutdown.
+tokio = { version = "1", features = ["net", "io-util", "time", "rt", "process", "sync"] }
 
 # Crypto-free turn-coordination contract (the AttestedResumePort trait lives here).
 ironclaw_turns = { path = "../ironclaw_turns" }

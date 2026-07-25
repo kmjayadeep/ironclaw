@@ -49,6 +49,7 @@
 #![forbid(unsafe_code)]
 
 mod alpaca;
+mod alpaca_supervisor;
 mod alpaca_uds;
 mod binding;
 mod driver;
@@ -69,6 +70,10 @@ pub use trust::{
 pub use alpaca::{
     AlpacaError, AlpacaPort, BroadcastRequest, CombineRequest, CraftRequest, CurrencyId,
     RecordingAlpacaPort, SharedAlpacaPort, UnconfiguredAlpacaPort,
+};
+pub use alpaca_supervisor::{
+    AlpacaConfigError, AlpacaDeployment, AlpacaSupervisor, RestartBackoff, SOCKET_PATH_MAX,
+    SidecarSpawnSpec, mint_sidecar_token, port_for,
 };
 pub use alpaca_uds::UdsAlpacaPort;
 pub use binding::{

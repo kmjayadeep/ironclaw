@@ -12,6 +12,7 @@ import { chmodSync, mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { createChainApis, type SupportedChain } from "./bootstrap.ts";
+import { readTokenAndWatchParent } from "./parent-link.ts";
 import { handle, type RouterOptions } from "./router.ts";
 
 const BUILD_VERSION = "0.0.0";
@@ -26,30 +27,6 @@ const MAX_BODY_BYTES = 256 * 1024;
  * is actually wrong.
  */
 const SUN_PATH_MAX = 104;
-
-function readToken(): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let buffered = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => {
-      buffered += chunk;
-      // The parent writes the token then closes; guard against an unbounded
-      // stream from a misbehaving parent.
-      if (buffered.length > 4096) {
-        reject(new Error("token on stdin exceeded the maximum length"));
-      }
-    });
-    process.stdin.on("end", () => {
-      const token = buffered.trim();
-      if (token.length === 0) {
-        reject(new Error("no sidecar token supplied on stdin"));
-        return;
-      }
-      resolve(token);
-    });
-    process.stdin.on("error", reject);
-  });
-}
 
 function chainsFromEnv(): SupportedChain[] {
   const raw = process.env.ALPACA_CHAINS;
@@ -74,7 +51,31 @@ async function main(): Promise<void> {
         `socket path is ${SUN_PATH_MAX}. Use a shorter directory (e.g. under /tmp).`,
     );
   }
-  const token = await readToken();
+  // Declared before the token read: the same stdin pipe that carries the token
+  // is the parent-liveness link, and its EOF must be able to shut us down from
+  // the moment it can fire.
+  let server: ReturnType<typeof createServer> | undefined;
+  let shuttingDown = false;
+  const shutdown = (why: string) => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    console.error(`[alpaca] shutting down: ${why}`);
+    const done = () => {
+      rmSync(socketPath, { force: true });
+      process.exit(0);
+    };
+    if (server) {
+      server.close(done);
+    } else {
+      done();
+    }
+  };
+
+  const token = await readTokenAndWatchParent(process.stdin, () =>
+    shutdown("the parent process closed the stdin link"),
+  );
   const chains = chainsFromEnv();
 
   const options: RouterOptions = {
@@ -83,7 +84,7 @@ async function main(): Promise<void> {
     buildVersion: BUILD_VERSION,
   };
 
-  const server = createServer((req, res) => {
+  server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     let total = 0;
     let aborted = false;
@@ -132,14 +133,8 @@ async function main(): Promise<void> {
     console.error(`[alpaca] listening on ${socketPath}`);
   });
 
-  const shutdown = () => {
-    server.close(() => {
-      rmSync(socketPath, { force: true });
-      process.exit(0);
-    });
-  };
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
 main().catch((cause: unknown) => {
