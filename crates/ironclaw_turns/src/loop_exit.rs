@@ -9,8 +9,6 @@ use ironclaw_processes::{
 };
 use serde::{Deserialize, Serialize, de};
 
-#[cfg(any(test, feature = "test-support"))]
-use crate::runner::TurnRunTransitionPort;
 use crate::{
     BlockedReason, CapabilityActivityId, GateKind, GateRef, LoopDiagnosticRef, LoopExitId,
     LoopGateRef, LoopMessageRef, LoopResultRef, ResolvedRunProfile, SanitizedFailure,
@@ -118,19 +116,6 @@ impl LoopExitApplier {
             transition_port,
             evidence_port,
         }
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn from_turn(
-        transition_port: Arc<dyn TurnRunTransitionPort>,
-        evidence_port: Arc<dyn LoopExitEvidencePort>,
-    ) -> Self {
-        Self::new(
-            Arc::new(crate::AgentTurnProcessTransitionAdapter::new(
-                transition_port,
-            )),
-            evidence_port,
-        )
     }
 
     /// Derive policy from durable evidence, validate the exit, and apply the
