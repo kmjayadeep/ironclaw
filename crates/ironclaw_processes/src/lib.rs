@@ -34,16 +34,17 @@ mod wrappers;
 pub use cancellation::{ProcessCancellationRegistry, ProcessCancellationToken};
 pub use host::{ProcessHost, ProcessSubscription};
 pub use journal::{
-    ClaimProcessesRequest, ClaimedProcess, FailProcessRequest, GetProcessSnapshotRequest,
-    JournaledProcessSnapshot, KillProcessRequest, ProcessCheckpointRef, ProcessGateOwnerMatch,
-    ProcessGateQuery, ProcessGateQuerySource, ProcessGateRecord, ProcessJournalCursor,
-    ProcessJournalEntry, ProcessJournalError, ProcessJournalKind, ProcessJournalPage,
-    ProcessJournalProjectionCursor, ProcessJournalProjectionRequest,
-    ProcessJournalProjectionSnapshot, ProcessJournalSource, ProcessKind, ProcessLeaseRequest,
-    ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleLookupBatchRequest,
-    ProcessLifecycleLookupRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,
-    ProcessLifecycleStatus, ProcessOutcome, ProcessStateTransitionRequest, ProcessSubmissionPort,
-    ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort, ProcessWorkerId,
+    CancelProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
+    GetProcessSnapshotRequest, JournaledProcessSnapshot, KillProcessRequest, ProcessCheckpointRef,
+    ProcessControlPort, ProcessControlResult, ProcessGateOwnerMatch, ProcessGateQuery,
+    ProcessGateQuerySource, ProcessGateRecord, ProcessJournalCursor, ProcessJournalEntry,
+    ProcessJournalError, ProcessJournalKind, ProcessJournalPage, ProcessJournalProjectionCursor,
+    ProcessJournalProjectionRequest, ProcessJournalProjectionSnapshot, ProcessJournalSource,
+    ProcessKind, ProcessLeaseRequest, ProcessLeaseSnapshot, ProcessLeaseToken,
+    ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupRequest,
+    ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
+    ProcessOutcome, ProcessStateTransitionRequest, ProcessSubmissionPort, ProcessSuspension,
+    ProcessSuspensionKind, ProcessTransitionPort, ProcessWorkerId,
     RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, ResumeProcessRequest,
     StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
 };

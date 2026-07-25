@@ -13,14 +13,16 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 use crate::journal::{
-    ClaimProcessesRequest, ClaimedProcess, FailProcessRequest, GetProcessSnapshotRequest,
-    JournaledProcessSnapshot, ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource,
+    CancelProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
+    GetProcessSnapshotRequest, JournaledProcessSnapshot, KillProcessRequest, ProcessControlPort,
+    ProcessControlResult, ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource,
     ProcessGateRecord, ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind,
     ProcessJournalPage, ProcessJournalSource, ProcessLeaseRequest, ProcessLeaseSnapshot,
     ProcessLeaseToken, ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult,
     ProcessLifecycleLookupSource, ProcessLifecycleStatus, ProcessSubmissionPort, ProcessSuspension,
     ProcessTransitionPort, ProcessWorkerId, RecoverExpiredProcessLeasesRequest,
-    RecoverExpiredProcessLeasesResponse, SubmitProcessRequest, SuspendProcessRequest,
+    RecoverExpiredProcessLeasesResponse, ResumeProcessRequest, StopProcessRequest,
+    SubmitProcessRequest, SuspendProcessRequest,
 };
 use crate::types::{invalid_path, same_scope_owner};
 
@@ -42,6 +44,12 @@ pub enum ProcessJournalStoreError {
     },
     #[error("process {process_id} lease is invalid")]
     InvalidLease { process_id: ProcessId },
+    #[error("process {process_id} changed after cursor {expected:?}; current cursor is {actual:?}")]
+    StaleSnapshot {
+        process_id: ProcessId,
+        expected: ProcessJournalCursor,
+        actual: ProcessJournalCursor,
+    },
     #[error("invalid storage path: {0}")]
     InvalidPath(String),
     #[error("filesystem error: {0}")]
@@ -411,10 +419,174 @@ where
     }
 }
 
+#[async_trait]
+impl<F> ProcessControlPort for ProcessJournalStore<F>
+where
+    F: RootFilesystem + Send + Sync + 'static,
+{
+    type Error = ProcessJournalStoreError;
+
+    async fn resume_process(
+        &self,
+        request: ResumeProcessRequest,
+    ) -> Result<ProcessControlResult, Self::Error> {
+        self.control_transition(
+            request.scope,
+            request.process_id,
+            request.expected_cursor,
+            None,
+            |snapshot| {
+                ensure_transition(snapshot, ProcessLifecycleStatus::Queued)?;
+                Ok(Some((
+                    ProcessLifecycleStatus::Queued,
+                    ProcessJournalKind::Resumed,
+                )))
+            },
+            request.checkpoint_ref,
+        )
+        .await
+    }
+
+    async fn stop_process(
+        &self,
+        request: StopProcessRequest,
+    ) -> Result<ProcessControlResult, Self::Error> {
+        self.control_transition(
+            request.scope,
+            request.process_id,
+            None,
+            request.reason,
+            |snapshot| {
+                Ok((!snapshot.status.is_terminal())
+                    .then_some((ProcessLifecycleStatus::Stopped, ProcessJournalKind::Stopped)))
+            },
+            None,
+        )
+        .await
+    }
+
+    async fn request_cancel_process(
+        &self,
+        request: CancelProcessRequest,
+    ) -> Result<ProcessControlResult, Self::Error> {
+        self.control_transition(
+            request.scope,
+            request.process_id,
+            None,
+            request.reason,
+            |snapshot| {
+                let transition = match snapshot.status {
+                    status if status.is_terminal() => None,
+                    ProcessLifecycleStatus::Running | ProcessLifecycleStatus::CancelRequested => {
+                        Some((
+                            ProcessLifecycleStatus::CancelRequested,
+                            ProcessJournalKind::CancelRequested,
+                        ))
+                    }
+                    _ => Some((
+                        ProcessLifecycleStatus::Cancelled,
+                        ProcessJournalKind::Cancelled,
+                    )),
+                };
+                Ok(transition)
+            },
+            None,
+        )
+        .await
+    }
+
+    async fn kill_process(
+        &self,
+        request: KillProcessRequest,
+    ) -> Result<ProcessControlResult, Self::Error> {
+        self.control_transition(
+            request.scope,
+            request.process_id,
+            None,
+            request.reason,
+            |snapshot| {
+                Ok((!snapshot.status.is_terminal())
+                    .then_some((ProcessLifecycleStatus::Killed, ProcessJournalKind::Killed)))
+            },
+            None,
+        )
+        .await
+    }
+}
+
 impl<F> ProcessJournalStore<F>
 where
     F: RootFilesystem + Send + Sync + 'static,
 {
+    async fn control_transition(
+        &self,
+        scope: ResourceScope,
+        process_id: ProcessId,
+        expected_cursor: Option<ProcessJournalCursor>,
+        reason: Option<String>,
+        decide: impl Fn(
+            &JournaledProcessSnapshot,
+        ) -> Result<
+            Option<(ProcessLifecycleStatus, ProcessJournalKind)>,
+            ProcessJournalStoreError,
+        >,
+        checkpoint_ref: Option<crate::ProcessCheckpointRef>,
+    ) -> Result<ProcessControlResult, ProcessJournalStoreError> {
+        let _guard = self.mutation_lock.lock().await;
+        self.mutate(|state| {
+            let snapshot = state.process_mut(process_id)?;
+            if !process_scope_visible(&snapshot.scope, &scope) {
+                return Err(ProcessJournalStoreError::UnknownProcess { process_id });
+            }
+            if let Some(expected) = expected_cursor
+                && expected != snapshot.journal_cursor
+            {
+                return Err(ProcessJournalStoreError::StaleSnapshot {
+                    process_id,
+                    expected,
+                    actual: snapshot.journal_cursor,
+                });
+            }
+            let already_terminal = snapshot.status.is_terminal();
+            let Some((status, kind)) = decide(snapshot)? else {
+                return Ok(ProcessControlResult {
+                    state: snapshot.clone(),
+                    changed: false,
+                    already_terminal,
+                });
+            };
+            if status == snapshot.status {
+                return Ok(ProcessControlResult {
+                    state: snapshot.clone(),
+                    changed: false,
+                    already_terminal,
+                });
+            }
+            let cursor = state.next_cursor();
+            let snapshot = state.process_mut(process_id)?;
+            snapshot.status = status;
+            snapshot.suspension = None;
+            if checkpoint_ref.is_some() {
+                snapshot.checkpoint_ref = checkpoint_ref.clone();
+            }
+            snapshot.failure = None;
+            if status != ProcessLifecycleStatus::CancelRequested {
+                snapshot.lease = None;
+            }
+            snapshot.journal_cursor = cursor;
+            let snapshot = snapshot.clone();
+            let mut entry = ProcessJournalEntry::from_snapshot(&snapshot, cursor, kind);
+            entry.sanitized_reason = reason.clone();
+            state.push_entry(entry);
+            Ok(ProcessControlResult {
+                state: snapshot,
+                changed: true,
+                already_terminal,
+            })
+        })
+        .await
+    }
+
     async fn leased_transition(
         &self,
         request: ProcessLeaseRequest,
@@ -742,6 +914,7 @@ fn ensure_transition(
 ) -> Result<(), ProcessJournalStoreError> {
     let valid = match (snapshot.status, to) {
         (ProcessLifecycleStatus::Queued, ProcessLifecycleStatus::Running)
+        | (ProcessLifecycleStatus::Suspended, ProcessLifecycleStatus::Queued)
         | (ProcessLifecycleStatus::Running, ProcessLifecycleStatus::Running)
         | (ProcessLifecycleStatus::Running, ProcessLifecycleStatus::Suspended)
         | (ProcessLifecycleStatus::Running, ProcessLifecycleStatus::Completed)

@@ -5,13 +5,14 @@ use ironclaw_host_api::{
     ProjectId, ResourceScope, TenantId, ThreadId, TurnGateRef, UserId, VirtualPath,
 };
 use ironclaw_processes::{
-    ClaimProcessesRequest, GetProcessSnapshotRequest, ProcessCheckpointRef, ProcessGateOwnerMatch,
-    ProcessGateQuery, ProcessGateQuerySource, ProcessJournalCursor, ProcessJournalSource,
-    ProcessJournalStore, ProcessKind, ProcessLeaseRequest, ProcessLeaseToken,
-    ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupRequest,
-    ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
-    ProcessStateTransitionRequest, ProcessSubmissionPort, ProcessSuspension, ProcessSuspensionKind,
-    ProcessTransitionPort, ProcessWorkerId, SubmitProcessRequest, SuspendProcessRequest,
+    CancelProcessRequest, ClaimProcessesRequest, GetProcessSnapshotRequest, KillProcessRequest,
+    ProcessCheckpointRef, ProcessControlPort, ProcessGateOwnerMatch, ProcessGateQuery,
+    ProcessGateQuerySource, ProcessJournalCursor, ProcessJournalSource, ProcessJournalStore,
+    ProcessKind, ProcessLeaseRequest, ProcessLeaseToken, ProcessLifecycleLookupBatchRequest,
+    ProcessLifecycleLookupRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,
+    ProcessLifecycleStatus, ProcessStateTransitionRequest, ProcessSubmissionPort,
+    ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort, ProcessWorkerId,
+    ResumeProcessRequest, StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
 };
 use serde_json::json;
 
@@ -285,6 +286,157 @@ async fn process_journal_store_rejects_wrong_lease() {
         .await
         .expect_err("wrong lease must fail");
     assert!(error.to_string().contains("lease is invalid"));
+}
+
+#[tokio::test]
+async fn process_control_is_scoped_atomic_and_process_kind_neutral() {
+    let store = ProcessJournalStore::new(in_memory_backed_processes_filesystem());
+    let scope = scope();
+    let process_id = ProcessId::new();
+    let submitted = submit_internal_process(&store, &scope, process_id).await;
+    let worker_id = ProcessWorkerId::from_trusted(ProcessId::new().as_uuid().to_string());
+    let mut claimed = store
+        .claim_next_processes(ClaimProcessesRequest {
+            worker_id,
+            scope_filter: Some(scope.clone()),
+            max_processes: 1,
+        })
+        .await
+        .expect("claim process");
+    let claim = claimed.pop().expect("claimed process");
+    let suspended = store
+        .suspend_process(SuspendProcessRequest {
+            process_id,
+            worker_id: claim.worker_id,
+            lease_token: claim.lease_token,
+            checkpoint_ref: ProcessCheckpointRef::from_trusted("checkpoint:control"),
+            suspension: ProcessSuspension {
+                kind: ProcessSuspensionKind::ExternalProcess,
+                gate_ref: None,
+                activity_id: None,
+                credential_requirements: Vec::new(),
+                detail: None,
+            },
+            metadata: None,
+        })
+        .await
+        .expect("suspend process");
+
+    let stale = store
+        .resume_process(ResumeProcessRequest {
+            scope: scope.clone(),
+            process_id,
+            expected_cursor: Some(submitted.journal_cursor),
+            checkpoint_ref: None,
+        })
+        .await
+        .expect_err("stale resume must fail");
+    assert!(stale.to_string().contains("changed after cursor"));
+
+    let mut wrong_scope = scope.clone();
+    wrong_scope.user_id = UserId::new("other-user").expect("other user");
+    let unauthorized = store
+        .resume_process(ResumeProcessRequest {
+            scope: wrong_scope,
+            process_id,
+            expected_cursor: Some(suspended.journal_cursor),
+            checkpoint_ref: None,
+        })
+        .await
+        .expect_err("cross-scope resume must not disclose process");
+    assert!(unauthorized.to_string().contains("unknown process"));
+
+    let resumed = store
+        .resume_process(ResumeProcessRequest {
+            scope: scope.clone(),
+            process_id,
+            expected_cursor: Some(suspended.journal_cursor),
+            checkpoint_ref: None,
+        })
+        .await
+        .expect("resume process");
+    assert!(resumed.changed);
+    assert_eq!(resumed.state.status, ProcessLifecycleStatus::Queued);
+    assert!(resumed.state.suspension.is_none());
+
+    let mut reclaimed = store
+        .claim_next_processes(ClaimProcessesRequest {
+            worker_id: ProcessWorkerId::from_trusted(ProcessId::new().as_uuid().to_string()),
+            scope_filter: Some(scope.clone()),
+            max_processes: 1,
+        })
+        .await
+        .expect("reclaim process");
+    let claim = reclaimed.pop().expect("reclaimed process");
+    let cancel_requested = store
+        .request_cancel_process(CancelProcessRequest {
+            scope: scope.clone(),
+            process_id,
+            reason: Some("operator request".to_string()),
+        })
+        .await
+        .expect("request cancellation");
+    assert_eq!(
+        cancel_requested.state.status,
+        ProcessLifecycleStatus::CancelRequested
+    );
+    assert!(cancel_requested.state.lease.is_some());
+    let cancelled = store
+        .cancel_process(ProcessStateTransitionRequest {
+            lease: ProcessLeaseRequest {
+                process_id,
+                worker_id: claim.worker_id,
+                lease_token: claim.lease_token,
+            },
+            metadata: None,
+        })
+        .await
+        .expect("complete cancellation");
+    assert_eq!(cancelled.status, ProcessLifecycleStatus::Cancelled);
+
+    let stopped_id = ProcessId::new();
+    submit_internal_process(&store, &scope, stopped_id).await;
+    let stopped = store
+        .stop_process(StopProcessRequest {
+            scope: scope.clone(),
+            process_id: stopped_id,
+            reason: Some("shutdown".to_string()),
+        })
+        .await
+        .expect("stop process");
+    assert_eq!(stopped.state.status, ProcessLifecycleStatus::Stopped);
+
+    let killed_id = ProcessId::new();
+    submit_internal_process(&store, &scope, killed_id).await;
+    let killed = store
+        .kill_process(KillProcessRequest {
+            scope,
+            process_id: killed_id,
+            reason: Some("forced shutdown".to_string()),
+        })
+        .await
+        .expect("kill process");
+    assert_eq!(killed.state.status, ProcessLifecycleStatus::Killed);
+}
+
+async fn submit_internal_process(
+    store: &ProcessJournalStore<InMemoryBackend>,
+    scope: &ResourceScope,
+    process_id: ProcessId,
+) -> ironclaw_processes::JournaledProcessSnapshot {
+    store
+        .submit_process(SubmitProcessRequest {
+            process_id,
+            process_kind: ProcessKind::Internal,
+            scope: scope.clone(),
+            owner_user_id: Some(scope.user_id.clone()),
+            parent_process_id: None,
+            root_process_id: None,
+            created_at: Utc::now(),
+            metadata: serde_json::Value::Null,
+        })
+        .await
+        .expect("submit internal process")
 }
 
 fn scope() -> ResourceScope {

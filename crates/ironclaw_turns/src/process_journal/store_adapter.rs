@@ -195,7 +195,8 @@ impl ProcessGateQuerySource for ProcessJournalStoreTurnAdapter {
 pub fn turn_error_from_process_journal_store_error(error: ProcessJournalStoreError) -> TurnError {
     match error {
         ProcessJournalStoreError::UnknownProcess { .. } => TurnError::ScopeNotFound,
-        ProcessJournalStoreError::ProcessAlreadyExists { .. } => TurnError::Conflict {
+        ProcessJournalStoreError::ProcessAlreadyExists { .. }
+        | ProcessJournalStoreError::StaleSnapshot { .. } => TurnError::Conflict {
             reason: error.to_string(),
         },
         ProcessJournalStoreError::InvalidTransition { from, to, .. } => TurnError::InvalidRequest {

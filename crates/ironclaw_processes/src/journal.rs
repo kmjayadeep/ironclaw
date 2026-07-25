@@ -453,13 +453,25 @@ pub struct SuspendProcessRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResumeProcessRequest {
+    pub scope: ResourceScope,
     pub process_id: ProcessId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_cursor: Option<ProcessJournalCursor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_ref: Option<ProcessCheckpointRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StopProcessRequest {
+    pub scope: ResourceScope,
+    pub process_id: ProcessId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelProcessRequest {
+    pub scope: ResourceScope,
     pub process_id: ProcessId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -467,9 +479,17 @@ pub struct StopProcessRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KillProcessRequest {
+    pub scope: ResourceScope,
     pub process_id: ProcessId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProcessControlResult {
+    pub state: JournaledProcessSnapshot,
+    pub changed: bool,
+    pub already_terminal: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -555,6 +575,31 @@ pub trait ProcessTransitionPort: Send + Sync {
         &self,
         request: ProcessLeaseRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error>;
+}
+
+#[async_trait]
+pub trait ProcessControlPort: Send + Sync {
+    type Error: Send + Sync + 'static;
+
+    async fn resume_process(
+        &self,
+        request: ResumeProcessRequest,
+    ) -> Result<ProcessControlResult, Self::Error>;
+
+    async fn stop_process(
+        &self,
+        request: StopProcessRequest,
+    ) -> Result<ProcessControlResult, Self::Error>;
+
+    async fn request_cancel_process(
+        &self,
+        request: CancelProcessRequest,
+    ) -> Result<ProcessControlResult, Self::Error>;
+
+    async fn kill_process(
+        &self,
+        request: KillProcessRequest,
+    ) -> Result<ProcessControlResult, Self::Error>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
