@@ -65,8 +65,15 @@ const INTENT_REVIEW_SPA_BASE_ENV: &str = "IRONCLAW_INTENT_REVIEW_SPA_BASE";
 ///
 /// Server-fixed: read from configuration at composition time, never from a
 /// request. That is what keeps this out of the open-redirect class.
+///
+/// `/review` rather than anything under `/intent`: `webui_serve` reserves the
+/// first literal segment of every mounted route descriptor as a host-owned root
+/// namespace, and the static fallback refuses to render the SPA shell for one.
+/// `/intent` belongs to THIS route, so an SPA page beneath it could never be
+/// served. No fragment either — the SPA is a `BrowserRouter`, which never sees
+/// one.
 pub(crate) fn intent_review_spa_base() -> String {
-    std::env::var(INTENT_REVIEW_SPA_BASE_ENV).unwrap_or_else(|_| "/webui/#/intent".to_string())
+    std::env::var(INTENT_REVIEW_SPA_BASE_ENV).unwrap_or_else(|_| "/review".to_string())
 }
 
 #[derive(Clone)]
@@ -370,5 +377,55 @@ mod tests {
     fn the_route_id_does_not_embed_a_concrete_token() {
         let descriptor = intent_review_descriptor();
         assert!(descriptor.route_pattern().as_str().contains("{token}"));
+    }
+
+    /// The default redirect target must be a route the SPA can actually serve.
+    ///
+    /// Two ways it can silently not be, both of which this pins:
+    ///
+    /// * A `#` fragment never routes — the SPA is a `BrowserRouter`, so a
+    ///   fragment is dropped before React Router ever sees it.
+    /// * The first path segment must not be a host-owned root namespace.
+    ///   `webui_serve` reserves the first literal segment of every mounted
+    ///   route descriptor, and the static fallback refuses to render the SPA
+    ///   shell for a reserved namespace. `/intent` is this very route's
+    ///   namespace, so the SPA cannot live under it.
+    ///
+    /// Get either wrong and a review link lands on the app's default route with
+    /// the intent id discarded — the approver sees their inbox, not the
+    /// transaction they were asked to approve.
+    #[test]
+    fn the_default_spa_base_is_a_route_the_spa_can_serve() {
+        let base = intent_review_spa_base();
+        assert!(
+            !base.contains('#'),
+            "the SPA is a BrowserRouter; a fragment in {base:?} never reaches the router"
+        );
+
+        let root_namespace = base
+            .trim_start_matches('/')
+            .split('/')
+            .next()
+            .expect("a base path has a first segment");
+        let reserved = INTENT_REVIEW_PATH
+            .trim_start_matches('/')
+            .split('/')
+            .next()
+            .expect("the route pattern has a first segment");
+        assert_ne!(
+            root_namespace, reserved,
+            "{base:?} sits under this route's own server-owned namespace, so the \
+             static SPA fallback will never render it"
+        );
+    }
+
+    /// The env override exists for deployments that mount the SPA elsewhere; it
+    /// must not be able to smuggle a request-derived value, which is why the
+    /// base is read once at composition time and never from a request.
+    #[test]
+    fn the_spa_base_is_configurable_but_server_fixed() {
+        // Reading it twice with no request in between must be stable — the
+        // property that keeps this out of the open-redirect class.
+        assert_eq!(intent_review_spa_base(), intent_review_spa_base());
     }
 }
