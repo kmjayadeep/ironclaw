@@ -81,20 +81,21 @@ pub use loop_exit::{
     LoopExitViolationKind, LoopFailed, LoopFailureKind,
 };
 pub use origin::{ProductTurnContext, RunOriginAdapter, TurnOriginKind, TurnSurfaceType};
+#[cfg(feature = "test-support")]
+pub use process_journal::AgentTurnProcessTransitionAdapter;
 pub use process_journal::{
     AGENT_TURN_PROCESS_KIND, AgentTurnProcessMetadata, AgentTurnProcessStateMetadata,
-    AgentTurnProcessTransitionAdapter, KernelApplyValidatedExitRequest, KernelClaimProcessRequest,
-    KernelClaimProcessesRequest, KernelClaimedProcess, KernelFailProcessRequest,
-    KernelProcessCheckpointRef, KernelProcessId, KernelProcessJournalCursor,
-    KernelProcessJournalEntry, KernelProcessJournalKind, KernelProcessJournalPage,
-    KernelProcessKind, KernelProcessLeaseRequest, KernelProcessLeaseSnapshot, KernelProcessOutcome,
-    KernelProcessSnapshot, KernelProcessStateSnapshot, KernelProcessStatus,
-    KernelProcessSuspension, KernelProcessSuspensionKind, KernelProcessWorkerId,
-    KernelRecordModelRouteRequest, KernelRecoverExpiredLeasesRequest,
-    KernelRecoverExpiredLeasesResponse, KernelSuspendProcessRequest,
-    ProcessBackedTurnRunTransitionPort, ProcessJournalStoreTurnAdapter,
-    TurnEventProjectionFromProcessJournal, claimed_turn_run_from_process_claim,
-    turn_run_state_from_process_snapshot,
+    KernelApplyValidatedExitRequest, KernelClaimProcessRequest, KernelClaimProcessesRequest,
+    KernelClaimedProcess, KernelFailProcessRequest, KernelProcessCheckpointRef, KernelProcessId,
+    KernelProcessJournalCursor, KernelProcessJournalEntry, KernelProcessJournalKind,
+    KernelProcessJournalPage, KernelProcessKind, KernelProcessLeaseRequest,
+    KernelProcessLeaseSnapshot, KernelProcessOutcome, KernelProcessSnapshot,
+    KernelProcessStateSnapshot, KernelProcessStatus, KernelProcessSuspension,
+    KernelProcessSuspensionKind, KernelProcessWorkerId, KernelRecordModelRouteRequest,
+    KernelRecoverExpiredLeasesRequest, KernelRecoverExpiredLeasesResponse,
+    KernelSuspendProcessRequest, ProcessBackedTurnRunTransitionPort,
+    ProcessJournalStoreTurnAdapter, TurnEventProjectionFromProcessJournal,
+    claimed_turn_run_from_process_claim, turn_run_state_from_process_snapshot,
 };
 pub use request::{
     CancelRunRequest, GateResumeDisposition, GetRunStateRequest, ResumeTurnPrecondition,

@@ -11,10 +11,11 @@ use ironclaw_processes::{
     ClaimProcessesRequest, FailProcessRequest, ProcessLeaseRequest, ProcessLeaseToken,
     ProcessTransitionPort, ProcessWorkerId, RecoverExpiredProcessLeasesRequest,
 };
+#[cfg(any(test, feature = "test-support"))]
+use ironclaw_turns::AgentTurnProcessTransitionAdapter;
 use ironclaw_turns::{
-    AgentTurnProcessTransitionAdapter, SanitizedFailure, TurnError, TurnLeaseToken, TurnRunId,
-    TurnRunWake, TurnRunWakeNotifier, TurnRunWakeNotifyError, TurnRunnerId, TurnScope,
-    claimed_turn_run_from_process_claim,
+    SanitizedFailure, TurnError, TurnLeaseToken, TurnRunId, TurnRunWake, TurnRunWakeNotifier,
+    TurnRunWakeNotifyError, TurnRunnerId, TurnScope, claimed_turn_run_from_process_claim,
     runner::{ClaimedTurnRun, TurnRunTransitionPort},
 };
 use tokio::{
@@ -218,6 +219,7 @@ pub struct TurnRunScheduler {
 }
 
 impl TurnRunScheduler {
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(
         transitions: Arc<dyn TurnRunTransitionPort>,
         executor: Arc<dyn TurnRunExecutor>,

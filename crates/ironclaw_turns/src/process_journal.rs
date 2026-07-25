@@ -958,10 +958,12 @@ impl From<&ClaimedTurnRun> for ClaimedProcess {
 }
 
 #[derive(Clone)]
+#[cfg(feature = "test-support")]
 pub struct AgentTurnProcessTransitionAdapter {
     inner: Arc<dyn TurnRunTransitionPort>,
 }
 
+#[cfg(feature = "test-support")]
 impl AgentTurnProcessTransitionAdapter {
     pub fn new(inner: Arc<dyn TurnRunTransitionPort>) -> Self {
         Self { inner }
@@ -1020,6 +1022,7 @@ impl TurnEventProjectionSource for TurnEventProjectionFromProcessJournal {
     }
 }
 
+#[cfg(feature = "test-support")]
 fn turn_scope_filter_from_process(
     scope_filter: Option<ironclaw_host_api::ResourceScope>,
 ) -> Result<Option<TurnScope>, TurnError> {
@@ -1053,6 +1056,7 @@ fn turn_scope_from_process_scope(scope: ResourceScope) -> Result<TurnScope, Turn
     }
 }
 
+#[cfg(feature = "test-support")]
 fn turn_recover_request_from_process(
     request: RecoverExpiredProcessLeasesRequest,
 ) -> Result<RecoverExpiredLeasesRequest, TurnError> {
@@ -1063,6 +1067,7 @@ fn turn_recover_request_from_process(
 }
 
 #[async_trait]
+#[cfg(feature = "test-support")]
 impl ProcessTransitionPort for AgentTurnProcessTransitionAdapter {
     type Error = TurnError;
 

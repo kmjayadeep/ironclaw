@@ -403,7 +403,7 @@ struct RuntimeStoreParts {
     subagent_await_edge_evidence: Arc<dyn AwaitDependentRunEvidenceStore>,
     trigger_repository: Arc<dyn ironclaw_triggers::TriggerRepository>,
     /// Process lifecycle source for trigger active-run lookup. Every substrate
-    /// now provides the same typed turn-backed process projection.
+    /// now provides the same typed process-journal projection.
     admin_secret_provisioner: Arc<dyn crate::admin_secrets::AdminSecretProvisioner>,
     project_service: Arc<dyn ironclaw_product::ProjectService>,
     trigger_conversation_services: Option<RebornFilesystemConversationServices>,
@@ -4115,7 +4115,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     let runtime_skill_context_source = skill_context_source.clone();
     let planned_runtime_parts = DefaultPlannedRuntimeParts {
         turn_state: Arc::clone(&turn_state_store),
-        process_system: Some(processes.planned.clone()),
+        process_system: processes.planned.clone(),
         thread_service: Arc::clone(&thread_service),
         thread_scope: thread_scope.clone(),
         // Read landed attachment bytes back through the project workspace

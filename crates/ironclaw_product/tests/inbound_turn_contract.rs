@@ -41,8 +41,8 @@ use ironclaw_runner::planned_driver_factory::{
     PLANNED_DEFAULT_PROFILE_ID, default_planned_run_profile_resolver,
 };
 use ironclaw_runner::runtime::{
-    DefaultPlannedRuntimeConfig, DefaultPlannedRuntimeParts, RuntimeSubagentGoalStore,
-    RuntimeTurnStateStore, build_product_live_planned_runtime,
+    DefaultPlannedRuntimeConfig, DefaultPlannedRuntimeParts, ProcessRuntimeSystem,
+    RuntimeSubagentGoalStore, RuntimeTurnStateStore, build_product_live_planned_runtime,
 };
 use ironclaw_runner::subagent::await_edge::{
     boot_recovery::ScopeRecoveryDriver, resolver::AwaitEdgeResolver, store::AwaitEdgeStore,
@@ -741,7 +741,7 @@ async fn user_message_no_profile_uses_product_live_runtime_and_persists_reply() 
         attachment_read_port: None,
         gate_record_store: None,
         turn_state: turn_state_for_runtime,
-        process_system: None,
+        process_system: ProcessRuntimeSystem::in_memory_ephemeral().expect("process system"),
         thread_service: Arc::new(thread_service.clone()),
         thread_scope: thread_scope.clone(),
         model_gateway,
@@ -925,7 +925,7 @@ async fn user_message_no_profile_can_cancel_product_live_run_from_product_path()
         attachment_read_port: None,
         gate_record_store: None,
         turn_state: turn_state_for_runtime,
-        process_system: None,
+        process_system: ProcessRuntimeSystem::in_memory_ephemeral().expect("process system"),
         thread_service: Arc::new(thread_service.clone()),
         thread_scope: thread_scope.clone(),
         model_gateway,
@@ -1122,7 +1122,7 @@ async fn product_live_runtime_rejects_unretained_cancellation_factory() {
         attachment_read_port: None,
         gate_record_store: None,
         turn_state: turn_state_for_runtime,
-        process_system: None,
+        process_system: ProcessRuntimeSystem::in_memory_ephemeral().expect("process system"),
         thread_service: Arc::new(thread_service.clone()),
         thread_scope: thread_scope.clone(),
         model_gateway,

@@ -39,7 +39,8 @@ use ironclaw_runner::{
     model_routes::{ModelSelectionMode, ModelSlot},
     planned_driver_factory::default_planned_run_profile_resolver,
     runtime::{
-        DefaultPlannedRuntimeConfig, DefaultPlannedRuntimeParts, build_product_live_planned_runtime,
+        DefaultPlannedRuntimeConfig, DefaultPlannedRuntimeParts, ProcessRuntimeSystem,
+        build_product_live_planned_runtime,
     },
     subagent::{
         await_edge::{
@@ -1398,7 +1399,7 @@ async fn adapter_bundle_satisfies_product_live_runtime_readiness_gate() {
         attachment_read_port: None,
         gate_record_store: None,
         turn_state,
-        process_system: None,
+        process_system: ProcessRuntimeSystem::in_memory_ephemeral().expect("process system"),
         thread_service: Arc::clone(&thread_service) as Arc<dyn SessionThreadService>,
         thread_scope: thread_scope.clone(),
         model_gateway: Arc::new(StubModelGateway),

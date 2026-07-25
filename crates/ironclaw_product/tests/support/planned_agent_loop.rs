@@ -45,8 +45,8 @@ use ironclaw_runner::{
         ModelRoute, ModelRoutePolicy, ModelSelectionMode, ModelSlot, StaticModelRouteResolver,
     },
     runtime::{
-        DefaultPlannedRuntimeConfig, DefaultPlannedRuntimeParts, RebornRuntimeLoopComposition,
-        RuntimeTurnStateStore, build_product_live_planned_runtime,
+        DefaultPlannedRuntimeConfig, DefaultPlannedRuntimeParts, ProcessRuntimeSystem,
+        RebornRuntimeLoopComposition, RuntimeTurnStateStore, build_product_live_planned_runtime,
     },
     subagent::await_edge::{
         boot_recovery::ScopeRecoveryDriver, resolver::AwaitEdgeResolver, store::AwaitEdgeStore,
@@ -387,7 +387,7 @@ impl ProductLiveAgentLoopHarness {
             attachment_read_port: None,
             gate_record_store: turn_executor_gate_store,
             turn_state: turn_state_for_runtime,
-            process_system: None,
+            process_system: ProcessRuntimeSystem::in_memory_ephemeral().expect("process system"),
             thread_service: Arc::new(thread_service.clone()),
             thread_scope: thread_scope.clone(),
             model_gateway,
