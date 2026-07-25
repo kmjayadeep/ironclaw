@@ -274,6 +274,7 @@ pub fn parse_product_slash_command(
         .map_err(|error| ProductSlashCommandParseError::InvalidPayload(error.to_string()))
 }
 
+// arch-exempt: large_file, the inbound product-adapter contract grows with its grammar helpers, plan #6175
 /// Classify manifest-declared slash commands for a normalized channel
 /// message — the channel-neutral grammar every host sink runs exactly once,
 /// beside the parser it wraps. Slash text that does not resolve to a
@@ -297,7 +298,7 @@ pub fn classify_declared_command(
     declared
         .iter()
         .any(|name| name == descriptor.name)
-        .then(|| ChannelInboundClassification::Command(payload))
+        .then_some(ChannelInboundClassification::Command(payload))
 }
 
 #[derive(Deserialize)]
