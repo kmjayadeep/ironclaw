@@ -84,8 +84,8 @@ pub use origin::{ProductTurnContext, RunOriginAdapter, TurnOriginKind, TurnSurfa
 #[cfg(feature = "test-support")]
 pub use process_journal::AgentTurnProcessTransitionAdapter;
 pub use process_journal::{
-    AGENT_TURN_PROCESS_KIND, AgentTurnProcessMetadata, AgentTurnProcessRuntime,
-    AgentTurnProcessStateMetadata, ProcessJournalStoreTurnAdapter,
+    AGENT_TURN_PROCESS_KIND, AgentTurnProcessCommitObserver, AgentTurnProcessMetadata,
+    AgentTurnProcessRuntime, AgentTurnProcessStateMetadata, ProcessJournalStoreTurnAdapter,
     TurnEventProjectionFromProcessJournal, claimed_turn_run_from_process_claim,
     turn_run_state_from_process_snapshot,
 };

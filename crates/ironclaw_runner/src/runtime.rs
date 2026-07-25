@@ -17,14 +17,14 @@ use ironclaw_loop_host::{
 };
 use ironclaw_memory::MemoryService;
 use ironclaw_processes::{
-    ProcessJournalSource, ProcessJournalStoreError, ProcessSubmissionPort, ProcessTransitionPort,
+    ProcessJournalCommitObserver, ProcessJournalObserverRegistry, ProcessJournalSource,
+    ProcessJournalStoreError, ProcessSubmissionPort, ProcessTransitionPort,
 };
 use ironclaw_threads::{SessionThreadService, ThreadScope};
 use ironclaw_turns::{
-    AgentLoopDriverError, CheckpointStateStorePort, DefaultTurnCoordinator,
-    DefaultTurnLifecycleEventBus, LifecyclePublicationErrorPort, LifecyclePublishingTurnStateStore,
-    LoopCheckpointStore, ProcessJournalStoreTurnAdapter, RunProfileResolver,
-    TurnCommittedEventObserver, TurnEventSink, TurnLifecycleEventBus, TurnRunWakeNotifier,
+    AgentLoopDriverError, AgentTurnProcessCommitObserver, CheckpointStateStorePort,
+    DefaultTurnCoordinator, LoopCheckpointStore, ProcessJournalStoreTurnAdapter,
+    RunProfileResolver, TurnCommittedEventObserver, TurnEventSink, TurnRunWakeNotifier,
     TurnSpawnTreePort, TurnSpawnTreeStateStore, TurnStateStore,
     loop_exit::LoopExitEvidencePort,
     run_profile::{
@@ -285,6 +285,7 @@ pub struct ProcessRuntimeSystem {
         dyn ironclaw_processes::ProcessLifecycleLookupSource<Error = ironclaw_turns::TurnError>,
     >,
     gates: Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = ironclaw_turns::TurnError>>,
+    observers: Arc<dyn ProcessJournalObserverRegistry>,
 }
 
 impl ProcessRuntimeSystem {
@@ -314,7 +315,8 @@ impl ProcessRuntimeSystem {
                 >,
         ));
         Self {
-            submission: store as Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
+            submission: Arc::clone(&store)
+                as Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
             turn_submission: Arc::clone(&adapter)
                 as Arc<dyn ProcessSubmissionPort<Error = ironclaw_turns::TurnError>>,
             transitions: Arc::clone(&adapter)
@@ -337,6 +339,7 @@ impl ProcessRuntimeSystem {
                             Error = ironclaw_turns::TurnError,
                         >,
                 >,
+            observers: store as Arc<dyn ProcessJournalObserverRegistry>,
         }
     }
 
@@ -396,6 +399,13 @@ impl ProcessRuntimeSystem {
             self.journal(),
             self.controls(),
         )
+    }
+
+    pub fn subscribe_process_observer(
+        &self,
+        observer: Arc<dyn ProcessJournalCommitObserver>,
+    ) -> Result<(), String> {
+        self.observers.subscribe_process_observer(observer)
     }
 }
 
@@ -782,28 +792,16 @@ where
     let subagent_await_edge_settler = Arc::clone(&parts.subagent_await_edge_settler);
     let subagent_completion_observer: Arc<dyn TurnCommittedEventObserver> =
         Arc::clone(&subagent_await_edge_settler).as_turn_committed_event_observer();
-    let lifecycle_bus = Arc::new(DefaultTurnLifecycleEventBus::new());
-    lifecycle_bus
-        .subscribe_required(Arc::clone(&subagent_completion_observer))
-        .map_err(|error| DefaultPlannedRuntimeBuildError::SubagentCompletion(error.to_string()))?;
-    if let Some(turn_event_sink) = parts.turn_event_sink.clone() {
-        lifecycle_bus
-            .subscribe_best_effort(turn_event_sink)
-            .map_err(|error| {
-                DefaultPlannedRuntimeBuildError::SubagentCompletion(error.to_string())
-            })?;
-    }
     let process_system = parts.process_system.clone();
-    let mut turn_state_builder =
-        LifecyclePublishingTurnStateStore::new(Arc::clone(&parts.turn_state), lifecycle_bus);
-    turn_state_builder =
-        turn_state_builder.with_process_submission_port(process_system.submission());
-    let turn_state = Arc::new(turn_state_builder);
-    let publication_error_port: Arc<dyn LifecyclePublicationErrorPort> = turn_state.clone();
-    let base_coordinator = DefaultTurnCoordinator::new(Arc::clone(&turn_state))
+    process_system
+        .subscribe_process_observer(Arc::new(AgentTurnProcessCommitObserver::new(
+            subagent_completion_observer,
+            parts.turn_event_sink.clone(),
+        )))
+        .map_err(DefaultPlannedRuntimeBuildError::SubagentCompletion)?;
+    let base_coordinator = DefaultTurnCoordinator::new(Arc::clone(&parts.turn_state))
         .with_run_profile_resolver(Arc::clone(&run_profile_resolver))
         .with_wake_notifier(Arc::clone(&wake_notifier))
-        .with_lifecycle_publication_error_port(publication_error_port)
         .with_process_runtime(process_system.agent_turn_runtime());
     let base_coordinator_arc = Arc::new(base_coordinator);
     let child_runs: Arc<dyn TurnSpawnTreePort> = base_coordinator_arc.clone();

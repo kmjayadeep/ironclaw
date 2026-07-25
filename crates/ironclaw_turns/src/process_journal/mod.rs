@@ -15,13 +15,13 @@ use uuid::Uuid;
 use ironclaw_host_api::{ProcessId, ResourceScope, SYSTEM_RESERVED_ID};
 use ironclaw_processes::{
     CancelProcessRequest, ClaimedProcess, FailProcessRequest, GetProcessSnapshotRequest,
-    JournaledProcessSnapshot, ProcessCheckpointRef, ProcessControlPort, ProcessJournalCursor,
-    ProcessJournalEntry, ProcessJournalKind, ProcessJournalPage, ProcessJournalSource, ProcessKind,
-    ProcessLeaseRequest, ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleStatus,
-    ProcessOperationId, ProcessOutcome, ProcessSubmissionPort, ProcessSuspension,
-    ProcessSuspensionKind, ProcessWorkerId, RecoverExpiredProcessLeasesRequest,
-    RecoverExpiredProcessLeasesResponse, ResumeProcessRequest, SubmitProcessRequest,
-    SuspendProcessRequest,
+    JournaledProcessSnapshot, ProcessCheckpointRef, ProcessControlPort, ProcessJournalCommit,
+    ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind,
+    ProcessJournalPage, ProcessJournalSource, ProcessKind, ProcessLeaseRequest,
+    ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleStatus, ProcessOperationId,
+    ProcessOutcome, ProcessSubmissionPort, ProcessSuspension, ProcessSuspensionKind,
+    ProcessWorkerId, RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse,
+    ResumeProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
 };
 #[cfg(feature = "test-support")]
 use ironclaw_processes::{
@@ -35,8 +35,9 @@ use crate::{
     GateResumeDisposition, ProductTurnContext, ReplyTargetBindingRef, ResolvedRunProfile,
     RunProfileId, RunProfileResolutionError, RunProfileResolutionRequest, RunProfileResolver,
     RunProfileVersion, SourceBindingRef, SubmitChildRunRequest, TurnActor, TurnAdmissionPolicy,
-    TurnCheckpointId, TurnError, TurnEventKind, TurnId, TurnLifecycleEvent, TurnRunId,
-    TurnRunProfile, TurnRunRecord, TurnRunState, TurnRunnerId, TurnScope, TurnStatus,
+    TurnCheckpointId, TurnCommittedEventObserver, TurnError, TurnEventKind, TurnEventSink, TurnId,
+    TurnLifecycleEvent, TurnRunId, TurnRunProfile, TurnRunRecord, TurnRunState, TurnRunnerId,
+    TurnScope, TurnStatus,
     events::{
         EventCursor, TurnBlockedGateKind, TurnBlockedGateMetadata, TurnEventPage,
         TurnEventProjectionSource,
@@ -57,6 +58,60 @@ mod store_adapter;
 pub use store_adapter::{
     ProcessJournalStoreTurnAdapter, turn_error_from_process_journal_store_error,
 };
+
+pub struct AgentTurnProcessCommitObserver {
+    required: Arc<dyn TurnCommittedEventObserver>,
+    best_effort: Option<Arc<dyn TurnEventSink>>,
+}
+
+impl AgentTurnProcessCommitObserver {
+    pub fn new(
+        required: Arc<dyn TurnCommittedEventObserver>,
+        best_effort: Option<Arc<dyn TurnEventSink>>,
+    ) -> Self {
+        Self {
+            required,
+            best_effort,
+        }
+    }
+}
+
+#[async_trait]
+impl ProcessJournalCommitObserver for AgentTurnProcessCommitObserver {
+    async fn observe_process_commit(&self, commit: ProcessJournalCommit) -> Result<(), String> {
+        if commit.state.process_kind != ProcessKind::AgentTurn {
+            return Ok(());
+        }
+        let event = turn_lifecycle_event_from_process_journal_entry(ProcessJournalEntry {
+            cursor: commit.state.journal_cursor,
+            process_id: commit.state.process_id,
+            process_kind: commit.state.process_kind,
+            scope: commit.state.scope,
+            occurred_at: Some(Utc::now()),
+            owner_user_id: commit.state.owner_user_id,
+            status: commit.state.status,
+            kind: commit.kind,
+            suspension: commit.state.suspension,
+            sanitized_reason: commit.sanitized_reason,
+            retryable: None,
+            detail: None,
+            metadata: commit.state.metadata,
+        })
+        .map_err(|error| error.to_string())?;
+        if self.required.observes_event(&event) {
+            self.required
+                .observe_committed_event(event.clone())
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        if let Some(sink) = &self.best_effort
+            && let Err(error) = sink.publish(event).await
+        {
+            tracing::debug!(%error, "turn projection sink rejected process commit");
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone)]
 pub struct AgentTurnProcessRuntime {
