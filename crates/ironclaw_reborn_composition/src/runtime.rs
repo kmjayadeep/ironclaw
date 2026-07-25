@@ -1309,6 +1309,23 @@ impl RebornRuntime {
         ))
     }
 
+    /// Protected intent-detail mount (`GET /api/webchat/v2/intents/{intent_id}`)
+    /// for the host ingress to merge via
+    /// `WebuiServeConfig::with_protected_route_mount`.
+    ///
+    /// This is where the review flow's authorization actually happens: the
+    /// public link only redirects, and the page behind it reads through here
+    /// against a session whose user must be the intent's bound approver.
+    ///
+    /// `None` under the same condition as the public link — no intents means
+    /// nothing to read.
+    pub fn intent_detail_mount(&self) -> Option<crate::webui::route_mounts::ProtectedRouteMount> {
+        let intents = self.intent_store()?;
+        Some(crate::intent_detail_serve::intent_detail_mount(Arc::clone(
+            intents,
+        )))
+    }
+
     /// Public NEAR AI login callback mount for the host ingress to merge via
     /// `ironclaw_webui::WebuiServeConfig::with_public_route_mount`. Built
     /// from the runtime's private session/reload/boot so those stay internal.

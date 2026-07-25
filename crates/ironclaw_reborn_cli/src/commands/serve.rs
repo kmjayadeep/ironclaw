@@ -598,6 +598,12 @@ impl ServeCommand {
             if let Some(intent_mount) = runtime.intent_review_mount() {
                 serve_config = serve_config.with_public_route_mount(intent_mount);
             }
+            // The authenticated read the review page makes once that redirect
+            // has landed. The link showed nothing; this is where the bound
+            // approver is checked.
+            if let Some(detail_mount) = runtime.intent_detail_mount() {
+                serve_config = serve_config.with_protected_route_mount(detail_mount);
+            }
             if let Some(mount) = public_mount {
                 serve_config = serve_config.with_public_route_mount(mount);
             }
