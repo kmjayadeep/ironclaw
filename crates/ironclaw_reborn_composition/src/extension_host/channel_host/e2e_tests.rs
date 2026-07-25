@@ -90,12 +90,12 @@ use super::{
     ChannelExtras, ChannelHostDeliveryDeps, ChannelHostIdentity,
     FilesystemChannelWorkflowStateFactory, GenericChannelHostAssembly, GenericChannelHostDeps,
 };
-use crate::extension_host::extension_ingress::{
-    ExtensionIngressParts, InboundPayloadClassifier, PostAdmissionObserver,
-    build_extension_ingress, extension_ingress_route_mount,
-};
+use crate::extension_host::extension_ingress::extension_ingress_route_mount;
 use crate::extension_host::run_delivery_ports::ProductAuthBlockedAuthPromptSource;
 use crate::{RebornUserIdentityLookup, RebornUserIdentityLookupError};
+use ironclaw_extension_host::ingress::sink::{
+    ExtensionIngressParts, InboundPayloadClassifier, PostAdmissionObserver, build_extension_ingress,
+};
 use ironclaw_extension_host::{
     AdminConfigurationService, ChannelConfigReactivation, ChannelConfigService,
     FilesystemAdminConfigurationStore,

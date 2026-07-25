@@ -189,13 +189,7 @@ pub(crate) struct ChannelPairingStatus {
     pub(crate) pending: Option<ChannelPairingIssue>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ChannelPairingConsumeOutcome {
-    Paired { user_id: UserId },
-    AlreadyPairedSameUser { user_id: UserId },
-    AlreadyBoundToOtherUser,
-    ExpiredOrUnknown,
-}
+pub(crate) use ironclaw_extension_host::ingress::pairing::ChannelPairingConsumeOutcome;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub(crate) enum ChannelPairingError {
@@ -1085,13 +1079,13 @@ fn candidate_code<'a>(text: &'a str, inbound_code_prefixes: &[String]) -> Option
 }
 
 #[async_trait]
-impl crate::extension_host::extension_ingress::ChannelPairingInterceptor for ChannelPairingService {
+impl ironclaw_extension_host::ingress::sink::ChannelPairingInterceptor for ChannelPairingService {
     async fn intercept(
         &self,
         installation_id: &AdapterInstallationId,
         message: &ironclaw_product::NormalizedInboundMessage,
-    ) -> crate::extension_host::extension_ingress::ChannelPairingInterception {
-        use crate::extension_host::extension_ingress::ChannelPairingInterception;
+    ) -> ironclaw_extension_host::ingress::sink::ChannelPairingInterception {
+        use ironclaw_extension_host::ingress::sink::ChannelPairingInterception;
 
         if message.trigger != ironclaw_product::ProductTriggerReason::DirectChat {
             return ChannelPairingInterception::NotHandled;

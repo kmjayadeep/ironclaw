@@ -14,28 +14,7 @@ use ironclaw_turns::{AcceptedMessageRef, TurnRunId};
 
 use super::*;
 
-/// Records pairing outcomes for assertions. An ordinary double now that the
-/// observer is a trait — it used to be a `#[cfg(test)]` variant compiled into
-/// the production enum.
-pub(crate) struct RecordingPairingOutcomeObserver {
-    pub(crate) outcomes: Arc<std::sync::Mutex<Vec<ChannelPairingConsumeOutcome>>>,
-}
-
-#[async_trait]
-impl ChannelPairingOutcomeObserver for RecordingPairingOutcomeObserver {
-    async fn observe_pairing_outcome(
-        &self,
-        _conversation: ExternalConversationRef,
-        _event_id: ExternalEventId,
-        outcome: ChannelPairingConsumeOutcome,
-    ) {
-        match self.outcomes.lock() {
-            Ok(mut outcomes) => outcomes.push(outcome),
-            Err(poisoned) => poisoned.into_inner().push(outcome),
-        }
-    }
-}
-use crate::extension_host::channel_pairing::ChannelPairingConsumeOutcome;
+use crate::ingress::pairing::ChannelPairingConsumeOutcome;
 
 struct CountingSurface {
     submissions: AtomicUsize,
@@ -177,9 +156,7 @@ fn admission_for(text: &str) -> InboundAdmission {
             attachments: Vec::new(),
             reply_context: None,
         },
-        channel_adapter: Arc::new(
-            ironclaw_extension_host::test_support::FakeChannelAdapter::default(),
-        ),
+        channel_adapter: Arc::new(crate::test_support::FakeChannelAdapter::default()),
         channel_egress: None,
     }
 }
@@ -221,9 +198,11 @@ fn pairing_sink(
     })
     .with_pairing(
         Arc::new(ScriptedPairingInterceptor { interception }),
-        Some(Arc::new(RecordingPairingOutcomeObserver {
-            outcomes: Arc::clone(&outcomes),
-        }) as Arc<dyn ChannelPairingOutcomeObserver>),
+        Some(
+            Arc::new(crate::test_support::RecordingPairingOutcomeObserver {
+                outcomes: Arc::clone(&outcomes),
+            }) as Arc<dyn ChannelPairingOutcomeObserver>,
+        ),
     );
     (sink, workflow, outcomes)
 }

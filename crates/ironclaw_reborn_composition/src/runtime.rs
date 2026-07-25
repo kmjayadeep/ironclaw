@@ -749,7 +749,7 @@ pub struct RebornRuntime {
     pub(crate) channel_dm_target_store:
         Arc<ironclaw_extension_host::FilesystemChannelDmTargetStore>,
     pub(crate) extension_ingress:
-        Option<crate::extension_host::extension_ingress::ExtensionIngressParts>,
+        Option<ironclaw_extension_host::ingress::sink::ExtensionIngressParts>,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) deployment_channels: Arc<ironclaw_extension_host::DeploymentChannelRegistry>,
     pub(crate) channel_pairing: Option<Arc<ChannelPairingRegistry>>,
@@ -1430,7 +1430,7 @@ impl RebornRuntime {
 
     pub fn extension_ingress_parts(
         &self,
-    ) -> Option<crate::extension_host::extension_ingress::ExtensionIngressParts> {
+    ) -> Option<ironclaw_extension_host::ingress::sink::ExtensionIngressParts> {
         self.extension_ingress.clone()
     }
 

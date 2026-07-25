@@ -64,11 +64,8 @@ pub use extension_host::channel_host::{ChannelHostIdentity, GenericChannelHostAs
 pub use extension_host::channel_identity::{
     ChannelIdentityBindingConfig, channel_identity_binding_hook_factory,
 };
-pub use extension_host::extension_ingress::{
-    ChannelInboundSinkConfig, ChannelIngressDrain, ChannelIngressRegistration,
-    ExtensionIngressParts, ExtensionIngressRegistry, GenericChannelInboundSink,
-    PostAdmissionObserver, StaticIngressSecrets, VerifiedEvidenceMint,
-};
+// Re-exported from the owning host crate: this is the architecture-mandated
+// composition facade downstream binaries/tests consume.
 pub use extension_host::extension_ingress::{
     EXTENSION_INGRESS_ROUTE_PATTERN, extension_ingress_route_mount,
 };
@@ -116,6 +113,11 @@ pub use ironclaw_auth::{
 /// allow-list is frozen to the composition facade, so these types travel
 /// through here.
 pub use ironclaw_auth::{CredentialAccount, CredentialAccountSelectionRequest};
+pub use ironclaw_extension_host::ingress::sink::{
+    ChannelInboundSinkConfig, ChannelIngressDrain, ChannelIngressRegistration,
+    ExtensionIngressParts, ExtensionIngressRegistry, GenericChannelInboundSink,
+    PostAdmissionObserver, StaticIngressSecrets, VerifiedEvidenceMint,
+};
 pub use ironclaw_extension_host::{
     FirstPartyHandlerRegistrar, FirstPartyPackageAsset, FirstPartyPackageBundle,
     FirstPartyPackageOAuthSetup, FirstPartyPackageOnboarding, FirstPartyRegistrarContext,

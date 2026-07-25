@@ -192,7 +192,7 @@ impl RebornRuntimeStores {
     /// extension host (extension-runtime P4).
     pub(crate) fn extension_ingress_parts(
         &self,
-    ) -> Option<crate::extension_host::extension_ingress::ExtensionIngressParts> {
+    ) -> Option<ironclaw_extension_host::ingress::sink::ExtensionIngressParts> {
         self.extension_ingress.clone()
     }
 

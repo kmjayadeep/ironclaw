@@ -23,7 +23,7 @@ use ironclaw_product::{
 use tokio::sync::Notify;
 
 use super::*;
-use crate::extension_host::extension_ingress::{
+use ironclaw_extension_host::ingress::sink::{
     ChannelInboundSinkConfig, ChannelIngressDrain, ChannelPairingInterception,
     ChannelPairingInterceptor, ChannelPairingOutcomeObserver, GenericChannelInboundSink,
     VerifiedEvidenceMint,
@@ -417,7 +417,7 @@ fn pairing_ingress_with_outcomes(
         .with_pairing(
             service as Arc<dyn ChannelPairingInterceptor>,
             Some(Arc::new(
-                crate::extension_host::extension_ingress::tests::RecordingPairingOutcomeObserver {
+                ironclaw_extension_host::test_support::RecordingPairingOutcomeObserver {
                     outcomes: Arc::clone(&outcomes),
                 },
             ) as Arc<dyn ChannelPairingOutcomeObserver>),

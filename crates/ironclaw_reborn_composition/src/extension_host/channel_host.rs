@@ -57,13 +57,13 @@ use ironclaw_threads::SessionThreadService;
 use ironclaw_turns::{TurnCoordinator, TurnScope};
 
 use crate::extension_host::channel_pairing::ChannelPairingConsumeOutcome;
-use crate::extension_host::extension_ingress::{
+use ironclaw_extension_host::ChannelConfigService;
+use ironclaw_extension_host::ingress::sink::{
     ChannelInboundSinkConfig, ChannelIngressDrain, ChannelIngressRegistration,
     ChannelPairingOutcomeObserver, ExtensionIngressRegistry, GenericChannelInboundSink,
     InboundPayloadClassifier, ManagedRegistrationOutcome, PostAdmissionObserver,
     VerifiedEvidenceMint,
 };
-use ironclaw_extension_host::ChannelConfigService;
 
 const CHANNEL_IDEMPOTENCY_LEDGER_SETTLED_LIMIT: usize = 10_000;
 const CHANNEL_IDEMPOTENCY_LEDGER_PRUNE_INTERVAL: usize = 1_000;
@@ -703,7 +703,7 @@ impl GenericChannelHostAssembly {
             .and_then(|registry| registry.get(source.extension_id()))
             .map(|service| {
                 service
-                    as Arc<dyn crate::extension_host::extension_ingress::ChannelPairingInterceptor>
+                    as Arc<dyn ironclaw_extension_host::ingress::sink::ChannelPairingInterceptor>
             });
         let surface = Arc::new(workflow) as Arc<dyn ChannelInboundProductSurface>;
         let mut sink = GenericChannelInboundSink::new(ChannelInboundSinkConfig {

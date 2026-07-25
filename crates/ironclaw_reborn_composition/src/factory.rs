@@ -1123,7 +1123,7 @@ pub(crate) struct RebornRuntimeStores {
     /// per-extension registration surface. `None` on composition paths that do
     /// not build the generic extension host.
     pub(crate) extension_ingress:
-        Option<crate::extension_host::extension_ingress::ExtensionIngressParts>,
+        Option<ironclaw_extension_host::ingress::sink::ExtensionIngressParts>,
     /// Pairing services for `WebGeneratedCode` channel extensions, built
     /// from the binary-assembled account-setup descriptors; the channel host
     /// assembly consumes it for sink gates and actor resolution.
@@ -1148,7 +1148,7 @@ pub(crate) struct RebornRuntimeStores {
 }
 
 struct ChannelHostWiring {
-    extension_ingress: Option<crate::extension_host::extension_ingress::ExtensionIngressParts>,
+    extension_ingress: Option<ironclaw_extension_host::ingress::sink::ExtensionIngressParts>,
     delivery_coordinator: Option<Arc<ironclaw_product::DeliveryCoordinator>>,
     channel_delivery_resolver: Option<Arc<dyn ironclaw_product::ChannelDeliveryResolver>>,
     #[cfg(feature = "test-support")]
@@ -5362,7 +5362,7 @@ async fn build_backend_production(
             extension_management.attach_discovery_runtime_ports(ports.clone());
         }
         services.set_extension_tool_resolver(generic.resolver);
-        let ingress_parts = crate::extension_host::extension_ingress::build_extension_ingress(
+        let ingress_parts = ironclaw_extension_host::ingress::sink::build_extension_ingress(
             generic.host.snapshot_watch(),
             Arc::clone(&deployment_channels),
             Arc::new(ironclaw_extension_host::FilesystemReplyContextStore::new(

@@ -1,0 +1,654 @@
+//! The generic channel inbound sink and per-extension ingress registry.
+//!
+//! Owns the durable admission path every channel extension shares: the
+//! registration table behind the router's ports, the trusted-evidence mint
+//! mirroring the executed verification recipe, the pairing pre-admission
+//! gate, and the sink that builds the trusted envelope and submits it through
+//! `ChannelInboundProductSurface` before any 2xx.
+//!
+//! Transport stays out: composition wraps this in the host HTTP server's
+//! route mount (see `ingress/mod.rs`).
+
+use std::collections::{BTreeSet, HashMap};
+use std::sync::{Arc, RwLock};
+
+use crate::ingress::{
+    ExtensionIngressRouter, InboundAdmission, InboundAdmissionAck, InboundSink, InboundSinkError,
+    IngressPortError, IngressSecretsPort, VerificationCandidate,
+};
+use async_trait::async_trait;
+use chrono::Utc;
+use ironclaw_host_api::{ChannelInboundProductSurface, SecretHandle};
+use ironclaw_product::{
+    AdapterInstallationId, ChannelInboundClassification, ExternalConversationRef, ExternalEventId,
+    NormalizedInboundMessage, ProductAdapterId, ProductInboundAck, ProductInboundEnvelope,
+    ProductSourceChannel, ProtocolAuthEvidence,
+};
+use ironclaw_product::{
+    ChannelInboundSurfaceOutcome, ChannelInboundSurfaceRejectedAdmission,
+    ChannelInboundSurfaceRequest,
+};
+use tokio::task::JoinSet;
+
+use crate::ingress::pairing::ChannelPairingConsumeOutcome;
+
+/// Fixed host route paths inside the extension ingress namespace
+/// (`/webhooks/extensions/…`). An extension whose canonical route collides
+/// with one of these fails activation (`SnapshotConflict::ReservedRoute`).
+///
+/// Empty today: no fixed host route lives under the extension namespace, and
+/// legacy fixed webhook paths (e.g. the one-release channel aliases outside
+/// the namespace) cannot collide with a canonical extension path by
+/// construction. Any future fixed mount under `/webhooks/extensions/` MUST
+/// be added here in the same change that mounts it.
+pub fn reserved_fixed_ingress_routes() -> BTreeSet<String> {
+    BTreeSet::new()
+}
+
+// ── Per-extension registration ──────────────────────────────────────────────
+
+/// Post-admission follow-up for one extension's inbound messages (e.g. a
+/// delivery observer that pushes the run's final reply back to the vendor).
+/// Runs outside the webhook response path; must not assume the vendor can
+/// retry.
+#[async_trait]
+pub trait PostAdmissionObserver: Send + Sync {
+    async fn observe_ack(&self, envelope: ProductInboundEnvelope, ack: ProductInboundAck);
+
+    async fn observe_error(
+        &self,
+        _envelope: ProductInboundEnvelope,
+        _error: ironclaw_product::ProductAdapterError,
+    ) {
+    }
+}
+
+/// Optional protocol-specific reclassification of a normalized message into
+/// a richer channel payload classification (today: gate-resolution replies like
+/// `approve` / `deny gate:<ref>` / `auth deny <ref>`). Transitional debt:
+/// deleted when gate replies become a host-generic channel concern.
+pub type InboundPayloadClassifier =
+    dyn Fn(&NormalizedInboundMessage) -> Option<ChannelInboundClassification> + Send + Sync;
+
+/// How the sink mints the trusted auth claim for admitted messages —
+/// mirrors the ingress verification recipe the router executed.
+#[derive(Debug, Clone)]
+pub enum VerifiedEvidenceMint {
+    RequestSignature {
+        signature_header: String,
+        timestamp_header: Option<String>,
+    },
+    SharedSecretHeader {
+        header: String,
+    },
+}
+
+impl VerifiedEvidenceMint {
+    fn mint(&self, subject: &str) -> ProtocolAuthEvidence {
+        match self {
+            Self::RequestSignature {
+                signature_header,
+                timestamp_header,
+            } => ironclaw_product::auth::mark_request_signature_verified(
+                signature_header.clone(),
+                timestamp_header.clone(),
+                subject,
+            ),
+            Self::SharedSecretHeader { header } => {
+                ironclaw_product::auth::mark_shared_secret_header_verified(header.clone(), subject)
+            }
+        }
+    }
+}
+
+/// One extension's inbound wiring: verification secrets + the durable
+/// admission sink (+ optional drain hook for post-admission tasks).
+pub struct ChannelIngressRegistration {
+    pub secrets: Arc<dyn IngressSecretsPort>,
+    pub sink: Arc<dyn InboundSink>,
+    /// Awaited on graceful shutdown after ingress stops accepting requests.
+    pub drain: Option<Arc<dyn ChannelIngressDrain>>,
+}
+
+/// Async drain hook for registrations that schedule post-admission work.
+#[async_trait]
+pub trait ChannelIngressDrain: Send + Sync {
+    async fn drain(&self);
+}
+
+/// One registry slot: the registration plus whether the generic channel
+/// host assembly manages its lifetime (snapshot-driven register/replace/
+/// unregister). Lane-owned registrations (`managed: false`) are never
+/// touched by the assembly's reconcile passes.
+struct RegisteredChannel {
+    entry: Arc<ChannelIngressRegistration>,
+    managed: bool,
+}
+
+/// Outcome of a managed (assembly-driven) registration attempt.
+pub enum ManagedRegistrationOutcome {
+    /// The managed entry is now registered; `replaced` carries a previously
+    /// managed entry whose post-admission work still needs draining.
+    Registered {
+        replaced: Option<Arc<ChannelIngressRegistration>>,
+    },
+    /// A lane-owned (unmanaged) registration already serves this extension;
+    /// the managed entry was not installed.
+    SkippedUnmanaged,
+}
+
+/// The per-extension registration table behind the generic router's ports.
+/// Registrations are data: concrete channel graphs (and the integration
+/// harness) register their extension id; the router itself stays generic.
+#[derive(Default)]
+pub struct ExtensionIngressRegistry {
+    registrations: RwLock<HashMap<String, RegisteredChannel>>,
+}
+
+impl ExtensionIngressRegistry {
+    /// Register (or replace) one extension's inbound wiring. Lane-owned:
+    /// the generic assembly's reconcile passes never replace or remove it.
+    pub fn register(&self, extension_id: impl Into<String>, entry: ChannelIngressRegistration) {
+        let mut registrations = match self.registrations.write() {
+            Ok(registrations) => registrations,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        registrations.insert(
+            extension_id.into(),
+            RegisteredChannel {
+                entry: Arc::new(entry),
+                managed: false,
+            },
+        );
+    }
+
+    /// Register an assembly-managed entry. Installs only when the slot is
+    /// empty or currently holds another managed entry — a lane-owned
+    /// registration always wins (check-and-insert under one write lock, so
+    /// a concurrent lane registration cannot be clobbered).
+    pub fn register_managed(
+        &self,
+        extension_id: impl Into<String>,
+        entry: ChannelIngressRegistration,
+    ) -> ManagedRegistrationOutcome {
+        let mut registrations = match self.registrations.write() {
+            Ok(registrations) => registrations,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let slot = extension_id.into();
+        match registrations.get(&slot) {
+            Some(existing) if !existing.managed => ManagedRegistrationOutcome::SkippedUnmanaged,
+            existing => {
+                let replaced = existing.map(|existing| Arc::clone(&existing.entry));
+                registrations.insert(
+                    slot,
+                    RegisteredChannel {
+                        entry: Arc::new(entry),
+                        managed: true,
+                    },
+                );
+                ManagedRegistrationOutcome::Registered { replaced }
+            }
+        }
+    }
+
+    /// Remove an assembly-managed entry (no-op for lane-owned entries).
+    /// Returns the removed registration so the caller can drain it.
+    pub fn unregister_managed(
+        &self,
+        extension_id: &str,
+    ) -> Option<Arc<ChannelIngressRegistration>> {
+        let mut registrations = match self.registrations.write() {
+            Ok(registrations) => registrations,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        match registrations.get(extension_id) {
+            Some(existing) if existing.managed => registrations
+                .remove(extension_id)
+                .map(|removed| removed.entry),
+            _ => None,
+        }
+    }
+
+    /// Whether any inbound wiring (lane-owned or managed) is registered for
+    /// this extension.
+    pub fn is_registered(&self, extension_id: &str) -> bool {
+        let registrations = match self.registrations.read() {
+            Ok(registrations) => registrations,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        registrations.contains_key(extension_id)
+    }
+
+    fn registration(&self, extension_id: &str) -> Option<Arc<ChannelIngressRegistration>> {
+        let registrations = match self.registrations.read() {
+            Ok(registrations) => registrations,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        registrations
+            .get(extension_id)
+            .map(|registered| Arc::clone(&registered.entry))
+    }
+
+    /// Drain every registration's post-admission work (graceful shutdown).
+    pub async fn drain(&self) {
+        let drains: Vec<Arc<dyn ChannelIngressDrain>> = {
+            let registrations = match self.registrations.read() {
+                Ok(registrations) => registrations,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            registrations
+                .values()
+                .filter_map(|registered| registered.entry.drain.clone())
+                .collect()
+        };
+        for drain in drains {
+            drain.drain().await;
+        }
+    }
+}
+
+#[async_trait]
+impl IngressSecretsPort for ExtensionIngressRegistry {
+    async fn verification_candidates(
+        &self,
+        extension_id: &str,
+        installation_id: &str,
+        handle: Option<&SecretHandle>,
+    ) -> Result<Vec<VerificationCandidate>, IngressPortError> {
+        let Some(entry) = self.registration(extension_id) else {
+            // Active route without inbound wiring: fail closed (503), never
+            // an unauthenticated 401 that would make the vendor drop events.
+            return Err(IngressPortError {
+                reason: format!("extension `{extension_id}` has no ingress registration"),
+            });
+        };
+        entry
+            .secrets
+            .verification_candidates(extension_id, installation_id, handle)
+            .await
+    }
+}
+
+#[async_trait]
+impl InboundSink for ExtensionIngressRegistry {
+    async fn admit(
+        &self,
+        admission: InboundAdmission,
+    ) -> Result<InboundAdmissionAck, InboundSinkError> {
+        let Some(entry) = self.registration(&admission.extension_id) else {
+            return Err(InboundSinkError {
+                retryable: true,
+                reason: format!(
+                    "extension `{}` has no ingress registration",
+                    admission.extension_id
+                ),
+            });
+        };
+        entry.sink.admit(admission).await
+    }
+}
+
+// ── The generic inbound sink over ProductSurface admission ──────────────────
+
+/// Pre-admission pairing interception for `WebGeneratedCode` channels: a
+/// direct message from an actor with no identity binding is offered to the
+/// pairing seam BEFORE ProductSurface admission, so a pairing code is consumed
+/// instead of becoming (or failing as) a turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChannelPairingInterception {
+    NotHandled,
+    Consumed(ChannelPairingConsumeOutcome),
+    Failed,
+}
+
+#[async_trait]
+pub trait ChannelPairingInterceptor: Send + Sync {
+    async fn intercept(
+        &self,
+        installation_id: &AdapterInstallationId,
+        message: &NormalizedInboundMessage,
+    ) -> ChannelPairingInterception;
+}
+
+/// Configuration for [`GenericChannelInboundSink`].
+pub struct ChannelInboundSinkConfig {
+    /// The adapter identity stamped on inbound envelopes.
+    pub adapter_id: ProductAdapterId,
+    /// Auth-claim shape matching the executed verification recipe.
+    pub evidence: VerifiedEvidenceMint,
+    /// Optional protocol-specific payload reclassification (gate replies).
+    pub classifier: Option<Arc<InboundPayloadClassifier>>,
+    /// The typed channel admission door: durable idempotency ledger →
+    /// identity/conversation binding → turn submission.
+    pub surface: Arc<dyn ChannelInboundProductSurface>,
+    /// Optional post-admission follow-up (e.g. final-reply delivery).
+    pub observer: Option<Arc<dyn PostAdmissionObserver>>,
+}
+
+/// Post-pairing notification seam.
+///
+/// A trait rather than an enum over concrete observers: the sink is generic
+/// channel machinery and must not name the delivery observer that happens to
+/// consume its outcomes today. Implementors supply the behavior; tests supply
+/// an ordinary double instead of a `#[cfg(test)]` enum variant compiled into
+/// the production type.
+#[async_trait]
+pub trait ChannelPairingOutcomeObserver: Send + Sync {
+    async fn observe_pairing_outcome(
+        &self,
+        conversation: ExternalConversationRef,
+        event_id: ExternalEventId,
+        outcome: ChannelPairingConsumeOutcome,
+    );
+}
+
+/// The generic [`InboundSink`]: builds the trusted inbound envelope from a
+/// normalized message and submits it synchronously through ProductSurface —
+/// the durable dedupe + admission commit the router requires
+/// before acking 2xx. Post-admission observers run on tracked background
+/// tasks drained at shutdown.
+pub struct GenericChannelInboundSink {
+    config: ChannelInboundSinkConfig,
+    pairing: Option<Arc<dyn ChannelPairingInterceptor>>,
+    pairing_outcome_observer: Option<Arc<dyn ChannelPairingOutcomeObserver>>,
+    observer_tasks: tokio::sync::Mutex<JoinSet<()>>,
+}
+
+impl GenericChannelInboundSink {
+    pub fn new(config: ChannelInboundSinkConfig) -> Self {
+        Self {
+            config,
+            pairing: None,
+            pairing_outcome_observer: None,
+            observer_tasks: tokio::sync::Mutex::new(JoinSet::new()),
+        }
+    }
+
+    pub fn with_pairing(
+        mut self,
+        pairing: Arc<dyn ChannelPairingInterceptor>,
+        observer: Option<Arc<dyn ChannelPairingOutcomeObserver>>,
+    ) -> Self {
+        self.pairing = Some(pairing);
+        self.pairing_outcome_observer = observer;
+        self
+    }
+
+    fn permanent(reason: impl std::fmt::Display) -> InboundSinkError {
+        InboundSinkError {
+            retryable: false,
+            reason: reason.to_string(),
+        }
+    }
+
+    async fn spawn_observer<F>(&self, run: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let mut tasks = self.observer_tasks.lock().await;
+        // Reap finished tasks so the set stays bounded.
+        while let Some(result) = tasks.try_join_next() {
+            if let Err(error) = result {
+                tracing::debug!(
+                    error = %error,
+                    "post-admission observer task finished with join error"
+                );
+            }
+        }
+        tasks.spawn(run);
+    }
+}
+
+#[async_trait]
+impl ChannelIngressDrain for GenericChannelInboundSink {
+    async fn drain(&self) {
+        let mut tasks = self.observer_tasks.lock().await;
+        while let Some(result) = tasks.join_next().await {
+            if let Err(error) = result {
+                tracing::debug!(
+                    error = %error,
+                    "post-admission observer task finished with join error"
+                );
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl InboundSink for GenericChannelInboundSink {
+    async fn admit(
+        &self,
+        admission: InboundAdmission,
+    ) -> Result<InboundAdmissionAck, InboundSinkError> {
+        let InboundAdmission {
+            extension_id: _,
+            installation_id,
+            message,
+            channel_adapter,
+            channel_egress,
+        } = admission;
+        let installation = AdapterInstallationId::new(&installation_id).map_err(Self::permanent)?;
+        // Pairing pre-admission gate: a serviced pairing interaction is
+        // durably reflected in the pairing/identity stores, not the turn
+        // ledger — the vendor still gets its 2xx.
+        if let Some(pairing) = &self.pairing {
+            // Boxed: the consume path (CAS claim → identity bind → completion
+            // fan-out) is a deep async subtree nested inside the admission
+            // future; boxing keeps instrumented builds off the stack limit.
+            match Box::pin(pairing.intercept(&installation, &message)).await {
+                ChannelPairingInterception::NotHandled => {}
+                ChannelPairingInterception::Consumed(outcome) => {
+                    if let Some(observer) = self.pairing_outcome_observer.clone() {
+                        let conversation = message.conversation.clone();
+                        let event_id = message.event_id.clone();
+                        self.spawn_observer(async move {
+                            observer
+                                .observe_pairing_outcome(conversation, event_id, outcome)
+                                .await;
+                        })
+                        .await;
+                    }
+                    return Ok(InboundAdmissionAck::Accepted);
+                }
+                ChannelPairingInterception::Failed => {
+                    return Err(InboundSinkError {
+                        retryable: true,
+                        reason: "channel pairing completion failed".to_string(),
+                    });
+                }
+            }
+        }
+        let evidence = self.config.evidence.mint(&installation_id);
+        // Durable dedupe + admission commit (idempotency ledger keyed by
+        // installation + external event fingerprint) plus identity/
+        // conversation binding and turn submission — synchronous, so the
+        // router's 2xx is ack-after-commit.
+        // Boxed: ProductSurface admission (ledger → identity/actor resolution →
+        // conversation binding → turn submission) is the deepest subtree in
+        // this future; boxing keeps instrumented builds off the stack limit.
+        let request = ChannelInboundSurfaceRequest {
+            adapter_id: self.config.adapter_id.clone(),
+            source_channel: ProductSourceChannel::new(self.config.adapter_id.as_str())
+                .map_err(Self::permanent)?,
+            installation_id: installation,
+            evidence,
+            received_at: Utc::now(),
+            classification: self
+                .config
+                .classifier
+                .as_ref()
+                .and_then(|classify| classify(&message)),
+            message,
+        };
+        let response = if request.message.attachments.is_empty() {
+            Box::pin(self.config.surface.admit_channel_inbound(request)).await
+        } else {
+            // Attachment-bearing admission pins the exact adapter and
+            // manifest-restricted egress that parsed the request, so accepted
+            // intake can fetch bytes after replay dedupe and policy.
+            let Some(channel_egress) = channel_egress else {
+                return Err(InboundSinkError {
+                    retryable: true,
+                    reason: "channel attachment egress is unavailable".to_string(),
+                });
+            };
+            Box::pin(
+                self.config
+                    .surface
+                    .admit_channel_inbound_with_attachment_transfer(
+                        request,
+                        channel_adapter,
+                        channel_egress,
+                    ),
+            )
+            .await
+        };
+        match response {
+            ChannelInboundSurfaceOutcome::Admitted(admission) => {
+                let admission = *admission;
+                let envelope = admission.envelope;
+                let ack = admission.ack;
+                let duplicate = matches!(ack, ProductInboundAck::Duplicate { .. });
+                let durable = ack.is_durable_outcome();
+                if let Some(observer) = self.config.observer.clone() {
+                    self.spawn_observer(async move {
+                        observer.observe_ack(envelope, ack).await;
+                    })
+                    .await;
+                }
+                if duplicate {
+                    Ok(InboundAdmissionAck::Duplicate)
+                } else if durable {
+                    Ok(InboundAdmissionAck::Accepted)
+                } else {
+                    Err(InboundSinkError {
+                        retryable: true,
+                        reason: "ProductSurface returned a non-durable rejection".to_string(),
+                    })
+                }
+            }
+            // Honor the error's own retryability: a transient admission
+            // failure must not claim a durable permanent outcome. `Invalid`
+            // carries no envelope, so a permanent outcome here cannot reach
+            // the observer the way `Rejected` does — log it so a durably
+            // settled admission is never silent.
+            ChannelInboundSurfaceOutcome::Invalid(error) => {
+                let retryable = error.is_retryable();
+                if !retryable {
+                    tracing::debug!(
+                        adapter_id = %self.config.adapter_id,
+                        error = %error,
+                        "inbound admission settled permanently before an envelope existed"
+                    );
+                }
+                Err(InboundSinkError {
+                    retryable,
+                    reason: error.to_string(),
+                })
+            }
+            ChannelInboundSurfaceOutcome::Rejected(rejection) => {
+                let ChannelInboundSurfaceRejectedAdmission { envelope, error } = *rejection;
+                let retryable = error.is_retryable();
+                if let Some(observer) = self.config.observer.clone() {
+                    self.spawn_observer(async move {
+                        observer.observe_error(envelope, error).await;
+                    })
+                    .await;
+                } else if !retryable {
+                    tracing::debug!(
+                        "inbound admission settled terminally with no post-admission observer"
+                    );
+                }
+                if retryable {
+                    Err(InboundSinkError {
+                        retryable: true,
+                        reason: "ProductSurface admission failed retryably".to_string(),
+                    })
+                } else {
+                    // A non-retryable ProductSurface error is settled in the durable
+                    // idempotency ledger (a vendor redelivery replays as
+                    // Duplicate) — the event is durably accounted for, so the
+                    // vendor gets its 2xx; user-visible feedback flows through
+                    // the post-admission observer.
+                    Ok(InboundAdmissionAck::Accepted)
+                }
+            }
+        }
+    }
+}
+
+/// A static secrets port: fixed candidates for one extension (operator
+/// config resolved at registration time). Dynamic setups implement
+/// [`IngressSecretsPort`] directly and re-read their stores per request.
+pub struct StaticIngressSecrets {
+    candidates: Vec<VerificationCandidate>,
+}
+
+impl StaticIngressSecrets {
+    pub fn new(candidates: Vec<VerificationCandidate>) -> Self {
+        Self { candidates }
+    }
+}
+
+#[async_trait]
+impl IngressSecretsPort for StaticIngressSecrets {
+    async fn verification_candidates(
+        &self,
+        _extension_id: &str,
+        _installation_id: &str,
+        _handle: Option<&SecretHandle>,
+    ) -> Result<Vec<VerificationCandidate>, IngressPortError> {
+        Ok(self.candidates.clone())
+    }
+}
+
+// ── The composed router parts + serve mount ─────────────────────────────────
+
+/// The composed generic ingress: the deployment-first router (with an active
+/// snapshot compatibility fallback) plus the registration surface. Built once
+/// by composition; the serve layer mounts [`extension_ingress_route_mount`]
+/// over it.
+#[derive(Clone)]
+pub struct ExtensionIngressParts {
+    pub router: Arc<ExtensionIngressRouter>,
+    pub registry: Arc<ExtensionIngressRegistry>,
+    /// The router's `reply_context` storage — shared with the delivery
+    /// coordinator's read half (ING-11).
+    pub reply_context: Arc<dyn crate::ingress::ReplyContextStore>,
+}
+
+/// Build the generic ingress router over deployment bindings and the generic
+/// host's compatibility snapshot watch.
+/// `reply_context` is the durable ING-11 store (production: the
+/// filesystem-backed [`crate::FilesystemReplyContextStore`],
+/// so contexts stored before admission survive a restart to delivery time).
+pub fn build_extension_ingress(
+    watch: crate::SnapshotWatch,
+    deployment_channels: Arc<crate::DeploymentChannelRegistry>,
+    reply_context: Arc<dyn crate::ingress::ReplyContextStore>,
+    channel_egress_transport: Option<Arc<dyn crate::egress::ChannelEgressTransport>>,
+) -> ExtensionIngressParts {
+    let registry = Arc::new(ExtensionIngressRegistry::default());
+    let router = Arc::new(
+        ExtensionIngressRouter::new(
+            watch,
+            crate::ingress::ExtensionIngressRouterDeps {
+                secrets: Arc::clone(&registry) as Arc<dyn IngressSecretsPort>,
+                sink: Arc::clone(&registry) as Arc<dyn InboundSink>,
+                reply_context: Arc::clone(&reply_context),
+                channel_egress_transport,
+            },
+            crate::ingress::IngressRouterConfig::default(),
+        )
+        .with_deployment_channels(deployment_channels),
+    );
+    ExtensionIngressParts {
+        router,
+        registry,
+        reply_context,
+    }
+}
+
+#[cfg(test)]
+mod tests;
