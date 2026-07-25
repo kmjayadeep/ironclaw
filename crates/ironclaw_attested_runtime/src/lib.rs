@@ -48,6 +48,7 @@
 #![warn(unreachable_pub)]
 #![forbid(unsafe_code)]
 
+mod alpaca;
 mod binding;
 mod driver;
 mod intent_signer;
@@ -64,6 +65,10 @@ pub use trust::{
     VerifiedControl,
 };
 
+pub use alpaca::{
+    AlpacaError, AlpacaPort, BroadcastRequest, CombineRequest, CraftRequest, CurrencyId,
+    RecordingAlpacaPort, SharedAlpacaPort, UnconfiguredAlpacaPort,
+};
 pub use binding::{
     AttestedGateBinding, AttestedGateBindingStore, BindingError, BindingKey,
     InMemoryAttestedGateBindingStore, SyncBindingRead, validate_binding, validate_binding_key,
