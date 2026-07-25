@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ActivityId, AdapterInstallationId, AgentId, CapabilityId, ChannelAdapter,
     ChannelInboundClassification, NormalizedInboundMessage, ProductAdapterError, ProductAdapterId,
-    ProductInboundAck, ProductInboundEnvelope, ProductSourceChannel, ProjectId,
-    ProtocolAuthEvidence, RedactedString, RestrictedEgress, TenantId, ThreadId, TurnActor,
-    TurnScope, UserId,
+    ProductInboundAck, ProductInboundEnvelope, ProductSourceChannel, ProductSurfaceRejectionKind,
+    ProjectId, ProtocolAuthEvidence, RedactedString, RestrictedEgress, TenantId, ThreadId,
+    TurnActor, TurnScope, UserId,
 };
 
 /// One verified, normalized channel message admitted through a product surface.
@@ -81,7 +81,16 @@ pub trait ChannelInboundProductSurface: Send + Sync {
     ///
     /// The default admits attachment-free messages through
     /// [`Self::admit_channel_inbound`] and fails attachment-bearing admission
-    /// closed (retryably) for surfaces without transfer support.
+    /// closed for surfaces without transfer support.
+    ///
+    /// The failure is **permanent**: a surface that does not implement
+    /// transfer will never implement it for a redelivery of the same message,
+    /// so a retryable outcome would leave the vendor redelivering forever
+    /// while the user receives nothing — not even the message text. This
+    /// matches the equivalent default on the inbound turn service, which is
+    /// the same structural gap one layer down. A missing *deployment* egress
+    /// transport is a different, operator-fixable condition and stays
+    /// retryable at the ingress sink.
     async fn admit_channel_inbound_with_attachment_transfer(
         &self,
         request: ChannelInboundSurfaceRequest,
@@ -91,7 +100,10 @@ pub trait ChannelInboundProductSurface: Send + Sync {
         if request.message.attachments.is_empty() {
             return self.admit_channel_inbound(request).await;
         }
-        ChannelInboundSurfaceOutcome::Invalid(ProductAdapterError::SurfaceTransient {
+        ChannelInboundSurfaceOutcome::Invalid(ProductAdapterError::SurfaceRejected {
+            kind: ProductSurfaceRejectionKind::InvalidRequest,
+            status_code: 400,
+            retryable: false,
             reason: RedactedString::new(
                 "channel attachment transfer is not supported by this product surface",
             ),

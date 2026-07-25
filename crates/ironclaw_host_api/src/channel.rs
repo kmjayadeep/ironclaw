@@ -189,6 +189,18 @@ impl ChannelDescriptor {
                     });
                 }
             }
+            // A prefix must end on a segment boundary. Without this, prefix
+            // matching is a raw byte comparison, so a declaration like
+            // `/file/bot{token}` would also authorize `/file/bot{token}Evil/…`
+            // — a sibling path the manifest author never allowed on this
+            // pinned host + credential.
+            for prefix in &egress.path_prefixes {
+                if !prefix.ends_with('/') {
+                    return Err(ChannelDescriptorError::InvalidEgressConstraint {
+                        host: egress.host.clone(),
+                    });
+                }
+            }
             if egress
                 .request_body_limit_bytes
                 .is_some_and(|limit| limit > MAX_CHANNEL_EGRESS_TRANSFER_BYTES)
@@ -700,6 +712,22 @@ max_message_chars = 40000
         assert_eq!(target.path_prefixes, vec!["/file/bot{token}/"]);
         assert_eq!(target.request_body_limit_bytes, Some(65_536));
         assert_eq!(target.response_body_limit_bytes, Some(5 * 1024 * 1024));
+    }
+
+    /// A prefix without a trailing `/` does not end on a segment boundary, so
+    /// prefix matching would authorize any sibling sharing its bytes. Reject
+    /// the declaration rather than rely on every matcher to compensate.
+    #[test]
+    fn egress_path_prefix_without_a_segment_boundary_is_rejected() {
+        let toml = documented_channel_toml().replace(
+            "credential_handle = \"vendor_bot_token\"",
+            "credential_handle = \"vendor_bot_token\"\ninjection = { type = \"path_placeholder\", placeholder = \"token\" }\npath_prefixes = [\"/file/bot{token}\"]",
+        );
+        let channel: ChannelDescriptor = toml::from_str(&toml).unwrap();
+        assert!(matches!(
+            channel.validate(),
+            Err(ChannelDescriptorError::InvalidEgressConstraint { .. })
+        ));
     }
 
     #[test]

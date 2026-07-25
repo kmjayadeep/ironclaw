@@ -265,10 +265,18 @@ impl DeclaredChannelEgress {
         self.paths
             .iter()
             .any(|path| normalized_declared_path(path) == request_path)
-            || self
-                .path_prefixes
-                .iter()
-                .any(|prefix| request_path.starts_with(&normalized_declared_path(prefix)))
+            || self.path_prefixes.iter().any(|prefix| {
+                // Segment-boundary match, not a raw byte prefix. Descriptor
+                // validation already requires a trailing `/`, but enforcing it
+                // here too means a prefix that reached policy by any other
+                // route still cannot authorize a sibling path that merely
+                // shares its bytes (`/file/botX` vs `/file/botXEvil/…`).
+                let declared = normalized_declared_path(prefix);
+                let declared = declared.strip_suffix('/').unwrap_or(&declared);
+                request_path
+                    .strip_prefix(declared)
+                    .is_some_and(|rest| rest.starts_with('/'))
+            })
     }
 
     /// Lift one resolved `[[channel.egress]]` declaration into policy form.
@@ -654,5 +662,37 @@ mod tests {
         assert_eq!(approved.len(), 1);
         assert_eq!(approved[0].method, NetworkMethod::Get);
         assert_eq!(approved[0].response_body_limit, 5 * 1024 * 1024);
+    }
+
+    /// Prefix matching is a segment match, not a byte-prefix match. A declared
+    /// `/file/bot123/` must not authorize `/file/bot123Evil/...`: that sibling
+    /// shares the declared bytes but is a different path the manifest author
+    /// never allowed on this pinned host and credential.
+    #[tokio::test]
+    async fn path_prefix_does_not_authorize_a_sibling_sharing_its_bytes() {
+        let mut target = declared_vendor().remove(0);
+        target.methods = vec![NetworkMethod::Get];
+        target.paths.clear();
+        target.path_prefixes = vec!["/file/bot123/".to_string()];
+        let (egress, transport) = egress_over(vec![target]);
+
+        let mut sibling = post("https://vendor.example/file/bot123Evil/secrets.txt");
+        sibling.method = NetworkMethod::Get;
+        sibling.body = None;
+        let error = egress
+            .send(sibling)
+            .await
+            .expect_err("a sibling path sharing the prefix bytes must be denied");
+        assert!(matches!(error, RestrictedEgressError::PolicyDenied));
+
+        let mut allowed = post("https://vendor.example/file/bot123/report.pdf");
+        allowed.method = NetworkMethod::Get;
+        allowed.body = None;
+        egress
+            .send(allowed)
+            .await
+            .expect("a genuine sub-path of the declared prefix is allowed");
+
+        assert_eq!(transport.approved.lock().unwrap().len(), 1);
     }
 }

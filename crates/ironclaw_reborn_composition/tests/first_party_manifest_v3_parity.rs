@@ -455,7 +455,11 @@ fn telegram_v3_declares_only_the_bot_api_and_bounded_file_transfer_paths() {
         post.request_body_limit_bytes,
         Some(5 * 1024 * 1024 + 64 * 1024)
     );
-    assert_eq!(post.response_body_limit_bytes, Some(64 * 1024));
+    // This target also serves sendMessage/deleteMessage, whose responses echo
+    // the full Message object (including `reply_to_message` when the adapter
+    // threads a reply). A file-sized response cap here failed sends that had
+    // already reached the user, so it keeps the host default.
+    assert_eq!(post.response_body_limit_bytes, Some(256 * 1024));
 
     let download = channel
         .egress

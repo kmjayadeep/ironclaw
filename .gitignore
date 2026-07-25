@@ -99,3 +99,7 @@ test-tools/*/wasm-src/target/
 # (webui_v2, e2e, tooling, …) and stops the recurring accidental adds
 # (#6298/#6305).
 node_modules/
+
+# Built frontend bundles. Scoped per-crate .gitignore files only cover the
+# crate they live in, which let a sibling crate ship 3.5 MB of build output.
+crates/*/frontend/dist/

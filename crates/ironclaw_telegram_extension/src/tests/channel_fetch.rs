@@ -252,3 +252,59 @@ async fn fetch_attachment_treats_response_limit_overrun_as_permanent() {
         }
     ));
 }
+
+/// The adapter's transfer bound and the manifest's declared egress limits are
+/// one number in two files. A file between the two used to pass every code
+/// check and then be refused by policy at the egress boundary — reported
+/// inbound as "denied" rather than "too large", and outbound as a delivery
+/// that never happened.
+#[test]
+fn manifest_transfer_bounds_match_the_adapter_constants() {
+    const MANIFEST: &str =
+        include_str!("../../../ironclaw_first_party_extensions/assets/telegram/manifest.toml");
+
+    let download_cap = format!(
+        "response_body_limit_bytes = {}",
+        crate::attachment_transfer::TELEGRAM_MAX_TRANSFER_BYTES
+    );
+    assert!(
+        MANIFEST.contains(&download_cap),
+        "manifest download response cap must equal TELEGRAM_MAX_TRANSFER_BYTES ({download_cap})"
+    );
+
+    let upload_cap = format!(
+        "request_body_limit_bytes = {}",
+        crate::attachment_transfer::TELEGRAM_MAX_TRANSFER_BYTES
+            + crate::attachment_transfer::TELEGRAM_MULTIPART_OVERHEAD_BYTES
+    );
+    assert!(
+        MANIFEST.contains(&upload_cap),
+        "manifest request cap must equal the file bound plus multipart overhead ({upload_cap})"
+    );
+}
+
+/// The multipart boundary must not be derivable from the payload: the bytes
+/// are attacker-authored (an inbound attachment can be landed and later
+/// referenced by a reply), and a payload-derived candidate let a sender pad a
+/// file with collisions to force unbounded full-payload rescans.
+#[test]
+fn multipart_boundary_is_unpredictable_and_absent_from_the_payload() {
+    let payload = vec![b'a'; 4096];
+
+    let first = crate::attachment_transfer::multipart_boundary(&payload).expect("boundary");
+    let second = crate::attachment_transfer::multipart_boundary(&payload).expect("boundary");
+
+    assert_ne!(
+        first, second,
+        "a payload-derived boundary is predictable to the sender"
+    );
+    for boundary in [&first, &second] {
+        assert!(
+            !payload
+                .windows(boundary.len())
+                .any(|window| window == boundary.as_bytes()),
+            "boundary must not occur in the payload"
+        );
+        assert!(!boundary.contains(&payload.len().to_string()));
+    }
+}

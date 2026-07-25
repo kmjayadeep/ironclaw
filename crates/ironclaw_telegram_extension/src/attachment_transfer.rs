@@ -15,11 +15,31 @@ use crate::channel::{
 };
 use ironclaw_telegram_v2_adapter::TELEGRAM_API_HOST;
 
+/// Largest attachment payload a Telegram transfer carries, in bytes.
+///
+/// This is the same number the manifest's `[[channel.egress]]` declarations
+/// enforce (the download target's `response_body_limit_bytes`, and the Bot API
+/// target's `request_body_limit_bytes` less the multipart allowance below).
+/// Checking it adapter-side means an oversize file is refused with an accurate
+/// reason *before* egress instead of being policy-denied afterwards — inbound
+/// that turned "too large" into "denied", and outbound it let the coordinator
+/// report a send that never happened.
+pub(crate) const TELEGRAM_MAX_TRANSFER_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Multipart field overhead the manifest's request cap allows above the file.
+pub(crate) const TELEGRAM_MULTIPART_OVERHEAD_BYTES: u64 = 64 * 1024;
+
+/// The binding per-file bound: the channel's declared transfer limit and the
+/// host-wide attachment budget both apply, tightest wins.
+fn max_transfer_bytes() -> u64 {
+    TELEGRAM_MAX_TRANSFER_BYTES.min(DEFAULT_ATTACHMENT_BUDGETS.max_file_bytes as u64)
+}
+
 pub(super) async fn fetch_attachment(
     attachment: &AttachmentRef,
     egress: &dyn RestrictedEgress,
 ) -> Result<InboundAttachment, ChannelError> {
-    let max_file_bytes = DEFAULT_ATTACHMENT_BUDGETS.max_file_bytes as u64;
+    let max_file_bytes = max_transfer_bytes();
     if attachment
         .descriptor
         .size_bytes
@@ -114,7 +134,7 @@ pub(super) async fn send_document(
     reply_to_message_id: Option<i64>,
     file: &WorkspaceFile,
 ) -> PartDeliveryOutcome {
-    if file.bytes.len() > DEFAULT_ATTACHMENT_BUDGETS.max_file_bytes {
+    if file.bytes.len() as u64 > max_transfer_bytes() {
         return PartDeliveryOutcome::Permanent {
             reason: "telegram attachment exceeds the channel size limit".to_string(),
         };
@@ -174,11 +194,15 @@ fn map_egress_error(error: ironclaw_host_api::RestrictedEgressError) -> ChannelE
         EgressError::AuthRequired { .. } | EgressError::UndeclaredCredential { .. } => {
             transfer_error("telegram attachment transfer is unauthorized", false)
         }
+        // Size and policy are distinct outcomes: reporting an oversize
+        // download as "denied" sends the user chasing a permission problem.
+        EgressError::ResponseTooLarge => {
+            transfer_error("telegram attachment exceeds the channel size limit", false)
+        }
         EgressError::UndeclaredHost { .. }
         | EgressError::UndeclaredMethod
         | EgressError::HostOwnedHeader { .. }
-        | EgressError::PolicyDenied
-        | EgressError::ResponseTooLarge => {
+        | EgressError::PolicyDenied => {
             transfer_error("telegram attachment transfer was denied", false)
         }
     }
@@ -285,6 +309,16 @@ fn document_request(
     body.extend_from_slice(&file.bytes);
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
 
+    // The assembled body, not just the file, is what the manifest's
+    // `request_body_limit_bytes` bounds. Checking it here fails the delivery
+    // with an accurate reason; without it an in-budget file whose multipart
+    // fields pushed the body over the declared cap was rejected by policy
+    // *after* the coordinator had already committed to the send.
+    let request_cap = TELEGRAM_MAX_TRANSFER_BYTES + TELEGRAM_MULTIPART_OVERHEAD_BYTES;
+    if body.len() as u64 > request_cap {
+        return Err("telegram attachment exceeds the channel size limit".to_string());
+    }
+
     Ok(RestrictedEgressRequest {
         method: NetworkMethod::Post,
         url: format!(
@@ -300,17 +334,22 @@ fn document_request(
     })
 }
 
-fn multipart_boundary(bytes: &[u8]) -> Result<String, String> {
-    for nonce in 0..=u32::MAX {
-        let boundary = format!("ironclaw-telegram-{}-{nonce}", bytes.len());
-        if !bytes
-            .windows(boundary.len())
-            .any(|window| window == boundary.as_bytes())
-        {
-            return Ok(boundary);
-        }
+/// Random multipart boundary, verified absent from the payload exactly once.
+///
+/// The payload is attacker-authored (an inbound attachment can be landed in
+/// the workspace and later referenced by a reply), so the candidate must not
+/// be derivable from the bytes: a predictable candidate lets a sender pad a
+/// file with collisions and force an unbounded number of full-payload scans.
+/// A v4 UUID makes a collision negligible, so one scan settles it.
+pub(crate) fn multipart_boundary(bytes: &[u8]) -> Result<String, String> {
+    let boundary = format!("ironclaw-telegram-{}", uuid::Uuid::new_v4().simple());
+    if bytes
+        .windows(boundary.len())
+        .any(|window| window == boundary.as_bytes())
+    {
+        return Err("telegram multipart boundary could not be generated".to_string());
     }
-    Err("telegram multipart boundary could not be generated".to_string())
+    Ok(boundary)
 }
 
 fn push_text(body: &mut Vec<u8>, boundary: &str, name: &str, value: &str) {
