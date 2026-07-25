@@ -13,6 +13,28 @@ use ironclaw_product::{ChannelInboundSurfaceAdmission, ChannelInboundSurfaceOutc
 use ironclaw_turns::{AcceptedMessageRef, TurnRunId};
 
 use super::*;
+
+/// Records pairing outcomes for assertions. An ordinary double now that the
+/// observer is a trait — it used to be a `#[cfg(test)]` variant compiled into
+/// the production enum.
+pub(crate) struct RecordingPairingOutcomeObserver {
+    pub(crate) outcomes: Arc<std::sync::Mutex<Vec<ChannelPairingConsumeOutcome>>>,
+}
+
+#[async_trait]
+impl ChannelPairingOutcomeObserver for RecordingPairingOutcomeObserver {
+    async fn observe_pairing_outcome(
+        &self,
+        _conversation: ExternalConversationRef,
+        _event_id: ExternalEventId,
+        outcome: ChannelPairingConsumeOutcome,
+    ) {
+        match self.outcomes.lock() {
+            Ok(mut outcomes) => outcomes.push(outcome),
+            Err(poisoned) => poisoned.into_inner().push(outcome),
+        }
+    }
+}
 use crate::extension_host::channel_pairing::ChannelPairingConsumeOutcome;
 
 struct CountingSurface {
@@ -199,9 +221,9 @@ fn pairing_sink(
     })
     .with_pairing(
         Arc::new(ScriptedPairingInterceptor { interception }),
-        Some(ChannelPairingOutcomeObserver::Recording(Arc::clone(
-            &outcomes,
-        ))),
+        Some(Arc::new(RecordingPairingOutcomeObserver {
+            outcomes: Arc::clone(&outcomes),
+        }) as Arc<dyn ChannelPairingOutcomeObserver>),
     );
     (sink, workflow, outcomes)
 }

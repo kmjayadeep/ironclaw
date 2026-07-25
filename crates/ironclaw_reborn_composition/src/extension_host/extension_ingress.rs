@@ -329,33 +329,21 @@ pub struct ChannelInboundSinkConfig {
     pub observer: Option<Arc<dyn PostAdmissionObserver>>,
 }
 
-#[derive(Clone)]
-pub(super) enum ChannelPairingOutcomeObserver {
-    RunDelivery(Arc<crate::extension_host::channel_host::RunDeliveryPostAdmissionObserver>),
-    #[cfg(test)]
-    Recording(Arc<std::sync::Mutex<Vec<ChannelPairingConsumeOutcome>>>),
-}
-
-impl ChannelPairingOutcomeObserver {
-    async fn observe(
+/// Post-pairing notification seam.
+///
+/// A trait rather than an enum over concrete observers: the sink is generic
+/// channel machinery and must not name the delivery observer that happens to
+/// consume its outcomes today. Implementors supply the behavior; tests supply
+/// an ordinary double instead of a `#[cfg(test)]` enum variant compiled into
+/// the production type.
+#[async_trait]
+pub(super) trait ChannelPairingOutcomeObserver: Send + Sync {
+    async fn observe_pairing_outcome(
         &self,
         conversation: ExternalConversationRef,
         event_id: ExternalEventId,
         outcome: ChannelPairingConsumeOutcome,
-    ) {
-        match self {
-            Self::RunDelivery(observer) => {
-                observer
-                    .observe_pairing_outcome(conversation, event_id, outcome)
-                    .await;
-            }
-            #[cfg(test)]
-            Self::Recording(outcomes) => match outcomes.lock() {
-                Ok(mut outcomes) => outcomes.push(outcome),
-                Err(poisoned) => poisoned.into_inner().push(outcome),
-            },
-        }
-    }
+    );
 }
 
 /// The generic [`InboundSink`]: builds the trusted inbound envelope from a
@@ -366,7 +354,7 @@ impl ChannelPairingOutcomeObserver {
 pub struct GenericChannelInboundSink {
     config: ChannelInboundSinkConfig,
     pairing: Option<Arc<dyn ChannelPairingInterceptor>>,
-    pairing_outcome_observer: Option<ChannelPairingOutcomeObserver>,
+    pairing_outcome_observer: Option<Arc<dyn ChannelPairingOutcomeObserver>>,
     observer_tasks: tokio::sync::Mutex<JoinSet<()>>,
 }
 
@@ -383,7 +371,7 @@ impl GenericChannelInboundSink {
     pub(super) fn with_pairing(
         mut self,
         pairing: Arc<dyn ChannelPairingInterceptor>,
-        observer: Option<ChannelPairingOutcomeObserver>,
+        observer: Option<Arc<dyn ChannelPairingOutcomeObserver>>,
     ) -> Self {
         self.pairing = Some(pairing);
         self.pairing_outcome_observer = observer;
@@ -458,7 +446,9 @@ impl InboundSink for GenericChannelInboundSink {
                         let conversation = message.conversation.clone();
                         let event_id = message.event_id.clone();
                         self.spawn_observer(async move {
-                            observer.observe(conversation, event_id, outcome).await;
+                            observer
+                                .observe_pairing_outcome(conversation, event_id, outcome)
+                                .await;
                         })
                         .await;
                     }
@@ -826,4 +816,4 @@ mod serve_mount {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

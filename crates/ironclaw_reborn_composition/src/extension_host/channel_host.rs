@@ -720,7 +720,7 @@ impl GenericChannelHostAssembly {
                 pairing,
                 observer
                     .clone()
-                    .map(ChannelPairingOutcomeObserver::RunDelivery),
+                    .map(|observer| observer as Arc<dyn ChannelPairingOutcomeObserver>),
             );
         }
         let sink = Arc::new(sink);
@@ -1081,8 +1081,9 @@ impl PostAdmissionObserver for RunDeliveryPostAdmissionObserver {
     }
 }
 
-impl RunDeliveryPostAdmissionObserver {
-    pub(super) async fn observe_pairing_outcome(
+#[async_trait]
+impl ChannelPairingOutcomeObserver for RunDeliveryPostAdmissionObserver {
+    async fn observe_pairing_outcome(
         &self,
         conversation: ExternalConversationRef,
         event_id: ExternalEventId,

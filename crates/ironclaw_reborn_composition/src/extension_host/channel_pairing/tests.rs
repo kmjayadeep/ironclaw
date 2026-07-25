@@ -416,9 +416,11 @@ fn pairing_ingress_with_outcomes(
         })
         .with_pairing(
             service as Arc<dyn ChannelPairingInterceptor>,
-            Some(ChannelPairingOutcomeObserver::Recording(Arc::clone(
-                &outcomes,
-            ))),
+            Some(Arc::new(
+                crate::extension_host::extension_ingress::tests::RecordingPairingOutcomeObserver {
+                    outcomes: Arc::clone(&outcomes),
+                },
+            ) as Arc<dyn ChannelPairingOutcomeObserver>),
         ),
     );
     (sink, outcomes)
