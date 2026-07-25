@@ -1026,6 +1026,9 @@ pub(crate) struct RebornRuntimeStores {
     pub(crate) skill_auto_activate_learned: Arc<AtomicBool>,
     pub(crate) outbound_state: Arc<dyn OutboundStateStorePort>,
     pub(crate) delivered_gate_routes: Arc<dyn DeliveredGateRouteStore>,
+    /// Lazy shared command-execution surface handed to channel-host graphs;
+    /// runtime construction fills it once the ProductSurface can exist.
+    pub(crate) command_surface: crate::extension_host::channel_host::SharedCommandSurface,
     pub(crate) triggered_run_delivery: Arc<dyn TriggeredRunDeliveryStore>,
     /// Late-rebindable turn-run source the trigger active-run lookup reads
     /// (`crate::turn_run_snapshot`). Production points it at this runtime's own
@@ -1264,6 +1267,7 @@ impl RebornRuntimeStores {
                     approval_interaction,
                     auth_interaction,
                     identity,
+                    command_surface: self.command_surface.clone(),
                     identity_lookup,
                     delivery,
                     channel_pairing: self.channel_pairing.clone(),
@@ -5553,6 +5557,7 @@ async fn build_backend_production(
         approval_requests: Arc::clone(&approval_requests),
         capability_leases: Arc::clone(&stores.leases),
         external_tool_catalog: Arc::new(InMemoryExternalToolCatalog::new()),
+        command_surface: crate::extension_host::channel_host::SharedCommandSurface::default(),
         runtime_policy: runtime_policy_for_return,
         persistent_approval_policies: Arc::clone(&stores.persistent_approval_policies),
         tool_permission_overrides: Arc::clone(&tool_permission_overrides),

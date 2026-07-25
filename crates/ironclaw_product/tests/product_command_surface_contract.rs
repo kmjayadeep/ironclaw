@@ -25,6 +25,20 @@ fn sample_command_envelope(
     command: &str,
     arguments: &str,
 ) -> ProductInboundEnvelope {
+    sample_command_envelope_with_trigger(
+        event_suffix,
+        command,
+        arguments,
+        ProductTriggerReason::BotCommand,
+    )
+}
+
+fn sample_command_envelope_with_trigger(
+    event_suffix: &str,
+    command: &str,
+    arguments: &str,
+    trigger: ProductTriggerReason,
+) -> ProductInboundEnvelope {
     let adapter_id = ProductAdapterId::new("test_adapter").expect("valid adapter");
     let installation_id = AdapterInstallationId::new("install_alpha").expect("valid installation");
     let evidence = ProtocolAuthEvidence::test_verified(
@@ -45,8 +59,7 @@ fn sample_command_envelope(
         ExternalActorRef::new("test", "user1", Option::<String>::None).expect("valid actor"),
         ExternalConversationRef::new(None, "conv1", None, None).expect("valid conversation"),
         ProductInboundPayload::Command(
-            InboundCommandPayload::new(command, arguments, ProductTriggerReason::BotCommand)
-                .expect("valid command"),
+            InboundCommandPayload::new(command, arguments, trigger).expect("valid command"),
         ),
     )
     .expect("parsed");
@@ -273,6 +286,88 @@ async fn status_command_maps_to_its_operation_with_the_bound_thread() {
         .and_then(serde_json::Value::as_str)
         .expect("status input carries the bound thread");
     assert!(!thread_id.is_empty());
+}
+
+#[tokio::test]
+async fn paired_dm_admission_enforces_direct_route_and_declared_set() {
+    use ironclaw_product::PairedDmCommandAdmission;
+
+    let make_workflow = |surface: Arc<RecordingCommandSurface>| {
+        DefaultProductSurface::new(
+            Arc::new(FakeInboundTurnService::new()),
+            Arc::new(FakeIdempotencyLedger::new()),
+            Arc::new(FakeConversationBindingService::new()),
+        )
+        .with_product_command_admission_service(Arc::new(PairedDmCommandAdmission::new([
+            "model".to_string(),
+            "status".to_string(),
+        ])))
+        .with_product_command_surface(surface)
+    };
+
+    // Direct + declared → executes.
+    let surface = Arc::new(RecordingCommandSurface::output(serde_json::json!({})));
+    let ack = make_workflow(surface.clone())
+        .submit_inbound(sample_command_envelope_with_trigger(
+            "adm-direct",
+            "status",
+            "",
+            ProductTriggerReason::DirectChat,
+        ))
+        .await
+        .expect("accept");
+    assert!(matches!(ack, ProductInboundAck::CommandResult { .. }));
+    assert_eq!(surface.invokes().len(), 1);
+
+    // Shared route (a group bot-command) → policy denied, nothing executes.
+    let surface = Arc::new(RecordingCommandSurface::output(serde_json::json!({})));
+    let ack = make_workflow(surface.clone())
+        .submit_inbound(sample_command_envelope_with_trigger(
+            "adm-shared",
+            "status",
+            "",
+            ProductTriggerReason::BotCommand,
+        ))
+        .await
+        .expect("accept");
+    let ProductInboundAck::Rejected(rejection) = ack else {
+        panic!("expected shared-route rejection");
+    };
+    assert_eq!(
+        rejection.kind,
+        ironclaw_product::ProductRejectionKind::PolicyDenied
+    );
+    assert!(surface.invokes().is_empty());
+
+    // Direct but undeclared (alias resolves to a canonical name outside the
+    // declared set) → user-correctable rejection, nothing executes.
+    let surface = Arc::new(RecordingCommandSurface::output(serde_json::json!({})));
+    let workflow = DefaultProductSurface::new(
+        Arc::new(FakeInboundTurnService::new()),
+        Arc::new(FakeIdempotencyLedger::new()),
+        Arc::new(FakeConversationBindingService::new()),
+    )
+    .with_product_command_admission_service(Arc::new(PairedDmCommandAdmission::new([
+        "model".to_string()
+    ])))
+    .with_product_command_surface(surface.clone());
+    let ack = workflow
+        .submit_inbound(sample_command_envelope_with_trigger(
+            "adm-undeclared",
+            "progress",
+            "",
+            ProductTriggerReason::DirectChat,
+        ))
+        .await
+        .expect("accept");
+    let ProductInboundAck::Rejected(rejection) = ack else {
+        panic!("expected undeclared rejection");
+    };
+    assert_eq!(
+        rejection.kind,
+        ironclaw_product::ProductRejectionKind::InvalidRequest
+    );
+    assert!(surface.invokes().is_empty());
 }
 
 #[tokio::test]

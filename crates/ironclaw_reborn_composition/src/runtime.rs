@@ -752,6 +752,9 @@ pub struct RebornRuntime {
         Option<crate::extension_host::extension_ingress::ExtensionIngressParts>,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) deployment_channels: Arc<ironclaw_extension_host::DeploymentChannelRegistry>,
+    /// Lazy shared command-execution surface for channel-host graphs; filled
+    /// at the end of runtime construction (first write wins).
+    pub(crate) command_surface: crate::extension_host::channel_host::SharedCommandSurface,
     pub(crate) channel_pairing: Option<Arc<ChannelPairingRegistry>>,
     pub(crate) channel_delivery_resolver:
         Option<Arc<dyn ironclaw_product::ChannelDeliveryResolver>>,
@@ -1667,6 +1670,7 @@ impl RebornRuntime {
                     approval_interaction: None,
                     auth_interaction: None,
                     identity,
+                    command_surface: self.command_surface.clone(),
                     identity_lookup,
                     delivery,
                     channel_pairing: self.channel_pairing.clone(),
@@ -4688,6 +4692,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         trigger_source_turn_state_store: Arc::clone(&services.trigger_source_turn_state_store),
         broadcast_budget_event_sink,
         external_tool_catalog: services.external_tool_catalog.clone(),
+        command_surface: services.command_surface.clone(),
         persistent_approval_policies: Arc::clone(&services.persistent_approval_policies),
         tool_permission_overrides: services.tool_permission_overrides.clone(),
         auto_approve_settings: services.auto_approve_settings.clone(),
@@ -4770,6 +4775,11 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     if let Some(channel_connection) = runtime.generic_channel_connection_facade() {
         let _ = runtime.channel_facade_slot.set(channel_connection);
     }
+    // Fill the shared command-execution surface now the full runtime exists:
+    // channel-host graphs hold the lazy handle and start rejecting commands
+    // retryably until this write lands. First write wins by `OnceLock`
+    // contract, mirroring the channel-facade slot above.
+    runtime.command_surface.set(runtime.product_surface(None)?);
     Ok(runtime)
 }
 

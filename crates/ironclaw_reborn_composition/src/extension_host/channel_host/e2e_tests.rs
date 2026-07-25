@@ -410,6 +410,7 @@ async fn build_harness_with_options(options: HarnessOptions) -> Harness {
 
     let channel_config = configured_channel_config().await;
     let deps = GenericChannelHostDeps {
+        command_surface: super::SharedCommandSurface::default(),
         watch: host.snapshot_watch(),
         deployment_channels: Arc::new(ironclaw_extension_host::DeploymentChannelRegistry::default()),
         registry: Arc::clone(&ingress.registry),

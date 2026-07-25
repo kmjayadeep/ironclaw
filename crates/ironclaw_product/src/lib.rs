@@ -34,6 +34,7 @@ mod auth_prompt;
 mod automation_thread_metadata;
 mod binding;
 mod binding_ref;
+mod command_admission;
 mod command_dispatch;
 mod commands;
 mod conversation_binding;
@@ -103,6 +104,7 @@ pub use binding::{
     ConversationBindingService, ProductConversationRouteKind, ResolveBindingRequest,
     ResolvedBinding, route_kind_for_inbound_payload,
 };
+pub use command_admission::PairedDmCommandAdmission;
 pub use command_dispatch::{
     ProductCommandAdmission, ProductCommandAdmissionService, ProductCommandContext,
     RejectingProductCommandAdmissionService,

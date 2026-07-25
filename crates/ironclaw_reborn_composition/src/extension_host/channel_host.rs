@@ -214,6 +214,75 @@ where
     }
 }
 
+/// The command execution surface shared by every extension's workflow.
+///
+/// The channel-host assembly starts during runtime construction — before the
+/// runtime's `ProductSurface` can exist — so per-extension graphs receive
+/// this lazy handle instead of a concrete surface. Runtime construction fills
+/// it exactly once as its final step; until then (and in harnesses that never
+/// fill it) command dispatch fails closed with a retryable unavailability.
+#[derive(Clone, Default)]
+pub(crate) struct SharedCommandSurface {
+    cell: Arc<std::sync::OnceLock<Arc<dyn ironclaw_host_api::ProductSurface>>>,
+}
+
+impl SharedCommandSurface {
+    /// Fill the shared handle. First writer wins; later calls are no-ops so a
+    /// restart-time double-fill cannot swap surfaces under live graphs.
+    pub(crate) fn set(&self, surface: Arc<dyn ironclaw_host_api::ProductSurface>) {
+        let _ = self.cell.set(surface);
+    }
+}
+
+#[async_trait]
+impl ironclaw_host_api::ProductSurface for SharedCommandSurface {
+    async fn invoke(
+        &self,
+        caller: ironclaw_host_api::ProductSurfaceCaller,
+        request: ironclaw_host_api::ProductSurfaceInvokeRequest,
+    ) -> Result<
+        ironclaw_host_api::ProductSurfaceInvokeResponse,
+        ironclaw_host_api::ProductSurfaceError,
+    > {
+        match self.cell.get() {
+            Some(surface) => surface.invoke(caller, request).await,
+            None => Err(ironclaw_host_api::ProductSurfaceError::service_unavailable(
+                true,
+            )),
+        }
+    }
+
+    async fn query(
+        &self,
+        caller: ironclaw_host_api::ProductSurfaceCaller,
+        request: ironclaw_host_api::ProductSurfaceQueryRequest,
+    ) -> Result<ironclaw_host_api::ProductSurfaceQueryPage, ironclaw_host_api::ProductSurfaceError>
+    {
+        match self.cell.get() {
+            Some(surface) => surface.query(caller, request).await,
+            None => Err(ironclaw_host_api::ProductSurfaceError::service_unavailable(
+                true,
+            )),
+        }
+    }
+
+    async fn stream_events(
+        &self,
+        caller: ironclaw_host_api::ProductSurfaceCaller,
+        request: ironclaw_host_api::ProductSurfaceStreamRequest,
+    ) -> Result<
+        ironclaw_host_api::ProductSurfaceStreamResponse,
+        ironclaw_host_api::ProductSurfaceError,
+    > {
+        match self.cell.get() {
+            Some(surface) => surface.stream_events(caller, request).await,
+            None => Err(ironclaw_host_api::ProductSurfaceError::service_unavailable(
+                true,
+            )),
+        }
+    }
+}
+
 /// Per-extension vendor ports that are not yet host-generic. Populated by
 /// the extension's composition lane; a pure-manifest channel package
 /// registers none.
@@ -289,6 +358,10 @@ pub(crate) struct GenericChannelHostDeps {
     /// for extensions that pair without an OAuth vendor.
     pub(crate) channel_pairing:
         Option<Arc<crate::extension_host::channel_pairing::ChannelPairingRegistry>>,
+    /// Lazy shared command execution surface (filled after runtime
+    /// construction); per-extension workflows chain it so manifest-declared
+    /// slash commands execute as product capability operations.
+    pub(crate) command_surface: SharedCommandSurface,
 }
 
 /// What the assembly last reconciled for one extension id.
@@ -682,6 +755,17 @@ impl GenericChannelHostAssembly {
         }
         if let Some(delivery) = &self.deps.delivery {
             workflow = workflow.with_delivered_gate_routes(Arc::clone(&delivery.route_store));
+        }
+        // Slash commands: manifest-declared set → DM-only admission + the
+        // shared capability-operation surface. Both fail closed when absent.
+        if !channel.commands.is_empty() {
+            workflow = workflow
+                .with_product_command_admission_service(Arc::new(
+                    ironclaw_product::PairedDmCommandAdmission::new(
+                        channel.commands.iter().cloned(),
+                    ),
+                ))
+                .with_product_command_surface(Arc::new(self.deps.command_surface.clone()));
         }
 
         let observer = match &self.deps.delivery {
