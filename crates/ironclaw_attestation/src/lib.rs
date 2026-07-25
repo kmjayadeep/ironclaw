@@ -32,6 +32,7 @@
 #![warn(unreachable_pub)]
 #![forbid(unsafe_code)]
 
+mod agent_key;
 mod approved_tx_hash;
 mod canonical;
 mod decoded_tx;
@@ -57,6 +58,10 @@ mod ledger;
 #[cfg(feature = "contract-tests")]
 pub mod ledger;
 
+pub use agent_key::{
+    AgentKeyError, AgentKeyState, AgentSigningKey, AgentSigningKeyStore, DEFAULT_INTENT_TTL_MS,
+    DEFAULT_ROTATION_OVERLAP_MS, InMemoryAgentSigningKeyStore, verification_admits,
+};
 pub use approved_tx_hash::approved_tx_hash_for;
 pub use canonical::canonical_signing_bytes;
 pub use decoded_tx::{
