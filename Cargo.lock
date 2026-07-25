@@ -4407,6 +4407,7 @@ name = "ironclaw_attestation"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "ed25519-dalek",
  "ironclaw_attestation",
  "ironclaw_signing_provider",
  "serde",
@@ -4414,6 +4415,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "tokio",
+ "ulid",
 ]
 
 [[package]]

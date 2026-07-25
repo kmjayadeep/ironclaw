@@ -37,6 +37,7 @@ mod canonical;
 mod decoded_tx;
 mod error;
 mod fields;
+mod intent;
 mod rendered;
 
 mod wire;
@@ -68,6 +69,10 @@ pub use error::AttestationError;
 pub use grant::{
     AttestedSigningGrant, ClaimedGrant, GrantError, GrantKey, GrantStatus,
     InMemorySealedGrantStore, SealedGrantStore,
+};
+pub use intent::{
+    AGENT_PUBLIC_KEY_LEN, AgentKeyId, INTENT_SIGNATURE_LEN, IntentError, IntentId, IntentSigner,
+    IntentSignerError, SignedIntent, UnsignedIntent,
 };
 pub use ledger::{
     InMemorySigningLedger, LedgerError, LedgerKey, SigningLedger, SigningLedgerState,
