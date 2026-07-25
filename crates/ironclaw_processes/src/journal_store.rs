@@ -13,15 +13,14 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 use crate::journal::{
-    ClaimProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
-    GetProcessSnapshotRequest, JournaledProcessSnapshot, ProcessGateOwnerMatch, ProcessGateQuery,
-    ProcessGateQuerySource, ProcessGateRecord, ProcessJournalCursor, ProcessJournalEntry,
-    ProcessJournalKind, ProcessJournalPage, ProcessJournalSource, ProcessLeaseRequest,
-    ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleLookupBatchRequest,
-    ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
-    ProcessSubmissionPort, ProcessSuspension, ProcessTransitionPort, ProcessWorkerId,
-    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, SubmitProcessRequest,
-    SuspendProcessRequest,
+    ClaimProcessesRequest, ClaimedProcess, FailProcessRequest, GetProcessSnapshotRequest,
+    JournaledProcessSnapshot, ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource,
+    ProcessGateRecord, ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind,
+    ProcessJournalPage, ProcessJournalSource, ProcessLeaseRequest, ProcessLeaseSnapshot,
+    ProcessLeaseToken, ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult,
+    ProcessLifecycleLookupSource, ProcessLifecycleStatus, ProcessSubmissionPort, ProcessSuspension,
+    ProcessTransitionPort, ProcessWorkerId, RecoverExpiredProcessLeasesRequest,
+    RecoverExpiredProcessLeasesResponse, SubmitProcessRequest, SuspendProcessRequest,
 };
 use crate::types::{invalid_path, same_scope_owner};
 
@@ -209,20 +208,6 @@ where
     F: RootFilesystem + Send + Sync + 'static,
 {
     type Error = ProcessJournalStoreError;
-
-    async fn claim_next_process(
-        &self,
-        request: ClaimProcessRequest,
-    ) -> Result<Option<ClaimedProcess>, Self::Error> {
-        let mut claimed = self
-            .claim_next_processes(ClaimProcessesRequest {
-                worker_id: request.worker_id,
-                scope_filter: request.scope_filter,
-                max_processes: 1,
-            })
-            .await?;
-        Ok(claimed.pop())
-    }
 
     async fn claim_next_processes(
         &self,

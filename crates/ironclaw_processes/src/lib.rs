@@ -34,11 +34,11 @@ mod wrappers;
 pub use cancellation::{ProcessCancellationRegistry, ProcessCancellationToken};
 pub use host::{ProcessHost, ProcessSubscription};
 pub use journal::{
-    ClaimProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
-    GetProcessSnapshotRequest, JournaledProcessSnapshot, KillProcessRequest, ProcessCheckpointRef,
-    ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource, ProcessGateRecord,
-    ProcessJournalCursor, ProcessJournalEntry, ProcessJournalError, ProcessJournalKind,
-    ProcessJournalPage, ProcessJournalProjectionCursor, ProcessJournalProjectionRequest,
+    ClaimProcessesRequest, ClaimedProcess, FailProcessRequest, GetProcessSnapshotRequest,
+    JournaledProcessSnapshot, KillProcessRequest, ProcessCheckpointRef, ProcessGateOwnerMatch,
+    ProcessGateQuery, ProcessGateQuerySource, ProcessGateRecord, ProcessJournalCursor,
+    ProcessJournalEntry, ProcessJournalError, ProcessJournalKind, ProcessJournalPage,
+    ProcessJournalProjectionCursor, ProcessJournalProjectionRequest,
     ProcessJournalProjectionSnapshot, ProcessJournalSource, ProcessKind, ProcessLeaseRequest,
     ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleLookupBatchRequest,
     ProcessLifecycleLookupRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,

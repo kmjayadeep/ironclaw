@@ -37,12 +37,12 @@ use ironclaw_turns::TurnRunWakeNotifier as _;
 use ironclaw_turns::test_support::in_memory_turn_state_store;
 use ironclaw_turns::{
     AcceptedMessageRef, AgentLoopDriver, AgentLoopDriverDescriptor, AgentLoopDriverError,
-    AgentLoopDriverResumeRequest, AgentLoopDriverRunRequest, AllowAllTurnAdmissionPolicy,
-    EventCursor, GetRunStateRequest, IdempotencyKey, InMemoryRunProfileResolver,
-    LoopCheckpointStore, LoopExit, LoopExitId, LoopFailed, LoopFailureKind, ReplyTargetBindingRef,
-    RunProfileResolutionRequest, RunProfileResolver, SourceBindingRef, SubmitTurnRequest,
-    SubmitTurnResponse, TurnActor, TurnRunId, TurnRunWake, TurnScope, TurnStateRowStore,
-    TurnStateStore, TurnStateStoreLimits, TurnStatus,
+    AgentLoopDriverResumeRequest, AgentLoopDriverRunRequest, AgentTurnProcessTransitionAdapter,
+    AllowAllTurnAdmissionPolicy, EventCursor, GetRunStateRequest, IdempotencyKey,
+    InMemoryRunProfileResolver, LoopCheckpointStore, LoopExit, LoopExitId, LoopFailed,
+    LoopFailureKind, ReplyTargetBindingRef, RunProfileResolutionRequest, RunProfileResolver,
+    SourceBindingRef, SubmitTurnRequest, SubmitTurnResponse, TurnActor, TurnRunId, TurnRunWake,
+    TurnScope, TurnStateRowStore, TurnStateStore, TurnStateStoreLimits, TurnStatus,
     run_profile::{
         AgentLoopDriverHost, InMemoryLoopHostMilestoneSink, InstructionSafetyContext,
         LoopRunContext, PromptMode,
@@ -52,6 +52,18 @@ use ironclaw_turns::{
 use tokio::sync::Barrier;
 
 use ironclaw_loop_host::in_memory_backed_checkpoint_state_store as in_memory_checkpoint_state_store;
+
+fn scheduler_from_turn(
+    transitions: Arc<dyn TurnRunTransitionPort>,
+    executor: Arc<dyn ironclaw_runner::turn_scheduler::TurnRunExecutor>,
+    config: TurnRunSchedulerConfig,
+) -> TurnRunScheduler {
+    TurnRunScheduler::new_with_process_transition(
+        Arc::new(AgentTurnProcessTransitionAdapter::new(transitions)),
+        executor,
+        config,
+    )
+}
 
 // ---------------------------------------------------------------------------
 // Barrier-blocking driver
@@ -653,7 +665,7 @@ async fn scheduler_executor_two_runs_concurrently() {
         .with_claim_error_backoff(std::time::Duration::from_millis(5));
 
     let scheduler_handle =
-        TurnRunScheduler::new(Arc::clone(&transition_port), executor, scheduler_config).start();
+        scheduler_from_turn(Arc::clone(&transition_port), executor, scheduler_config).start();
 
     // Wake the scheduler for both runs — coordinator wake is the real prod path;
     // here we simulate it by directly notifying the scheduler's wake notifier.
@@ -932,7 +944,7 @@ async fn scheduler_executor_applies_loop_exit_end_to_end() {
         .with_claim_error_backoff(std::time::Duration::from_millis(5));
 
     let scheduler_handle =
-        TurnRunScheduler::new(Arc::clone(&transition_port), executor, scheduler_config).start();
+        scheduler_from_turn(Arc::clone(&transition_port), executor, scheduler_config).start();
 
     let turn_scope = TurnScope::new(
         tenant_id.clone(),

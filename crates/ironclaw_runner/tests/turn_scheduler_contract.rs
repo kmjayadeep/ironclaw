@@ -20,14 +20,14 @@ use ironclaw_runner::turn_scheduler::{
 };
 use ironclaw_turns::test_support::in_memory_turn_state_store;
 use ironclaw_turns::{
-    AcceptedMessageRef, CancelRunRequest, CancelRunResponse, DefaultTurnCoordinator,
-    GetRunStateRequest, IdempotencyKey, NoopTurnRunWakeNotifier, ReplyTargetBindingRef,
-    ResumeTurnRequest, ResumeTurnResponse, RunProfileRequest, SanitizedCancelReason,
-    SourceBindingRef, SpawnTreeReservation, SubmitChildRunRequest, SubmitTurnRequest,
-    SubmitTurnResponse, TurnActor, TurnCoordinator, TurnError, TurnRunId, TurnRunRecord,
-    TurnRunState, TurnRunWake, TurnRunWakeNotifier, TurnRunWakeNotifyError, TurnRunnerId,
-    TurnScope, TurnSpawnTreeStateStore, TurnStateRowStore, TurnStateStore, TurnStateStoreLimits,
-    TurnStatus,
+    AcceptedMessageRef, AgentTurnProcessTransitionAdapter, CancelRunRequest, CancelRunResponse,
+    DefaultTurnCoordinator, GetRunStateRequest, IdempotencyKey, NoopTurnRunWakeNotifier,
+    ReplyTargetBindingRef, ResumeTurnRequest, ResumeTurnResponse, RunProfileRequest,
+    SanitizedCancelReason, SourceBindingRef, SpawnTreeReservation, SubmitChildRunRequest,
+    SubmitTurnRequest, SubmitTurnResponse, TurnActor, TurnCoordinator, TurnError, TurnRunId,
+    TurnRunRecord, TurnRunState, TurnRunWake, TurnRunWakeNotifier, TurnRunWakeNotifyError,
+    TurnRunnerId, TurnScope, TurnSpawnTreeStateStore, TurnStateRowStore, TurnStateStore,
+    TurnStateStoreLimits, TurnStatus,
     runner::{
         ApplyValidatedLoopExitRequest, BlockRunRequest, CancelRunCompletionRequest,
         ClaimRunRequest, ClaimedTurnRun, CompleteRunRequest, FailRunRequest, HeartbeatRequest,
@@ -36,6 +36,18 @@ use ironclaw_turns::{
     },
 };
 use tokio::{sync::Notify, time::timeout};
+
+fn scheduler_from_turn(
+    transitions: Arc<dyn TurnRunTransitionPort>,
+    executor: Arc<dyn TurnRunExecutor>,
+    config: TurnRunSchedulerConfig,
+) -> TurnRunScheduler {
+    TurnRunScheduler::new_with_process_transition(
+        Arc::new(AgentTurnProcessTransitionAdapter::new(transitions)),
+        executor,
+        config,
+    )
+}
 
 #[derive(Default)]
 struct CompletingExecutor {
@@ -895,7 +907,7 @@ async fn scheduler_uses_stable_runner_id_across_claims() {
     let transitions = Arc::new(ClaimRecordingTransitions::new(Arc::clone(&store)));
     let transition_port: Arc<dyn TurnRunTransitionPort> = transitions.clone();
     let executor = Arc::new(CompletingExecutor::default());
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         transition_port,
         executor.clone(),
         fast_config()
@@ -932,7 +944,7 @@ async fn production_services_scheduler_and_coordinator_execute_turn_end_to_end()
     let executor = Arc::new(CompletingExecutor::default());
     let executor_port: Arc<dyn TurnRunExecutor> = executor.clone();
     let transition_port: Arc<dyn TurnRunTransitionPort> = store.clone();
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         transition_port,
         executor_port,
         fast_config().with_poll_interval(Duration::from_secs(60)),
@@ -969,7 +981,7 @@ async fn scheduler_executor_emits_thread_run_correlated_operator_log() {
     let store = Arc::new(in_memory_turn_state_store());
     let transitions: Arc<dyn TurnRunTransitionPort> = store.clone();
     let executor = Arc::new(CompletingExecutor::default());
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         Arc::clone(&transitions),
         executor.clone(),
         fast_config().with_poll_interval(Duration::from_secs(60)),
@@ -1017,7 +1029,7 @@ async fn scheduler_completes_multiple_submitted_threads_end_to_end() {
     let store = Arc::new(in_memory_turn_state_store());
     let transitions: Arc<dyn TurnRunTransitionPort> = store.clone();
     let executor = Arc::new(CompletingExecutor::default());
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         Arc::clone(&transitions),
         executor.clone(),
         fast_config()
@@ -1046,7 +1058,7 @@ async fn fake_wake_without_queued_run_does_not_execute() {
     let store = Arc::new(in_memory_turn_state_store());
     let transitions: Arc<dyn TurnRunTransitionPort> = store.clone();
     let executor = Arc::new(CompletingExecutor::default());
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         Arc::clone(&transitions),
         executor.clone(),
         fast_config().with_poll_interval(Duration::from_secs(60)),
@@ -1072,7 +1084,7 @@ async fn stale_wake_after_completion_does_not_reexecute_run() {
     let store = Arc::new(in_memory_turn_state_store());
     let transitions: Arc<dyn TurnRunTransitionPort> = store.clone();
     let executor = Arc::new(CompletingExecutor::default());
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         Arc::clone(&transitions),
         executor.clone(),
         fast_config().with_poll_interval(Duration::from_secs(60)),
@@ -1108,7 +1120,7 @@ async fn wake_notifier_reports_delivery_unavailable_after_scheduler_shutdown() {
     let store = Arc::new(in_memory_turn_state_store());
     let transitions: Arc<dyn TurnRunTransitionPort> = store.clone();
     let executor = Arc::new(CompletingExecutor::default());
-    let scheduler = TurnRunScheduler::new(Arc::clone(&transitions), executor, fast_config());
+    let scheduler = scheduler_from_turn(Arc::clone(&transitions), executor, fast_config());
     let handle = scheduler.start();
     let notifier = handle.wake_notifier();
 
@@ -1125,7 +1137,7 @@ async fn claim_errors_coalesce_wakes_during_backoff() {
     let transitions = Arc::new(FailingClaimTransitions::default());
     let transition_port: Arc<dyn TurnRunTransitionPort> = transitions.clone();
     let executor = Arc::new(CompletingExecutor::default());
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         transition_port,
         executor,
         fast_config()
@@ -1169,7 +1181,7 @@ async fn wake_notifier_drains_submitted_run() {
     let store = Arc::new(in_memory_turn_state_store());
     let transitions: Arc<dyn TurnRunTransitionPort> = store.clone();
     let executor = Arc::new(CompletingExecutor::default());
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         Arc::clone(&transitions),
         executor.clone(),
         fast_config().with_poll_interval(Duration::from_secs(60)),
@@ -1198,8 +1210,7 @@ async fn duplicate_wakes_claim_run_once() {
     let transitions: Arc<dyn TurnRunTransitionPort> = store.clone();
     let gate = Arc::new(Notify::new());
     let executor = Arc::new(CompletingExecutor::with_gate(Arc::clone(&gate)));
-    let scheduler =
-        TurnRunScheduler::new(Arc::clone(&transitions), executor.clone(), fast_config());
+    let scheduler = scheduler_from_turn(Arc::clone(&transitions), executor.clone(), fast_config());
     let handle = scheduler.start();
     let coordinator =
         DefaultTurnCoordinator::new(store.clone()).with_wake_notifier(handle.wake_notifier());
@@ -1223,7 +1234,7 @@ async fn shutdown_aborts_in_flight_executor_tasks() {
     let store = Arc::new(in_memory_turn_state_store());
     let transitions: Arc<dyn TurnRunTransitionPort> = store.clone();
     let executor = Arc::new(HangingExecutor::default());
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         Arc::clone(&transitions),
         executor.clone(),
         fast_config().with_poll_interval(Duration::from_secs(60)),
@@ -1252,7 +1263,7 @@ async fn shutdown_relinquishes_in_flight_runs_to_queued() {
     let transitions: Arc<dyn TurnRunTransitionPort> = store.clone();
     // HangingExecutor blocks indefinitely so the run stays Running through shutdown.
     let executor = Arc::new(HangingExecutor::default());
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         Arc::clone(&transitions),
         executor.clone(),
         fast_config().with_poll_interval(Duration::from_secs(60)),
@@ -1305,7 +1316,7 @@ async fn drop_without_shutdown_relinquishes_in_flight_run_to_queued() {
     // until the task is aborted, giving the shutdown drain a live in-flight
     // run to relinquish.
     let executor = Arc::new(HangingExecutor::default());
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         Arc::clone(&transitions),
         executor.clone(),
         fast_config().with_poll_interval(Duration::from_secs(60)),
@@ -1369,7 +1380,7 @@ async fn start_with_channel_shares_notifier_with_scheduler_loop() {
     let cap = fast_config().wake_channel_capacity();
     let (notifier, channel) = SchedulerTurnRunWakeNotifier::channel(cap);
 
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         Arc::clone(&transitions),
         executor.clone(),
         fast_config().with_poll_interval(Duration::from_secs(60)),
@@ -1403,8 +1414,7 @@ async fn poller_recovers_queued_run_after_missed_wake() {
     let store = Arc::new(in_memory_turn_state_store());
     let transitions: Arc<dyn TurnRunTransitionPort> = store.clone();
     let executor = Arc::new(CompletingExecutor::default());
-    let scheduler =
-        TurnRunScheduler::new(Arc::clone(&transitions), executor.clone(), fast_config());
+    let scheduler = scheduler_from_turn(Arc::clone(&transitions), executor.clone(), fast_config());
     let handle = scheduler.start();
     let coordinator = DefaultTurnCoordinator::new(store.clone())
         .with_wake_notifier(Arc::new(NoopTurnRunWakeNotifier));
@@ -1424,7 +1434,7 @@ async fn executor_completion_rearms_drain_without_waiting_for_poll() {
     let transitions: Arc<dyn TurnRunTransitionPort> = store.clone();
     let gate = Arc::new(Notify::new());
     let executor = Arc::new(CompletingExecutor::with_gate(Arc::clone(&gate)));
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         Arc::clone(&transitions),
         executor.clone(),
         fast_config()
@@ -1461,8 +1471,7 @@ async fn executor_error_fails_run_instead_of_retrying() {
     let store = Arc::new(in_memory_turn_state_store());
     let transitions: Arc<dyn TurnRunTransitionPort> = store.clone();
     let executor = Arc::new(FailingExecutor::default());
-    let scheduler =
-        TurnRunScheduler::new(Arc::clone(&transitions), executor.clone(), fast_config());
+    let scheduler = scheduler_from_turn(Arc::clone(&transitions), executor.clone(), fast_config());
     let handle = scheduler.start();
     let coordinator =
         DefaultTurnCoordinator::new(store.clone()).with_wake_notifier(handle.wake_notifier());
@@ -1501,8 +1510,7 @@ async fn executor_panic_fails_run() {
     let store = Arc::new(in_memory_turn_state_store());
     let transitions: Arc<dyn TurnRunTransitionPort> = store.clone();
     let executor = Arc::new(PanickingExecutor::default());
-    let scheduler =
-        TurnRunScheduler::new(Arc::clone(&transitions), executor.clone(), fast_config());
+    let scheduler = scheduler_from_turn(Arc::clone(&transitions), executor.clone(), fast_config());
     let handle = scheduler.start();
     let coordinator =
         DefaultTurnCoordinator::new(store.clone()).with_wake_notifier(handle.wake_notifier());
@@ -1548,7 +1556,7 @@ async fn scheduler_heartbeats_long_running_executor_until_completion() {
     let transition_port: Arc<dyn TurnRunTransitionPort> = transitions.clone();
     let gate = Arc::new(Notify::new());
     let executor = Arc::new(CompletingExecutor::with_gate(Arc::clone(&gate)));
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         transition_port,
         executor.clone(),
         fast_config()
@@ -1586,7 +1594,7 @@ async fn chaos_scheduler_recovers_after_transient_claim_and_heartbeat_drops() {
     let transition_port: Arc<dyn TurnRunTransitionPort> = chaos.clone();
     let gate = Arc::new(Notify::new());
     let executor = Arc::new(CompletingExecutor::with_gate(Arc::clone(&gate)));
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         transition_port,
         executor.clone(),
         fast_config()
@@ -1633,7 +1641,7 @@ async fn scheduler_tolerates_transient_heartbeat_timeout_until_executor_complete
     let transition_port: Arc<dyn TurnRunTransitionPort> = transitions.clone();
     let gate = Arc::new(Notify::new());
     let executor = Arc::new(CompletingExecutor::with_gate(Arc::clone(&gate)));
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         transition_port,
         executor.clone(),
         fast_config()
@@ -1667,7 +1675,7 @@ async fn chaos_scheduler_retries_terminal_failure_recording_after_transient_stor
     );
     let transition_port: Arc<dyn TurnRunTransitionPort> = chaos.clone();
     let executor = Arc::new(FailingExecutor::default());
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         transition_port,
         executor.clone(),
         fast_config()
@@ -1724,7 +1732,7 @@ async fn chaos_scheduler_relinquishes_run_when_terminal_failure_recording_is_exh
     );
     let transition_port: Arc<dyn TurnRunTransitionPort> = chaos.clone();
     let executor = Arc::new(FailingExecutor::default());
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         transition_port,
         executor.clone(),
         fast_config()
@@ -1767,7 +1775,7 @@ async fn scheduler_keeps_executor_alive_during_sustained_heartbeat_timeouts() {
     let transition_port: Arc<dyn TurnRunTransitionPort> = transitions.clone();
     let gate = Arc::new(Notify::new());
     let executor = Arc::new(CompletingExecutor::with_gate(Arc::clone(&gate)));
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         transition_port,
         executor.clone(),
         fast_config()
@@ -1811,7 +1819,7 @@ async fn scheduler_records_failure_after_repeated_heartbeat_errors() {
     );
     let transition_port: Arc<dyn TurnRunTransitionPort> = chaos.clone();
     let executor = Arc::new(HangingExecutor::default());
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         transition_port,
         executor.clone(),
         fast_config()
@@ -1862,7 +1870,7 @@ async fn canceled_hanging_executor_lease_expires_to_cancelled() {
     );
     let transitions: Arc<dyn TurnRunTransitionPort> = store.clone();
     let executor = Arc::new(HangingExecutor::default());
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         Arc::clone(&transitions),
         executor.clone(),
         fast_config()
@@ -1912,7 +1920,7 @@ async fn expired_lease_reconciler_fails_running_run_at_crash_retry_bound() {
     );
     let transitions: Arc<dyn TurnRunTransitionPort> = store.clone();
     let executor = Arc::new(CompletingExecutor::default());
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         Arc::clone(&transitions),
         executor,
         fast_config().with_poll_interval(Duration::from_secs(60)),
@@ -2081,7 +2089,7 @@ async fn shutdown_completes_promptly_after_stalled_claim_unblocks() {
     });
     let transition_port: Arc<dyn TurnRunTransitionPort> = transitions;
     let executor = Arc::new(CompletingExecutor::default());
-    let scheduler = TurnRunScheduler::new(
+    let scheduler = scheduler_from_turn(
         transition_port,
         executor,
         fast_config()

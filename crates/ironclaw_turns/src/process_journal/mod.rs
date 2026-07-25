@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use ironclaw_host_api::{ProcessId, ResourceScope, SYSTEM_RESERVED_ID};
 #[cfg(feature = "test-support")]
-use ironclaw_processes::{ClaimProcessRequest, ClaimProcessesRequest, ProcessTransitionPort};
+use ironclaw_processes::{ClaimProcessesRequest, ProcessTransitionPort};
 use ironclaw_processes::{
     ClaimedProcess, FailProcessRequest, JournaledProcessSnapshot, ProcessCheckpointRef,
     ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind, ProcessJournalPage,
@@ -24,7 +24,7 @@ use ironclaw_processes::{
 };
 
 #[cfg(feature = "test-support")]
-use crate::runner::{ClaimRunRequest, ClaimRunsRequest, TurnRunTransitionPort};
+use crate::runner::{ClaimRunsRequest, TurnRunTransitionPort};
 use crate::{
     AcceptedMessageRef, BlockedReason, GateKind, GateResumeDisposition, ProductTurnContext,
     ReplyTargetBindingRef, ResolvedRunProfile, RunProfileId, RunProfileVersion, SourceBindingRef,
@@ -473,10 +473,6 @@ impl AgentTurnProcessTransitionAdapter {
     pub fn new(inner: Arc<dyn TurnRunTransitionPort>) -> Self {
         Self { inner }
     }
-
-    pub fn inner(&self) -> &Arc<dyn TurnRunTransitionPort> {
-        &self.inner
-    }
 }
 
 #[derive(Clone)]
@@ -575,21 +571,6 @@ fn turn_recover_request_from_process(
 #[cfg(feature = "test-support")]
 impl ProcessTransitionPort for AgentTurnProcessTransitionAdapter {
     type Error = TurnError;
-
-    async fn claim_next_process(
-        &self,
-        request: ClaimProcessRequest,
-    ) -> Result<Option<ClaimedProcess>, Self::Error> {
-        let claimed = self
-            .inner
-            .claim_next_run(ClaimRunRequest {
-                runner_id: turn_runner_id_from_worker(&request.worker_id)?,
-                lease_token: turn_lease_token_from_process(&request.lease_token)?,
-                scope_filter: turn_scope_filter_from_process(request.scope_filter)?,
-            })
-            .await?;
-        Ok(claimed.as_ref().map(ClaimedProcess::from))
-    }
 
     async fn claim_next_processes(
         &self,

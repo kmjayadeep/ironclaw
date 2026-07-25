@@ -18,10 +18,10 @@ use chrono::Utc;
 use ironclaw_host_api::{AgentId, ProjectId, TenantId, ThreadId, UserId};
 use ironclaw_processes::ProcessTransitionPort;
 use ironclaw_turns::{
-    AcceptedMessageRef, EventCursor, InMemoryRunProfileResolver, ReplyTargetBindingRef,
-    RunProfileId, RunProfileResolutionRequest, RunProfileResolver, RunProfileVersion,
-    SourceBindingRef, TurnActor, TurnError, TurnId, TurnLeaseToken, TurnRunId, TurnRunState,
-    TurnRunWake, TurnRunnerId, TurnScope, TurnStatus,
+    AcceptedMessageRef, AgentTurnProcessTransitionAdapter, EventCursor, InMemoryRunProfileResolver,
+    ReplyTargetBindingRef, RunProfileId, RunProfileResolutionRequest, RunProfileResolver,
+    RunProfileVersion, SourceBindingRef, TurnActor, TurnError, TurnId, TurnLeaseToken, TurnRunId,
+    TurnRunState, TurnRunWake, TurnRunnerId, TurnScope, TurnStatus,
     runner::{
         ApplyValidatedLoopExitRequest, BlockRunRequest, CancelRunCompletionRequest,
         ClaimRunRequest, ClaimedTurnRun, CompleteRunRequest, FailRunRequest, HeartbeatRequest,
@@ -38,6 +38,18 @@ fn unused_transition() -> Result<TurnRunState, TurnError> {
     Err(TurnError::Unavailable {
         reason: "unused".to_string(),
     })
+}
+
+fn scheduler_from_turn(
+    transitions: Arc<dyn TurnRunTransitionPort>,
+    executor: Arc<dyn TurnRunExecutor>,
+    config: TurnRunSchedulerConfig,
+) -> TurnRunScheduler {
+    TurnRunScheduler::new_with_process_transition(
+        Arc::new(AgentTurnProcessTransitionAdapter::new(transitions)),
+        executor,
+        config,
+    )
 }
 
 /// A `TurnRunTransitionPort` that claims nothing and no-ops everything else.
@@ -444,7 +456,7 @@ async fn scheduler_batches_claims_up_to_available_permits() {
         .with_poll_interval(Duration::from_secs(3600))
         .with_lease_recovery_interval(Duration::from_secs(3600))
         .with_runner_heartbeat_interval(Duration::from_secs(3600));
-    let scheduler = TurnRunScheduler::new(transitions.clone(), executor.clone(), config);
+    let scheduler = scheduler_from_turn(transitions.clone(), executor.clone(), config);
     let handle = scheduler.start();
 
     use ironclaw_turns::TurnRunWakeNotifier;
@@ -504,7 +516,7 @@ async fn heartbeat_does_not_deadlock_executor_holding_transition_lock() {
         .with_poll_interval(Duration::from_secs(3600))
         .with_lease_recovery_interval(Duration::from_secs(3600))
         .with_runner_heartbeat_interval(Duration::from_millis(250));
-    let scheduler = TurnRunScheduler::new(transitions.clone(), executor, config);
+    let scheduler = scheduler_from_turn(transitions.clone(), executor, config);
     let handle = scheduler.start();
 
     use ironclaw_turns::TurnRunWakeNotifier;
@@ -555,7 +567,7 @@ async fn is_stopped_reflects_scheduler_lifecycle() {
         .with_lease_recovery_interval(std::time::Duration::from_secs(3600));
 
     let scheduler =
-        TurnRunScheduler::new(Arc::new(NoopTransitionPort), Arc::new(NoopExecutor), config);
+        scheduler_from_turn(Arc::new(NoopTransitionPort), Arc::new(NoopExecutor), config);
     let handle = scheduler.start();
 
     // Spawn a task that holds the handle, checks is_stopped(), shuts down,
@@ -602,7 +614,7 @@ async fn drop_without_shutdown_sends_shutdown_signal() {
         .with_lease_recovery_interval(std::time::Duration::from_secs(3600));
 
     let scheduler =
-        TurnRunScheduler::new(Arc::new(NoopTransitionPort), Arc::new(NoopExecutor), config);
+        scheduler_from_turn(Arc::new(NoopTransitionPort), Arc::new(NoopExecutor), config);
     let handle = scheduler.start();
 
     // Clone the cancellation token so we can observe it after the drop.
@@ -680,7 +692,7 @@ async fn drop_with_saturated_queue_still_cancels_token() {
     }
 
     let scheduler =
-        TurnRunScheduler::new(Arc::new(NoopTransitionPort), Arc::new(NoopExecutor), config);
+        scheduler_from_turn(Arc::new(NoopTransitionPort), Arc::new(NoopExecutor), config);
     let handle = scheduler.start_with_channel(notifier, channel);
 
     // Clone the token so we can observe it after the drop.

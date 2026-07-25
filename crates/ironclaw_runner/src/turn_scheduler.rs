@@ -11,10 +11,6 @@ use ironclaw_processes::{
     ClaimProcessesRequest, FailProcessRequest, ProcessLeaseRequest, ProcessLeaseToken,
     ProcessTransitionPort, ProcessWorkerId, RecoverExpiredProcessLeasesRequest,
 };
-#[cfg(any(test, feature = "test-support"))]
-use ironclaw_turns::AgentTurnProcessTransitionAdapter;
-#[cfg(any(test, feature = "test-support"))]
-use ironclaw_turns::runner::TurnRunTransitionPort;
 use ironclaw_turns::{
     SanitizedFailure, TurnError, TurnLeaseToken, TurnRunId, TurnRunWake, TurnRunWakeNotifier,
     TurnRunWakeNotifyError, TurnRunnerId, TurnScope, claimed_turn_run_from_process_claim,
@@ -220,18 +216,6 @@ pub struct TurnRunScheduler {
 }
 
 impl TurnRunScheduler {
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn new(
-        transitions: Arc<dyn TurnRunTransitionPort>,
-        executor: Arc<dyn TurnRunExecutor>,
-        config: TurnRunSchedulerConfig,
-    ) -> Self {
-        let process_transitions = Arc::new(AgentTurnProcessTransitionAdapter::new(Arc::clone(
-            &transitions,
-        )));
-        Self::new_with_process_transition(process_transitions, executor, config)
-    }
-
     pub fn new_with_process_transition(
         process_transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
         executor: Arc<dyn TurnRunExecutor>,

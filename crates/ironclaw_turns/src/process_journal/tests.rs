@@ -373,13 +373,14 @@ async fn process_transition_adapter_drives_real_turn_store_transitions() {
     let lease_token =
         ProcessLeaseToken::from_trusted(crate::TurnLeaseToken::new().to_wire_string());
     let claimed = adapter
-        .claim_next_process(ClaimProcessRequest {
+        .claim_next_processes(ClaimProcessesRequest {
             worker_id: worker_id.clone(),
-            lease_token: lease_token.clone(),
             scope_filter: None,
+            max_processes: 1,
         })
         .await
         .expect("claim process")
+        .pop()
         .expect("claimed process");
     assert_eq!(
         claimed.state.process_id,

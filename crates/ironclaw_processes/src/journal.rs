@@ -179,14 +179,6 @@ pub struct ProcessLeaseSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClaimProcessRequest {
-    pub worker_id: ProcessWorkerId,
-    pub lease_token: ProcessLeaseToken,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope_filter: Option<ResourceScope>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaimProcessesRequest {
     pub worker_id: ProcessWorkerId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -513,31 +505,10 @@ pub enum ProcessOutcome {
 pub trait ProcessTransitionPort: Send + Sync {
     type Error: Send + Sync + 'static;
 
-    async fn claim_next_process(
-        &self,
-        request: ClaimProcessRequest,
-    ) -> Result<Option<ClaimedProcess>, Self::Error>;
-
     async fn claim_next_processes(
         &self,
         request: ClaimProcessesRequest,
-    ) -> Result<Vec<ClaimedProcess>, Self::Error> {
-        let mut claimed = Vec::new();
-        for _ in 0..request.max_processes {
-            let next = self
-                .claim_next_process(ClaimProcessRequest {
-                    worker_id: request.worker_id.clone(),
-                    lease_token: ProcessLeaseToken::from_trusted(uuid_like_token()),
-                    scope_filter: request.scope_filter.clone(),
-                })
-                .await?;
-            let Some(next) = next else {
-                break;
-            };
-            claimed.push(next);
-        }
-        Ok(claimed)
-    }
+    ) -> Result<Vec<ClaimedProcess>, Self::Error>;
 
     async fn heartbeat_process(
         &self,
@@ -583,10 +554,6 @@ pub enum ProcessJournalError {
     RefTooLong { kind: &'static str },
     #[error("invalid {kind} ref: control characters are not allowed")]
     ControlCharacter { kind: &'static str },
-}
-
-fn uuid_like_token() -> String {
-    ironclaw_host_api::ProcessId::new().as_uuid().to_string()
 }
 
 fn validate_opaque_ref(kind: &'static str, value: &str) -> Result<(), ProcessJournalError> {

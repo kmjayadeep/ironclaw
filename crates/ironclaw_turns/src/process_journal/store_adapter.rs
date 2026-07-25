@@ -3,12 +3,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use ironclaw_host_api::ResourceScope;
 use ironclaw_processes::{
-    ClaimProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
-    GetProcessSnapshotRequest, JournaledProcessSnapshot, ProcessGateQuery, ProcessGateQuerySource,
-    ProcessGateRecord, ProcessJournalCursor, ProcessJournalPage, ProcessJournalSource,
-    ProcessJournalStoreError, ProcessLeaseRequest, ProcessLifecycleLookupBatchRequest,
-    ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessTransitionPort,
-    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, SuspendProcessRequest,
+    ClaimProcessesRequest, ClaimedProcess, FailProcessRequest, GetProcessSnapshotRequest,
+    JournaledProcessSnapshot, ProcessGateQuery, ProcessGateQuerySource, ProcessGateRecord,
+    ProcessJournalCursor, ProcessJournalPage, ProcessJournalSource, ProcessJournalStoreError,
+    ProcessLeaseRequest, ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult,
+    ProcessLifecycleLookupSource, ProcessTransitionPort, RecoverExpiredProcessLeasesRequest,
+    RecoverExpiredProcessLeasesResponse, SuspendProcessRequest,
 };
 
 use crate::TurnError;
@@ -39,16 +39,6 @@ impl ProcessJournalStoreTurnAdapter {
 #[async_trait]
 impl ProcessTransitionPort for ProcessJournalStoreTurnAdapter {
     type Error = TurnError;
-
-    async fn claim_next_process(
-        &self,
-        request: ClaimProcessRequest,
-    ) -> Result<Option<ClaimedProcess>, Self::Error> {
-        self.transitions
-            .claim_next_process(request)
-            .await
-            .map_err(turn_error_from_process_journal_store_error)
-    }
 
     async fn claim_next_processes(
         &self,

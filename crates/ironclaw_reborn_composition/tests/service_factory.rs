@@ -46,6 +46,7 @@ use ironclaw_secrets::SecretMaterial;
 use ironclaw_trust::{AdminConfig, AdminEntry, HostTrustAssignment, HostTrustPolicy};
 use ironclaw_trust::{AuthorityCeiling, EffectiveTrustClass, TrustDecision, TrustProvenance};
 use ironclaw_turns::{
+    AgentTurnProcessTransitionAdapter,
     runner::{ClaimedTurnRun, TurnRunTransitionPort},
     test_support::in_memory_turn_state_store,
 };
@@ -56,6 +57,18 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 static SECRETS_MASTER_KEY_ENV_LOCK: Mutex<()> = Mutex::const_new(());
+
+fn scheduler_from_turn(
+    transitions: Arc<dyn TurnRunTransitionPort>,
+    executor: Arc<dyn TurnRunExecutor>,
+    config: TurnRunSchedulerConfig,
+) -> TurnRunScheduler {
+    TurnRunScheduler::new_with_process_transition(
+        Arc::new(AgentTurnProcessTransitionAdapter::new(transitions)),
+        executor,
+        config,
+    )
+}
 
 async fn build_runtime_for_test(
     input: RebornHostBindings,
@@ -476,7 +489,7 @@ fn live_wake_notifier() -> (Arc<SchedulerTurnRunWakeNotifier>, TurnRunSchedulerH
     let transitions: Arc<dyn TurnRunTransitionPort> = Arc::new(in_memory_turn_state_store());
     let executor: Arc<dyn TurnRunExecutor> = Arc::new(NoopTurnRunExecutor);
     let handle =
-        TurnRunScheduler::new(transitions, executor, TurnRunSchedulerConfig::default()).start();
+        scheduler_from_turn(transitions, executor, TurnRunSchedulerConfig::default()).start();
     (handle.wake_notifier(), handle)
 }
 

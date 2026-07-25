@@ -113,17 +113,17 @@ use ironclaw_trust::{
 use ironclaw_turns::test_support::in_memory_turn_state_store;
 use ironclaw_turns::{
     AcceptedMessageRef, AgentLoopDriver, AgentLoopDriverDescriptor, AgentLoopDriverError,
-    AgentLoopDriverResumeRequest, AgentLoopDriverRunRequest, CancelRunRequest, CancelRunResponse,
-    CheckpointStateStorePort, DefaultTurnCoordinator, EventCursor, GetCheckpointStateRequest,
-    GetLoopCheckpointRequest, GetRunStateRequest, IdempotencyKey, InMemoryRunProfileResolver,
-    InMemoryTurnEventSink, LoopBlocked, LoopBlockedKind, LoopCheckpointRecord, LoopCheckpointStore,
-    LoopCompleted, LoopCompletionKind, LoopExit, LoopExitId, LoopGateRef, LoopMessageRef,
-    LoopResultRef, PutCheckpointStateRequest, PutLoopCheckpointRequest, ReplyTargetBindingRef,
-    ResumeTurnRequest, RunProfileId, RunProfileRequest, RunProfileResolutionRequest,
-    RunProfileResolver, RunProfileVersion, SourceBindingRef, SubmitTurnRequest, SubmitTurnResponse,
-    TurnActor, TurnAdmissionPolicy, TurnCoordinator, TurnError, TurnId, TurnLeaseToken, TurnRunId,
-    TurnRunState, TurnRunnerId, TurnScope, TurnSpawnTreeStateStore, TurnStateRowStore,
-    TurnStateStore, TurnStatus,
+    AgentLoopDriverResumeRequest, AgentLoopDriverRunRequest, AgentTurnProcessTransitionAdapter,
+    CancelRunRequest, CancelRunResponse, CheckpointStateStorePort, DefaultTurnCoordinator,
+    EventCursor, GetCheckpointStateRequest, GetLoopCheckpointRequest, GetRunStateRequest,
+    IdempotencyKey, InMemoryRunProfileResolver, InMemoryTurnEventSink, LoopBlocked,
+    LoopBlockedKind, LoopCheckpointRecord, LoopCheckpointStore, LoopCompleted, LoopCompletionKind,
+    LoopExit, LoopExitId, LoopGateRef, LoopMessageRef, LoopResultRef, PutCheckpointStateRequest,
+    PutLoopCheckpointRequest, ReplyTargetBindingRef, ResumeTurnRequest, RunProfileId,
+    RunProfileRequest, RunProfileResolutionRequest, RunProfileResolver, RunProfileVersion,
+    SourceBindingRef, SubmitTurnRequest, SubmitTurnResponse, TurnActor, TurnAdmissionPolicy,
+    TurnCoordinator, TurnError, TurnId, TurnLeaseToken, TurnRunId, TurnRunState, TurnRunnerId,
+    TurnScope, TurnSpawnTreeStateStore, TurnStateRowStore, TurnStateStore, TurnStatus,
     run_profile::{
         AgentLoopDriverHost, AgentLoopHostError, AgentLoopHostErrorKind, AssistantReply,
         BatchPolicyKind, CapabilityDescriptorView, CapabilityInputRef, CapabilitySurfaceVersion,
@@ -153,6 +153,18 @@ use ironclaw_turns::{
 };
 use serde_json::{Value, json};
 use tokio::sync::Notify;
+
+fn scheduler_from_turn(
+    transitions: Arc<dyn TurnRunTransitionPort>,
+    executor: Arc<dyn ironclaw_runner::turn_scheduler::TurnRunExecutor>,
+    config: TurnRunSchedulerConfig,
+) -> TurnRunScheduler {
+    TurnRunScheduler::new_with_process_transition(
+        Arc::new(AgentTurnProcessTransitionAdapter::new(transitions)),
+        executor,
+        config,
+    )
+}
 
 fn driver_requirements_for(
     descriptor: &AgentLoopDriverDescriptor,
@@ -1802,7 +1814,7 @@ async fn turn_runner_worker_completes_queued_run_after_turn_store_reopen() {
             as Arc<dyn HostFactory>,
         None,
     ));
-    let scheduler_handle = TurnRunScheduler::new(
+    let scheduler_handle = scheduler_from_turn(
         reopened_turn_store.clone() as Arc<dyn ironclaw_turns::runner::TurnRunTransitionPort>,
         executor,
         TurnRunSchedulerConfig::default()
@@ -1916,7 +1928,7 @@ async fn turn_runner_worker_records_after_turn_memory_on_completed_run() {
         )
         .with_after_turn_memory_recorder(recorder),
     );
-    let scheduler_handle = TurnRunScheduler::new(
+    let scheduler_handle = scheduler_from_turn(
         turn_store.clone() as Arc<dyn ironclaw_turns::runner::TurnRunTransitionPort>,
         executor,
         TurnRunSchedulerConfig::default()
@@ -2162,7 +2174,7 @@ async fn turn_runner_worker_emits_thread_run_correlated_operator_log() {
             as Arc<dyn HostFactory>,
         None,
     ));
-    let scheduler_handle = TurnRunScheduler::new(
+    let scheduler_handle = scheduler_from_turn(
         turn_store.clone() as Arc<dyn ironclaw_turns::runner::TurnRunTransitionPort>,
         executor,
         TurnRunSchedulerConfig::default()
@@ -2375,7 +2387,7 @@ async fn turn_runner_worker_completes_after_libsql_turn_and_thread_services_reop
         Arc::new(factory) as Arc<dyn HostFactory>,
         None,
     ));
-    let scheduler_handle = TurnRunScheduler::new(
+    let scheduler_handle = scheduler_from_turn(
         turn_store.clone() as Arc<dyn ironclaw_turns::runner::TurnRunTransitionPort>,
         executor,
         TurnRunSchedulerConfig::default()
@@ -2509,7 +2521,7 @@ async fn turn_runner_worker_drives_full_text_only_model_transcript_completion_af
             as Arc<dyn HostFactory>,
         None,
     ));
-    let scheduler_handle = TurnRunScheduler::new(
+    let scheduler_handle = scheduler_from_turn(
         turn_store.clone() as Arc<dyn ironclaw_turns::runner::TurnRunTransitionPort>,
         executor,
         TurnRunSchedulerConfig::default()
@@ -2629,7 +2641,7 @@ async fn turn_runner_worker_full_reborn_fails_when_checkpoint_state_disk_is_full
         Arc::new(factory) as Arc<dyn HostFactory>,
         None,
     ));
-    let scheduler_handle = TurnRunScheduler::new(
+    let scheduler_handle = scheduler_from_turn(
         turn_store.clone() as Arc<dyn ironclaw_turns::runner::TurnRunTransitionPort>,
         executor,
         full_reborn_chaos_scheduler_config(),
@@ -2712,7 +2724,7 @@ async fn turn_runner_worker_full_reborn_retry_recovers_after_transient_checkpoin
         Arc::new(factory) as Arc<dyn HostFactory>,
         None,
     ));
-    let scheduler_handle = TurnRunScheduler::new(
+    let scheduler_handle = scheduler_from_turn(
         turn_store.clone() as Arc<dyn ironclaw_turns::runner::TurnRunTransitionPort>,
         executor,
         full_reborn_chaos_scheduler_config(),
@@ -2819,7 +2831,7 @@ async fn turn_runner_worker_full_reborn_fails_cleanly_when_model_provider_is_off
         Arc::new(factory) as Arc<dyn HostFactory>,
         None,
     ));
-    let scheduler_handle = TurnRunScheduler::new(
+    let scheduler_handle = scheduler_from_turn(
         turn_store.clone() as Arc<dyn ironclaw_turns::runner::TurnRunTransitionPort>,
         executor,
         full_reborn_chaos_scheduler_config(),
@@ -2903,7 +2915,7 @@ async fn turn_runner_worker_full_reborn_completes_while_postgres_heartbeats_are_
         Arc::new(factory) as Arc<dyn HostFactory>,
         None,
     ));
-    let scheduler_handle = TurnRunScheduler::new(
+    let scheduler_handle = scheduler_from_turn(
         transitions.clone() as Arc<dyn ironclaw_turns::runner::TurnRunTransitionPort>,
         executor,
         full_reborn_chaos_scheduler_config()
@@ -2997,7 +3009,7 @@ async fn turn_runner_worker_full_reborn_continues_after_tool_network_outage() {
         Arc::new(host_factory) as Arc<dyn HostFactory>,
         None,
     ));
-    let scheduler_handle = TurnRunScheduler::new(
+    let scheduler_handle = scheduler_from_turn(
         turn_store.clone() as Arc<dyn ironclaw_turns::runner::TurnRunTransitionPort>,
         executor,
         full_reborn_chaos_scheduler_config(),
@@ -3121,7 +3133,7 @@ async fn turn_runner_worker_drives_script_capability_through_real_host_runtime()
         Arc::new(factory) as Arc<dyn HostFactory>,
         None,
     ));
-    let scheduler_handle = TurnRunScheduler::new(
+    let scheduler_handle = scheduler_from_turn(
         turn_store.clone() as Arc<dyn ironclaw_turns::runner::TurnRunTransitionPort>,
         executor,
         TurnRunSchedulerConfig::default()
@@ -3235,7 +3247,7 @@ async fn turn_runner_rejects_driver_fabricated_approval_block_without_durable_ga
             as Arc<dyn HostFactory>,
         None,
     ));
-    let scheduler_handle = TurnRunScheduler::new(
+    let scheduler_handle = scheduler_from_turn(
         turn_store.clone() as Arc<dyn ironclaw_turns::runner::TurnRunTransitionPort>,
         executor,
         TurnRunSchedulerConfig::default()
@@ -3317,7 +3329,7 @@ async fn turn_runner_blocks_on_approval_then_coordinator_resume_completes_same_r
             as Arc<dyn HostFactory>,
         None,
     ));
-    let scheduler_handle = TurnRunScheduler::new(
+    let scheduler_handle = scheduler_from_turn(
         turn_store.clone() as Arc<dyn ironclaw_turns::runner::TurnRunTransitionPort>,
         executor,
         TurnRunSchedulerConfig::default()
@@ -3578,7 +3590,7 @@ async fn turn_runner_worker_fails_when_real_host_factory_rejects_claimed_scope()
         Arc::new(rejecting_factory) as Arc<dyn HostFactory>,
         None,
     ));
-    let scheduler_handle = TurnRunScheduler::new(
+    let scheduler_handle = scheduler_from_turn(
         turn_store.clone() as Arc<dyn ironclaw_turns::runner::TurnRunTransitionPort>,
         executor,
         TurnRunSchedulerConfig::default()
