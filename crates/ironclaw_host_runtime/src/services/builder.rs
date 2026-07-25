@@ -17,7 +17,7 @@ use super::{
     RunStateStorePort, RuntimeBackendHealth, RuntimeCredentialAccountResolver, RuntimeHttpEgress,
     RuntimeKind, RuntimeProcessPort, ScopedFilesystem, ScriptExecutor, SecretMode, SecretStorePort,
     SecurityAuditSink, SharedSecretStore, TenantSandboxProcessPort, TrustPolicy,
-    TurnRunWakeNotifier, TurnStateRowStore, TurnStateStore, WasmError, WasmRuntimeAdapter,
+    TurnRunWakeNotifier, TurnStateStore, WasmError, WasmRuntimeAdapter,
     WasmRuntimeCredentialProvider, WasmStagedRuntimeCredentials, WitToolHost, WitToolRuntimeConfig,
     build_reborn_event_stores, production_wiring_report, set_runtime_http_egress,
     set_tool_call_http_egress,
@@ -440,20 +440,6 @@ where
     /// [`RootFilesystem`] layer, not here.
     ///
     /// Replaces the legacy `with_libsql_turn_state_store` /
-    /// `with_postgres_turn_state_store` builders (deleted along with the
-    /// corresponding per-backend `Filesystem*Store` siblings — see
-    /// `docs/plans/2026-05-16-scoped-filesystem-tenant-isolation.md`).
-    pub fn with_filesystem_turn_state_store<FsBackend>(
-        self,
-        scoped_filesystem: Arc<ScopedFilesystem<FsBackend>>,
-    ) -> Self
-    where
-        FsBackend: RootFilesystem + 'static,
-    {
-        let store = Arc::new(TurnStateRowStore::new(scoped_filesystem));
-        self.with_turn_state(store)
-    }
-
     pub fn with_turn_run_wake_notifier<T>(mut self, notifier: Arc<T>) -> Self
     where
         T: TurnRunWakeNotifier + 'static,

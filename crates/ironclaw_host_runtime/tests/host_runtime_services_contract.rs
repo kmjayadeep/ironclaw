@@ -40,8 +40,9 @@ use ironclaw_host_runtime::{
     RuntimeWorkId, TenantSandboxProcessPort, builtin_first_party_handlers,
 };
 use ironclaw_processes::{
-    BackgroundProcessManager, ProcessError, ProcessHost, ProcessManager, ProcessResultStore,
-    ProcessResultStorePort, ProcessStatus, ProcessStore, ProcessStorePort,
+    BackgroundProcessManager, ProcessError, ProcessHost, ProcessJournalStore, ProcessManager,
+    ProcessResultStore, ProcessResultStorePort, ProcessRuntimePort, ProcessStatus, ProcessStore,
+    ProcessStorePort,
 };
 use ironclaw_reborn_event_store::{
     RebornEventStoreConfig, RebornEventStoreError, RebornProfile, build_reborn_event_stores,
@@ -57,9 +58,8 @@ use ironclaw_scripts::{ScriptRuntime, ScriptRuntimeConfig};
 use ironclaw_secrets::{InMemoryCredentialBroker, SecretMaterial, SecretStore, SecretStorePort};
 use ironclaw_triggers::InMemoryTriggerRepository;
 use ironclaw_turns::NoopTurnRunWakeNotifier;
-use ironclaw_turns::TurnStateRowStore;
 use ironclaw_turns::{
-    InMemoryRunProfileResolver, SubmitTurnResponse, TurnCoordinator, TurnStateStore,
+    AgentTurnProcessRuntime, InMemoryRunProfileResolver, SubmitTurnResponse, TurnCoordinator,
 };
 use ironclaw_wasm::{
     RecordingWasmHostHttp, WasmHttpResponse, WasmStagedRuntimeCredential,
@@ -90,6 +90,18 @@ fn assert_actor_policy_denied(outcome: RuntimeCapabilityOutcome) {
         }
         other => panic!("expected actor policy denial, got {other:?}"),
     }
+}
+
+fn process_backed_turn_state<F>(
+    filesystem: Arc<ironclaw_filesystem::ScopedFilesystem<F>>,
+) -> Arc<AgentTurnProcessRuntime>
+where
+    F: RootFilesystem + Send + Sync + 'static,
+{
+    let store = Arc::new(ProcessJournalStore::new(filesystem));
+    Arc::new(AgentTurnProcessRuntime::from_process_runtime(
+        store as Arc<dyn ProcessRuntimePort>,
+    ))
 }
 
 async fn assert_alice_run_status(
@@ -679,11 +691,11 @@ async fn production_root_filesystem_selection_accepts_libsql_root_filesystem() {
 }
 
 #[tokio::test]
-async fn production_turn_state_selection_accepts_filesystem_turn_state_store() {
+async fn production_turn_state_selection_accepts_process_backed_turn_state() {
     let db_dir = tempfile::tempdir().unwrap();
     let db_path = db_dir.path().join("turn-state.db");
     let db = Arc::new(libsql::Builder::new_local(db_path).build().await.unwrap());
-    let scoped = libsql_scoped_turns_fs(Arc::clone(&db)).await;
+    let scoped = libsql_scoped_processes_fs(Arc::clone(&db)).await;
 
     let services = HostRuntimeServices::new(
         Arc::new(registry_with_manifest(SCRIPT_MANIFEST)),
@@ -693,7 +705,7 @@ async fn production_turn_state_selection_accepts_filesystem_turn_state_store() {
         ironclaw_processes::in_memory_backed_process_services(),
         CapabilitySurfaceVersion::new("surface-v1").unwrap(),
     )
-    .with_filesystem_turn_state_store(scoped);
+    .with_turn_state(process_backed_turn_state(scoped));
 
     let report = services
         .validate_production_wiring(&ProductionWiringConfig::new([]))
@@ -703,14 +715,14 @@ async fn production_turn_state_selection_accepts_filesystem_turn_state_store() {
             ProductionWiringComponent::TurnState,
             ProductionWiringIssueKind::Missing
         ),
-        "TurnStateRowStore must satisfy production turn-state presence: {report:?}"
+        "process-backed turn projection must satisfy production turn-state presence: {report:?}"
     );
     assert!(
         !report.contains(
             ProductionWiringComponent::TurnState,
             ProductionWiringIssueKind::LocalOnlyImplementation
         ),
-        "TurnStateRowStore over LibSqlRootFilesystem must not be classified local-only: {report:?}"
+        "process-backed turn projection over LibSqlRootFilesystem must not be classified local-only: {report:?}"
     );
 }
 
@@ -720,7 +732,7 @@ async fn production_turn_coordinator_uses_configured_store_and_notifier() {
     let db_path = db_dir.path().join("turn-coordinator.db");
     let db = Arc::new(libsql::Builder::new_local(db_path).build().await.unwrap());
     let notifier = Arc::new(RecordingTurnRunWakeNotifier::default());
-    let scoped = libsql_scoped_turns_fs(Arc::clone(&db)).await;
+    let scoped = libsql_scoped_processes_fs(Arc::clone(&db)).await;
 
     let services = HostRuntimeServices::new(
         Arc::new(registry_with_manifest(SCRIPT_MANIFEST)),
@@ -730,7 +742,7 @@ async fn production_turn_coordinator_uses_configured_store_and_notifier() {
         ironclaw_processes::in_memory_backed_process_services(),
         CapabilitySurfaceVersion::new("surface-v1").unwrap(),
     )
-    .with_filesystem_turn_state_store(Arc::clone(&scoped))
+    .with_turn_state(process_backed_turn_state(Arc::clone(&scoped)))
     .with_run_profile_resolver(Arc::new(InMemoryRunProfileResolver::default()))
     .with_turn_run_wake_notifier(Arc::clone(&notifier));
 
@@ -741,12 +753,9 @@ async fn production_turn_coordinator_uses_configured_store_and_notifier() {
     let response = coordinator.submit_turn(request.clone()).await.unwrap();
     let SubmitTurnResponse::Accepted { run_id, .. } = response;
 
-    let reopened = TurnStateRowStore::new(scoped);
+    let reopened = process_backed_turn_state(scoped);
     let state = reopened
-        .get_run_state(ironclaw_turns::GetRunStateRequest {
-            scope: request.scope,
-            run_id,
-        })
+        .get_run_state(&request.scope, run_id)
         .await
         .unwrap();
     assert_eq!(state.run_id, run_id);
@@ -759,7 +768,7 @@ async fn production_turn_coordinator_requires_explicit_run_profile_resolver() {
     let db_dir = tempfile::tempdir().unwrap();
     let db_path = db_dir.path().join("turn-coordinator-missing-resolver.db");
     let db = Arc::new(libsql::Builder::new_local(db_path).build().await.unwrap());
-    let scoped = libsql_scoped_turns_fs(Arc::clone(&db)).await;
+    let scoped = libsql_scoped_processes_fs(Arc::clone(&db)).await;
 
     let services = HostRuntimeServices::new(
         Arc::new(registry_with_manifest(SCRIPT_MANIFEST)),
@@ -769,7 +778,7 @@ async fn production_turn_coordinator_requires_explicit_run_profile_resolver() {
         ironclaw_processes::in_memory_backed_process_services(),
         CapabilitySurfaceVersion::new("surface-v1").unwrap(),
     )
-    .with_filesystem_turn_state_store(scoped)
+    .with_turn_state(process_backed_turn_state(scoped))
     .with_turn_run_wake_notifier(Arc::new(RecordingTurnRunWakeNotifier::default()));
 
     let report = match services.turn_coordinator_for_production() {

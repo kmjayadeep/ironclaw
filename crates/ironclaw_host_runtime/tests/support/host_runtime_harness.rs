@@ -107,20 +107,16 @@ impl HostPolicyFacts for PermissiveHostPolicyFacts {
     }
 }
 
-/// Construct an [`Arc<ScopedFilesystem<LibSqlRootFilesystem>>`] that exposes
-/// the `/turns` mount alias over a libSQL-backed [`RootFilesystem`]. Mirrors
-/// the production composition shape: the `/turns` alias rewrites to a
-/// tenant/user-scoped target inside `/engine`, and the filesystem backend
-/// supplies durable storage. Used by tests that previously constructed
-/// `LibSqlTurnStateStore` directly.
-pub(crate) async fn libsql_scoped_turns_fs(
+/// Construct a libSQL-backed scoped filesystem exposing the canonical process
+/// journal mount used by production composition.
+pub(crate) async fn libsql_scoped_processes_fs(
     db: Arc<libsql::Database>,
 ) -> Arc<ScopedFilesystem<LibSqlRootFilesystem>> {
     let filesystem = Arc::new(LibSqlRootFilesystem::new(db));
     filesystem.run_migrations().await.unwrap();
     let view = MountView::new(vec![MountGrant::new(
-        MountAlias::new("/turns").unwrap(),
-        VirtualPath::new("/engine/tenants/tenant1/users/user1/turns").unwrap(),
+        MountAlias::new("/processes").unwrap(),
+        VirtualPath::new("/engine/processes").unwrap(),
         MountPermissions::read_write_list_delete(),
     )])
     .unwrap();

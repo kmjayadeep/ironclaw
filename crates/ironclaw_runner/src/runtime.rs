@@ -357,14 +357,7 @@ impl ProcessRuntimeSystem {
     }
 
     pub fn agent_turn_runtime(&self) -> ironclaw_turns::AgentTurnProcessRuntime {
-        ironclaw_turns::AgentTurnProcessRuntime::new(
-            Arc::clone(&self.adapter)
-                as Arc<dyn ProcessSubmissionPort<Error = ironclaw_turns::TurnError>>,
-            self.journal(),
-            self.controls(),
-            Arc::clone(&self.adapter)
-                as Arc<dyn ironclaw_processes::ProcessTreePort<Error = ironclaw_turns::TurnError>>,
-        )
+        ironclaw_turns::AgentTurnProcessRuntime::from_process_adapter(Arc::clone(&self.adapter))
     }
 
     pub fn subscribe_process_observer(

@@ -57,7 +57,7 @@ use ironclaw_secrets::{
 use ironclaw_trust::{HostTrustPolicy, TrustPolicy};
 use ironclaw_turns::{
     DefaultTurnCoordinator, NoopTurnRunWakeNotifier, RunProfileResolver, TurnRunWakeNotifier,
-    TurnStateRowStore, TurnStateStore,
+    TurnStateStore,
 };
 use ironclaw_wasm::{
     DenyWasmHostHttp, EmptyWasmRuntimeCredentials, PreparedWitTool, WasmError,

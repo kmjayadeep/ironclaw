@@ -19,8 +19,8 @@ use ironclaw_processes::{
     ProcessJournalCommit, ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalEntry,
     ProcessJournalKind, ProcessJournalPage, ProcessJournalSource, ProcessKind, ProcessLeaseRequest,
     ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleStatus, ProcessOperationId,
-    ProcessOutcome, ProcessSubmissionPort, ProcessSuspension, ProcessSuspensionKind,
-    ProcessTreePort, ProcessWorkerId, PruneReleasedProcessRequest,
+    ProcessOutcome, ProcessRuntimePort, ProcessSubmissionPort, ProcessSuspension,
+    ProcessSuspensionKind, ProcessTreePort, ProcessWorkerId, PruneReleasedProcessRequest,
     RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse,
     ReleaseProcessTreeRequest, ReserveProcessTreeRequest, ResumeProcessRequest,
     SubmitProcessRequest, SuspendProcessRequest,
@@ -127,6 +127,19 @@ pub struct AgentTurnProcessRuntime {
 }
 
 impl AgentTurnProcessRuntime {
+    pub fn from_process_runtime(runtime: Arc<dyn ProcessRuntimePort>) -> Self {
+        Self::from_process_adapter(Arc::new(ProcessJournalStoreTurnAdapter::new(runtime)))
+    }
+
+    pub fn from_process_adapter(adapter: Arc<ProcessJournalStoreTurnAdapter>) -> Self {
+        Self::new(
+            Arc::clone(&adapter) as Arc<dyn ProcessSubmissionPort<Error = TurnError>>,
+            Arc::clone(&adapter) as Arc<dyn ProcessJournalSource<Error = TurnError>>,
+            Arc::clone(&adapter) as Arc<dyn ProcessControlPort<Error = TurnError>>,
+            adapter as Arc<dyn ProcessTreePort<Error = TurnError>>,
+        )
+    }
+
     pub fn new(
         submission: Arc<dyn ProcessSubmissionPort<Error = TurnError>>,
         journal: Arc<dyn ProcessJournalSource<Error = TurnError>>,
