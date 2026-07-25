@@ -2688,11 +2688,18 @@ async fn build_local_runtime(input: RebornBuildInput) -> Result<RebornServices, 
     // persists at raise is the one the resume port reads back. Without the hook
     // the capability's own handler refuses (fail-closed), so a runtime that does
     // not compose the attested substrate can never half-raise a gate.
+    // Attested-signing (Phase B): the raise also mints a signed intent, so the
+    // approver gets a review link and the transaction carries agent
+    // attribution across the chat-channel hop. Populated here rather than left
+    // to callers — an unpopulated composition seam is the anti-pattern the
+    // architecture guardrails exist to catch.
+    let intent_minting = build_intent_minting()?;
     let host_runtime: Arc<dyn ironclaw_host_runtime::HostRuntime> = Arc::new(
         services
             .host_runtime_for_local_testing()
             .with_attested_raise_hook(Arc::new(
-                crate::attested_raise::RebornAttestedRaiseHook::new(Arc::clone(&attested_signing)),
+                crate::attested_raise::RebornAttestedRaiseHook::new(Arc::clone(&attested_signing))
+                    .with_intent_minting(intent_minting),
             )),
     );
     let attested_signing = Some(attested_signing);
@@ -2824,6 +2831,40 @@ where
     Ok(Arc::new(ScopedFilesystem::with_fixed_view(
         filesystem, view,
     )))
+}
+
+/// Environment override for the base URL the intent review link is built on.
+pub const INTENT_REVIEW_URL_BASE_ENV: &str = "IRONCLAW_INTENT_REVIEW_URL_BASE";
+
+/// Assemble local-dev intent minting (Phase B §B3/§B4).
+///
+/// In-memory stores, matching the rest of the local-dev attested composition
+/// (durable backends are the stacked follow-up). The agent signing keys are
+/// sealed with a per-process `SecretsCrypto` — no stable key in source, and the
+/// in-memory keystore is rebuilt every start anyway.
+///
+/// The review-link base is server-fixed: it comes from configuration, never
+/// from a request, so the eventual redirect target cannot be attacker-chosen.
+fn build_intent_minting() -> Result<crate::attested_raise::IntentMinting, RebornBuildError> {
+    use ironclaw_attestation::{
+        DEFAULT_INTENT_TTL_MS, InMemoryAgentSigningKeyStore, InMemoryIntentStore,
+    };
+    use ironclaw_attested_runtime::{InMemorySealedAgentKeyStore, SecretsIntentSigner};
+    use ironclaw_secrets::SecretsCrypto;
+
+    let signer = Arc::new(SecretsIntentSigner::new(
+        Arc::new(SecretsCrypto::generate()),
+        Arc::new(InMemorySealedAgentKeyStore::new()),
+        Arc::new(InMemoryAgentSigningKeyStore::new()),
+    ));
+    let review_url_base = std::env::var(INTENT_REVIEW_URL_BASE_ENV)
+        .unwrap_or_else(|_| "http://127.0.0.1:8080/intent".to_string());
+    Ok(crate::attested_raise::IntentMinting::new(
+        signer,
+        Arc::new(InMemoryIntentStore::new()),
+        DEFAULT_INTENT_TTL_MS,
+        review_url_base,
+    ))
 }
 
 /// Assemble the local-dev attested-signing signer-continuation composition

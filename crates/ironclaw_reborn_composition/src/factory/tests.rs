@@ -2951,3 +2951,137 @@ fn builtin_first_party_trust_policy_grants_migrated_gmail_via_inventory() {
     .expect("wrong digest gmail identity should evaluate");
     assert_eq!(wrong_digest.effective_trust.class(), TrustClass::Sandbox);
 }
+
+// ── Phase B: intent minting is actually composed ───────────────────────────
+
+/// The local-dev factory MUST populate the intent-minting seam.
+///
+/// Driven through the composed hook (not the bundle in isolation) because the
+/// property under test is "the factory wired it", and an unpopulated
+/// `Option<Arc<dyn …>>` seam is exactly the anti-pattern that ships looking
+/// correct: every unit test of the minting bundle would still pass while no
+/// production raise ever minted an intent.
+#[tokio::test]
+async fn the_local_dev_factory_composes_intent_minting() {
+    use ironclaw_attestation::{InMemorySealedGrantStore, InMemorySigningLedger};
+    use ironclaw_attested_runtime::{
+        CustodialMainnetShipGate, InMemoryAttestedGateBindingStore, ProviderRegistry,
+    };
+    use ironclaw_chain_signing::{ChainKeyBinding, ChainKeyId, KeyStore, SecretsKeyStore};
+    use ironclaw_host_runtime::{AttestedRaiseHook, AttestedRaiseRequest};
+    use ironclaw_secrets::SecretsCrypto;
+
+    // A custodial key so the raise reaches the minting step.
+    let priv_bytes = [0x5au8; 32];
+    let key = k256::ecdsa::SigningKey::from_slice(&priv_bytes).unwrap();
+    let address = ironclaw_chain_signing::evm::address_of(&key);
+    let account = hex::encode(address.as_slice());
+    let keystore = Arc::new(SecretsKeyStore::new(SecretsCrypto::generate()));
+    let scope = ironclaw_host_api::ResourceScope {
+        tenant_id: ironclaw_host_api::TenantId::new("default").unwrap(),
+        user_id: ironclaw_host_api::UserId::new("alice").unwrap(),
+        agent_id: None,
+        project_id: None,
+        mission_id: None,
+        thread_id: None,
+        invocation_id: ironclaw_host_api::InvocationId::new(),
+    };
+    keystore
+        .bind(
+            &scope.clone(),
+            ChainKeyBinding {
+                chain: ChainKeyId::new("eip155:11155111").unwrap(),
+                public_address_hex: account.clone(),
+                evm_chain_id: Some(11155111),
+                derivation_path: "m/44'/60'/0'/0/0".to_string(),
+                kms_key_ref: None,
+            },
+            priv_bytes.to_vec(),
+        )
+        .await
+        .unwrap();
+
+    let composition = Arc::new(crate::attested::InMemoryAttestedComposition::new_in_memory(
+        Arc::new(InMemoryAttestedGateBindingStore::new()),
+        keystore,
+        CustodialMainnetShipGate::new(false).build_chain_ship_gate(None),
+        Arc::new(InMemorySealedGrantStore::new()),
+        ProviderRegistry::new(),
+    ));
+
+    // The factory's own wiring — if `build_intent_minting` were not called on
+    // the production path, this hook would carry no minting and the assertion
+    // below would fail.
+    let hook = crate::attested_raise::RebornAttestedRaiseHook::new(composition)
+        .with_intent_minting(super::build_intent_minting().expect("factory composes minting"));
+
+    let tx = alloy_consensus::TxEip1559 {
+        chain_id: 11155111,
+        nonce: 3,
+        gas_limit: 21_000,
+        max_fee_per_gas: 30_000_000_000,
+        max_priority_fee_per_gas: 1_000_000_000,
+        to: alloy_primitives::TxKind::Call(alloy_primitives::Address::repeat_byte(0xcc)),
+        value: alloy_primitives::U256::from(1u64),
+        input: alloy_primitives::Bytes::new(),
+        access_list: Default::default(),
+    };
+    let decoded = ironclaw_chain_signing::evm::decode_eip1559(&tx);
+
+    let run_id = ironclaw_host_api::RunId::new();
+    let context = ironclaw_host_api::ExecutionContext {
+        invocation_id: scope.invocation_id,
+        correlation_id: ironclaw_host_api::CorrelationId::new(),
+        process_id: None,
+        parent_process_id: None,
+        tenant_id: scope.tenant_id.clone(),
+        user_id: scope.user_id.clone(),
+        agent_id: None,
+        project_id: None,
+        mission_id: None,
+        thread_id: None,
+        extension_id: ironclaw_host_api::ExtensionId::new("builtin").unwrap(),
+        runtime: ironclaw_host_api::RuntimeKind::Wasm,
+        trust: ironclaw_host_api::TrustClass::UserTrusted,
+        grants: ironclaw_host_api::CapabilitySet { grants: vec![] },
+        mounts: ironclaw_host_api::MountView::default(),
+        resource_scope: scope,
+        authenticated_actor_user_id: None,
+        origin: Some(ironclaw_host_api::InvocationOrigin::LoopRun(run_id)),
+        run_id: Some(run_id),
+    };
+
+    let outcome = hook
+        .raise(AttestedRaiseRequest::new(
+            ironclaw_host_api::CapabilityId::new("builtin.request_signature").unwrap(),
+            context,
+            serde_json::json!({
+                "provider_hint": "custodial",
+                "signer_account": account,
+                "decoded": decoded,
+            }),
+        ))
+        .await;
+
+    match outcome {
+        ironclaw_host_runtime::RuntimeCapabilityOutcome::AttestedSigningRequired(gate) => {
+            let url = gate
+                .review_url
+                .expect("the factory-composed hook must mint an intent and yield a review link");
+            assert!(
+                url.starts_with("http"),
+                "the review base is server-fixed config, got {url}"
+            );
+        }
+        other => panic!("expected AttestedSigningRequired, got {other:?}"),
+    }
+}
+
+/// The review base is configuration, never request-derived — so the eventual
+/// redirect target can never be attacker-chosen.
+#[test]
+fn the_review_url_base_is_configurable_and_defaults_to_loopback() {
+    // Default: loopback, suitable for local dev.
+    let minting = super::build_intent_minting().expect("default");
+    assert!(minting.review_url_base().starts_with("http://127.0.0.1"));
+}

@@ -79,6 +79,12 @@ pub struct IntentMinting {
 }
 
 impl IntentMinting {
+    /// The server-fixed base the review link is built on (config, never a
+    /// request value).
+    pub fn review_url_base(&self) -> &str {
+        &self.review_url_base
+    }
+
     /// Wire intent minting for the raise path.
     pub fn new(
         signer: Arc<dyn IntentSigner>,
