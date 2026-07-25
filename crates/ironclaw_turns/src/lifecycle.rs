@@ -332,6 +332,7 @@ impl<S: ?Sized> LifecyclePublishingTurnStateStore<S> {
                 process_id: process_id_from_turn_run_id(*run_id),
                 process_kind: ProcessKind::AgentTurn,
                 scope: request.scope.to_resource_scope(),
+                exclusive_within_scope: true,
                 owner_user_id: lifecycle_owner_user_id(
                     &request.scope,
                     Some(&request.actor.user_id),
@@ -384,6 +385,7 @@ impl<S: ?Sized> LifecyclePublishingTurnStateStore<S> {
                 process_id: process_id_from_turn_run_id(*run_id),
                 process_kind: ProcessKind::AgentTurn,
                 scope: request.child_scope.to_resource_scope(),
+                exclusive_within_scope: true,
                 owner_user_id: lifecycle_owner_user_id(
                     &request.child_scope,
                     Some(&request.actor.user_id),

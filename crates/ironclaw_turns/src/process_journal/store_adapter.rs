@@ -245,6 +245,21 @@ impl ProcessGateQuerySource for ProcessJournalStoreTurnAdapter {
 pub fn turn_error_from_process_journal_store_error(error: ProcessJournalStoreError) -> TurnError {
     match error {
         ProcessJournalStoreError::UnknownProcess { .. } => TurnError::ScopeNotFound,
+        ProcessJournalStoreError::ActiveProcessConflict {
+            process_id,
+            status,
+            suspension,
+            cursor,
+            ..
+        } => TurnError::ThreadBusy(crate::ThreadBusy {
+            active_run_id: crate::TurnRunId::from_uuid(process_id.as_uuid()),
+            status: crate::process_journal::turn_status_from_process_status(
+                status,
+                suspension.as_deref(),
+            )
+            .unwrap_or(crate::TurnStatus::RecoveryRequired),
+            event_cursor: crate::EventCursor(cursor.0),
+        }),
         ProcessJournalStoreError::ProcessAlreadyExists { .. }
         | ProcessJournalStoreError::StaleSnapshot { .. } => TurnError::Conflict {
             reason: error.to_string(),

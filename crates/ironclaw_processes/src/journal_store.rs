@@ -41,6 +41,16 @@ pub enum ProcessJournalStoreError {
     UnknownProcess { process_id: ProcessId },
     #[error("process {process_id} already exists")]
     ProcessAlreadyExists { process_id: ProcessId },
+    #[error(
+        "scope already has active {process_kind:?} process {process_id} in {status:?} at cursor {cursor:?}"
+    )]
+    ActiveProcessConflict {
+        process_id: ProcessId,
+        process_kind: crate::ProcessKind,
+        status: ProcessLifecycleStatus,
+        suspension: Option<Box<ProcessSuspension>>,
+        cursor: ProcessJournalCursor,
+    },
     #[error("process {process_id} cannot transition from {from:?} to {to:?}")]
     InvalidTransition {
         process_id: ProcessId,
@@ -100,6 +110,21 @@ where
             if state.processes.contains_key(&request.process_id) {
                 return Err(ProcessJournalStoreError::ProcessAlreadyExists {
                     process_id: request.process_id,
+                });
+            }
+            if request.exclusive_within_scope
+                && let Some(active) = state.processes.values().find(|snapshot| {
+                    snapshot.process_kind == request.process_kind
+                        && snapshot.status.keeps_active_lock()
+                        && same_scope_owner(&snapshot.scope, &request.scope)
+                })
+            {
+                return Err(ProcessJournalStoreError::ActiveProcessConflict {
+                    process_id: active.process_id,
+                    process_kind: active.process_kind.clone(),
+                    status: active.status,
+                    suspension: active.suspension.clone().map(Box::new),
+                    cursor: active.journal_cursor,
                 });
             }
             let cursor = state.next_cursor();

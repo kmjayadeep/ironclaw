@@ -29,6 +29,7 @@ async fn process_journal_store_owns_lifecycle_and_gate_projection() {
             process_id,
             process_kind: ProcessKind::AgentTurn,
             scope: scope.clone(),
+            exclusive_within_scope: false,
             owner_user_id: Some(owner.clone()),
             parent_process_id: None,
             root_process_id: None,
@@ -158,6 +159,7 @@ async fn process_journal_store_completes_claimed_process() {
             process_id,
             process_kind: ProcessKind::Internal,
             scope: scope.clone(),
+            exclusive_within_scope: false,
             owner_user_id: Some(scope.user_id.clone()),
             parent_process_id: None,
             root_process_id: None,
@@ -203,6 +205,7 @@ async fn process_journal_store_relinquishes_claim_with_fresh_reclaim_lease() {
             process_id,
             process_kind: ProcessKind::Internal,
             scope: scope.clone(),
+            exclusive_within_scope: false,
             owner_user_id: Some(scope.user_id.clone()),
             parent_process_id: None,
             root_process_id: None,
@@ -255,6 +258,7 @@ async fn process_journal_store_rejects_wrong_lease() {
             process_id,
             process_kind: ProcessKind::Internal,
             scope: scope.clone(),
+            exclusive_within_scope: false,
             owner_user_id: Some(scope.user_id.clone()),
             parent_process_id: None,
             root_process_id: None,
@@ -445,6 +449,48 @@ async fn process_control_is_scoped_atomic_and_process_kind_neutral() {
     assert_eq!(killed.state.status, ProcessLifecycleStatus::Killed);
 }
 
+#[tokio::test]
+async fn exclusive_process_submission_uses_authoritative_live_projection() {
+    let store = ProcessJournalStore::new(in_memory_backed_processes_filesystem());
+    let scope = scope();
+    let first_id = ProcessId::new();
+    let request = |process_id| SubmitProcessRequest {
+        process_id,
+        process_kind: ProcessKind::AgentTurn,
+        scope: scope.clone(),
+        exclusive_within_scope: true,
+        owner_user_id: Some(scope.user_id.clone()),
+        parent_process_id: None,
+        root_process_id: None,
+        created_at: Utc::now(),
+        metadata: serde_json::Value::Null,
+    };
+    store
+        .submit_process(request(first_id))
+        .await
+        .expect("submit exclusive process");
+    let conflict = store
+        .submit_process(request(ProcessId::new()))
+        .await
+        .expect_err("second live process in scope must conflict");
+    assert!(conflict.to_string().contains(&first_id.to_string()));
+
+    store
+        .stop_process(StopProcessRequest {
+            scope: scope.clone(),
+            process_id: first_id,
+            operation_id: None,
+            reason: None,
+        })
+        .await
+        .expect("stop first process");
+    let replacement = store
+        .submit_process(request(ProcessId::new()))
+        .await
+        .expect("terminal process releases exclusive scope");
+    assert_eq!(replacement.status, ProcessLifecycleStatus::Queued);
+}
+
 async fn submit_internal_process(
     store: &ProcessJournalStore<InMemoryBackend>,
     scope: &ResourceScope,
@@ -455,6 +501,7 @@ async fn submit_internal_process(
             process_id,
             process_kind: ProcessKind::Internal,
             scope: scope.clone(),
+            exclusive_within_scope: false,
             owner_user_id: Some(scope.user_id.clone()),
             parent_process_id: None,
             root_process_id: None,
