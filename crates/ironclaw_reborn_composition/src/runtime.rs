@@ -413,9 +413,7 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
 
     let subagent_goal_store = Arc::new(SubagentGoalStore::new(Arc::clone(&scoped_filesystem)))
         as Arc<dyn RuntimeSubagentGoalStore>;
-    let processes = ProcessRuntimeSystem::from_process_journal_store(Arc::clone(
-        &services.process_journal_store,
-    ));
+    let processes = services.processes.clone();
     let turn_projection = Arc::new(processes.agent_turn_runtime());
     let loop_checkpoint_store = Arc::new(ironclaw_turns::ProcessLoopCheckpointStore::new(
         processes.checkpoints(),

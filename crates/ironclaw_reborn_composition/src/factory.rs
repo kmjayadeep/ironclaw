@@ -142,8 +142,7 @@ use ironclaw_outbound::{
     DeliveredGateRouteStore, OutboundStateStore, OutboundStateStorePort, TriggeredRunDeliveryStore,
 };
 use ironclaw_processes::{
-    ProcessConcurrencyClass, ProcessConcurrencyLimits, ProcessJournalStore, ProcessRuntimePort,
-    ProcessServices,
+    ProcessConcurrencyClass, ProcessConcurrencyLimits, ProcessJournalStore, ProcessServices,
 };
 use ironclaw_product::{
     ChannelConnectionNoticePolicy, ChannelConnectionRequirement, ExtensionAccountSetupDescriptor,
@@ -157,6 +156,7 @@ use ironclaw_resources::{
     ResourceGovernor,
 };
 use ironclaw_run_state::ApprovalRequestStore;
+use ironclaw_runner::runtime::ProcessRuntimeSystem;
 use ironclaw_secrets::CredentialBroker;
 use ironclaw_secrets::{SecretStore, SecretStorePort};
 use ironclaw_threads::FilesystemSessionThreadService;
@@ -167,12 +167,10 @@ use ironclaw_triggers::{
     TriggerRepository,
 };
 use ironclaw_trust::{AdminConfig, AdminEntry, HostTrustAssignment, HostTrustPolicy};
+#[cfg(test)]
 use ironclaw_turns::TurnStateRowStore;
-use ironclaw_turns::{
-    AgentTurnProcessRuntime, GetRunStateRequest, InMemoryRunProfileResolver,
-    ProcessJournalStoreTurnAdapter, TurnScope, TurnStateStore,
-};
 use ironclaw_turns::{CheckpointStateStorePort, ExternalToolCatalog, InMemoryExternalToolCatalog};
+use ironclaw_turns::{GetRunStateRequest, InMemoryRunProfileResolver, TurnScope, TurnStateStore};
 use secrecy::SecretString;
 
 /// Display name sent with RFC 7591 dynamic client registration.
@@ -1092,7 +1090,7 @@ pub(crate) struct RebornRuntimeStores {
     pub(crate) extension_registry: Arc<ExtensionRegistry>,
     pub(crate) shared_extension_registry: Arc<SharedExtensionRegistry>,
     pub(crate) scoped_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
-    pub(crate) process_journal_store: Arc<ProcessJournalStore<CompositeRootFilesystem>>,
+    pub(crate) processes: ProcessRuntimeSystem,
     #[cfg(test)]
     pub(crate) turn_state: Arc<TurnStateRowStore<CompositeRootFilesystem>>,
     pub(crate) checkpoint_state_store: Arc<dyn CheckpointStateStorePort>,
@@ -1576,6 +1574,7 @@ fn configured_runtime_owner_scope(
     )
 }
 
+#[cfg(test)]
 fn owner_turn_state_filesystem<F>(
     filesystem: Arc<F>,
     owner_scope: &ResourceScope,
@@ -1589,6 +1588,7 @@ where
     )))
 }
 
+#[cfg(test)]
 fn production_turn_state_store<F>(
     filesystem: Arc<ScopedFilesystem<F>>,
     limits: ironclaw_turns::TurnStateStoreLimits,
@@ -3982,13 +3982,6 @@ type FilesystemProductionHostRuntimeServices<F> = HostRuntimeServices<
     ironclaw_processes::ProcessResultStore<F>,
 >;
 
-fn substrate_only_default_owner_id() -> Result<UserId, crate::RebornCompositionError> {
-    let identity = RebornRuntimeIdentity::reborn_cli();
-    // The substrate-only builders do not receive app/runtime owner input.
-    // Preserve their legacy location under the default `reborn-cli` owner.
-    UserId::new(identity.tenant_id).map_err(crate::RebornCompositionError::Mount)
-}
-
 pub(crate) async fn build_libsql_production_host_runtime_services<TPolicy, TWake>(
     config: crate::LibSqlProductionSubstrateConfig<TPolicy, TWake>,
 ) -> Result<crate::LibSqlProductionHostRuntimeServices, crate::RebornCompositionError>
@@ -4175,15 +4168,9 @@ where
         surface_version,
     } = input;
     let scoped_filesystem = crate::wrap_scoped(Arc::clone(&filesystem));
-    let owner_user_id = substrate_only_default_owner_id()?;
-    let owner_scope =
-        default_runtime_owner_scope(owner_user_id).map_err(crate::RebornCompositionError::Mount)?;
-    let turn_state_filesystem = owner_turn_state_filesystem(Arc::clone(&filesystem), &owner_scope)
-        .map_err(crate::RebornCompositionError::Mount)?;
-    let turn_state = Arc::new(production_turn_state_store(
-        Arc::clone(&turn_state_filesystem),
-        ironclaw_turns::TurnStateStoreLimits::default(),
-    ));
+    let process_journal_store = Arc::new(ProcessJournalStore::new(Arc::clone(&scoped_filesystem)));
+    let processes = ProcessRuntimeSystem::from_process_journal_store(process_journal_store);
+    let turn_state = Arc::new(processes.agent_turn_runtime());
     let process_services = ProcessServices::filesystem(Arc::clone(&scoped_filesystem));
     let secret_credentials = build_filesystem_secret_credential_stores(
         Arc::clone(&scoped_filesystem),
@@ -4658,28 +4645,11 @@ async fn build_backend_production(
             },
         ),
     );
-    let process_journal_adapter = Arc::new(ProcessJournalStoreTurnAdapter::new(Arc::clone(
-        &process_journal_store,
-    )
-        as Arc<dyn ProcessRuntimePort>));
-    let process_lifecycle_lookup_source = Arc::clone(&process_journal_adapter)
-        as Arc<
-            dyn ironclaw_processes::ProcessLifecycleLookupSource<Error = ironclaw_turns::TurnError>,
-        >;
-    let process_gate_query_source = Arc::clone(&process_journal_adapter)
-        as Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = ironclaw_turns::TurnError>>;
-    let process_turn_state = Arc::new(AgentTurnProcessRuntime::new(
-        Arc::clone(&process_journal_adapter)
-            as Arc<
-                dyn ironclaw_processes::ProcessSubmissionPort<Error = ironclaw_turns::TurnError>,
-            >,
-        Arc::clone(&process_journal_adapter)
-            as Arc<dyn ironclaw_processes::ProcessJournalSource<Error = ironclaw_turns::TurnError>>,
-        Arc::clone(&process_journal_adapter)
-            as Arc<dyn ironclaw_processes::ProcessControlPort<Error = ironclaw_turns::TurnError>>,
-        Arc::clone(&process_journal_adapter)
-            as Arc<dyn ironclaw_processes::ProcessTreePort<Error = ironclaw_turns::TurnError>>,
-    ));
+    let processes =
+        ProcessRuntimeSystem::from_process_journal_store(Arc::clone(&process_journal_store));
+    let process_lifecycle_lookup_source = processes.lifecycle();
+    let process_gate_query_source = processes.gates();
+    let process_turn_state = Arc::new(processes.agent_turn_runtime());
     #[cfg(test)]
     let test_turn_state = Arc::new(production_turn_state_store(
         test_turn_state_filesystem,
@@ -5665,7 +5635,7 @@ async fn build_backend_production(
         extension_registry: Arc::clone(&extension_registry),
         shared_extension_registry,
         scoped_filesystem: Arc::clone(&stores.scoped_filesystem),
-        process_journal_store,
+        processes,
         #[cfg(test)]
         turn_state: test_turn_state,
         checkpoint_state_store,
