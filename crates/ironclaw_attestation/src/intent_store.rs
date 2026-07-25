@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use ironclaw_signing_provider::TenantId;
+use ironclaw_signing_provider::{GateRef, TenantId};
 
 use crate::intent::{IntentId, SignedIntent};
 
@@ -86,6 +86,12 @@ impl IntentState {
 pub struct IntentRecord {
     /// The sealed, verifiable intent.
     pub intent: SignedIntent,
+    /// The gate this intent was raised alongside.
+    ///
+    /// This is the join the projection needs: the resolve path knows the gate
+    /// it just claimed the grant for, and this is how it finds the intent to
+    /// mark resolved. Set at raise time and immutable thereafter.
+    pub gate_ref: GateRef,
     /// Hash of the review token that addresses it.
     pub review_token_hash: ReviewTokenHash,
     /// Lifecycle projection.
@@ -94,9 +100,14 @@ pub struct IntentRecord {
 
 impl IntentRecord {
     /// A freshly raised, pending record.
-    pub fn pending(intent: SignedIntent, review_token_hash: ReviewTokenHash) -> Self {
+    pub fn pending(
+        intent: SignedIntent,
+        gate_ref: GateRef,
+        review_token_hash: ReviewTokenHash,
+    ) -> Self {
         Self {
             intent,
+            gate_ref,
             review_token_hash,
             state: IntentState::Pending,
         }
@@ -165,6 +176,16 @@ pub trait IntentStore: Send + Sync {
     async fn find_by_token_hash(
         &self,
         token_hash: &ReviewTokenHash,
+    ) -> Result<IntentRecord, IntentStoreError>;
+
+    /// Find the intent raised alongside `gate_ref`.
+    ///
+    /// The projection's lookup: the resolve path holds a gate ref, not an
+    /// intent id. Tenant-qualified like every other read.
+    async fn find_by_gate_ref(
+        &self,
+        tenant: &TenantId,
+        gate_ref: &GateRef,
     ) -> Result<IntentRecord, IntentStoreError>;
 
     /// Project the gate outcome onto the record.
@@ -239,6 +260,21 @@ impl IntentStore for InMemoryIntentStore {
             .ok_or(IntentStoreError::NotFound)
     }
 
+    async fn find_by_gate_ref(
+        &self,
+        tenant: &TenantId,
+        gate_ref: &GateRef,
+    ) -> Result<IntentRecord, IntentStoreError> {
+        self.lock()?
+            .iter()
+            .find(|record| {
+                record.tenant().as_str() == tenant.as_str()
+                    && record.gate_ref.as_str() == gate_ref.as_str()
+            })
+            .cloned()
+            .ok_or(IntentStoreError::NotFound)
+    }
+
     async fn resolve(
         &self,
         tenant: &TenantId,
@@ -302,6 +338,7 @@ mod tests {
         };
         IntentRecord::pending(
             intent.into_signed([0u8; INTENT_SIGNATURE_LEN]),
+            GateRef::new(format!("gate:attested-{id}")),
             ReviewTokenHash::of_token(token),
         )
     }
@@ -475,6 +512,40 @@ mod tests {
             store.get(&tenant_a(), &id).await.expect("get").state,
             IntentState::Pending,
             "the foreign resolve must not have moved the record"
+        );
+    }
+
+    /// The projection's join: the resolve path holds a gate ref and must reach
+    /// exactly the intent raised with it — and never another tenant's.
+    #[tokio::test]
+    async fn an_intent_is_reachable_by_its_gate_ref() {
+        let store = InMemoryIntentStore::new();
+        store
+            .put(record_for("tenant-a", "intent-1", "tok-1"))
+            .await
+            .expect("put");
+        let gate = GateRef::new("gate:attested-intent-1");
+        assert_eq!(
+            store
+                .find_by_gate_ref(&tenant_a(), &gate)
+                .await
+                .expect("found")
+                .intent_id()
+                .as_str(),
+            "intent-1"
+        );
+        assert_eq!(
+            store
+                .find_by_gate_ref(&TenantId::new("tenant-b"), &gate)
+                .await,
+            Err(IntentStoreError::NotFound),
+            "the gate-ref lookup is tenant-qualified like every other read"
+        );
+        assert_eq!(
+            store
+                .find_by_gate_ref(&tenant_a(), &GateRef::new("gate:attested-other"))
+                .await,
+            Err(IntentStoreError::NotFound)
         );
     }
 

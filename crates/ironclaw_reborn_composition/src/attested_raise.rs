@@ -79,6 +79,15 @@ pub struct IntentMinting {
 }
 
 impl IntentMinting {
+    /// The intent store this minting writes to.
+    ///
+    /// Exposed so the composition can hand the SAME instance to the
+    /// continuation port's lifecycle projection. Two separate stores would make
+    /// the projection silently never find the intent it just settled.
+    pub fn intents(&self) -> &Arc<dyn IntentStore> {
+        &self.intents
+    }
+
     /// The server-fixed base the review link is built on (config, never a
     /// request value).
     pub fn review_url_base(&self) -> &str {
@@ -455,6 +464,7 @@ where
         let token = mint_review_token()?;
         let record = IntentRecord::pending(
             intent.into_signed(signature),
+            binding.context.gate_ref.clone(),
             ReviewTokenHash::of_token(&token),
         );
         minting.intents.put(record).await.map_err(|error| {

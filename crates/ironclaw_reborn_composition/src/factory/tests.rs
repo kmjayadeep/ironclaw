@@ -2963,7 +2963,7 @@ fn builtin_first_party_trust_policy_grants_migrated_gmail_via_inventory() {
 /// production raise ever minted an intent.
 #[tokio::test]
 async fn the_local_dev_factory_composes_intent_minting() {
-    use ironclaw_attestation::{InMemorySealedGrantStore, InMemorySigningLedger};
+    use ironclaw_attestation::InMemorySealedGrantStore;
     use ironclaw_attested_runtime::{
         CustodialMainnetShipGate, InMemoryAttestedGateBindingStore, ProviderRegistry,
     };

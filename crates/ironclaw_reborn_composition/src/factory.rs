@@ -404,6 +404,9 @@ pub struct RebornServices {
     /// (PR11) once a turn reaches `AttestedResolved`. `None` for production until
     /// the durable backends (PR12) are wired.
     pub(crate) attested_signing: Option<Arc<crate::attested::InMemoryAttestedComposition>>,
+    /// The intent store the raise hook mints into. Shared with the continuation
+    /// port so the lifecycle projection settles the very record the raise wrote.
+    pub(crate) intent_store: Option<Arc<dyn ironclaw_attestation::IntentStore>>,
     pub host_runtime: Option<Arc<dyn ironclaw_host_runtime::HostRuntime>>,
     pub turn_coordinator: Option<Arc<dyn ironclaw_turns::TurnCoordinator>>,
     pub product_auth: Option<Arc<RebornProductAuthServices>>,
@@ -1582,6 +1585,7 @@ impl RebornServices {
     pub fn disabled() -> Self {
         Self {
             attested_signing: None,
+            intent_store: None,
             host_runtime: None,
             turn_coordinator: None,
             product_auth: None,
@@ -2694,6 +2698,8 @@ async fn build_local_runtime(input: RebornBuildInput) -> Result<RebornServices, 
     // to callers — an unpopulated composition seam is the anti-pattern the
     // architecture guardrails exist to catch.
     let intent_minting = build_intent_minting()?;
+    // The SAME store instance the continuation port projects onto.
+    let intent_store = Arc::clone(intent_minting.intents());
     let host_runtime: Arc<dyn ironclaw_host_runtime::HostRuntime> = Arc::new(
         services
             .host_runtime_for_local_testing()
@@ -2703,9 +2709,11 @@ async fn build_local_runtime(input: RebornBuildInput) -> Result<RebornServices, 
             )),
     );
     let attested_signing = Some(attested_signing);
+    let intent_store = Some(intent_store);
 
     Ok(RebornServices {
         attested_signing,
+        intent_store,
         host_runtime: Some(host_runtime),
         turn_coordinator: Some(turn_coordinator),
         // Local-dev always composes a safe in-memory product-auth boundary when
@@ -2834,7 +2842,7 @@ where
 }
 
 /// Environment override for the base URL the intent review link is built on.
-pub const INTENT_REVIEW_URL_BASE_ENV: &str = "IRONCLAW_INTENT_REVIEW_URL_BASE";
+pub(crate) const INTENT_REVIEW_URL_BASE_ENV: &str = "IRONCLAW_INTENT_REVIEW_URL_BASE";
 
 /// Assemble local-dev intent minting (Phase B §B3/§B4).
 ///
@@ -5661,6 +5669,8 @@ where
 
     Ok(RebornServices {
         attested_signing: None,
+        // No attested composition on this path ⇒ nothing mints intents either.
+        intent_store: None,
         host_runtime: Some(host_runtime),
         turn_coordinator: Some(turn_coordinator),
         readiness: readiness_for(profile, true, true, product_auth_ready),

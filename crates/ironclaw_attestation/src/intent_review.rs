@@ -186,6 +186,7 @@ mod tests {
         };
         let mut record = IntentRecord::pending(
             intent.into_signed([0u8; INTENT_SIGNATURE_LEN]),
+            ironclaw_signing_provider::GateRef::new("gate:attested-review"),
             ReviewTokenHash::of_token("tok"),
         );
         record.state = state;

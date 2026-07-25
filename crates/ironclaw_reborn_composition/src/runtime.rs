@@ -1221,6 +1221,12 @@ impl RebornRuntime {
         self.services.attested_signing.as_ref()
     }
 
+    /// The intent store the raise hook mints into (Phase B/C), when intent
+    /// minting is composed.
+    pub fn intent_store(&self) -> Option<&Arc<dyn ironclaw_attestation::IntentStore>> {
+        self.services.intent_store.as_ref()
+    }
+
     pub fn services(&self) -> &RebornServices {
         &self.services
     }

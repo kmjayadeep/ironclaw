@@ -268,8 +268,14 @@ pub(crate) fn build_webui_services_with_channel_connection(
     // attested composition (production until the durable stores land) the port
     // stays unset and attested resolutions fail closed.
     if let Some(attested) = runtime.attested_signing() {
-        api = api
-            .with_attested_continuation(Arc::new(crate::RebornAttestedContinuation::new(attested)));
+        let mut continuation = crate::RebornAttestedContinuation::new(attested);
+        // Settling a gate also settles its intent. Wired here — with the SAME
+        // store the raise hook minted into — so the path that claims the
+        // one-shot grant is the single writer of that projection.
+        if let Some(intents) = runtime.intent_store() {
+            continuation = continuation.with_intent_store(Arc::clone(intents));
+        }
+        api = api.with_attested_continuation(Arc::new(continuation));
     }
     // Admin user-management surface: wired only when the identity directory,
     // the admin secret provisioner, and a token minter are all available.

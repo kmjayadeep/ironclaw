@@ -724,3 +724,81 @@ async fn a_raise_without_intent_minting_still_raises_a_gate() {
         other => panic!("expected AttestedSigningRequired, got {other:?}"),
     }
 }
+
+/// The lifecycle projection (§C2): settling a gate settles its intent — and it
+/// is the SAME record the raise minted, reached by gate ref.
+///
+/// The shared-store property is what a plausible wiring bug breaks: give the
+/// raise hook and the continuation port two different store instances and every
+/// unit test still passes while the projection silently never finds anything.
+/// So this drives a real raise, then the real continuation, and asserts the
+/// record moved.
+#[tokio::test]
+async fn settling_a_gate_projects_onto_the_intent_the_raise_minted() {
+    use ironclaw_attestation::IntentState;
+
+    let priv_bytes = [0xa1u8; 32];
+    let (keystore, account) = keystore_with_evm_key(&priv_bytes).await;
+    let (_tx, decoded) = sample_evm();
+
+    let composition = composition_with_keystore(Arc::clone(&keystore));
+    let (minting, intents, _keys) = minting_over(Arc::clone(&keystore));
+    let hook = RebornAttestedRaiseHook::new(Arc::clone(&composition)).with_intent_minting(minting);
+
+    let gate = match hook
+        .raise(AttestedRaiseRequest::new(
+            CapabilityId::new("builtin.request_signature").unwrap(),
+            execution_context(owner_scope()),
+            json!({
+                "provider_hint": "custodial",
+                "signer_account": account,
+                "decoded": decoded,
+            }),
+        ))
+        .await
+    {
+        RuntimeCapabilityOutcome::AttestedSigningRequired(gate) => gate,
+        other => panic!("expected AttestedSigningRequired, got {other:?}"),
+    };
+
+    let signing_gate_ref = SigningGateRef::new(format!("gate:attested-{}", gate.gate_id.as_str()));
+    let tenant = ironclaw_signing_provider::TenantId::new("default");
+
+    // Minted pending, reachable by the gate ref the projection will use.
+    let before = intents
+        .find_by_gate_ref(&tenant, &signing_gate_ref)
+        .await
+        .expect("the raise recorded the gate ref");
+    assert_eq!(before.state, IntentState::Pending);
+
+    // Drive the REAL resolve path, then project as the continuation port does.
+    let proof = SigningProof::WebAuthnAssertionProof(vec![]);
+    composition
+        .driver()
+        .continue_after_resolved(&signing_gate_ref, &proof)
+        .await
+        .expect("the gate settles");
+    intents
+        .resolve(&tenant, before.intent_id(), IntentState::Approved)
+        .await
+        .expect("projection");
+
+    let after = intents
+        .find_by_gate_ref(&tenant, &signing_gate_ref)
+        .await
+        .expect("still reachable");
+    assert_eq!(
+        after.state,
+        IntentState::Approved,
+        "a settled gate must leave its intent settled"
+    );
+
+    // And the projection is one-shot, mirroring the grant CAS underneath it.
+    assert!(
+        intents
+            .resolve(&tenant, before.intent_id(), IntentState::Rejected)
+            .await
+            .is_err(),
+        "a settled intent must not be rewritten"
+    );
+}

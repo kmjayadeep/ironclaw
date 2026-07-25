@@ -31,6 +31,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use ironclaw_attestation::{IntentState, IntentStore};
 use ironclaw_attested_runtime::{
     AttestedGateBindingStore, BindingKey, BindingOwner, ContinuationError, VerifiedContinuation,
 };
@@ -40,6 +41,7 @@ use ironclaw_product_workflow::{
 };
 use ironclaw_signing_provider::{
     ApprovedTxHash, GateRef as SigningGateRef, SigningProof, SigningProviderError,
+    TenantId as SigningTenantId,
 };
 use ironclaw_turns::{GateRef, TurnActor, TurnRunId, TurnScope};
 use ironclaw_wallet_external::{
@@ -77,14 +79,65 @@ pub struct RebornAttestedContinuation {
     /// signing / broadcasting (defense-in-depth, layered on top of the driver's
     /// own binding read + hash re-check + one-shot grant CAS).
     bindings: Arc<dyn AttestedGateBindingStore>,
+    /// Intent store for the lifecycle projection (Phase C §C2).
+    ///
+    /// This port is the SINGLE writer of that projection: it is the code path
+    /// that claims the one-shot grant, so projecting from here is what keeps
+    /// `IntentState` a mirror of the gate outcome rather than a second,
+    /// independently-mutable idea of what "approved" means.
+    // arch-exempt: optional_arc, intent minting is a Phase B capability a
+    // deployment either composes or does not; absent it there is no intent to
+    // project.
+    intents: Option<Arc<dyn IntentStore>>,
 }
 
 impl RebornAttestedContinuation {
+    /// Attach the intent store so resolved gates project onto their intent.
+    pub fn with_intent_store(mut self, intents: Arc<dyn IntentStore>) -> Self {
+        self.intents = Some(intents);
+        self
+    }
+
+    /// Project a settled gate outcome onto its intent.
+    ///
+    /// Best-effort BY DESIGN: the grant is already claimed and the transaction
+    /// already broadcast by the time this runs, so a projection failure must
+    /// not fail the continuation — that would report an error for a
+    /// transaction that actually went through. The gate outcome, not this
+    /// record, remains the source of truth; the projection is for the review
+    /// UI and audit. Failures are logged, never swallowed silently.
+    async fn project_intent(&self, scope: &TurnScope, gate_ref: &GateRef, outcome: IntentState) {
+        let Some(intents) = self.intents.as_ref() else {
+            return;
+        };
+        let tenant = SigningTenantId::new(scope.tenant_id.as_str());
+        let signing_gate_ref = SigningGateRef::new(gate_ref.as_str());
+        match intents.find_by_gate_ref(&tenant, &signing_gate_ref).await {
+            Ok(record) => {
+                if let Err(error) = intents.resolve(&tenant, record.intent_id(), outcome).await {
+                    tracing::warn!(
+                        %error,
+                        gate_ref = gate_ref.as_str(),
+                        "attested gate settled but its intent projection did not update"
+                    );
+                }
+            }
+            // No intent for this gate is normal when minting is not composed.
+            Err(ironclaw_attestation::IntentStoreError::NotFound) => {}
+            Err(error) => tracing::warn!(
+                %error,
+                gate_ref = gate_ref.as_str(),
+                "attested gate settled but its intent could not be read"
+            ),
+        }
+    }
+
     /// Build the port over the runtime's attested-signing composition.
     pub fn new(composition: &InMemoryAttestedComposition) -> Self {
         Self {
             driver: Arc::clone(composition.driver()),
             bindings: Arc::clone(composition.bindings()),
+            intents: None,
         }
     }
 
@@ -270,6 +323,11 @@ impl AttestedGateContinuationPort for RebornAttestedContinuation {
             .broadcast_signed_continuation(verified)
             .await
             .map_err(map_continuation_error)?;
+
+        // The gate is settled: project it onto the intent. This is the single
+        // writer of that projection — the same path that claimed the grant.
+        self.project_intent(scope, gate_ref, IntentState::Approved)
+            .await;
 
         Ok(AttestedContinuationOutcome {
             signer: outcome.signer,
