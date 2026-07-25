@@ -25,6 +25,7 @@ use ironclaw_host_runtime::{
     CapabilitySurfacePolicy, RuntimeCapabilityOutcome, RuntimeFailureKind, SHELL_CAPABILITY_ID,
     SPAWN_SUBAGENT_CAPABILITY_ID, SurfaceKind, VisibleCapabilityRequest,
 };
+use ironclaw_processes::ProcessTransitionPort;
 use ironclaw_reborn_composition::RebornRuntimeProcessBinding;
 use ironclaw_reborn_composition::{
     RebornBuildError, RebornCompositionProfile, RebornRuntime, RebornRuntimeError,
@@ -110,7 +111,7 @@ impl TurnRunExecutor for NoopTurnRunExecutor {
     async fn execute_claimed_run(
         &self,
         _claimed: ClaimedTurnRun,
-        _transitions: Arc<dyn TurnRunTransitionPort>,
+        _transitions: Arc<dyn ProcessTransitionPort<Error = ironclaw_turns::TurnError>>,
     ) -> Result<(), TurnRunExecutorError> {
         Ok(())
     }

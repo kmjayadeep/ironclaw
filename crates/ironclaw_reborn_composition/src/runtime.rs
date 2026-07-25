@@ -369,8 +369,6 @@ impl HostUserProfileSource for MemoryBackedUserProfileSourceAdapter {
 #[derive(Clone)]
 struct RuntimeProcessSystem {
     planned: ProcessRuntimeSystem,
-    transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
-    journal: Arc<dyn ProcessJournalSource<Error = TurnError>>,
     lifecycle: Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
     gates: Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
 }
@@ -504,10 +502,6 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
                 Arc::clone(&process_adapter) as Arc<dyn ProcessTransitionPort<Error = TurnError>>,
                 Arc::clone(&process_adapter) as Arc<dyn ProcessJournalSource<Error = TurnError>>,
             ),
-            transitions: Arc::clone(&process_adapter)
-                as Arc<dyn ProcessTransitionPort<Error = TurnError>>,
-            journal: Arc::clone(&process_adapter)
-                as Arc<dyn ProcessJournalSource<Error = TurnError>>,
             lifecycle: Arc::clone(&process_adapter)
                 as Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
             gates: Arc::clone(&process_adapter)
@@ -831,16 +825,6 @@ pub struct RebornRuntime {
     /// that committed at memory speed) so a planned restart recovers in-flight
     /// turns, not just the synchronously-durable gate-park/terminal/new-run ones.
     turn_state_flush: Arc<dyn TurnStateFlush>,
-    #[allow(
-        dead_code,
-        reason = "migration handle for process-journal cutover; wired before runner call sites move"
-    )]
-    pub(crate) process_transition_port: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
-    #[allow(
-        dead_code,
-        reason = "migration handle for process-journal cutover; wired before projection call sites move"
-    )]
-    pub(crate) process_journal_source: Arc<dyn ProcessJournalSource<Error = TurnError>>,
     pub(crate) process_lifecycle_lookup_source:
         Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
     #[allow(
@@ -3615,8 +3599,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         project_service,
         trigger_conversation_services,
     } = runtime_parts;
-    let process_transition_port = Arc::clone(&processes.transitions);
-    let process_journal_source = Arc::clone(&processes.journal);
+    let process_journal_source = processes.planned.journal();
     let process_lifecycle_lookup_source = Arc::clone(&processes.lifecycle);
     let process_gate_query_source = Arc::clone(&processes.gates);
     let filesystem_skill_context_runtime = filesystem_skill_context_runtime(&services);
@@ -4761,8 +4744,6 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         budget_event_projection,
         poll_settings: poll,
         admin_api_token_minter,
-        process_transition_port,
-        process_journal_source,
         process_lifecycle_lookup_source,
         actor_user_id,
         source_binding_ref: validated_identity.source_binding_ref,
