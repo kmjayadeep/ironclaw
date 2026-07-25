@@ -52,6 +52,7 @@ mod alpaca;
 mod alpaca_supervisor;
 mod alpaca_uds;
 mod binding;
+mod device_signature;
 mod driver;
 mod intent_signer;
 mod port;
@@ -80,6 +81,7 @@ pub use binding::{
     AttestedGateBinding, AttestedGateBindingStore, BindingError, BindingKey,
     InMemoryAttestedGateBindingStore, SyncBindingRead, validate_binding, validate_binding_key,
 };
+pub use device_signature::{DeviceSignatureError, signable_digest, verify_device_signature};
 pub use driver::{
     AttestedSignerContinuationDriver, BindingOwner, BroadcastDisposition, BroadcastOutcome,
     Broadcaster, ContinuationError, CustodialSignerLike, EvmSignable, ProviderRegistry,
