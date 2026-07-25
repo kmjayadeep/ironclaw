@@ -6,20 +6,24 @@ use ironclaw_host_api::{
     ProjectId, ResourceScope, TenantId, ThreadId, TurnGateRef, UserId, VirtualPath,
 };
 use ironclaw_processes::{
-    CancelProcessRequest, ClaimProcessesRequest, GetProcessSnapshotRequest, KillProcessRequest,
-    ProcessCheckpointRef, ProcessControlPort, ProcessGateOwnerMatch, ProcessGateQuery,
-    ProcessGateQuerySource, ProcessJournalCommit, ProcessJournalCommitObserver,
-    ProcessJournalCursor, ProcessJournalObserverRegistry, ProcessJournalSource,
-    ProcessJournalStore, ProcessKind, ProcessLeaseRequest, ProcessLeaseToken,
+    CancelProcessRequest, ClaimProcessesRequest, GetProcessCheckpointRequest,
+    GetProcessSnapshotRequest, KillProcessRequest, ProcessCheckpointId, ProcessCheckpointPort,
+    ProcessCheckpointRef, ProcessConcurrencyClass, ProcessConcurrencyLimits, ProcessControlPort,
+    ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource, ProcessJournalCommit,
+    ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalObserverRegistry,
+    ProcessJournalSource, ProcessJournalStore, ProcessKind, ProcessLeaseRequest, ProcessLeaseToken,
     ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupRequest,
     ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
     ProcessOperationId, ProcessStateTransitionRequest, ProcessSubmissionPort, ProcessSuspension,
     ProcessSuspensionKind, ProcessTransitionPort, ProcessTreePort, ProcessWorkerId,
-    ReleaseProcessTreeRequest, ResumeProcessRequest, StopProcessRequest, SubmitProcessRequest,
-    SuspendProcessRequest,
+    RecordProcessCheckpointRequest, ReleaseProcessTreeRequest, ResumeProcessRequest,
+    StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
 };
 use serde_json::json;
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 #[derive(Default)]
 struct RecordingProcessObserver {
@@ -38,6 +42,61 @@ impl ProcessJournalCommitObserver for RecordingProcessObserver {
 }
 
 #[tokio::test]
+async fn process_checkpoint_records_are_durable_scoped_and_idempotent() {
+    let filesystem = in_memory_backed_processes_filesystem();
+    let store = ProcessJournalStore::new(Arc::clone(&filesystem));
+    let scope = scope();
+    let process_id = ProcessId::new();
+    submit_internal_process(&store, &scope, process_id).await;
+    let checkpoint_id = ProcessCheckpointId::from_trusted("checkpoint-1");
+    let request = RecordProcessCheckpointRequest {
+        checkpoint_id: checkpoint_id.clone(),
+        process_id,
+        scope: scope.clone(),
+        state_ref: ProcessCheckpointRef::from_trusted("state-1"),
+        created_at: Utc::now(),
+        metadata: json!({"schema": "agent-loop-v1"}),
+    };
+
+    let recorded = store
+        .record_process_checkpoint(request.clone())
+        .await
+        .expect("record checkpoint");
+    assert_eq!(
+        store
+            .record_process_checkpoint(request)
+            .await
+            .expect("idempotent record"),
+        recorded
+    );
+
+    let reopened = ProcessJournalStore::new(filesystem);
+    let loaded = reopened
+        .get_process_checkpoint(GetProcessCheckpointRequest {
+            checkpoint_id: checkpoint_id.clone(),
+            process_id,
+            scope: scope.clone(),
+        })
+        .await
+        .expect("load checkpoint");
+    assert_eq!(loaded, Some(recorded));
+
+    let mut wrong_scope = scope;
+    wrong_scope.user_id = UserId::new("other-user").expect("other user");
+    assert!(
+        reopened
+            .get_process_checkpoint(GetProcessCheckpointRequest {
+                checkpoint_id,
+                process_id,
+                scope: wrong_scope,
+            })
+            .await
+            .expect("wrong-scope lookup")
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn process_observer_receives_commits_once_not_idempotency_replays() {
     let store = ProcessJournalStore::new(in_memory_backed_processes_filesystem());
     let observer = Arc::new(RecordingProcessObserver::default());
@@ -52,6 +111,7 @@ async fn process_observer_receives_commits_once_not_idempotency_replays() {
         exclusive_within_scope: false,
         operation_id: Some(ProcessOperationId::from_trusted("submit-once")),
         owner_user_id: Some(scope.user_id.clone()),
+        concurrency_class: None,
         parent_process_id: None,
         root_process_id: None,
         spawn_tree_descendant_cap: None,
@@ -78,6 +138,68 @@ async fn process_observer_receives_commits_once_not_idempotency_replays() {
 }
 
 #[tokio::test]
+async fn process_claim_enforces_owner_and_class_concurrency_limits_atomically() {
+    let owner_store = ProcessJournalStore::new(in_memory_backed_processes_filesystem())
+        .with_concurrency_limits(ProcessConcurrencyLimits {
+            max_running_per_owner: Some(1),
+            max_running_by_class: BTreeMap::new(),
+        });
+    let scope = scope();
+    submit_internal_process(&owner_store, &scope, ProcessId::new()).await;
+    submit_internal_process(&owner_store, &scope, ProcessId::new()).await;
+    let owner_claims = owner_store
+        .claim_next_processes(ClaimProcessesRequest {
+            worker_id: ProcessWorkerId::from_trusted("owner-worker"),
+            scope_filter: None,
+            max_processes: 10,
+        })
+        .await
+        .expect("claim owner-limited processes");
+    assert_eq!(owner_claims.len(), 1);
+
+    let class = ProcessConcurrencyClass::from_trusted("scheduled_trigger");
+    let class_store = ProcessJournalStore::new(in_memory_backed_processes_filesystem())
+        .with_concurrency_limits(ProcessConcurrencyLimits {
+            max_running_per_owner: None,
+            max_running_by_class: BTreeMap::from([(class.clone(), 1)]),
+        });
+    for (process_id, user_id) in [
+        (ProcessId::new(), "class-user-a"),
+        (ProcessId::new(), "class-user-b"),
+    ] {
+        let mut process_scope = scope.clone();
+        process_scope.user_id = UserId::new(user_id).expect("class user");
+        class_store
+            .submit_process(SubmitProcessRequest {
+                process_id,
+                process_kind: ProcessKind::AgentTurn,
+                scope: process_scope.clone(),
+                exclusive_within_scope: false,
+                operation_id: None,
+                owner_user_id: Some(process_scope.user_id.clone()),
+                concurrency_class: Some(class.clone()),
+                parent_process_id: None,
+                root_process_id: None,
+                spawn_tree_descendant_cap: None,
+                checkpoint_ref: None,
+                created_at: Utc::now(),
+                metadata: serde_json::Value::Null,
+            })
+            .await
+            .expect("submit class-limited process");
+    }
+    let class_claims = class_store
+        .claim_next_processes(ClaimProcessesRequest {
+            worker_id: ProcessWorkerId::from_trusted("class-worker"),
+            scope_filter: None,
+            max_processes: 10,
+        })
+        .await
+        .expect("claim class-limited processes");
+    assert_eq!(class_claims.len(), 1);
+}
+
+#[tokio::test]
 async fn process_tree_submission_reserves_and_releases_capacity_atomically() {
     let store = ProcessJournalStore::new(in_memory_backed_processes_filesystem());
     let root_scope = scope();
@@ -92,6 +214,7 @@ async fn process_tree_submission_reserves_and_releases_capacity_atomically() {
         exclusive_within_scope: false,
         operation_id: Some(ProcessOperationId::from_trusted(operation)),
         owner_user_id: Some(child_scope.user_id.clone()),
+        concurrency_class: None,
         parent_process_id: Some(root_id),
         root_process_id: Some(root_id),
         spawn_tree_descendant_cap: Some(1),
@@ -153,6 +276,7 @@ async fn process_journal_store_owns_lifecycle_and_gate_projection() {
             exclusive_within_scope: false,
             operation_id: None,
             owner_user_id: Some(owner.clone()),
+            concurrency_class: None,
             parent_process_id: None,
             root_process_id: None,
             spawn_tree_descendant_cap: None,
@@ -286,6 +410,7 @@ async fn process_journal_store_completes_claimed_process() {
             exclusive_within_scope: false,
             operation_id: None,
             owner_user_id: Some(scope.user_id.clone()),
+            concurrency_class: None,
             parent_process_id: None,
             root_process_id: None,
             spawn_tree_descendant_cap: None,
@@ -335,6 +460,7 @@ async fn process_journal_store_relinquishes_claim_with_fresh_reclaim_lease() {
             exclusive_within_scope: false,
             operation_id: None,
             owner_user_id: Some(scope.user_id.clone()),
+            concurrency_class: None,
             parent_process_id: None,
             root_process_id: None,
             spawn_tree_descendant_cap: None,
@@ -391,6 +517,7 @@ async fn process_journal_store_rejects_wrong_lease() {
             exclusive_within_scope: false,
             operation_id: None,
             owner_user_id: Some(scope.user_id.clone()),
+            concurrency_class: None,
             parent_process_id: None,
             root_process_id: None,
             spawn_tree_descendant_cap: None,
@@ -594,6 +721,7 @@ async fn exclusive_process_submission_uses_authoritative_live_projection() {
         exclusive_within_scope: true,
         operation_id: None,
         owner_user_id: Some(scope.user_id.clone()),
+        concurrency_class: None,
         parent_process_id: None,
         root_process_id: None,
         spawn_tree_descendant_cap: None,
@@ -640,6 +768,7 @@ async fn submit_internal_process(
             exclusive_within_scope: false,
             operation_id: None,
             owner_user_id: Some(scope.user_id.clone()),
+            concurrency_class: None,
             parent_process_id: None,
             root_process_id: None,
             spawn_tree_descendant_cap: None,

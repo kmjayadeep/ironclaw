@@ -35,21 +35,22 @@ pub use cancellation::{ProcessCancellationRegistry, ProcessCancellationToken};
 pub use host::{ProcessHost, ProcessSubscription};
 pub use journal::{
     CancelProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
-    GetProcessSnapshotRequest, JournaledProcessSnapshot, KillProcessRequest, ProcessCheckpointRef,
-    ProcessControlPort, ProcessControlResult, ProcessGateOwnerMatch, ProcessGateQuery,
-    ProcessGateQuerySource, ProcessGateRecord, ProcessJournalCommit, ProcessJournalCommitObserver,
-    ProcessJournalCursor, ProcessJournalEntry, ProcessJournalError, ProcessJournalKind,
-    ProcessJournalObserverRegistry, ProcessJournalPage, ProcessJournalProjectionCursor,
-    ProcessJournalProjectionRequest, ProcessJournalProjectionSnapshot, ProcessJournalSource,
-    ProcessKind, ProcessLeaseRequest, ProcessLeaseSnapshot, ProcessLeaseToken,
-    ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupRequest,
-    ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
-    ProcessOperationId, ProcessOutcome, ProcessStateTransitionRequest, ProcessSubmissionPort,
-    ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort, ProcessTreePort,
-    ProcessTreeReservation, ProcessWorkerId, PruneReleasedProcessRequest,
-    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse,
-    ReleaseProcessTreeRequest, ReserveProcessTreeRequest, ResumeProcessRequest, StopProcessRequest,
-    SubmitProcessRequest, SuspendProcessRequest,
+    GetProcessCheckpointRequest, GetProcessSnapshotRequest, JournaledProcessSnapshot,
+    KillProcessRequest, ProcessCheckpointId, ProcessCheckpointPort, ProcessCheckpointRecord,
+    ProcessCheckpointRef, ProcessConcurrencyClass, ProcessConcurrencyLimits, ProcessControlPort,
+    ProcessControlResult, ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource,
+    ProcessGateRecord, ProcessJournalCommit, ProcessJournalCommitObserver, ProcessJournalCursor,
+    ProcessJournalEntry, ProcessJournalError, ProcessJournalKind, ProcessJournalObserverRegistry,
+    ProcessJournalPage, ProcessJournalProjectionCursor, ProcessJournalProjectionRequest,
+    ProcessJournalProjectionSnapshot, ProcessJournalSource, ProcessKind, ProcessLeaseRequest,
+    ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleLookupBatchRequest,
+    ProcessLifecycleLookupRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,
+    ProcessLifecycleStatus, ProcessOperationId, ProcessOutcome, ProcessStateTransitionRequest,
+    ProcessSubmissionPort, ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort,
+    ProcessTreePort, ProcessTreeReservation, ProcessWorkerId, PruneReleasedProcessRequest,
+    RecordProcessCheckpointRequest, RecoverExpiredProcessLeasesRequest,
+    RecoverExpiredProcessLeasesResponse, ReleaseProcessTreeRequest, ReserveProcessTreeRequest,
+    ResumeProcessRequest, StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
 };
 pub use journal_store::{ProcessJournalStore, ProcessJournalStoreError};
 pub use process_store::{ProcessResultStore, ProcessStore};
@@ -68,3 +69,19 @@ pub use types::{
     ProcessResultStorePort, ProcessStart, ProcessStatus, ProcessStorePort,
 };
 pub use wrappers::{EventingProcessStore, ResourceManagedProcessStore};
+
+/// Complete static-kernel process surface. Consumers should accept narrower
+/// ports; composition uses this trait to carry one journal implementation.
+pub trait ProcessRuntimePort:
+    ProcessSubmissionPort<Error = ProcessJournalStoreError>
+    + ProcessTransitionPort<Error = ProcessJournalStoreError>
+    + ProcessControlPort<Error = ProcessJournalStoreError>
+    + ProcessJournalSource<Error = ProcessJournalStoreError>
+    + ProcessLifecycleLookupSource<Error = ProcessJournalStoreError>
+    + ProcessGateQuerySource<Error = ProcessJournalStoreError>
+    + ProcessTreePort<Error = ProcessJournalStoreError>
+    + ProcessCheckpointPort<Error = ProcessJournalStoreError>
+    + Send
+    + Sync
+{
+}

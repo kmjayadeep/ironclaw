@@ -13,7 +13,7 @@ use ironclaw_host_api::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -29,6 +29,26 @@ impl ProcessCheckpointRef {
     pub fn new(value: impl Into<String>) -> Result<Self, ProcessJournalError> {
         let value = value.into();
         validate_opaque_ref("process checkpoint", &value)?;
+        Ok(Self(value))
+    }
+
+    pub fn from_trusted(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProcessCheckpointId(String);
+
+impl ProcessCheckpointId {
+    pub fn new(value: impl Into<String>) -> Result<Self, ProcessJournalError> {
+        let value = value.into();
+        validate_opaque_ref("process checkpoint id", &value)?;
         Ok(Self(value))
     }
 
@@ -99,6 +119,32 @@ impl ProcessOperationId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProcessConcurrencyClass(String);
+
+impl ProcessConcurrencyClass {
+    pub fn new(value: impl Into<String>) -> Result<Self, ProcessJournalError> {
+        let value = value.into();
+        validate_opaque_ref("process concurrency class", &value)?;
+        Ok(Self(value))
+    }
+
+    pub fn from_trusted(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProcessConcurrencyLimits {
+    pub max_running_per_owner: Option<u32>,
+    pub max_running_by_class: BTreeMap<ProcessConcurrencyClass, u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,6 +272,8 @@ pub struct JournaledProcessSnapshot {
     pub created_at: Timestamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_user_id: Option<UserId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency_class: Option<ProcessConcurrencyClass>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_process_id: Option<ProcessId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -363,6 +411,8 @@ pub struct SubmitProcessRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_user_id: Option<UserId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency_class: Option<ProcessConcurrencyClass>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_process_id: Option<ProcessId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_process_id: Option<ProcessId>,
@@ -381,6 +431,35 @@ pub struct ProcessTreeReservation {
     pub descendant_count: u64,
     #[serde(default)]
     pub released_processes: HashSet<ProcessId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProcessCheckpointRecord {
+    pub checkpoint_id: ProcessCheckpointId,
+    pub process_id: ProcessId,
+    pub scope: ResourceScope,
+    pub state_ref: ProcessCheckpointRef,
+    pub created_at: Timestamp,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecordProcessCheckpointRequest {
+    pub checkpoint_id: ProcessCheckpointId,
+    pub process_id: ProcessId,
+    pub scope: ResourceScope,
+    pub state_ref: ProcessCheckpointRef,
+    pub created_at: Timestamp,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetProcessCheckpointRequest {
+    pub checkpoint_id: ProcessCheckpointId,
+    pub process_id: ProcessId,
+    pub scope: ResourceScope,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -531,6 +610,21 @@ pub trait ProcessTreePort: Send + Sync {
         &self,
         request: PruneReleasedProcessRequest,
     ) -> Result<(), Self::Error>;
+}
+
+#[async_trait]
+pub trait ProcessCheckpointPort: Send + Sync {
+    type Error: Send + Sync + 'static;
+
+    async fn record_process_checkpoint(
+        &self,
+        request: RecordProcessCheckpointRequest,
+    ) -> Result<ProcessCheckpointRecord, Self::Error>;
+
+    async fn get_process_checkpoint(
+        &self,
+        request: GetProcessCheckpointRequest,
+    ) -> Result<Option<ProcessCheckpointRecord>, Self::Error>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

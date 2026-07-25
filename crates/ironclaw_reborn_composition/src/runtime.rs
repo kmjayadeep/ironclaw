@@ -94,8 +94,8 @@ use ironclaw_turns::{
     GetRunStateRequest, IdempotencyKey, LoopGateRef, ReplyTargetBindingRef,
     RunProfileResolutionRequest, SanitizedCancelReason, SourceBindingRef, SubmitTurnRequest,
     SubmitTurnResponse, TurnActor, TurnCoordinator, TurnError, TurnEventProjectionSource, TurnId,
-    TurnRunId, TurnRunState, TurnRunWake, TurnScope, TurnSpawnTreeStateStore, TurnStateRowStore,
-    TurnStateStoreLimits, TurnStatus,
+    TurnRunId, TurnRunState, TurnRunWake, TurnScope, TurnSpawnTreeStateStore, TurnStateStoreLimits,
+    TurnStatus,
     events::EventCursor,
     run_profile::{LoopHostMilestoneSink, LoopRunContext},
 };
@@ -370,7 +370,6 @@ impl HostUserProfileSource for MemoryBackedUserProfileSourceAdapter {
 struct RuntimeStoreParts {
     scoped_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
     turn_projection: Arc<AgentTurnProcessRuntime>,
-    turn_state_flush: Arc<dyn TurnStateFlush>,
     processes: ProcessRuntimeSystem,
     checkpoint_state_store: Arc<dyn ironclaw_turns::CheckpointStateStorePort>,
     loop_checkpoint_store: Arc<dyn ironclaw_turns::LoopCheckpointStore>,
@@ -400,26 +399,9 @@ struct RuntimeStoreParts {
     trigger_conversation_services: Option<RebornFilesystemConversationServices>,
 }
 
-#[async_trait::async_trait]
-trait TurnStateFlush: Send + Sync {
-    async fn drain_turn_state(&self) -> Result<(), TurnError>;
-}
-
-#[async_trait::async_trait]
-impl<F> TurnStateFlush for TurnStateRowStore<F>
-where
-    F: RootFilesystem + Send + Sync + 'static,
-{
-    async fn drain_turn_state(&self) -> Result<(), TurnError> {
-        self.drain().await
-    }
-}
-
 fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
     let scoped_filesystem = Arc::clone(&services.scoped_filesystem);
-    let turn_state = Arc::clone(&services.turn_state);
     let checkpoint_state_store = Arc::clone(&services.checkpoint_state_store);
-    let loop_checkpoint_store = Arc::clone(&services.loop_checkpoint_store);
     let thread_service = Arc::clone(&services.thread_service);
     let resource_governor = Arc::clone(&services.resource_governor);
     let budget_gate_store = Arc::clone(&services.budget_gate_store);
@@ -435,6 +417,9 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
         &services.process_journal_store,
     ));
     let turn_projection = Arc::new(processes.agent_turn_runtime());
+    let loop_checkpoint_store = Arc::new(ironclaw_turns::ProcessLoopCheckpointStore::new(
+        processes.checkpoints(),
+    )) as Arc<dyn ironclaw_turns::LoopCheckpointStore>;
 
     let (subagent_await_edge_writer, subagent_await_edge_settler, subagent_await_edge_evidence) = {
         let store = Arc::new(AwaitEdgeStore::new(Arc::clone(&scoped_filesystem)));
@@ -458,7 +443,6 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
     RuntimeStoreParts {
         scoped_filesystem,
         turn_projection,
-        turn_state_flush: Arc::clone(&turn_state) as Arc<dyn TurnStateFlush>,
         processes,
         checkpoint_state_store,
         loop_checkpoint_store,
@@ -773,11 +757,6 @@ pub struct RebornRuntime {
     /// reconcile loop lives exactly as long as the runtime.
     _channel_host_assembly:
         Option<Arc<crate::extension_host::channel_host::GenericChannelHostAssembly>>,
-    /// Turn-state row-store flusher, kept so graceful `shutdown` can drain the
-    /// write-behind durable tail (awaiting the acks of non-critical transitions
-    /// that committed at memory speed) so a planned restart recovers in-flight
-    /// turns, not just the synchronously-durable gate-park/terminal/new-run ones.
-    turn_state_flush: Arc<dyn TurnStateFlush>,
     pub(crate) process_lifecycle_lookup_source:
         Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
     #[allow(
@@ -2877,21 +2856,6 @@ impl RebornRuntime {
         if let Some(projection) = self.budget_event_projection {
             projection.shutdown().await;
         }
-        // Everything that mutates turn state (trigger poller, credential-refresh
-        // worker, scheduler/runner) is now stopped, so the row store is quiescent.
-        // Drain the write-behind durable tail — awaiting the acks of non-critical
-        // transitions that committed at memory speed — so a planned restart
-        // recovers in-flight turns, not just the synchronously-durable
-        // gate-park/terminal/new-run ones. Best-effort: a drain failure means the
-        // flusher latched degraded mid-shutdown; log it so the operator sees the
-        // un-drained tail rather than failing the clean exit path.
-        if let Err(error) = self.turn_state_flush.drain_turn_state().await {
-            tracing::warn!(
-                %error,
-                "turn-state WriteBehind drain failed during graceful shutdown; the un-acked \
-                 non-critical tail may not be durable on restart"
-            );
-        }
         Ok(())
     }
 
@@ -3533,7 +3497,6 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     let RuntimeStoreParts {
         scoped_filesystem,
         turn_projection,
-        turn_state_flush,
         processes,
         checkpoint_state_store,
         loop_checkpoint_store,
@@ -4680,7 +4643,6 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         channel_egress_credential_bridges: services.channel_egress_credential_bridges.clone(),
         turn_coordinator,
         _channel_host_assembly: channel_host_assembly,
-        turn_state_flush,
         process_gate_query_source,
         turn_tree_store: turn_projection,
         thread_service,

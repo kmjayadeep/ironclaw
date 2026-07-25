@@ -4,12 +4,14 @@ use async_trait::async_trait;
 use ironclaw_host_api::ResourceScope;
 use ironclaw_processes::{
     CancelProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
-    GetProcessSnapshotRequest, JournaledProcessSnapshot, KillProcessRequest, ProcessControlPort,
+    GetProcessCheckpointRequest, GetProcessSnapshotRequest, JournaledProcessSnapshot,
+    KillProcessRequest, ProcessCheckpointPort, ProcessCheckpointRecord, ProcessControlPort,
     ProcessControlResult, ProcessGateQuery, ProcessGateQuerySource, ProcessGateRecord,
     ProcessJournalCursor, ProcessJournalPage, ProcessJournalSource, ProcessJournalStoreError,
     ProcessLeaseRequest, ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult,
-    ProcessLifecycleLookupSource, ProcessStateTransitionRequest, ProcessSubmissionPort,
-    ProcessTransitionPort, ProcessTreePort, ProcessTreeReservation, PruneReleasedProcessRequest,
+    ProcessLifecycleLookupSource, ProcessRuntimePort, ProcessStateTransitionRequest,
+    ProcessSubmissionPort, ProcessTransitionPort, ProcessTreePort, ProcessTreeReservation,
+    PruneReleasedProcessRequest, RecordProcessCheckpointRequest,
     RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse,
     ReleaseProcessTreeRequest, ReserveProcessTreeRequest, ResumeProcessRequest, StopProcessRequest,
     SubmitProcessRequest, SuspendProcessRequest,
@@ -19,33 +21,11 @@ use crate::TurnError;
 
 #[derive(Clone)]
 pub struct ProcessJournalStoreTurnAdapter {
-    submission: Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
-    transitions: Arc<dyn ProcessTransitionPort<Error = ProcessJournalStoreError>>,
-    controls: Arc<dyn ProcessControlPort<Error = ProcessJournalStoreError>>,
-    journal: Arc<dyn ProcessJournalSource<Error = ProcessJournalStoreError>>,
-    lifecycle: Arc<dyn ProcessLifecycleLookupSource<Error = ProcessJournalStoreError>>,
-    gates: Arc<dyn ProcessGateQuerySource<Error = ProcessJournalStoreError>>,
-    trees: Arc<dyn ProcessTreePort<Error = ProcessJournalStoreError>>,
+    runtime: Arc<dyn ProcessRuntimePort>,
 }
 impl ProcessJournalStoreTurnAdapter {
-    pub fn new(
-        submission: Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
-        transitions: Arc<dyn ProcessTransitionPort<Error = ProcessJournalStoreError>>,
-        controls: Arc<dyn ProcessControlPort<Error = ProcessJournalStoreError>>,
-        journal: Arc<dyn ProcessJournalSource<Error = ProcessJournalStoreError>>,
-        lifecycle: Arc<dyn ProcessLifecycleLookupSource<Error = ProcessJournalStoreError>>,
-        gates: Arc<dyn ProcessGateQuerySource<Error = ProcessJournalStoreError>>,
-        trees: Arc<dyn ProcessTreePort<Error = ProcessJournalStoreError>>,
-    ) -> Self {
-        Self {
-            submission,
-            transitions,
-            controls,
-            journal,
-            lifecycle,
-            gates,
-            trees,
-        }
+    pub fn new(runtime: Arc<dyn ProcessRuntimePort>) -> Self {
+        Self { runtime }
     }
 }
 
@@ -58,7 +38,7 @@ impl ProcessTreePort for ProcessJournalStoreTurnAdapter {
         scope: &ResourceScope,
         parent_process_id: ironclaw_host_api::ProcessId,
     ) -> Result<Vec<JournaledProcessSnapshot>, Self::Error> {
-        self.trees
+        self.runtime
             .child_processes(scope, parent_process_id)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -68,7 +48,7 @@ impl ProcessTreePort for ProcessJournalStoreTurnAdapter {
         &self,
         request: ReserveProcessTreeRequest,
     ) -> Result<ProcessTreeReservation, Self::Error> {
-        self.trees
+        self.runtime
             .reserve_process_tree(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -78,7 +58,7 @@ impl ProcessTreePort for ProcessJournalStoreTurnAdapter {
         &self,
         request: ReleaseProcessTreeRequest,
     ) -> Result<(), Self::Error> {
-        self.trees
+        self.runtime
             .release_process_tree(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -88,8 +68,33 @@ impl ProcessTreePort for ProcessJournalStoreTurnAdapter {
         &self,
         request: PruneReleasedProcessRequest,
     ) -> Result<(), Self::Error> {
-        self.trees
+        self.runtime
             .prune_released_process(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+}
+
+#[async_trait]
+impl ProcessCheckpointPort for ProcessJournalStoreTurnAdapter {
+    type Error = TurnError;
+
+    async fn record_process_checkpoint(
+        &self,
+        request: RecordProcessCheckpointRequest,
+    ) -> Result<ProcessCheckpointRecord, Self::Error> {
+        self.runtime
+            .record_process_checkpoint(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+
+    async fn get_process_checkpoint(
+        &self,
+        request: GetProcessCheckpointRequest,
+    ) -> Result<Option<ProcessCheckpointRecord>, Self::Error> {
+        self.runtime
+            .get_process_checkpoint(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)
     }
@@ -103,7 +108,7 @@ impl ProcessSubmissionPort for ProcessJournalStoreTurnAdapter {
         &self,
         request: SubmitProcessRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
-        self.submission
+        self.runtime
             .submit_process(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -118,7 +123,7 @@ impl ProcessControlPort for ProcessJournalStoreTurnAdapter {
         &self,
         request: ResumeProcessRequest,
     ) -> Result<ProcessControlResult, Self::Error> {
-        self.controls
+        self.runtime
             .resume_process(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -128,7 +133,7 @@ impl ProcessControlPort for ProcessJournalStoreTurnAdapter {
         &self,
         request: StopProcessRequest,
     ) -> Result<ProcessControlResult, Self::Error> {
-        self.controls
+        self.runtime
             .stop_process(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -138,7 +143,7 @@ impl ProcessControlPort for ProcessJournalStoreTurnAdapter {
         &self,
         request: CancelProcessRequest,
     ) -> Result<ProcessControlResult, Self::Error> {
-        self.controls
+        self.runtime
             .request_cancel_process(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -148,7 +153,7 @@ impl ProcessControlPort for ProcessJournalStoreTurnAdapter {
         &self,
         request: KillProcessRequest,
     ) -> Result<ProcessControlResult, Self::Error> {
-        self.controls
+        self.runtime
             .kill_process(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -163,7 +168,7 @@ impl ProcessTransitionPort for ProcessJournalStoreTurnAdapter {
         &self,
         request: ClaimProcessesRequest,
     ) -> Result<Vec<ClaimedProcess>, Self::Error> {
-        self.transitions
+        self.runtime
             .claim_next_processes(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -173,7 +178,7 @@ impl ProcessTransitionPort for ProcessJournalStoreTurnAdapter {
         &self,
         request: ProcessLeaseRequest,
     ) -> Result<ProcessJournalCursor, Self::Error> {
-        self.transitions
+        self.runtime
             .heartbeat_process(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -183,7 +188,7 @@ impl ProcessTransitionPort for ProcessJournalStoreTurnAdapter {
         &self,
         request: RecoverExpiredProcessLeasesRequest,
     ) -> Result<RecoverExpiredProcessLeasesResponse, Self::Error> {
-        self.transitions
+        self.runtime
             .recover_expired_process_leases(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -193,7 +198,7 @@ impl ProcessTransitionPort for ProcessJournalStoreTurnAdapter {
         &self,
         request: SuspendProcessRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
-        self.transitions
+        self.runtime
             .suspend_process(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -203,7 +208,7 @@ impl ProcessTransitionPort for ProcessJournalStoreTurnAdapter {
         &self,
         request: ProcessStateTransitionRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
-        self.transitions
+        self.runtime
             .complete_process(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -213,7 +218,7 @@ impl ProcessTransitionPort for ProcessJournalStoreTurnAdapter {
         &self,
         request: ProcessStateTransitionRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
-        self.transitions
+        self.runtime
             .cancel_process(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -223,7 +228,7 @@ impl ProcessTransitionPort for ProcessJournalStoreTurnAdapter {
         &self,
         request: FailProcessRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
-        self.transitions
+        self.runtime
             .fail_process(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -233,7 +238,7 @@ impl ProcessTransitionPort for ProcessJournalStoreTurnAdapter {
         &self,
         request: ProcessLeaseRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
-        self.transitions
+        self.runtime
             .relinquish_process(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -248,7 +253,7 @@ impl ProcessJournalSource for ProcessJournalStoreTurnAdapter {
         &self,
         request: GetProcessSnapshotRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
-        self.journal
+        self.runtime
             .get_process_snapshot(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -261,7 +266,7 @@ impl ProcessJournalSource for ProcessJournalStoreTurnAdapter {
         after: Option<ProcessJournalCursor>,
         limit: usize,
     ) -> Result<ProcessJournalPage, Self::Error> {
-        self.journal
+        self.runtime
             .read_process_journal_after(scope, owner_user_id, after, limit)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -272,7 +277,7 @@ impl ProcessJournalSource for ProcessJournalStoreTurnAdapter {
         after: Option<ProcessJournalCursor>,
         limit: usize,
     ) -> Result<ProcessJournalPage, Self::Error> {
-        self.journal
+        self.runtime
             .read_process_journal_log_after(after, limit)
             .await
             .map_err(turn_error_from_process_journal_store_error)
@@ -287,7 +292,7 @@ impl ProcessLifecycleLookupSource for ProcessJournalStoreTurnAdapter {
         &self,
         request: ProcessLifecycleLookupBatchRequest,
     ) -> Vec<Result<ProcessLifecycleLookupResult, Self::Error>> {
-        self.lifecycle
+        self.runtime
             .process_lifecycle_states(request)
             .await
             .into_iter()
@@ -304,7 +309,7 @@ impl ProcessGateQuerySource for ProcessJournalStoreTurnAdapter {
         &self,
         request: ProcessGateQuery,
     ) -> Result<Vec<ProcessGateRecord>, Self::Error> {
-        self.gates
+        self.runtime
             .query_process_gates(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)

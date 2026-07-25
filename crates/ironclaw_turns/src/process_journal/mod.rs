@@ -15,9 +15,9 @@ use uuid::Uuid;
 use ironclaw_host_api::{ProcessId, ResourceScope, SYSTEM_RESERVED_ID};
 use ironclaw_processes::{
     CancelProcessRequest, ClaimedProcess, FailProcessRequest, GetProcessSnapshotRequest,
-    JournaledProcessSnapshot, ProcessCheckpointRef, ProcessControlPort, ProcessJournalCommit,
-    ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind,
-    ProcessJournalPage, ProcessJournalSource, ProcessKind, ProcessLeaseRequest,
+    JournaledProcessSnapshot, ProcessCheckpointRef, ProcessConcurrencyClass, ProcessControlPort,
+    ProcessJournalCommit, ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalEntry,
+    ProcessJournalKind, ProcessJournalPage, ProcessJournalSource, ProcessKind, ProcessLeaseRequest,
     ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleStatus, ProcessOperationId,
     ProcessOutcome, ProcessSubmissionPort, ProcessSuspension, ProcessSuspensionKind,
     ProcessTreePort, ProcessWorkerId, PruneReleasedProcessRequest,
@@ -38,8 +38,8 @@ use crate::{
     RunProfileId, RunProfileResolutionError, RunProfileResolutionRequest, RunProfileResolver,
     RunProfileVersion, SourceBindingRef, SubmitChildRunRequest, TurnActor, TurnAdmissionPolicy,
     TurnCheckpointId, TurnCommittedEventObserver, TurnError, TurnEventKind, TurnEventSink, TurnId,
-    TurnLifecycleEvent, TurnRunId, TurnRunProfile, TurnRunRecord, TurnRunState, TurnRunnerId,
-    TurnScope, TurnStatus,
+    TurnLifecycleEvent, TurnOriginKind, TurnRunId, TurnRunProfile, TurnRunRecord, TurnRunState,
+    TurnRunnerId, TurnScope, TurnStatus,
     events::{
         EventCursor, TurnBlockedGateKind, TurnBlockedGateMetadata, TurnEventPage,
         TurnEventProjectionSource,
@@ -57,7 +57,9 @@ use crate::{
 
 pub const AGENT_TURN_PROCESS_KIND: &str = "agent_turn";
 
+mod loop_checkpoint;
 mod store_adapter;
+pub use loop_checkpoint::ProcessLoopCheckpointStore;
 pub use store_adapter::{
     ProcessJournalStoreTurnAdapter, turn_error_from_process_journal_store_error,
 };
@@ -191,6 +193,7 @@ impl AgentTurnProcessRuntime {
             product_context: request.product_context,
             resume_disposition: None,
         };
+        let concurrency_class = process_concurrency_class(metadata.product_context.as_ref());
         let snapshot = self
             .submission
             .submit_process(SubmitProcessRequest {
@@ -202,6 +205,7 @@ impl AgentTurnProcessRuntime {
                     request.idempotency_key.as_str(),
                 )),
                 owner_user_id: Some(request.actor.user_id),
+                concurrency_class,
                 parent_process_id: None,
                 root_process_id: None,
                 spawn_tree_descendant_cap: None,
@@ -287,6 +291,7 @@ impl AgentTurnProcessRuntime {
             product_context: parent_metadata.product_context,
             resume_disposition: None,
         };
+        let concurrency_class = process_concurrency_class(metadata.product_context.as_ref());
         let snapshot = self
             .submission
             .submit_process(SubmitProcessRequest {
@@ -299,6 +304,7 @@ impl AgentTurnProcessRuntime {
                     request.idempotency_key.as_str()
                 ))),
                 owner_user_id: Some(request.actor.user_id.clone()),
+                concurrency_class,
                 parent_process_id: Some(parent.process_id),
                 root_process_id: Some(root_process_id),
                 spawn_tree_descendant_cap: Some(request.spawn_tree_descendant_cap),
@@ -445,6 +451,7 @@ impl AgentTurnProcessRuntime {
         metadata.reply_target_binding_ref = request.reply_target_binding_ref;
         metadata.model_usage = None;
         metadata.resume_disposition = None;
+        let concurrency_class = process_concurrency_class(metadata.product_context.as_ref());
         let run_id = TurnRunId::new();
         let retried = self
             .submission
@@ -458,6 +465,7 @@ impl AgentTurnProcessRuntime {
                     request.idempotency_key.as_str()
                 ))),
                 owner_user_id: snapshot.owner_user_id,
+                concurrency_class,
                 parent_process_id: snapshot.parent_process_id,
                 root_process_id: snapshot.root_process_id,
                 spawn_tree_descendant_cap: None,
@@ -774,6 +782,7 @@ impl TurnRunProcessExt for TurnRunRecord {
             lease: process_lease_from_record(self),
             created_at: self.received_at,
             owner_user_id: self.scope.explicit_owner_user_id().cloned(),
+            concurrency_class: process_concurrency_class(self.product_context.as_ref()),
             parent_process_id: self.parent_run_id.map(process_id_from_turn_run_id),
             root_process_id: self.spawn_tree_root_run_id.map(process_id_from_turn_run_id),
             metadata: json!({ "agent_turn": AgentTurnProcessMetadata::from_record(self) }),
@@ -803,6 +812,7 @@ impl TurnRunStateProcessExt for TurnRunState {
                 .explicit_owner_user_id()
                 .cloned()
                 .or_else(|| self.actor.as_ref().map(|actor| actor.user_id.clone())),
+            concurrency_class: process_concurrency_class(self.product_context.as_ref()),
             parent_process_id: None,
             root_process_id: None,
             metadata: json!({ "agent_turn": AgentTurnProcessStateMetadata::from_state(self) }),
@@ -840,6 +850,19 @@ pub fn process_id_from_turn_run_id(run_id: TurnRunId) -> ProcessId {
 
 fn process_checkpoint_ref(checkpoint_id: TurnCheckpointId) -> ProcessCheckpointRef {
     ProcessCheckpointRef::from_trusted(checkpoint_id.as_uuid().to_string())
+}
+
+fn process_concurrency_class(
+    product_context: Option<&ProductTurnContext>,
+) -> Option<ProcessConcurrencyClass> {
+    match product_context?.origin {
+        TurnOriginKind::ScheduledTrigger => {
+            Some(ProcessConcurrencyClass::from_trusted("scheduled_trigger"))
+        }
+        TurnOriginKind::WebUi | TurnOriginKind::Inbound => {
+            Some(ProcessConcurrencyClass::from_trusted("conversation"))
+        }
+    }
 }
 
 pub fn process_status_from_turn_status(status: TurnStatus) -> ProcessLifecycleStatus {

@@ -81,8 +81,8 @@ pub use process_journal::AgentTurnProcessTransitionAdapter;
 pub use process_journal::{
     AGENT_TURN_PROCESS_KIND, AgentTurnProcessCommitObserver, AgentTurnProcessMetadata,
     AgentTurnProcessRuntime, AgentTurnProcessStateMetadata, ProcessJournalStoreTurnAdapter,
-    TurnEventProjectionFromProcessJournal, claimed_turn_run_from_process_claim,
-    turn_run_state_from_process_snapshot,
+    ProcessLoopCheckpointStore, TurnEventProjectionFromProcessJournal,
+    claimed_turn_run_from_process_claim, turn_run_state_from_process_snapshot,
 };
 pub use request::{
     CancelRunRequest, GateResumeDisposition, GetRunStateRequest, ResumeTurnPrecondition,

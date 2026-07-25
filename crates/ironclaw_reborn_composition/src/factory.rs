@@ -141,7 +141,10 @@ use ironclaw_outbound::CommunicationPreferenceRepository;
 use ironclaw_outbound::{
     DeliveredGateRouteStore, OutboundStateStore, OutboundStateStorePort, TriggeredRunDeliveryStore,
 };
-use ironclaw_processes::{ProcessJournalStore, ProcessJournalStoreError, ProcessServices};
+use ironclaw_processes::{
+    ProcessConcurrencyClass, ProcessConcurrencyLimits, ProcessJournalStore, ProcessRuntimePort,
+    ProcessServices,
+};
 use ironclaw_product::{
     ChannelConnectionNoticePolicy, ChannelConnectionRequirement, ExtensionAccountSetupDescriptor,
     ExtensionAccountSetupRegistry, LifecycleProductSurfaceContext,
@@ -169,9 +172,7 @@ use ironclaw_turns::{
     AgentTurnProcessRuntime, GetRunStateRequest, InMemoryRunProfileResolver,
     ProcessJournalStoreTurnAdapter, TurnScope, TurnStateStore,
 };
-use ironclaw_turns::{
-    CheckpointStateStorePort, ExternalToolCatalog, InMemoryExternalToolCatalog, LoopCheckpointStore,
-};
+use ironclaw_turns::{CheckpointStateStorePort, ExternalToolCatalog, InMemoryExternalToolCatalog};
 use secrecy::SecretString;
 
 /// Display name sent with RFC 7591 dynamic client registration.
@@ -1092,9 +1093,9 @@ pub(crate) struct RebornRuntimeStores {
     pub(crate) shared_extension_registry: Arc<SharedExtensionRegistry>,
     pub(crate) scoped_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
     pub(crate) process_journal_store: Arc<ProcessJournalStore<CompositeRootFilesystem>>,
+    #[cfg(test)]
     pub(crate) turn_state: Arc<TurnStateRowStore<CompositeRootFilesystem>>,
     pub(crate) checkpoint_state_store: Arc<dyn CheckpointStateStorePort>,
-    pub(crate) loop_checkpoint_store: Arc<dyn LoopCheckpointStore>,
     pub(crate) thread_service: Arc<dyn SessionThreadService>,
     pub(crate) trigger_repository: Arc<dyn TriggerRepository>,
     pub(crate) resource_governor: Arc<dyn ResourceGovernor>,
@@ -4530,7 +4531,8 @@ async fn build_backend_production(
             default_runtime_owner_scope(owner_user_id.clone()).map_err(RebornBuildError::Mount)?
         }
     };
-    let turn_state_filesystem =
+    #[cfg(test)]
+    let test_turn_state_filesystem =
         owner_turn_state_filesystem(Arc::clone(&stores.filesystem), &turn_state_scope)
             .map_err(RebornBuildError::Mount)?;
     let secret_store: Arc<dyn SecretStorePort> = stores.secret_credentials.secret_store.clone();
@@ -4633,35 +4635,33 @@ async fn build_backend_production(
         broadcast_budget_event_sink,
         ..
     } = build_budget_sinks();
-    let turn_state = Arc::new(production_turn_state_store(
-        Arc::clone(&turn_state_filesystem),
-        turn_state_store_limits,
-    ));
-    let process_journal_store = Arc::new(ProcessJournalStore::new(Arc::clone(
-        &stores.scoped_filesystem,
-    )));
-    let process_journal_adapter = Arc::new(ProcessJournalStoreTurnAdapter::new(
-        Arc::clone(&process_journal_store)
-            as Arc<dyn ironclaw_processes::ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
-        Arc::clone(&process_journal_store)
-            as Arc<dyn ironclaw_processes::ProcessTransitionPort<Error = ProcessJournalStoreError>>,
-        Arc::clone(&process_journal_store)
-            as Arc<dyn ironclaw_processes::ProcessControlPort<Error = ProcessJournalStoreError>>,
-        Arc::clone(&process_journal_store)
-            as Arc<dyn ironclaw_processes::ProcessJournalSource<Error = ProcessJournalStoreError>>,
-        Arc::clone(&process_journal_store)
-            as Arc<
-                dyn ironclaw_processes::ProcessLifecycleLookupSource<
-                        Error = ProcessJournalStoreError,
-                    >,
-            >,
-        Arc::clone(&process_journal_store)
-            as Arc<
-                dyn ironclaw_processes::ProcessGateQuerySource<Error = ProcessJournalStoreError>,
-            >,
-        Arc::clone(&process_journal_store)
-            as Arc<dyn ironclaw_processes::ProcessTreePort<Error = ProcessJournalStoreError>>,
-    ));
+    let mut max_running_by_class = BTreeMap::new();
+    if let Some(limit) = turn_state_store_limits.max_concurrent_trigger_runs {
+        max_running_by_class.insert(
+            ProcessConcurrencyClass::from_trusted("scheduled_trigger"),
+            limit.get(),
+        );
+    }
+    if let Some(limit) = turn_state_store_limits.max_concurrent_conversation_runs {
+        max_running_by_class.insert(
+            ProcessConcurrencyClass::from_trusted("conversation"),
+            limit.get(),
+        );
+    }
+    let process_journal_store = Arc::new(
+        ProcessJournalStore::new(Arc::clone(&stores.scoped_filesystem)).with_concurrency_limits(
+            ProcessConcurrencyLimits {
+                max_running_per_owner: turn_state_store_limits
+                    .max_concurrent_runs_per_user
+                    .map(std::num::NonZeroU32::get),
+                max_running_by_class,
+            },
+        ),
+    );
+    let process_journal_adapter = Arc::new(ProcessJournalStoreTurnAdapter::new(Arc::clone(
+        &process_journal_store,
+    )
+        as Arc<dyn ProcessRuntimePort>));
     let process_lifecycle_lookup_source = Arc::clone(&process_journal_adapter)
         as Arc<
             dyn ironclaw_processes::ProcessLifecycleLookupSource<Error = ironclaw_turns::TurnError>,
@@ -4680,6 +4680,11 @@ async fn build_backend_production(
         Arc::clone(&process_journal_adapter)
             as Arc<dyn ironclaw_processes::ProcessTreePort<Error = ironclaw_turns::TurnError>>,
     ));
+    #[cfg(test)]
+    let test_turn_state = Arc::new(production_turn_state_store(
+        test_turn_state_filesystem,
+        turn_state_store_limits,
+    ));
     // Rebindable source-turn-state slot for the trigger delivery-target
     // service — same repoint seam as the sibling snapshot slot below.
     #[cfg(any(test, feature = "test-support"))]
@@ -4695,7 +4700,7 @@ async fn build_backend_production(
         });
     #[cfg(not(any(test, feature = "test-support")))]
     let trigger_create_source_turn_state: Arc<dyn ironclaw_turns::TurnStateStore> =
-        process_turn_state as Arc<dyn ironclaw_turns::TurnStateStore>;
+        Arc::clone(&process_turn_state) as Arc<dyn ironclaw_turns::TurnStateStore>;
     let trigger_create_hook = Arc::new(LocalRuntimeTriggerCreatorPairingHook {
         outbound_delivery_targets: Arc::clone(&outbound_delivery_targets),
         source_turn_state: trigger_create_source_turn_state,
@@ -4814,7 +4819,7 @@ async fn build_backend_production(
         secret_store = Arc::clone(&stores.secret_credentials.secret_store),
         credential_broker = stores.secret_credentials.credential_broker,
         filesystem_run_state = Arc::clone(&stores.scoped_filesystem),
-        turn_state = Arc::clone(&turn_state),
+        turn_state = Arc::clone(&process_turn_state),
         run_profile_resolver = planned_run_profile_resolver()?,
     )
     .with_approval_requests(Arc::clone(&approval_requests))
@@ -5661,9 +5666,9 @@ async fn build_backend_production(
         shared_extension_registry,
         scoped_filesystem: Arc::clone(&stores.scoped_filesystem),
         process_journal_store,
-        turn_state: Arc::clone(&turn_state),
+        #[cfg(test)]
+        turn_state: test_turn_state,
         checkpoint_state_store,
-        loop_checkpoint_store: Arc::clone(&turn_state) as Arc<dyn LoopCheckpointStore>,
         thread_service,
         trigger_repository: Arc::clone(&trigger_repository),
         resource_governor: production_resource_governor,

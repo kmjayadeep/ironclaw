@@ -16,17 +16,20 @@ use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
+use crate::ProcessRuntimePort;
 use crate::journal::{
     CancelProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
-    GetProcessSnapshotRequest, JournaledProcessSnapshot, KillProcessRequest, ProcessControlPort,
-    ProcessControlResult, ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource,
-    ProcessGateRecord, ProcessJournalCommit, ProcessJournalCommitObserver, ProcessJournalCursor,
-    ProcessJournalEntry, ProcessJournalKind, ProcessJournalObserverRegistry, ProcessJournalPage,
-    ProcessJournalSource, ProcessLeaseRequest, ProcessLeaseSnapshot, ProcessLeaseToken,
-    ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,
-    ProcessLifecycleStatus, ProcessOperationId, ProcessSubmissionPort, ProcessSuspension,
-    ProcessTransitionPort, ProcessTreePort, ProcessTreeReservation, ProcessWorkerId,
-    PruneReleasedProcessRequest, RecoverExpiredProcessLeasesRequest,
+    GetProcessCheckpointRequest, GetProcessSnapshotRequest, JournaledProcessSnapshot,
+    KillProcessRequest, ProcessCheckpointId, ProcessCheckpointPort, ProcessCheckpointRecord,
+    ProcessConcurrencyLimits, ProcessControlPort, ProcessControlResult, ProcessGateOwnerMatch,
+    ProcessGateQuery, ProcessGateQuerySource, ProcessGateRecord, ProcessJournalCommit,
+    ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind,
+    ProcessJournalObserverRegistry, ProcessJournalPage, ProcessJournalSource, ProcessLeaseRequest,
+    ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleLookupBatchRequest,
+    ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
+    ProcessOperationId, ProcessSubmissionPort, ProcessSuspension, ProcessTransitionPort,
+    ProcessTreePort, ProcessTreeReservation, ProcessWorkerId, PruneReleasedProcessRequest,
+    RecordProcessCheckpointRequest, RecoverExpiredProcessLeasesRequest,
     RecoverExpiredProcessLeasesResponse, ReleaseProcessTreeRequest, ReserveProcessTreeRequest,
     ResumeProcessRequest, StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
 };
@@ -93,6 +96,7 @@ where
     mutation_lock: Mutex<()>,
     observers: StdMutex<Vec<Arc<dyn ProcessJournalCommitObserver>>>,
     lease_duration: Duration,
+    concurrency_limits: ProcessConcurrencyLimits,
 }
 
 impl<F> ProcessJournalStore<F>
@@ -105,11 +109,17 @@ where
             mutation_lock: Mutex::new(()),
             observers: StdMutex::new(Vec::new()),
             lease_duration: DEFAULT_LEASE_DURATION,
+            concurrency_limits: ProcessConcurrencyLimits::default(),
         }
     }
 
     pub fn with_lease_duration(mut self, lease_duration: Duration) -> Self {
         self.lease_duration = lease_duration;
+        self
+    }
+
+    pub fn with_concurrency_limits(mut self, limits: ProcessConcurrencyLimits) -> Self {
+        self.concurrency_limits = limits;
         self
     }
 
@@ -213,6 +223,7 @@ where
                 lease: None,
                 created_at: request.created_at,
                 owner_user_id: request.owner_user_id.clone(),
+                concurrency_class: request.concurrency_class.clone(),
                 parent_process_id: request.parent_process_id,
                 root_process_id: request.root_process_id,
                 metadata: request.metadata.clone(),
@@ -379,7 +390,13 @@ where
             self.mutate(|state| {
                 let mut claimed = Vec::new();
                 let process_ids = state.claimable_process_ids(request.scope_filter.as_ref());
-                for process_id in process_ids.into_iter().take(request.max_processes) {
+                for process_id in process_ids {
+                    if claimed.len() >= request.max_processes {
+                        break;
+                    }
+                    if !process_claim_within_limits(state, process_id, &self.concurrency_limits) {
+                        continue;
+                    }
                     let now = Utc::now();
                     let cursor = state.next_cursor();
                     let Some(snapshot) = state.processes.get_mut(&process_id) else {
@@ -998,6 +1015,71 @@ where
     }
 }
 
+#[async_trait]
+impl<F> ProcessCheckpointPort for ProcessJournalStore<F>
+where
+    F: RootFilesystem + Send + Sync + 'static,
+{
+    type Error = ProcessJournalStoreError;
+
+    async fn record_process_checkpoint(
+        &self,
+        request: RecordProcessCheckpointRequest,
+    ) -> Result<ProcessCheckpointRecord, Self::Error> {
+        let _guard = self.mutation_lock.lock().await;
+        self.mutate(|state| {
+            let snapshot = state.processes.get(&request.process_id).ok_or(
+                ProcessJournalStoreError::UnknownProcess {
+                    process_id: request.process_id,
+                },
+            )?;
+            if !process_scope_visible(&snapshot.scope, &request.scope) {
+                return Err(ProcessJournalStoreError::UnknownProcess {
+                    process_id: request.process_id,
+                });
+            }
+            let record = ProcessCheckpointRecord {
+                checkpoint_id: request.checkpoint_id.clone(),
+                process_id: request.process_id,
+                scope: request.scope.clone(),
+                state_ref: request.state_ref.clone(),
+                created_at: request.created_at,
+                metadata: request.metadata.clone(),
+            };
+            if let Some(existing) = state.checkpoints.get(&request.checkpoint_id) {
+                return if existing == &record {
+                    Ok(existing.clone())
+                } else {
+                    Err(ProcessJournalStoreError::InvalidRequest(format!(
+                        "process checkpoint {} already exists",
+                        request.checkpoint_id.as_str()
+                    )))
+                };
+            }
+            state
+                .checkpoints
+                .insert(request.checkpoint_id.clone(), record.clone());
+            Ok(record)
+        })
+        .await
+    }
+
+    async fn get_process_checkpoint(
+        &self,
+        request: GetProcessCheckpointRequest,
+    ) -> Result<Option<ProcessCheckpointRecord>, Self::Error> {
+        let (state, _) = self.load_state().await?;
+        Ok(state
+            .checkpoints
+            .get(&request.checkpoint_id)
+            .filter(|record| {
+                record.process_id == request.process_id
+                    && process_scope_visible(&record.scope, &request.scope)
+            })
+            .cloned())
+    }
+}
+
 struct ProcessTransitionMutation {
     status: ProcessLifecycleStatus,
     kind: ProcessJournalKind,
@@ -1175,6 +1257,8 @@ struct ProcessJournalMaterializedState {
     submission_idempotency_order: VecDeque<String>,
     #[serde(default)]
     tree_reservations: HashMap<ProcessId, ProcessTreeReservation>,
+    #[serde(default)]
+    checkpoints: HashMap<ProcessCheckpointId, ProcessCheckpointRecord>,
 }
 
 impl Default for ProcessJournalMaterializedState {
@@ -1188,9 +1272,13 @@ impl Default for ProcessJournalMaterializedState {
             submission_idempotency: HashMap::new(),
             submission_idempotency_order: VecDeque::new(),
             tree_reservations: HashMap::new(),
+            checkpoints: HashMap::new(),
         }
     }
 }
+
+impl<F> ProcessRuntimePort for ProcessJournalStore<F> where F: RootFilesystem + Send + Sync + 'static
+{}
 
 impl ProcessJournalMaterializedState {
     fn next_cursor(&mut self) -> ProcessJournalCursor {
@@ -1422,6 +1510,46 @@ fn process_gate_snapshot_matches(
                 }
             }
         })
+}
+
+fn process_claim_within_limits(
+    state: &ProcessJournalMaterializedState,
+    process_id: ProcessId,
+    limits: &ProcessConcurrencyLimits,
+) -> bool {
+    let Some(candidate) = state.processes.get(&process_id) else {
+        return false;
+    };
+    if let (Some(cap), Some(owner)) = (limits.max_running_per_owner, &candidate.owner_user_id) {
+        let running_for_owner = state
+            .processes
+            .values()
+            .filter(|snapshot| {
+                snapshot.status == ProcessLifecycleStatus::Running
+                    && snapshot.scope.tenant_id == candidate.scope.tenant_id
+                    && snapshot.owner_user_id.as_ref() == Some(owner)
+            })
+            .count();
+        if running_for_owner >= cap as usize {
+            return false;
+        }
+    }
+    let Some(class) = &candidate.concurrency_class else {
+        return true;
+    };
+    let Some(cap) = limits.max_running_by_class.get(class) else {
+        return true;
+    };
+    state
+        .processes
+        .values()
+        .filter(|snapshot| {
+            snapshot.status == ProcessLifecycleStatus::Running
+                && snapshot.scope.tenant_id == candidate.scope.tenant_id
+                && snapshot.concurrency_class.as_ref() == Some(class)
+        })
+        .count()
+        < *cap as usize
 }
 
 fn process_scope_visible(stored: &ResourceScope, requested: &ResourceScope) -> bool {
