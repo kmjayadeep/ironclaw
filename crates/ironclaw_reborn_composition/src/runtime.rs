@@ -57,8 +57,8 @@ use ironclaw_loop_host::{
 };
 use ironclaw_observability::live_latency_started_at;
 use ironclaw_processes::{
-    ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource, ProcessJournalSource,
-    ProcessLifecycleLookupSource, ProcessSuspensionKind, ProcessTransitionPort,
+    ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource, ProcessLifecycleLookupSource,
+    ProcessSuspensionKind,
 };
 use ironclaw_product::ProjectionStream;
 use ironclaw_product::{
@@ -109,8 +109,8 @@ use ironclaw_outbound::OutboundDeliveryTargetRegistrationOutcome;
 use ironclaw_outbound::OutboundError;
 #[cfg(any(test, feature = "test-support"))]
 use ironclaw_product::RebornOutboundDeliveryTargetId;
+use ironclaw_turns::ExternalToolCatalog;
 use ironclaw_turns::run_profile::{MemoryPromptContextService, UserProfileContext};
-use ironclaw_turns::{ExternalToolCatalog, ProcessJournalStoreTurnAdapter};
 
 use self::latency::{trace_runtime_latency_error, trace_runtime_latency_ok};
 use self::runtime_turn_scheduler::RuntimeTurnScheduler;
@@ -366,18 +366,11 @@ impl HostUserProfileSource for MemoryBackedUserProfileSourceAdapter {
     }
 }
 
-#[derive(Clone)]
-struct RuntimeProcessSystem {
-    planned: ProcessRuntimeSystem,
-    lifecycle: Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
-    gates: Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
-}
-
 struct RuntimeStoreParts {
     scoped_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
     turn_state_store: Arc<dyn RuntimeTurnStateStore>,
     turn_state_flush: Arc<dyn TurnStateFlush>,
-    processes: RuntimeProcessSystem,
+    processes: ProcessRuntimeSystem,
     checkpoint_state_store: Arc<dyn ironclaw_turns::CheckpointStateStorePort>,
     loop_checkpoint_store: Arc<dyn ironclaw_turns::LoopCheckpointStore>,
     thread_service: Arc<dyn SessionThreadService>,
@@ -460,53 +453,11 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
     let process_journal_store = Arc::new(ironclaw_processes::ProcessJournalStore::new(Arc::clone(
         &scoped_filesystem,
     )));
-    let process_adapter = Arc::new(ProcessJournalStoreTurnAdapter::new(
-        Arc::clone(&process_journal_store)
-            as Arc<
-                dyn ironclaw_processes::ProcessTransitionPort<
-                        Error = ironclaw_processes::ProcessJournalStoreError,
-                    >,
-            >,
-        Arc::clone(&process_journal_store)
-            as Arc<
-                dyn ironclaw_processes::ProcessJournalSource<
-                        Error = ironclaw_processes::ProcessJournalStoreError,
-                    >,
-            >,
-        Arc::clone(&process_journal_store)
-            as Arc<
-                dyn ironclaw_processes::ProcessLifecycleLookupSource<
-                        Error = ironclaw_processes::ProcessJournalStoreError,
-                    >,
-            >,
-        Arc::clone(&process_journal_store)
-            as Arc<
-                dyn ironclaw_processes::ProcessGateQuerySource<
-                        Error = ironclaw_processes::ProcessJournalStoreError,
-                    >,
-            >,
-    ));
-
     RuntimeStoreParts {
         scoped_filesystem,
         turn_state_store: Arc::clone(&turn_state) as Arc<dyn RuntimeTurnStateStore>,
         turn_state_flush: Arc::clone(&turn_state) as Arc<dyn TurnStateFlush>,
-        processes: RuntimeProcessSystem {
-            planned: ProcessRuntimeSystem::new(
-                Arc::clone(&process_journal_store)
-                    as Arc<
-                        dyn ironclaw_processes::ProcessSubmissionPort<
-                                Error = ironclaw_processes::ProcessJournalStoreError,
-                            >,
-                    >,
-                Arc::clone(&process_adapter) as Arc<dyn ProcessTransitionPort<Error = TurnError>>,
-                Arc::clone(&process_adapter) as Arc<dyn ProcessJournalSource<Error = TurnError>>,
-            ),
-            lifecycle: Arc::clone(&process_adapter)
-                as Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
-            gates: Arc::clone(&process_adapter)
-                as Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
-        },
+        processes: ProcessRuntimeSystem::from_process_journal_store(process_journal_store),
         checkpoint_state_store,
         loop_checkpoint_store,
         thread_service,
@@ -3599,9 +3550,9 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         project_service,
         trigger_conversation_services,
     } = runtime_parts;
-    let process_journal_source = processes.planned.journal();
-    let process_lifecycle_lookup_source = Arc::clone(&processes.lifecycle);
-    let process_gate_query_source = Arc::clone(&processes.gates);
+    let process_journal_source = processes.journal();
+    let process_lifecycle_lookup_source = processes.lifecycle();
+    let process_gate_query_source = processes.gates();
     let filesystem_skill_context_runtime = filesystem_skill_context_runtime(&services);
     let (skill_context_source, skill_activation_source, skill_execution_adapter) = match (
         configured_skill_context_source,
@@ -4098,7 +4049,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     let runtime_skill_context_source = skill_context_source.clone();
     let planned_runtime_parts = DefaultPlannedRuntimeParts {
         turn_state: Arc::clone(&turn_state_store),
-        process_system: processes.planned.clone(),
+        process_system: processes.clone(),
         thread_service: Arc::clone(&thread_service),
         thread_scope: thread_scope.clone(),
         // Read landed attachment bytes back through the project workspace

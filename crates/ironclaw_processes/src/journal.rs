@@ -79,6 +79,26 @@ impl ProcessLeaseToken {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProcessOperationId(String);
+
+impl ProcessOperationId {
+    pub fn new(value: impl Into<String>) -> Result<Self, ProcessJournalError> {
+        let value = value.into();
+        validate_opaque_ref("process operation", &value)?;
+        Ok(Self(value))
+    }
+
+    pub fn from_trusted(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessKind {
@@ -456,15 +476,21 @@ pub struct ResumeProcessRequest {
     pub scope: ResourceScope,
     pub process_id: ProcessId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<ProcessOperationId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_cursor: Option<ProcessJournalCursor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_ref: Option<ProcessCheckpointRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StopProcessRequest {
     pub scope: ResourceScope,
     pub process_id: ProcessId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<ProcessOperationId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
@@ -474,6 +500,8 @@ pub struct CancelProcessRequest {
     pub scope: ResourceScope,
     pub process_id: ProcessId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<ProcessOperationId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
@@ -481,6 +509,8 @@ pub struct CancelProcessRequest {
 pub struct KillProcessRequest {
     pub scope: ResourceScope,
     pub process_id: ProcessId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<ProcessOperationId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }

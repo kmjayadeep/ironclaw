@@ -4643,6 +4643,8 @@ async fn build_backend_production(
         Arc::clone(&process_journal_store)
             as Arc<dyn ironclaw_processes::ProcessTransitionPort<Error = ProcessJournalStoreError>>,
         Arc::clone(&process_journal_store)
+            as Arc<dyn ironclaw_processes::ProcessControlPort<Error = ProcessJournalStoreError>>,
+        Arc::clone(&process_journal_store)
             as Arc<dyn ironclaw_processes::ProcessJournalSource<Error = ProcessJournalStoreError>>,
         Arc::clone(&process_journal_store)
             as Arc<

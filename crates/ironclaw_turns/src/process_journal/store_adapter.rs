@@ -3,12 +3,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use ironclaw_host_api::ResourceScope;
 use ironclaw_processes::{
-    ClaimProcessesRequest, ClaimedProcess, FailProcessRequest, GetProcessSnapshotRequest,
-    JournaledProcessSnapshot, ProcessGateQuery, ProcessGateQuerySource, ProcessGateRecord,
+    CancelProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
+    GetProcessSnapshotRequest, JournaledProcessSnapshot, KillProcessRequest, ProcessControlPort,
+    ProcessControlResult, ProcessGateQuery, ProcessGateQuerySource, ProcessGateRecord,
     ProcessJournalCursor, ProcessJournalPage, ProcessJournalSource, ProcessJournalStoreError,
     ProcessLeaseRequest, ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult,
     ProcessLifecycleLookupSource, ProcessStateTransitionRequest, ProcessTransitionPort,
-    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, SuspendProcessRequest,
+    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, ResumeProcessRequest,
+    StopProcessRequest, SuspendProcessRequest,
 };
 
 use crate::TurnError;
@@ -16,6 +18,7 @@ use crate::TurnError;
 #[derive(Clone)]
 pub struct ProcessJournalStoreTurnAdapter {
     transitions: Arc<dyn ProcessTransitionPort<Error = ProcessJournalStoreError>>,
+    controls: Arc<dyn ProcessControlPort<Error = ProcessJournalStoreError>>,
     journal: Arc<dyn ProcessJournalSource<Error = ProcessJournalStoreError>>,
     lifecycle: Arc<dyn ProcessLifecycleLookupSource<Error = ProcessJournalStoreError>>,
     gates: Arc<dyn ProcessGateQuerySource<Error = ProcessJournalStoreError>>,
@@ -23,16 +26,63 @@ pub struct ProcessJournalStoreTurnAdapter {
 impl ProcessJournalStoreTurnAdapter {
     pub fn new(
         transitions: Arc<dyn ProcessTransitionPort<Error = ProcessJournalStoreError>>,
+        controls: Arc<dyn ProcessControlPort<Error = ProcessJournalStoreError>>,
         journal: Arc<dyn ProcessJournalSource<Error = ProcessJournalStoreError>>,
         lifecycle: Arc<dyn ProcessLifecycleLookupSource<Error = ProcessJournalStoreError>>,
         gates: Arc<dyn ProcessGateQuerySource<Error = ProcessJournalStoreError>>,
     ) -> Self {
         Self {
             transitions,
+            controls,
             journal,
             lifecycle,
             gates,
         }
+    }
+}
+
+#[async_trait]
+impl ProcessControlPort for ProcessJournalStoreTurnAdapter {
+    type Error = TurnError;
+
+    async fn resume_process(
+        &self,
+        request: ResumeProcessRequest,
+    ) -> Result<ProcessControlResult, Self::Error> {
+        self.controls
+            .resume_process(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+
+    async fn stop_process(
+        &self,
+        request: StopProcessRequest,
+    ) -> Result<ProcessControlResult, Self::Error> {
+        self.controls
+            .stop_process(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+
+    async fn request_cancel_process(
+        &self,
+        request: CancelProcessRequest,
+    ) -> Result<ProcessControlResult, Self::Error> {
+        self.controls
+            .request_cancel_process(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+
+    async fn kill_process(
+        &self,
+        request: KillProcessRequest,
+    ) -> Result<ProcessControlResult, Self::Error> {
+        self.controls
+            .kill_process(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
     }
 }
 

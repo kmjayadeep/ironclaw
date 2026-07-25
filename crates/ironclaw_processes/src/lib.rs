@@ -43,8 +43,8 @@ pub use journal::{
     ProcessKind, ProcessLeaseRequest, ProcessLeaseSnapshot, ProcessLeaseToken,
     ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupRequest,
     ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
-    ProcessOutcome, ProcessStateTransitionRequest, ProcessSubmissionPort, ProcessSuspension,
-    ProcessSuspensionKind, ProcessTransitionPort, ProcessWorkerId,
+    ProcessOperationId, ProcessOutcome, ProcessStateTransitionRequest, ProcessSubmissionPort,
+    ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort, ProcessWorkerId,
     RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, ResumeProcessRequest,
     StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
 };

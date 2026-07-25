@@ -326,8 +326,10 @@ async fn process_control_is_scoped_atomic_and_process_kind_neutral() {
         .resume_process(ResumeProcessRequest {
             scope: scope.clone(),
             process_id,
+            operation_id: None,
             expected_cursor: Some(submitted.journal_cursor),
             checkpoint_ref: None,
+            metadata: None,
         })
         .await
         .expect_err("stale resume must fail");
@@ -339,8 +341,10 @@ async fn process_control_is_scoped_atomic_and_process_kind_neutral() {
         .resume_process(ResumeProcessRequest {
             scope: wrong_scope,
             process_id,
+            operation_id: None,
             expected_cursor: Some(suspended.journal_cursor),
             checkpoint_ref: None,
+            metadata: None,
         })
         .await
         .expect_err("cross-scope resume must not disclose process");
@@ -350,14 +354,33 @@ async fn process_control_is_scoped_atomic_and_process_kind_neutral() {
         .resume_process(ResumeProcessRequest {
             scope: scope.clone(),
             process_id,
+            operation_id: Some(ironclaw_processes::ProcessOperationId::from_trusted(
+                "resume:control",
+            )),
             expected_cursor: Some(suspended.journal_cursor),
             checkpoint_ref: None,
+            metadata: Some(json!({"resumed": true})),
         })
         .await
         .expect("resume process");
     assert!(resumed.changed);
     assert_eq!(resumed.state.status, ProcessLifecycleStatus::Queued);
     assert!(resumed.state.suspension.is_none());
+    assert_eq!(resumed.state.metadata["resumed"], true);
+    let replayed = store
+        .resume_process(ResumeProcessRequest {
+            scope: scope.clone(),
+            process_id,
+            operation_id: Some(ironclaw_processes::ProcessOperationId::from_trusted(
+                "resume:control",
+            )),
+            expected_cursor: Some(suspended.journal_cursor),
+            checkpoint_ref: None,
+            metadata: None,
+        })
+        .await
+        .expect("replay resume");
+    assert_eq!(replayed, resumed);
 
     let mut reclaimed = store
         .claim_next_processes(ClaimProcessesRequest {
@@ -372,6 +395,7 @@ async fn process_control_is_scoped_atomic_and_process_kind_neutral() {
         .request_cancel_process(CancelProcessRequest {
             scope: scope.clone(),
             process_id,
+            operation_id: None,
             reason: Some("operator request".to_string()),
         })
         .await
@@ -400,6 +424,7 @@ async fn process_control_is_scoped_atomic_and_process_kind_neutral() {
         .stop_process(StopProcessRequest {
             scope: scope.clone(),
             process_id: stopped_id,
+            operation_id: None,
             reason: Some("shutdown".to_string()),
         })
         .await
@@ -412,6 +437,7 @@ async fn process_control_is_scoped_atomic_and_process_kind_neutral() {
         .kill_process(KillProcessRequest {
             scope,
             process_id: killed_id,
+            operation_id: None,
             reason: Some("forced shutdown".to_string()),
         })
         .await

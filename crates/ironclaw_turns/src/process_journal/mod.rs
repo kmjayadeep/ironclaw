@@ -12,17 +12,18 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use ironclaw_host_api::{ProcessId, ResourceScope, SYSTEM_RESERVED_ID};
+use ironclaw_processes::{
+    CancelProcessRequest, ClaimedProcess, FailProcessRequest, GetProcessSnapshotRequest,
+    JournaledProcessSnapshot, ProcessCheckpointRef, ProcessControlPort, ProcessJournalCursor,
+    ProcessJournalEntry, ProcessJournalKind, ProcessJournalPage, ProcessJournalSource, ProcessKind,
+    ProcessLeaseRequest, ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleStatus,
+    ProcessOperationId, ProcessOutcome, ProcessSuspension, ProcessSuspensionKind, ProcessWorkerId,
+    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, ResumeProcessRequest,
+    SuspendProcessRequest,
+};
 #[cfg(feature = "test-support")]
 use ironclaw_processes::{
     ClaimProcessesRequest, ProcessStateTransitionRequest, ProcessTransitionPort,
-};
-use ironclaw_processes::{
-    ClaimedProcess, FailProcessRequest, JournaledProcessSnapshot, ProcessCheckpointRef,
-    ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind, ProcessJournalPage,
-    ProcessJournalSource, ProcessKind, ProcessLeaseRequest, ProcessLeaseSnapshot,
-    ProcessLeaseToken, ProcessLifecycleStatus, ProcessOutcome, ProcessSuspension,
-    ProcessSuspensionKind, ProcessWorkerId, RecoverExpiredProcessLeasesRequest,
-    RecoverExpiredProcessLeasesResponse, SuspendProcessRequest,
 };
 
 #[cfg(feature = "test-support")]
@@ -36,6 +37,8 @@ use crate::{
         EventCursor, TurnBlockedGateKind, TurnBlockedGateMetadata, TurnEventPage,
         TurnEventProjectionSource,
     },
+    request::{CancelRunRequest, ResumeTurnRequest},
+    response::{CancelRunResponse, ResumeTurnResponse},
     run_profile::{LoopModelRouteSnapshot, LoopModelUsage},
     runner::{
         BlockRunRequest, CancelRunCompletionRequest, ClaimedTurnRun, CompleteRunRequest,
@@ -50,6 +53,144 @@ mod store_adapter;
 pub use store_adapter::{
     ProcessJournalStoreTurnAdapter, turn_error_from_process_journal_store_error,
 };
+
+#[derive(Clone)]
+pub struct AgentTurnProcessRuntime {
+    journal: Arc<dyn ProcessJournalSource<Error = TurnError>>,
+    controls: Arc<dyn ProcessControlPort<Error = TurnError>>,
+}
+
+impl AgentTurnProcessRuntime {
+    pub fn new(
+        journal: Arc<dyn ProcessJournalSource<Error = TurnError>>,
+        controls: Arc<dyn ProcessControlPort<Error = TurnError>>,
+    ) -> Self {
+        Self { journal, controls }
+    }
+
+    pub async fn get_run_state(
+        &self,
+        scope: &TurnScope,
+        run_id: TurnRunId,
+    ) -> Result<TurnRunState, TurnError> {
+        let snapshot = self
+            .journal
+            .get_process_snapshot(GetProcessSnapshotRequest {
+                scope: scope.to_resource_scope(),
+                process_id: process_id_from_turn_run_id(run_id),
+            })
+            .await?;
+        turn_run_state_from_process_snapshot(snapshot)
+    }
+
+    pub async fn resume_turn(
+        &self,
+        request: ResumeTurnRequest,
+    ) -> Result<ResumeTurnResponse, TurnError> {
+        let snapshot = self
+            .journal
+            .get_process_snapshot(GetProcessSnapshotRequest {
+                scope: request.scope.to_resource_scope(),
+                process_id: process_id_from_turn_run_id(request.run_id),
+            })
+            .await?;
+        let state = turn_run_state_from_process_snapshot(snapshot.clone())?;
+        if state.actor.as_ref() != Some(&request.actor) {
+            return Err(TurnError::Unauthorized);
+        }
+        if snapshot.status == ProcessLifecycleStatus::Suspended {
+            let resumable = request.precondition.required_status().map_or_else(
+                || {
+                    matches!(
+                        state.status,
+                        TurnStatus::BlockedApproval
+                            | TurnStatus::BlockedAuth
+                            | TurnStatus::BlockedResource
+                    )
+                },
+                |required| state.status == required,
+            );
+            if !resumable {
+                return Err(TurnError::InvalidTransition {
+                    from: state.status,
+                    to: TurnStatus::Queued,
+                });
+            }
+            if state.gate_ref.as_ref() != Some(&request.gate_resolution_ref) {
+                return Err(TurnError::InvalidRequest {
+                    reason: "gate resolution reference mismatch".to_string(),
+                });
+            }
+        }
+        let metadata = resumed_agent_turn_metadata(&snapshot, &request)?;
+        let result = self
+            .controls
+            .resume_process(ResumeProcessRequest {
+                scope: request.scope.to_resource_scope(),
+                process_id: process_id_from_turn_run_id(request.run_id),
+                operation_id: Some(ProcessOperationId::from_trusted(
+                    request.idempotency_key.as_str(),
+                )),
+                expected_cursor: Some(snapshot.journal_cursor),
+                checkpoint_ref: snapshot.checkpoint_ref,
+                metadata: Some(metadata),
+            })
+            .await?;
+        let state = turn_run_state_from_process_snapshot(result.state)?;
+        Ok(ResumeTurnResponse {
+            run_id: state.run_id,
+            status: state.status,
+            event_cursor: state.event_cursor,
+        })
+    }
+
+    pub async fn cancel_run(
+        &self,
+        request: CancelRunRequest,
+    ) -> Result<CancelRunResponse, TurnError> {
+        let snapshot = self
+            .journal
+            .get_process_snapshot(GetProcessSnapshotRequest {
+                scope: request.scope.to_resource_scope(),
+                process_id: process_id_from_turn_run_id(request.run_id),
+            })
+            .await?;
+        let state = turn_run_state_from_process_snapshot(snapshot)?;
+        if state.actor.as_ref() != Some(&request.actor) {
+            return Err(TurnError::Unauthorized);
+        }
+        let result = self
+            .controls
+            .request_cancel_process(CancelProcessRequest {
+                scope: request.scope.to_resource_scope(),
+                process_id: process_id_from_turn_run_id(request.run_id),
+                operation_id: Some(ProcessOperationId::from_trusted(
+                    request.idempotency_key.as_str(),
+                )),
+                reason: Some(request.reason.category().to_string()),
+            })
+            .await?;
+        let state = turn_run_state_from_process_snapshot(result.state)?;
+        Ok(CancelRunResponse {
+            run_id: state.run_id,
+            status: state.status,
+            event_cursor: state.event_cursor,
+            already_terminal: result.already_terminal,
+            actor: state.actor,
+        })
+    }
+}
+
+fn resumed_agent_turn_metadata(
+    snapshot: &JournaledProcessSnapshot,
+    request: &ResumeTurnRequest,
+) -> Result<Value, TurnError> {
+    let mut metadata = agent_turn_metadata_from_process_snapshot(snapshot)?;
+    metadata.source_binding_ref = request.source_binding_ref.clone();
+    metadata.reply_target_binding_ref = request.reply_target_binding_ref.clone();
+    metadata.resume_disposition = request.resume_disposition.clone();
+    Ok(json!({ "agent_turn": metadata }))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTurnProcessMetadata {

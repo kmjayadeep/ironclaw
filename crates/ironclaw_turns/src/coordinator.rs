@@ -63,6 +63,7 @@ use crate::{
     TurnSpawnTreeStateStore, TurnStateStore, TurnStatus,
     events::EventCursor,
     lifecycle::{LifecyclePublicationErrorPort, NoopLifecyclePublicationErrorPort},
+    process_journal::AgentTurnProcessRuntime,
 };
 
 pub trait TurnAdmissionPolicy: Send + Sync {
@@ -161,6 +162,7 @@ pub struct DefaultTurnCoordinator<S: ?Sized> {
     run_profile_resolver: Arc<dyn RunProfileResolver>,
     wake_notifier: Arc<dyn TurnRunWakeNotifier>,
     publication_error_port: Arc<dyn LifecyclePublicationErrorPort>,
+    process_runtime: Option<AgentTurnProcessRuntime>,
     // Per-coordinator binding of run ids handed out by `prepare_turn` to the
     // scope they were prepared under. `submit_turn` consumes the reservation
     // when `requested_run_id` is set and rejects cross-scope submission so a
@@ -179,6 +181,7 @@ where
             run_profile_resolver: Arc::new(InMemoryRunProfileResolver::default()),
             wake_notifier: Arc::new(NoopTurnRunWakeNotifier),
             publication_error_port: Arc::new(NoopLifecyclePublicationErrorPort),
+            process_runtime: None,
             prepared_run_id_scopes: Mutex::new(HashMap::new()),
         }
     }
@@ -203,6 +206,11 @@ where
         port: Arc<dyn LifecyclePublicationErrorPort>,
     ) -> Self {
         self.publication_error_port = port;
+        self
+    }
+
+    pub fn with_process_runtime(mut self, runtime: AgentTurnProcessRuntime) -> Self {
+        self.process_runtime = Some(runtime);
         self
     }
 
@@ -403,7 +411,11 @@ where
     ) -> Result<ResumeTurnResponse, TurnError> {
         let started_at = live_latency_started_at();
         let scope = request.scope.clone();
-        let response = match self.store.resume_turn(request).await {
+        let response = match &self.process_runtime {
+            Some(runtime) => runtime.resume_turn(request).await,
+            None => self.store.resume_turn(request).await,
+        };
+        let response = match response {
             Ok(response) => {
                 trace_coordinator_latency_ok(
                     "store_resume_turn",
@@ -453,7 +465,11 @@ where
     async fn cancel_run(&self, request: CancelRunRequest) -> Result<CancelRunResponse, TurnError> {
         let started_at = live_latency_started_at();
         let scope = request.scope.clone();
-        let response = match self.store.request_cancel(request).await {
+        let response = match &self.process_runtime {
+            Some(runtime) => runtime.cancel_run(request).await,
+            None => self.store.request_cancel(request).await,
+        };
+        let response = match response {
             Ok(response) => {
                 trace_coordinator_latency_ok(
                     "store_cancel_run",
@@ -501,7 +517,10 @@ where
     }
 
     async fn get_run_state(&self, request: GetRunStateRequest) -> Result<TurnRunState, TurnError> {
-        self.store.get_run_state(request).await
+        match &self.process_runtime {
+            Some(runtime) => runtime.get_run_state(&request.scope, request.run_id).await,
+            None => self.store.get_run_state(request).await,
+        }
     }
 }
 

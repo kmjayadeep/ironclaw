@@ -278,22 +278,15 @@ impl SchedulerWakeWiring {
 pub struct ProcessRuntimeSystem {
     submission: Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
     transitions: Arc<dyn ProcessTransitionPort<Error = ironclaw_turns::TurnError>>,
+    controls: Arc<dyn ironclaw_processes::ProcessControlPort<Error = ironclaw_turns::TurnError>>,
     journal: Arc<dyn ProcessJournalSource<Error = ironclaw_turns::TurnError>>,
+    lifecycle: Arc<
+        dyn ironclaw_processes::ProcessLifecycleLookupSource<Error = ironclaw_turns::TurnError>,
+    >,
+    gates: Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = ironclaw_turns::TurnError>>,
 }
 
 impl ProcessRuntimeSystem {
-    pub fn new(
-        submission: Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
-        transitions: Arc<dyn ProcessTransitionPort<Error = ironclaw_turns::TurnError>>,
-        journal: Arc<dyn ProcessJournalSource<Error = ironclaw_turns::TurnError>>,
-    ) -> Self {
-        Self {
-            submission,
-            transitions,
-            journal,
-        }
-    }
-
     pub fn from_process_journal_store<F>(
         store: Arc<ironclaw_processes::ProcessJournalStore<F>>,
     ) -> Self
@@ -302,6 +295,10 @@ impl ProcessRuntimeSystem {
     {
         let adapter = Arc::new(ProcessJournalStoreTurnAdapter::new(
             Arc::clone(&store) as Arc<dyn ProcessTransitionPort<Error = ProcessJournalStoreError>>,
+            Arc::clone(&store)
+                as Arc<
+                    dyn ironclaw_processes::ProcessControlPort<Error = ProcessJournalStoreError>,
+                >,
             Arc::clone(&store) as Arc<dyn ProcessJournalSource<Error = ProcessJournalStoreError>>,
             Arc::clone(&store)
                 as Arc<
@@ -314,12 +311,29 @@ impl ProcessRuntimeSystem {
                     dyn ironclaw_processes::ProcessGateQuerySource<Error = ProcessJournalStoreError>,
                 >,
         ));
-        Self::new(
-            store as Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
-            Arc::clone(&adapter)
+        Self {
+            submission: store as Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
+            transitions: Arc::clone(&adapter)
                 as Arc<dyn ProcessTransitionPort<Error = ironclaw_turns::TurnError>>,
-            adapter as Arc<dyn ProcessJournalSource<Error = ironclaw_turns::TurnError>>,
-        )
+            controls: Arc::clone(&adapter)
+                as Arc<
+                    dyn ironclaw_processes::ProcessControlPort<Error = ironclaw_turns::TurnError>,
+                >,
+            journal: Arc::clone(&adapter)
+                as Arc<dyn ProcessJournalSource<Error = ironclaw_turns::TurnError>>,
+            lifecycle: Arc::clone(&adapter)
+                as Arc<
+                    dyn ironclaw_processes::ProcessLifecycleLookupSource<
+                            Error = ironclaw_turns::TurnError,
+                        >,
+                >,
+            gates: adapter
+                as Arc<
+                    dyn ironclaw_processes::ProcessGateQuerySource<
+                            Error = ironclaw_turns::TurnError,
+                        >,
+                >,
+        }
     }
 
     pub fn in_memory_ephemeral() -> Result<Self, String> {
@@ -350,6 +364,30 @@ impl ProcessRuntimeSystem {
 
     pub fn journal(&self) -> Arc<dyn ProcessJournalSource<Error = ironclaw_turns::TurnError>> {
         Arc::clone(&self.journal)
+    }
+
+    pub fn controls(
+        &self,
+    ) -> Arc<dyn ironclaw_processes::ProcessControlPort<Error = ironclaw_turns::TurnError>> {
+        Arc::clone(&self.controls)
+    }
+
+    pub fn lifecycle(
+        &self,
+    ) -> Arc<dyn ironclaw_processes::ProcessLifecycleLookupSource<Error = ironclaw_turns::TurnError>>
+    {
+        Arc::clone(&self.lifecycle)
+    }
+
+    pub fn gates(
+        &self,
+    ) -> Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = ironclaw_turns::TurnError>>
+    {
+        Arc::clone(&self.gates)
+    }
+
+    pub fn agent_turn_runtime(&self) -> ironclaw_turns::AgentTurnProcessRuntime {
+        ironclaw_turns::AgentTurnProcessRuntime::new(self.journal(), self.controls())
     }
 }
 
@@ -756,7 +794,8 @@ where
     let base_coordinator = DefaultTurnCoordinator::new(Arc::clone(&turn_state))
         .with_run_profile_resolver(Arc::clone(&run_profile_resolver))
         .with_wake_notifier(Arc::clone(&wake_notifier))
-        .with_lifecycle_publication_error_port(publication_error_port);
+        .with_lifecycle_publication_error_port(publication_error_port)
+        .with_process_runtime(process_system.agent_turn_runtime());
     let base_coordinator_arc = Arc::new(base_coordinator);
     let child_runs: Arc<dyn TurnSpawnTreePort> = base_coordinator_arc.clone();
     let coordinator: Arc<dyn ironclaw_turns::TurnCoordinator> = base_coordinator_arc;
