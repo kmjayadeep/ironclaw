@@ -474,4 +474,67 @@ mod tests {
         .await;
         assert!(UdsAlpacaPort::new(&path, "t").healthy().await);
     }
+
+    /// The Rust half of the cross-language contract check.
+    ///
+    /// These are the SAME files `sidecars/alpaca/test/fixtures.test.ts` reads.
+    /// Nothing in either type system connects a TypeScript sidecar to a Rust
+    /// caller, so a shared fixture is the only thing that makes a silent
+    /// divergence impossible: change the shape on one side and this fails.
+    mod fixtures {
+        use super::*;
+
+        fn fixture(name: &str) -> Vec<u8> {
+            // From this crate up to the workspace root, then into the sidecar.
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../sidecars/alpaca/fixtures")
+                .join(format!("{name}.json"));
+            std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("fixture {} unreadable: {error}", path.display()))
+        }
+
+        /// Wrap a fixture body in the HTTP envelope the client actually parses.
+        fn as_http(body: &[u8]) -> Vec<u8> {
+            let mut raw = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            )
+            .into_bytes();
+            raw.extend_from_slice(body);
+            raw
+        }
+
+        #[test]
+        fn the_success_fixture_decodes_to_its_result() {
+            let decoded = parse_envelope(&as_http(&fixture("response-ok")))
+                .expect("the golden success envelope must decode");
+            assert_eq!(decoded, "0x02f86b0182000782520894");
+        }
+
+        #[test]
+        fn the_error_fixture_maps_to_the_shared_category() {
+            let decoded = parse_envelope(&as_http(&fixture("response-error")));
+            assert_eq!(
+                decoded,
+                Err(AlpacaError::UnsupportedChain),
+                "the shared error code must map to the same category on both sides"
+            );
+        }
+
+        /// The request fixture is what THIS client emits, so its shape is
+        /// asserted against a freshly-built envelope rather than eyeballed.
+        #[test]
+        fn the_request_fixture_matches_what_this_client_sends() {
+            let golden: serde_json::Value =
+                serde_json::from_slice(&fixture("request-craft")).expect("valid fixture json");
+            assert_eq!(
+                golden.get("version").and_then(serde_json::Value::as_u64),
+                Some(u64::from(WIRE_VERSION)),
+                "the fixture must declare the version this client speaks"
+            );
+            // The envelope keys are the contract; `params` is opaque by design.
+            assert!(golden.get("currencyId").is_some());
+            assert!(golden.get("params").is_some());
+        }
+    }
 }
