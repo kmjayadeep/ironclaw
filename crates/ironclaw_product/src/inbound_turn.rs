@@ -468,9 +468,10 @@ where
             }
             attachment.mime_type = mime_type;
             // The descriptor's filename wins when the vendor supplied one;
-            // otherwise keep whatever the adapter recovered (e.g. Telegram
-            // photos/voice notes carry no `file_name` and the adapter derives
-            // one from the `getFile` path).
+            // otherwise keep whatever the adapter recovered. Some vendor
+            // payload kinds (inline photos, voice notes, stickers) carry no
+            // filename at all, and the adapter derives one from the provider
+            // download path — overwriting unconditionally discarded it.
             if let Some(descriptor_filename) = source.descriptor.filename.clone() {
                 attachment.filename = Some(descriptor_filename);
             }

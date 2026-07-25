@@ -1642,12 +1642,12 @@ impl RebornRuntime {
         );
         let workspace_filesystem = self.read_write_workspace_filesystem()?;
         let project_filesystem: Arc<dyn ironclaw_product::ProjectFilesystemReader> = Arc::new(
-            crate::support::fs::ProjectScopedFilesystemReader::with_max_read_bytes(
+            ironclaw_product::ProjectScopedFilesystemReader::with_max_read_bytes(
                 Arc::clone(&workspace_filesystem),
                 ironclaw_attachments::DEFAULT_ATTACHMENT_BUDGETS.max_file_bytes as u64,
             ),
         );
-        let inbound_attachments = Arc::new(crate::support::fs::ProjectScopedAttachmentLander::new(
+        let inbound_attachments = Arc::new(ironclaw_product::ProjectScopedAttachmentLander::new(
             workspace_filesystem,
         ));
         let delivery = self.delivery_coordinator.clone().map(|coordinator| {
@@ -1873,10 +1873,9 @@ impl RebornRuntime {
     #[cfg(feature = "test-support")]
     fn local_dev_workspace_attachment_reader_for_test(
         &self,
-    ) -> Option<Arc<crate::support::fs::ProjectScopedAttachmentReader<CompositeRootFilesystem>>>
-    {
+    ) -> Option<Arc<ironclaw_product::ProjectScopedAttachmentReader<CompositeRootFilesystem>>> {
         Some(Arc::new(
-            crate::support::fs::ProjectScopedAttachmentReader::new(
+            ironclaw_product::ProjectScopedAttachmentReader::new(
                 self.read_write_workspace_filesystem()?,
             ),
         ))
@@ -1899,7 +1898,7 @@ impl RebornRuntime {
         let read_write_workspace_filesystem = self.read_write_workspace_filesystem()?;
         Some(crate::factory::AttachmentTestSupport {
             read_port,
-            lander: Arc::new(crate::support::fs::ProjectScopedAttachmentLander::new(
+            lander: Arc::new(ironclaw_product::ProjectScopedAttachmentLander::new(
                 read_write_workspace_filesystem,
             )),
         })
@@ -4117,7 +4116,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         // vision-capable models. Only available when a local runtime (and thus a
         // workspace filesystem) is composed.
         attachment_read_port: Some(
-            Arc::new(crate::support::fs::ProjectScopedAttachmentReader::new(
+            Arc::new(ironclaw_product::ProjectScopedAttachmentReader::new(
                 Arc::clone(&services.workspace_filesystem),
             )) as Arc<dyn ironclaw_loop_host::LoopAttachmentReadPort>,
         ),

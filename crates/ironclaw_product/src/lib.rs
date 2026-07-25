@@ -56,6 +56,7 @@ mod product_surface_inbound;
 pub mod projection;
 mod reborn_services;
 mod run_delivery;
+mod scoped_fs;
 mod workflow;
 
 pub use action::{
@@ -131,6 +132,19 @@ pub use fakes::{
     FakeBeforeInboundPolicy, FakeConversationBindingService, FakeIdempotencyLedger,
     FakeInboundTurnService, NoProjectFilesystem, rejecting_product_surface_error,
 };
+pub use scoped_fs::{
+    ProjectScopedAttachmentLander,
+    ProjectScopedAttachmentReader,
+    ProjectScopedFilesystemReader,
+    // Shared scoped-path helpers: the mount-browse reader in composition
+    // derives the same MIME/size/error semantics from them.
+    file_name_of,
+    guard_readable_file,
+    map_filesystem_error,
+    map_kind,
+    mime_for_path,
+};
+
 pub use filesystem_ledger::RebornFilesystemIdempotencyLedger;
 pub use filesystem_ledger::RebornLibSqlIdempotencyLedger;
 pub use filesystem_ledger::RebornPostgresIdempotencyLedger;

@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use crate::{InboundAttachmentLander, InboundAttachmentReader};
 use async_trait::async_trait;
 use ironclaw_attachments::{DEFAULT_MAX_ATTACHMENT_BYTES, land_inbound_attachments};
 use ironclaw_filesystem::{FilesystemError, RootFilesystem, ScopedFilesystem};
@@ -18,13 +19,12 @@ use ironclaw_host_api::{
     ResourceScope, ScopedPath,
 };
 use ironclaw_loop_host::{LoopAttachmentReadError, LoopAttachmentReadPort};
-use ironclaw_product::{InboundAttachmentLander, InboundAttachmentReader};
 use ironclaw_threads::{AttachmentRef, ThreadScope};
 
-use crate::local_dev_mounts::WORKSPACE_ALIAS;
+use ironclaw_attachments::WORKSPACE_ALIAS;
 
 /// Lands inbound attachments through a project-scoped workspace filesystem.
-pub(crate) struct ProjectScopedAttachmentLander<F: RootFilesystem> {
+pub struct ProjectScopedAttachmentLander<F: RootFilesystem> {
     filesystem: Arc<ScopedFilesystem<F>>,
     project_alias: String,
     /// Per-attachment size ceiling passed to the landing routine. The
@@ -34,7 +34,7 @@ pub(crate) struct ProjectScopedAttachmentLander<F: RootFilesystem> {
 }
 
 impl<F: RootFilesystem> ProjectScopedAttachmentLander<F> {
-    pub(crate) fn new(filesystem: Arc<ScopedFilesystem<F>>) -> Self {
+    pub fn new(filesystem: Arc<ScopedFilesystem<F>>) -> Self {
         Self {
             filesystem,
             project_alias: WORKSPACE_ALIAS.to_string(),
@@ -48,13 +48,13 @@ impl<F: RootFilesystem> ProjectScopedAttachmentLander<F> {
 /// vision-capable model. The read re-scopes `storage_key` through the
 /// `MountView` authority (it is never treated as a host path), and is bounded so
 /// a corrupt/oversized key can't materialize unbounded bytes.
-pub(crate) struct ProjectScopedAttachmentReader<F: RootFilesystem> {
+pub struct ProjectScopedAttachmentReader<F: RootFilesystem> {
     filesystem: Arc<ScopedFilesystem<F>>,
     max_bytes: usize,
 }
 
 impl<F: RootFilesystem> ProjectScopedAttachmentReader<F> {
-    pub(crate) fn new(filesystem: Arc<ScopedFilesystem<F>>) -> Self {
+    pub fn new(filesystem: Arc<ScopedFilesystem<F>>) -> Self {
         Self {
             filesystem,
             max_bytes: DEFAULT_MAX_ATTACHMENT_BYTES,

@@ -1238,7 +1238,7 @@ impl RebornRuntimeStores {
         let outbound_preferences = Arc::clone(&self.outbound_preferences);
         let workspace_filesystem = Arc::clone(&self.workspace_filesystem);
         let project_filesystem: Arc<dyn ironclaw_product::ProjectFilesystemReader> = Arc::new(
-            crate::support::fs::ProjectScopedFilesystemReader::with_max_read_bytes(
+            ironclaw_product::ProjectScopedFilesystemReader::with_max_read_bytes(
                 Arc::clone(&workspace_filesystem),
                 ironclaw_attachments::DEFAULT_ATTACHMENT_BUDGETS.max_file_bytes as u64,
             ),
@@ -1256,7 +1256,7 @@ impl RebornRuntimeStores {
                 settings: run_delivery_settings,
             }
         });
-        let inbound_attachments = Arc::new(crate::support::fs::ProjectScopedAttachmentLander::new(
+        let inbound_attachments = Arc::new(ironclaw_product::ProjectScopedAttachmentLander::new(
             workspace_filesystem,
         ));
 

@@ -5138,8 +5138,8 @@ async fn webui_workspace_filesystem_lands_attachment_with_read_write_mount() {
     // is byte-identical over the read-write view (the reader never writes), so
     // this test resolves the same authority a vision-capable model would.
     let read_port =
-        crate::support::fs::ProjectScopedAttachmentReader::new(Arc::clone(&read_write_filesystem));
-    let lander = crate::support::fs::ProjectScopedAttachmentLander::new(read_write_filesystem);
+        ironclaw_product::ProjectScopedAttachmentReader::new(Arc::clone(&read_write_filesystem));
+    let lander = ironclaw_product::ProjectScopedAttachmentLander::new(read_write_filesystem);
 
     let thread_scope = ThreadScope {
         tenant_id: TenantId::new("runtime-attachment-mount-tenant").unwrap(),

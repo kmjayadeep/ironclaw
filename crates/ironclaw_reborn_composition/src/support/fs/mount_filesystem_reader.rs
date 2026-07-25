@@ -25,7 +25,7 @@ use ironclaw_product::{
 };
 
 use crate::local_dev_mounts::{BROWSE_MEMORY_ALIAS, WORKSPACE_ALIAS};
-use crate::support::fs::project_filesystem_reader::{
+use ironclaw_product::{
     file_name_of, guard_readable_file, map_filesystem_error, map_kind, mime_for_path,
 };
 
