@@ -43,6 +43,7 @@ mod extension_host;
 mod factory;
 mod google_oauth_secret_store;
 mod input;
+mod intent_review_serve;
 mod llm_admin;
 mod local_dev_authorization;
 mod local_dev_mounts;

@@ -592,6 +592,12 @@ impl ServeCommand {
             if let Some(nearai_mount) = runtime.nearai_login_callback_mount() {
                 serve_config = serve_config.with_public_route_mount(nearai_mount);
             }
+            // Public attested-signing review link (`GET /intent/{token}`): the
+            // token addresses an intent and authorizes nothing, so this route
+            // only redirects to the SPA, which then demands a session.
+            if let Some(intent_mount) = runtime.intent_review_mount() {
+                serve_config = serve_config.with_public_route_mount(intent_mount);
+            }
             if let Some(mount) = public_mount {
                 serve_config = serve_config.with_public_route_mount(mount);
             }

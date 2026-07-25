@@ -1295,6 +1295,20 @@ impl RebornRuntime {
             .map(|parts| Arc::clone(&parts.nearai_login_states))
     }
 
+    /// Public intent-review link mount (`GET /intent/{token}`) for the host
+    /// ingress to merge via `WebuiServeConfig::with_public_route_mount`.
+    ///
+    /// `None` when intent minting is not composed — no intents means no links
+    /// to resolve, so the route is simply absent rather than serving 404s for a
+    /// feature that does not exist.
+    pub fn intent_review_mount(&self) -> Option<crate::webui::route_mounts::PublicRouteMount> {
+        let intents = self.intent_store()?;
+        Some(crate::intent_review_serve::intent_review_mount(
+            Arc::clone(intents),
+            &crate::intent_review_serve::intent_review_spa_base(),
+        ))
+    }
+
     /// Public NEAR AI login callback mount for the host ingress to merge via
     /// `ironclaw_webui::WebuiServeConfig::with_public_route_mount`. Built
     /// from the runtime's private session/reload/boot so those stay internal.
