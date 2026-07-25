@@ -46,7 +46,6 @@ mod subagent_prompt_port;
 mod subagent_spawn_port;
 mod system_inference;
 mod token_estimator;
-mod turn_event_publisher;
 pub mod user_profile_context;
 
 pub use await_edge_port::{
@@ -133,7 +132,6 @@ pub const FAILURE_EXPLANATION_SYSTEM_PROMPT: &str =
 pub use token_estimator::{
     CHARS_PER_TOKEN_DEFAULT, EstimatedTokenCount, estimate_tokens_from_chars,
 };
-pub use turn_event_publisher::EventPublishingTurnRunTransitionPort;
 
 use tokio::sync::{Mutex, OnceCell};
 

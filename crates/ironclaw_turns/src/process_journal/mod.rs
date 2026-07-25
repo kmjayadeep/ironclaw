@@ -12,15 +12,19 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use ironclaw_host_api::{ProcessId, ResourceScope, SYSTEM_RESERVED_ID};
+#[cfg(feature = "test-support")]
+use ironclaw_processes::{ClaimProcessRequest, ClaimProcessesRequest, ProcessTransitionPort};
 use ironclaw_processes::{
-    ClaimProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
-    JournaledProcessSnapshot, ProcessCheckpointRef, ProcessJournalCursor, ProcessJournalEntry,
-    ProcessJournalKind, ProcessJournalPage, ProcessJournalSource, ProcessKind, ProcessLeaseRequest,
-    ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleStatus, ProcessOutcome,
-    ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort, ProcessWorkerId,
-    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, SuspendProcessRequest,
+    ClaimedProcess, FailProcessRequest, JournaledProcessSnapshot, ProcessCheckpointRef,
+    ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind, ProcessJournalPage,
+    ProcessJournalSource, ProcessKind, ProcessLeaseRequest, ProcessLeaseSnapshot,
+    ProcessLeaseToken, ProcessLifecycleStatus, ProcessOutcome, ProcessSuspension,
+    ProcessSuspensionKind, ProcessWorkerId, RecoverExpiredProcessLeasesRequest,
+    RecoverExpiredProcessLeasesResponse, SuspendProcessRequest,
 };
 
+#[cfg(feature = "test-support")]
+use crate::runner::{ClaimRunRequest, ClaimRunsRequest, TurnRunTransitionPort};
 use crate::{
     AcceptedMessageRef, BlockedReason, GateKind, GateResumeDisposition, ProductTurnContext,
     ReplyTargetBindingRef, ResolvedRunProfile, RunProfileId, RunProfileVersion, SourceBindingRef,
@@ -32,10 +36,9 @@ use crate::{
     },
     run_profile::{LoopModelRouteSnapshot, LoopModelUsage},
     runner::{
-        BlockRunRequest, CancelRunCompletionRequest, ClaimRunRequest, ClaimRunsRequest,
-        ClaimedTurnRun, CompleteRunRequest, FailRunRequest, HeartbeatRequest,
-        RecordRunnerFailureRequest, RecoverExpiredLeasesRequest, RecoverExpiredLeasesResponse,
-        RelinquishRunRequest, TurnRunTransitionPort, TurnRunnerOutcome,
+        BlockRunRequest, CancelRunCompletionRequest, ClaimedTurnRun, CompleteRunRequest,
+        FailRunRequest, HeartbeatRequest, RecordRunnerFailureRequest, RecoverExpiredLeasesRequest,
+        RecoverExpiredLeasesResponse, RelinquishRunRequest, TurnRunnerOutcome,
     },
 };
 

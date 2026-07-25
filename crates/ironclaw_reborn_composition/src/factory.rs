@@ -1986,7 +1986,7 @@ macro_rules! with_shared_host_runtime_wiring {
         secret_store = $secret:expr,
         credential_broker = $broker:expr,
         filesystem_run_state = $fs:expr,
-        turn_state_and_transition_port = $turn_state:expr,
+        turn_state = $turn_state:expr,
         run_profile_resolver = $resolver:expr $(,)?
     ) => {
         $services
@@ -2000,7 +2000,7 @@ macro_rules! with_shared_host_runtime_wiring {
             .with_secret_store($secret)
             .with_credential_broker($broker)
             .with_filesystem_run_state($fs)
-            .with_turn_state_and_transition_port($turn_state)
+            .with_turn_state($turn_state)
             .with_run_profile_resolver($resolver)
     };
 }
@@ -4212,7 +4212,7 @@ where
         secret_store = Arc::clone(&secret_credentials.secret_store),
         credential_broker = secret_credentials.credential_broker,
         filesystem_run_state = Arc::clone(&scoped_filesystem),
-        turn_state_and_transition_port = turn_state,
+        turn_state = turn_state,
         run_profile_resolver = Arc::new(
             ironclaw_runner::planned_driver_factory::default_planned_run_profile_resolver()?,
         ),
@@ -4795,7 +4795,7 @@ async fn build_backend_production(
         secret_store = Arc::clone(&stores.secret_credentials.secret_store),
         credential_broker = stores.secret_credentials.credential_broker,
         filesystem_run_state = Arc::clone(&stores.scoped_filesystem),
-        turn_state_and_transition_port = Arc::clone(&turn_state),
+        turn_state = Arc::clone(&turn_state),
         run_profile_resolver = planned_run_profile_resolver()?,
     )
     .with_approval_requests(Arc::clone(&approval_requests))

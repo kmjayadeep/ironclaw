@@ -6,8 +6,8 @@ use super::{
     ProductionEventStoreWiringError, ProductionImplementationReadiness, ProductionWiringComponent,
     ProductionWiringConfig, ProductionWiringIssue, ProductionWiringIssueKind,
     ProductionWiringReport, RebornEventStoreConfig, RebornProfile, ResourceGovernor,
-    RootFilesystem, RuntimeKind, TurnRunTransitionPort, TurnStateStore, component_name,
-    local_only_runtime_policy_reason, production_wiring_report, runtime_http_egress_is_configured,
+    RootFilesystem, RuntimeKind, TurnStateStore, component_name, local_only_runtime_policy_reason,
+    production_wiring_report, runtime_http_egress_is_configured,
 };
 
 impl<F, G, S, R> HostRuntimeServices<F, G, S, R>
@@ -434,59 +434,6 @@ where
         Ok(DefaultTurnCoordinator::new(Arc::clone(turn_state))
             .with_run_profile_resolver(Arc::clone(run_profile_resolver))
             .with_wake_notifier(Arc::clone(notifier)))
-    }
-
-    /// Validates turn persistence wiring and returns the configured trusted
-    /// runner transition port. The runner crate owns scheduler construction;
-    /// host runtime only verifies that the lower service is production-ready.
-    pub fn turn_run_transition_port_for_production(
-        &self,
-    ) -> Result<Arc<dyn TurnRunTransitionPort>, ProductionWiringReport> {
-        let mut issues = Vec::new();
-        self.push_missing(
-            &mut issues,
-            ProductionWiringComponent::TurnState,
-            self.turn_state.is_some(),
-        );
-        self.push_local_only(
-            &mut issues,
-            ProductionWiringComponent::TurnState,
-            self.component_types.turn_state,
-        );
-        self.push_local_only(
-            &mut issues,
-            ProductionWiringComponent::TurnState,
-            self.component_types.turn_run_transition_port,
-        );
-        if self.turn_run_transition_port.is_some()
-            && !self.component_types.turn_run_transition_port_verified
-        {
-            self.push_issue(
-                &mut issues,
-                ProductionWiringComponent::TurnState,
-                ProductionWiringIssueKind::UnverifiedProductionImplementation,
-                component_name(self.component_types.turn_run_transition_port),
-            );
-        }
-        if self.turn_run_transition_port.is_none() {
-            self.push_issue(
-                &mut issues,
-                ProductionWiringComponent::TurnState,
-                ProductionWiringIssueKind::UnsupportedRequirement,
-                component_name(self.component_types.turn_state),
-            );
-        }
-        if !issues.is_empty() {
-            return Err(ProductionWiringReport { issues });
-        }
-        let Some(transition_port) = self.turn_run_transition_port.as_ref() else {
-            return Err(production_wiring_report(
-                ProductionWiringComponent::TurnState,
-                ProductionWiringIssueKind::UnsupportedRequirement,
-                component_name(self.component_types.turn_state),
-            ));
-        };
-        Ok(Arc::clone(transition_port))
     }
 
     fn validate_production_turn_wiring(&self) -> Result<(), ProductionWiringReport> {

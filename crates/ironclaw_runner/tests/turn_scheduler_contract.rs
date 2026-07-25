@@ -9,19 +9,11 @@ use std::{
 
 use async_trait::async_trait;
 use chrono::{Duration as ChronoDuration, Utc};
-use ironclaw_authorization::GrantAuthorizer;
-use ironclaw_extensions::ExtensionRegistry;
-use ironclaw_filesystem::DiskFilesystem;
 use ironclaw_filesystem::InMemoryBackend;
 use ironclaw_host_api::{AgentId, ProcessId, ProjectId, TenantId, ThreadId, UserId};
-use ironclaw_host_runtime::{
-    CapabilitySurfaceVersion, HostRuntimeServices, ProductionWiringComponent,
-    ProductionWiringIssueKind,
-};
 use ironclaw_processes::{
-    ProcessLeaseRequest, ProcessLeaseToken, ProcessServices, ProcessTransitionPort, ProcessWorkerId,
+    ProcessLeaseRequest, ProcessLeaseToken, ProcessTransitionPort, ProcessWorkerId,
 };
-use ironclaw_resources::InMemoryResourceGovernor;
 use ironclaw_runner::turn_scheduler::{
     SchedulerTurnRunWakeNotifier, TurnRunExecutor, TurnRunExecutorError, TurnRunScheduler,
     TurnRunSchedulerConfig,
@@ -136,9 +128,6 @@ impl Default for DurableLikeTurnStore {
         }
     }
 }
-
-#[derive(Debug)]
-struct DurableTurnStoreStub;
 
 #[derive(Default)]
 struct HangingExecutor {
@@ -453,110 +442,6 @@ impl TurnRunTransitionPort for DurableLikeTurnStore {
         request: ApplyValidatedLoopExitRequest,
     ) -> Result<TurnRunState, TurnError> {
         self.inner.apply_validated_loop_exit(request).await
-    }
-}
-
-#[async_trait]
-impl TurnStateStore for DurableTurnStoreStub {
-    async fn submit_turn(
-        &self,
-        _request: SubmitTurnRequest,
-        _admission_policy: &dyn ironclaw_turns::TurnAdmissionPolicy,
-        _run_profile_resolver: &dyn ironclaw_turns::RunProfileResolver,
-    ) -> Result<SubmitTurnResponse, TurnError> {
-        panic!("store stub should not submit turns")
-    }
-
-    async fn resume_turn(
-        &self,
-        _request: ResumeTurnRequest,
-    ) -> Result<ResumeTurnResponse, TurnError> {
-        panic!("store stub should not resume turns")
-    }
-
-    async fn retry_turn(
-        &self,
-        request: ironclaw_turns::RetryTurnRequest,
-    ) -> Result<ironclaw_turns::RetryTurnResponse, TurnError> {
-        // WS-3 implements this.
-        Err(TurnError::RunNotRetryable {
-            run_id: request.run_id,
-        })
-    }
-
-    async fn request_cancel(
-        &self,
-        _request: CancelRunRequest,
-    ) -> Result<CancelRunResponse, TurnError> {
-        panic!("store stub should not cancel turns")
-    }
-
-    async fn get_run_state(&self, _request: GetRunStateRequest) -> Result<TurnRunState, TurnError> {
-        panic!("store stub should not read turns")
-    }
-}
-
-#[async_trait]
-impl TurnRunTransitionPort for DurableTurnStoreStub {
-    async fn claim_next_run(
-        &self,
-        _request: ClaimRunRequest,
-    ) -> Result<Option<ClaimedTurnRun>, TurnError> {
-        panic!("transition stub should not claim turns")
-    }
-
-    async fn heartbeat(
-        &self,
-        _request: HeartbeatRequest,
-    ) -> Result<ironclaw_turns::EventCursor, TurnError> {
-        panic!("transition stub should not heartbeat")
-    }
-
-    async fn recover_expired_leases(
-        &self,
-        _request: RecoverExpiredLeasesRequest,
-    ) -> Result<RecoverExpiredLeasesResponse, TurnError> {
-        panic!("transition stub should not recover leases")
-    }
-
-    async fn record_model_route_snapshot(
-        &self,
-        _request: RecordModelRouteSnapshotRequest,
-    ) -> Result<TurnRunState, TurnError> {
-        panic!("transition stub should not record model route snapshots")
-    }
-
-    async fn block_run(&self, _request: BlockRunRequest) -> Result<TurnRunState, TurnError> {
-        panic!("transition stub should not block runs")
-    }
-
-    async fn complete_run(&self, _request: CompleteRunRequest) -> Result<TurnRunState, TurnError> {
-        panic!("transition stub should not complete runs")
-    }
-
-    async fn cancel_run(
-        &self,
-        _request: CancelRunCompletionRequest,
-    ) -> Result<TurnRunState, TurnError> {
-        panic!("transition stub should not cancel runs")
-    }
-
-    async fn fail_run(&self, _request: FailRunRequest) -> Result<TurnRunState, TurnError> {
-        panic!("transition stub should not fail runs")
-    }
-
-    async fn record_runner_failure(
-        &self,
-        _request: RecordRunnerFailureRequest,
-    ) -> Result<TurnRunState, TurnError> {
-        panic!("transition stub should not record terminal failure")
-    }
-
-    async fn apply_validated_loop_exit(
-        &self,
-        _request: ApplyValidatedLoopExitRequest,
-    ) -> Result<TurnRunState, TurnError> {
-        panic!("transition stub should not apply loop exits")
     }
 }
 
@@ -1004,50 +889,6 @@ fn executor_error_exposes_typed_sanitized_failure() {
     assert_eq!(error.failure_category(), "scheduler_test_error");
 }
 
-#[test]
-fn production_services_expose_verified_transition_port_without_notifier() {
-    let store = Arc::new(DurableTurnStoreStub);
-    let services = HostRuntimeServices::new(
-        Arc::new(ExtensionRegistry::new()),
-        Arc::new(DiskFilesystem::new()),
-        Arc::new(InMemoryResourceGovernor::new()),
-        Arc::new(GrantAuthorizer::new()),
-        ProcessServices::in_memory(),
-        CapabilitySurfaceVersion::new("surface-v1").unwrap(),
-    )
-    .with_turn_state_and_transition_port(store);
-    let executor: Arc<dyn TurnRunExecutor> = Arc::new(CompletingExecutor::default());
-
-    let transition_port = services
-        .turn_run_transition_port_for_production()
-        .expect("production transition port should be verified");
-    let _scheduler = TurnRunScheduler::new(transition_port, executor, fast_config());
-}
-
-#[test]
-fn production_services_reject_unverified_scheduler_transition_port() {
-    let turn_state = Arc::new(DurableTurnStoreStub);
-    let transition_port = Arc::new(DurableTurnStoreStub);
-    let services = HostRuntimeServices::new(
-        Arc::new(ExtensionRegistry::new()),
-        Arc::new(DiskFilesystem::new()),
-        Arc::new(InMemoryResourceGovernor::new()),
-        Arc::new(GrantAuthorizer::new()),
-        ProcessServices::in_memory(),
-        CapabilitySurfaceVersion::new("surface-v1").unwrap(),
-    )
-    .with_turn_state(turn_state)
-    .with_turn_run_transition_port(transition_port);
-    let result = services.turn_run_transition_port_for_production();
-    let Err(report) = result else {
-        panic!("production wiring should reject unverified transition port");
-    };
-    assert!(report.contains(
-        ProductionWiringComponent::TurnState,
-        ProductionWiringIssueKind::UnverifiedProductionImplementation
-    ));
-}
-
 #[tokio::test]
 async fn scheduler_uses_stable_runner_id_across_claims() {
     let store = Arc::new(in_memory_turn_state_store());
@@ -1088,20 +929,9 @@ async fn scheduler_uses_stable_runner_id_across_claims() {
 #[tokio::test]
 async fn production_services_scheduler_and_coordinator_execute_turn_end_to_end() {
     let store = Arc::new(DurableLikeTurnStore::default());
-    let services = HostRuntimeServices::new(
-        Arc::new(ExtensionRegistry::new()),
-        Arc::new(DiskFilesystem::new()),
-        Arc::new(InMemoryResourceGovernor::new()),
-        Arc::new(GrantAuthorizer::new()),
-        ProcessServices::in_memory(),
-        CapabilitySurfaceVersion::new("surface-v1").unwrap(),
-    )
-    .with_turn_state_and_transition_port(Arc::clone(&store));
     let executor = Arc::new(CompletingExecutor::default());
     let executor_port: Arc<dyn TurnRunExecutor> = executor.clone();
-    let transition_port = services
-        .turn_run_transition_port_for_production()
-        .expect("production transition port should be verified");
+    let transition_port: Arc<dyn TurnRunTransitionPort> = store.clone();
     let scheduler = TurnRunScheduler::new(
         transition_port,
         executor_port,

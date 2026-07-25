@@ -32,7 +32,6 @@ use ironclaw_turns::{
         LoopCapabilityPort, LoopHostMilestoneSink, LoopModelBudgetAccountant, LoopModelPolicyGuard,
         LoopRunContext, MemoryPromptContextService,
     },
-    runner::TurnRunTransitionPort,
 };
 
 use crate::{
@@ -227,20 +226,12 @@ fn default_disabled_capability_ids() -> Vec<CapabilityId> {
 }
 
 pub trait RuntimeTurnStateStore:
-    TurnSpawnTreeStateStore
-    + TurnRunTransitionPort
-    + ironclaw_turns::TurnEventProjectionSource
-    + Send
-    + Sync
+    TurnSpawnTreeStateStore + ironclaw_turns::TurnEventProjectionSource + Send + Sync
 {
 }
 
 impl<T> RuntimeTurnStateStore for T where
-    T: TurnSpawnTreeStateStore
-        + TurnRunTransitionPort
-        + ironclaw_turns::TurnEventProjectionSource
-        + Send
-        + Sync
+    T: TurnSpawnTreeStateStore + ironclaw_turns::TurnEventProjectionSource + Send + Sync
 {
 }
 

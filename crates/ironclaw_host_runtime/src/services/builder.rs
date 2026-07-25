@@ -17,10 +17,10 @@ use super::{
     RunStateStorePort, RuntimeBackendHealth, RuntimeCredentialAccountResolver, RuntimeHttpEgress,
     RuntimeKind, RuntimeProcessPort, ScopedFilesystem, ScriptExecutor, SecretMode, SecretStorePort,
     SecurityAuditSink, SharedSecretStore, TenantSandboxProcessPort, TrustPolicy,
-    TurnRunTransitionPort, TurnRunWakeNotifier, TurnStateRowStore, TurnStateStore, WasmError,
-    WasmRuntimeAdapter, WasmRuntimeCredentialProvider, WasmStagedRuntimeCredentials, WitToolHost,
-    WitToolRuntimeConfig, build_reborn_event_stores, production_wiring_report,
-    set_runtime_http_egress, set_tool_call_http_egress,
+    TurnRunWakeNotifier, TurnStateRowStore, TurnStateStore, WasmError, WasmRuntimeAdapter,
+    WasmRuntimeCredentialProvider, WasmStagedRuntimeCredentials, WitToolHost, WitToolRuntimeConfig,
+    build_reborn_event_stores, production_wiring_report, set_runtime_http_egress,
+    set_tool_call_http_egress,
 };
 use crate::HostProcessPort;
 use crate::RuntimeHttpBodyStore;
@@ -78,7 +78,6 @@ where
             wasm_runtime,
             turn_state,
             run_profile_resolver,
-            turn_run_transition_port,
             turn_run_wake_notifier,
             extension_tool_resolver,
             post_edit_check,
@@ -124,7 +123,6 @@ where
             wasm_runtime,
             turn_state,
             run_profile_resolver,
-            turn_run_transition_port,
             turn_run_wake_notifier,
             extension_tool_resolver,
             post_edit_check,
@@ -189,7 +187,6 @@ where
             wasm_runtime,
             turn_state,
             run_profile_resolver,
-            turn_run_transition_port,
             turn_run_wake_notifier,
             extension_tool_resolver,
             post_edit_check,
@@ -245,7 +242,6 @@ where
             wasm_runtime,
             turn_state,
             run_profile_resolver,
-            turn_run_transition_port,
             turn_run_wake_notifier,
             extension_tool_resolver,
             post_edit_check,
@@ -418,34 +414,7 @@ where
         T: TurnStateStore + 'static,
     {
         self.component_types.turn_state = Some(ProductionComponentType::of::<T>());
-        self.component_types.turn_run_transition_port = None;
-        self.component_types.turn_run_transition_port_verified = false;
         self.turn_state = Some(turn_state);
-        self.turn_run_transition_port = None;
-        self
-    }
-
-    pub fn with_turn_state_and_transition_port<T>(mut self, turn_state: Arc<T>) -> Self
-    where
-        T: TurnStateStore + TurnRunTransitionPort + 'static,
-    {
-        self.component_types.turn_state = Some(ProductionComponentType::of::<T>());
-        self.component_types.turn_run_transition_port = Some(ProductionComponentType::of::<T>());
-        self.component_types.turn_run_transition_port_verified = true;
-        let state: Arc<dyn TurnStateStore> = turn_state.clone();
-        let transition_port: Arc<dyn TurnRunTransitionPort> = turn_state;
-        self.turn_state = Some(state);
-        self.turn_run_transition_port = Some(transition_port);
-        self
-    }
-
-    pub fn with_turn_run_transition_port<T>(mut self, transition_port: Arc<T>) -> Self
-    where
-        T: TurnRunTransitionPort + 'static,
-    {
-        self.component_types.turn_run_transition_port = Some(ProductionComponentType::of::<T>());
-        self.component_types.turn_run_transition_port_verified = false;
-        self.turn_run_transition_port = Some(transition_port);
         self
     }
 
@@ -473,10 +442,7 @@ where
     /// Replaces the legacy `with_libsql_turn_state_store` /
     /// `with_postgres_turn_state_store` builders (deleted along with the
     /// corresponding per-backend `Filesystem*Store` siblings — see
-    /// `docs/plans/2026-05-16-scoped-filesystem-tenant-isolation.md`). The
-    /// filesystem store implements both [`TurnStateStore`] and
-    /// [`TurnRunTransitionPort`], so this wiring covers production
-    /// readiness for both axes.
+    /// `docs/plans/2026-05-16-scoped-filesystem-tenant-isolation.md`).
     pub fn with_filesystem_turn_state_store<FsBackend>(
         self,
         scoped_filesystem: Arc<ScopedFilesystem<FsBackend>>,
@@ -485,7 +451,7 @@ where
         FsBackend: RootFilesystem + 'static,
     {
         let store = Arc::new(TurnStateRowStore::new(scoped_filesystem));
-        self.with_turn_state_and_transition_port(store)
+        self.with_turn_state(store)
     }
 
     pub fn with_turn_run_wake_notifier<T>(mut self, notifier: Arc<T>) -> Self

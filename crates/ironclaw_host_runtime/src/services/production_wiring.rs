@@ -262,8 +262,6 @@ pub(super) struct ProductionComponentTypes {
     pub(super) first_party_runtime: Option<ProductionComponentType>,
     pub(super) turn_state: Option<ProductionComponentType>,
     pub(super) run_profile_resolver: Option<ProductionComponentType>,
-    pub(super) turn_run_transition_port: Option<ProductionComponentType>,
-    pub(super) turn_run_transition_port_verified: bool,
     pub(super) turn_run_wake_notifier: Option<ProductionComponentType>,
 }
 

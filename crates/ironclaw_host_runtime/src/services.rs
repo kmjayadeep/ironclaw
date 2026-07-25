@@ -57,7 +57,7 @@ use ironclaw_secrets::{
 use ironclaw_trust::{HostTrustPolicy, TrustPolicy};
 use ironclaw_turns::{
     DefaultTurnCoordinator, NoopTurnRunWakeNotifier, RunProfileResolver, TurnRunWakeNotifier,
-    TurnStateRowStore, TurnStateStore, runner::TurnRunTransitionPort,
+    TurnStateRowStore, TurnStateStore,
 };
 use ironclaw_wasm::{
     DenyWasmHostHttp, EmptyWasmRuntimeCredentials, PreparedWitTool, WasmError,
@@ -168,7 +168,6 @@ where
     wasm_runtime: Option<Arc<WasmRuntimeAdapter>>,
     turn_state: Option<Arc<dyn TurnStateStore>>,
     run_profile_resolver: Option<Arc<dyn RunProfileResolver>>,
-    turn_run_transition_port: Option<Arc<dyn TurnRunTransitionPort>>,
     turn_run_wake_notifier: Option<Arc<dyn TurnRunWakeNotifier>>,
     /// Late-installed extension-host snapshot resolver (composition builds
     /// the extension host after these services; same slot pattern as the
@@ -471,7 +470,6 @@ where
             wasm_runtime: None,
             turn_state: None,
             run_profile_resolver: None,
-            turn_run_transition_port: None,
             turn_run_wake_notifier: None,
             extension_tool_resolver: Arc::new(Mutex::new(None)),
             post_edit_check: None,
@@ -503,8 +501,6 @@ where
                 first_party_runtime: None,
                 turn_state: None,
                 run_profile_resolver: None,
-                turn_run_transition_port: None,
-                turn_run_transition_port_verified: false,
                 turn_run_wake_notifier: None,
             },
         }
