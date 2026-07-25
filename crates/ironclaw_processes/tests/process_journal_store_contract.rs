@@ -14,8 +14,9 @@ use ironclaw_processes::{
     ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupRequest,
     ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
     ProcessOperationId, ProcessStateTransitionRequest, ProcessSubmissionPort, ProcessSuspension,
-    ProcessSuspensionKind, ProcessTransitionPort, ProcessWorkerId, ResumeProcessRequest,
-    StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
+    ProcessSuspensionKind, ProcessTransitionPort, ProcessTreePort, ProcessWorkerId,
+    ReleaseProcessTreeRequest, ResumeProcessRequest, StopProcessRequest, SubmitProcessRequest,
+    SuspendProcessRequest,
 };
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -53,6 +54,7 @@ async fn process_observer_receives_commits_once_not_idempotency_replays() {
         owner_user_id: Some(scope.user_id.clone()),
         parent_process_id: None,
         root_process_id: None,
+        spawn_tree_descendant_cap: None,
         checkpoint_ref: None,
         created_at: Utc::now(),
         metadata: serde_json::Value::Null,
@@ -76,6 +78,66 @@ async fn process_observer_receives_commits_once_not_idempotency_replays() {
 }
 
 #[tokio::test]
+async fn process_tree_submission_reserves_and_releases_capacity_atomically() {
+    let store = ProcessJournalStore::new(in_memory_backed_processes_filesystem());
+    let root_scope = scope();
+    let root_id = ProcessId::new();
+    submit_internal_process(&store, &root_scope, root_id).await;
+    let mut child_scope = root_scope.clone();
+    child_scope.thread_id = Some(ThreadId::new("thread-child").expect("child thread"));
+    let child_request = |process_id, operation: &str| SubmitProcessRequest {
+        process_id,
+        process_kind: ProcessKind::Internal,
+        scope: child_scope.clone(),
+        exclusive_within_scope: false,
+        operation_id: Some(ProcessOperationId::from_trusted(operation)),
+        owner_user_id: Some(child_scope.user_id.clone()),
+        parent_process_id: Some(root_id),
+        root_process_id: Some(root_id),
+        spawn_tree_descendant_cap: Some(1),
+        checkpoint_ref: None,
+        created_at: Utc::now(),
+        metadata: serde_json::Value::Null,
+    };
+    let first_child_id = ProcessId::new();
+    store
+        .submit_process(child_request(first_child_id, "first-child"))
+        .await
+        .expect("submit first child");
+    let capacity_error = store
+        .submit_process(child_request(ProcessId::new(), "over-cap"))
+        .await
+        .expect_err("tree cap must reject second live reservation");
+    assert!(capacity_error.to_string().contains("capacity 1 exceeded"));
+
+    let children = store
+        .child_processes(&root_scope, root_id)
+        .await
+        .expect("list child processes");
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0].process_id, first_child_id);
+
+    let release = ReleaseProcessTreeRequest {
+        scope: root_scope,
+        root_process_id: root_id,
+        delta: 1,
+        idempotency_process_id: first_child_id,
+    };
+    store
+        .release_process_tree(release.clone())
+        .await
+        .expect("release child reservation");
+    store
+        .release_process_tree(release)
+        .await
+        .expect("release replay is idempotent");
+    store
+        .submit_process(child_request(ProcessId::new(), "replacement-child"))
+        .await
+        .expect("released capacity admits replacement child");
+}
+
+#[tokio::test]
 async fn process_journal_store_owns_lifecycle_and_gate_projection() {
     let store = ProcessJournalStore::new(in_memory_backed_processes_filesystem());
     let scope = scope();
@@ -93,6 +155,7 @@ async fn process_journal_store_owns_lifecycle_and_gate_projection() {
             owner_user_id: Some(owner.clone()),
             parent_process_id: None,
             root_process_id: None,
+            spawn_tree_descendant_cap: None,
             checkpoint_ref: None,
             created_at: Utc::now(),
             metadata: json!({
@@ -225,6 +288,7 @@ async fn process_journal_store_completes_claimed_process() {
             owner_user_id: Some(scope.user_id.clone()),
             parent_process_id: None,
             root_process_id: None,
+            spawn_tree_descendant_cap: None,
             checkpoint_ref: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
@@ -273,6 +337,7 @@ async fn process_journal_store_relinquishes_claim_with_fresh_reclaim_lease() {
             owner_user_id: Some(scope.user_id.clone()),
             parent_process_id: None,
             root_process_id: None,
+            spawn_tree_descendant_cap: None,
             checkpoint_ref: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
@@ -328,6 +393,7 @@ async fn process_journal_store_rejects_wrong_lease() {
             owner_user_id: Some(scope.user_id.clone()),
             parent_process_id: None,
             root_process_id: None,
+            spawn_tree_descendant_cap: None,
             checkpoint_ref: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
@@ -530,6 +596,7 @@ async fn exclusive_process_submission_uses_authoritative_live_projection() {
         owner_user_id: Some(scope.user_id.clone()),
         parent_process_id: None,
         root_process_id: None,
+        spawn_tree_descendant_cap: None,
         checkpoint_ref: None,
         created_at: Utc::now(),
         metadata: serde_json::Value::Null,
@@ -575,6 +642,7 @@ async fn submit_internal_process(
             owner_user_id: Some(scope.user_id.clone()),
             parent_process_id: None,
             root_process_id: None,
+            spawn_tree_descendant_cap: None,
             checkpoint_ref: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,

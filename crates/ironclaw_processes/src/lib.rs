@@ -45,9 +45,11 @@ pub use journal::{
     ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupRequest,
     ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
     ProcessOperationId, ProcessOutcome, ProcessStateTransitionRequest, ProcessSubmissionPort,
-    ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort, ProcessWorkerId,
-    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, ResumeProcessRequest,
-    StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
+    ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort, ProcessTreePort,
+    ProcessTreeReservation, ProcessWorkerId, PruneReleasedProcessRequest,
+    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse,
+    ReleaseProcessTreeRequest, ReserveProcessTreeRequest, ResumeProcessRequest, StopProcessRequest,
+    SubmitProcessRequest, SuspendProcessRequest,
 };
 pub use journal_store::{ProcessJournalStore, ProcessJournalStoreError};
 pub use process_store::{ProcessResultStore, ProcessStore};

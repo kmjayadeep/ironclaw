@@ -285,6 +285,7 @@ pub struct ProcessRuntimeSystem {
         dyn ironclaw_processes::ProcessLifecycleLookupSource<Error = ironclaw_turns::TurnError>,
     >,
     gates: Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = ironclaw_turns::TurnError>>,
+    trees: Arc<dyn ironclaw_processes::ProcessTreePort<Error = ironclaw_turns::TurnError>>,
     observers: Arc<dyn ProcessJournalObserverRegistry>,
 }
 
@@ -313,6 +314,8 @@ impl ProcessRuntimeSystem {
                 as Arc<
                     dyn ironclaw_processes::ProcessGateQuerySource<Error = ProcessJournalStoreError>,
                 >,
+            store.clone()
+                as Arc<dyn ironclaw_processes::ProcessTreePort<Error = ProcessJournalStoreError>>,
         ));
         Self {
             submission: Arc::clone(&store)
@@ -333,12 +336,14 @@ impl ProcessRuntimeSystem {
                             Error = ironclaw_turns::TurnError,
                         >,
                 >,
-            gates: adapter
+            gates: Arc::clone(&adapter)
                 as Arc<
                     dyn ironclaw_processes::ProcessGateQuerySource<
                             Error = ironclaw_turns::TurnError,
                         >,
                 >,
+            trees: adapter
+                as Arc<dyn ironclaw_processes::ProcessTreePort<Error = ironclaw_turns::TurnError>>,
             observers: store as Arc<dyn ProcessJournalObserverRegistry>,
         }
     }
@@ -398,6 +403,7 @@ impl ProcessRuntimeSystem {
             Arc::clone(&self.turn_submission),
             self.journal(),
             self.controls(),
+            Arc::clone(&self.trees),
         )
     }
 
@@ -799,10 +805,11 @@ where
             parts.turn_event_sink.clone(),
         )))
         .map_err(DefaultPlannedRuntimeBuildError::SubagentCompletion)?;
-    let base_coordinator = DefaultTurnCoordinator::new(Arc::clone(&parts.turn_state))
+    let agent_turn_runtime = Arc::new(process_system.agent_turn_runtime());
+    let base_coordinator = DefaultTurnCoordinator::new(Arc::clone(&agent_turn_runtime))
         .with_run_profile_resolver(Arc::clone(&run_profile_resolver))
         .with_wake_notifier(Arc::clone(&wake_notifier))
-        .with_process_runtime(process_system.agent_turn_runtime());
+        .with_process_runtime(agent_turn_runtime.as_ref().clone());
     let base_coordinator_arc = Arc::new(base_coordinator);
     let child_runs: Arc<dyn TurnSpawnTreePort> = base_coordinator_arc.clone();
     let coordinator: Arc<dyn ironclaw_turns::TurnCoordinator> = base_coordinator_arc;
@@ -810,7 +817,7 @@ where
         .bind_coordinator(Arc::clone(&coordinator))
         .map_err(|error| DefaultPlannedRuntimeBuildError::SubagentCompletion(error.to_string()))?;
 
-    let turn_state_store: Arc<dyn TurnStateStore> = Arc::new(process_system.agent_turn_runtime());
+    let turn_state_store: Arc<dyn TurnStateStore> = agent_turn_runtime.clone();
     let subagent_prompt_source: Arc<dyn SubagentPromptMaterialSource> =
         Arc::new(GateBackedSubagentPromptMaterialSource::new(
             Arc::clone(&parts.subagent_goal_store),
@@ -821,7 +828,7 @@ where
         SubagentSpawnDeps {
             coordinator: Arc::clone(&coordinator) as Arc<dyn ironclaw_turns::TurnCoordinator>,
             child_runs,
-            turn_state_store: Arc::clone(&parts.turn_state) as Arc<dyn TurnSpawnTreeStateStore>,
+            turn_state_store: agent_turn_runtime.clone() as Arc<dyn TurnSpawnTreeStateStore>,
             thread_service: Arc::clone(&parts.thread_service),
             goal_store: Arc::clone(&parts.subagent_goal_store) as Arc<dyn SubagentSpawnGoalStore>,
             await_edge_writer: Arc::clone(&parts.subagent_await_edge_writer),

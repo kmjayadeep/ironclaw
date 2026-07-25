@@ -9,8 +9,10 @@ use ironclaw_processes::{
     ProcessJournalCursor, ProcessJournalPage, ProcessJournalSource, ProcessJournalStoreError,
     ProcessLeaseRequest, ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult,
     ProcessLifecycleLookupSource, ProcessStateTransitionRequest, ProcessSubmissionPort,
-    ProcessTransitionPort, RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse,
-    ResumeProcessRequest, StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
+    ProcessTransitionPort, ProcessTreePort, ProcessTreeReservation, PruneReleasedProcessRequest,
+    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse,
+    ReleaseProcessTreeRequest, ReserveProcessTreeRequest, ResumeProcessRequest, StopProcessRequest,
+    SubmitProcessRequest, SuspendProcessRequest,
 };
 
 use crate::TurnError;
@@ -23,6 +25,7 @@ pub struct ProcessJournalStoreTurnAdapter {
     journal: Arc<dyn ProcessJournalSource<Error = ProcessJournalStoreError>>,
     lifecycle: Arc<dyn ProcessLifecycleLookupSource<Error = ProcessJournalStoreError>>,
     gates: Arc<dyn ProcessGateQuerySource<Error = ProcessJournalStoreError>>,
+    trees: Arc<dyn ProcessTreePort<Error = ProcessJournalStoreError>>,
 }
 impl ProcessJournalStoreTurnAdapter {
     pub fn new(
@@ -32,6 +35,7 @@ impl ProcessJournalStoreTurnAdapter {
         journal: Arc<dyn ProcessJournalSource<Error = ProcessJournalStoreError>>,
         lifecycle: Arc<dyn ProcessLifecycleLookupSource<Error = ProcessJournalStoreError>>,
         gates: Arc<dyn ProcessGateQuerySource<Error = ProcessJournalStoreError>>,
+        trees: Arc<dyn ProcessTreePort<Error = ProcessJournalStoreError>>,
     ) -> Self {
         Self {
             submission,
@@ -40,7 +44,54 @@ impl ProcessJournalStoreTurnAdapter {
             journal,
             lifecycle,
             gates,
+            trees,
         }
+    }
+}
+
+#[async_trait]
+impl ProcessTreePort for ProcessJournalStoreTurnAdapter {
+    type Error = TurnError;
+
+    async fn child_processes(
+        &self,
+        scope: &ResourceScope,
+        parent_process_id: ironclaw_host_api::ProcessId,
+    ) -> Result<Vec<JournaledProcessSnapshot>, Self::Error> {
+        self.trees
+            .child_processes(scope, parent_process_id)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+
+    async fn reserve_process_tree(
+        &self,
+        request: ReserveProcessTreeRequest,
+    ) -> Result<ProcessTreeReservation, Self::Error> {
+        self.trees
+            .reserve_process_tree(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+
+    async fn release_process_tree(
+        &self,
+        request: ReleaseProcessTreeRequest,
+    ) -> Result<(), Self::Error> {
+        self.trees
+            .release_process_tree(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+
+    async fn prune_released_process(
+        &self,
+        request: PruneReleasedProcessRequest,
+    ) -> Result<(), Self::Error> {
+        self.trees
+            .prune_released_process(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
     }
 }
 
@@ -285,6 +336,14 @@ pub fn turn_error_from_process_journal_store_error(error: ProcessJournalStoreErr
         ProcessJournalStoreError::InvalidTransition { from, to, .. } => TurnError::InvalidRequest {
             reason: format!("invalid process journal transition from {from:?} to {to:?}"),
         },
+        ProcessJournalStoreError::UnauthorizedScope => TurnError::Unauthorized,
+        ProcessJournalStoreError::InvalidRequest(reason) => TurnError::InvalidRequest { reason },
+        ProcessJournalStoreError::ProcessTreeCapacityExceeded { cap } => {
+            TurnError::capacity_exceeded(
+                crate::TurnCapacityResource::SpawnTreeDescendants,
+                cap.into(),
+            )
+        }
         ProcessJournalStoreError::InvalidLease { .. }
         | ProcessJournalStoreError::InvalidPath(_)
         | ProcessJournalStoreError::Filesystem(_)

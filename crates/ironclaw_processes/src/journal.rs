@@ -13,6 +13,7 @@ use ironclaw_host_api::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -366,10 +367,43 @@ pub struct SubmitProcessRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_process_id: Option<ProcessId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_tree_descendant_cap: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_ref: Option<ProcessCheckpointRef>,
     pub created_at: Timestamp,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub metadata: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessTreeReservation {
+    pub root_process_id: ProcessId,
+    pub descendant_count: u64,
+    #[serde(default)]
+    pub released_processes: HashSet<ProcessId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReserveProcessTreeRequest {
+    pub scope: ResourceScope,
+    pub root_process_id: ProcessId,
+    pub delta: u32,
+    pub cap: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseProcessTreeRequest {
+    pub scope: ResourceScope,
+    pub root_process_id: ProcessId,
+    pub delta: u32,
+    pub idempotency_process_id: ProcessId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PruneReleasedProcessRequest {
+    pub scope: ResourceScope,
+    pub root_process_id: ProcessId,
+    pub process_id: ProcessId,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -471,6 +505,32 @@ pub trait ProcessSubmissionPort: Send + Sync {
         &self,
         request: SubmitProcessRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error>;
+}
+
+#[async_trait]
+pub trait ProcessTreePort: Send + Sync {
+    type Error: Send + Sync + 'static;
+
+    async fn child_processes(
+        &self,
+        scope: &ResourceScope,
+        parent_process_id: ProcessId,
+    ) -> Result<Vec<JournaledProcessSnapshot>, Self::Error>;
+
+    async fn reserve_process_tree(
+        &self,
+        request: ReserveProcessTreeRequest,
+    ) -> Result<ProcessTreeReservation, Self::Error>;
+
+    async fn release_process_tree(
+        &self,
+        request: ReleaseProcessTreeRequest,
+    ) -> Result<(), Self::Error>;
+
+    async fn prune_released_process(
+        &self,
+        request: PruneReleasedProcessRequest,
+    ) -> Result<(), Self::Error>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

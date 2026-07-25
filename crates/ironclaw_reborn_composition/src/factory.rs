@@ -4658,6 +4658,8 @@ async fn build_backend_production(
             as Arc<
                 dyn ironclaw_processes::ProcessGateQuerySource<Error = ProcessJournalStoreError>,
             >,
+        Arc::clone(&process_journal_store)
+            as Arc<dyn ironclaw_processes::ProcessTreePort<Error = ProcessJournalStoreError>>,
     ));
     let process_lifecycle_lookup_source = Arc::clone(&process_journal_adapter)
         as Arc<

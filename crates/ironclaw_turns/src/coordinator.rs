@@ -511,16 +511,27 @@ where
     ) -> Result<SubmitTurnResponse, TurnError> {
         let started_at = live_latency_started_at();
         let child_scope = request.child_scope.clone();
-        let process_request = request.clone();
-        let response = match self
-            .store
-            .submit_child_turn(
-                request,
-                self.admission_policy.as_ref(),
-                self.run_profile_resolver.as_ref(),
-            )
-            .await
-        {
+        let response = match &self.process_runtime {
+            Some(runtime) => {
+                runtime
+                    .submit_child_turn(
+                        request,
+                        self.admission_policy.as_ref(),
+                        self.run_profile_resolver.as_ref(),
+                    )
+                    .await
+            }
+            None => {
+                self.store
+                    .submit_child_turn(
+                        request,
+                        self.admission_policy.as_ref(),
+                        self.run_profile_resolver.as_ref(),
+                    )
+                    .await
+            }
+        };
+        let response = match response {
             Ok(response) => {
                 let SubmitTurnResponse::Accepted { run_id, .. } = &response;
                 trace_coordinator_latency_ok(
@@ -541,18 +552,6 @@ where
                 );
                 return Err(error);
             }
-        };
-        let SubmitTurnResponse::Accepted { run_id, .. } = response;
-        let response = match &self.process_runtime {
-            Some(runtime) => {
-                let record = self
-                    .store
-                    .get_run_record(&child_scope, run_id)
-                    .await?
-                    .ok_or(TurnError::ScopeNotFound)?;
-                runtime.submit_child_turn(&process_request, &record).await?
-            }
-            None => response,
         };
         let SubmitTurnResponse::Accepted { run_id, .. } = &response;
         let wake_started_at = live_latency_started_at();

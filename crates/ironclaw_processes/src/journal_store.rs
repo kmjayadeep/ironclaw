@@ -25,9 +25,10 @@ use crate::journal::{
     ProcessJournalSource, ProcessLeaseRequest, ProcessLeaseSnapshot, ProcessLeaseToken,
     ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,
     ProcessLifecycleStatus, ProcessOperationId, ProcessSubmissionPort, ProcessSuspension,
-    ProcessTransitionPort, ProcessWorkerId, RecoverExpiredProcessLeasesRequest,
-    RecoverExpiredProcessLeasesResponse, ResumeProcessRequest, StopProcessRequest,
-    SubmitProcessRequest, SuspendProcessRequest,
+    ProcessTransitionPort, ProcessTreePort, ProcessTreeReservation, ProcessWorkerId,
+    PruneReleasedProcessRequest, RecoverExpiredProcessLeasesRequest,
+    RecoverExpiredProcessLeasesResponse, ReleaseProcessTreeRequest, ReserveProcessTreeRequest,
+    ResumeProcessRequest, StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
 };
 use crate::types::{invalid_path, same_scope_owner};
 
@@ -60,6 +61,12 @@ pub enum ProcessJournalStoreError {
     },
     #[error("process {process_id} lease is invalid")]
     InvalidLease { process_id: ProcessId },
+    #[error("process scope is not authorized for lineage operation")]
+    UnauthorizedScope,
+    #[error("invalid process journal request: {0}")]
+    InvalidRequest(String),
+    #[error("process tree descendant capacity {cap} exceeded")]
+    ProcessTreeCapacityExceeded { cap: u32 },
     #[error("process {process_id} changed after cursor {expected:?}; current cursor is {actual:?}")]
     StaleSnapshot {
         process_id: ProcessId,
@@ -152,6 +159,47 @@ where
                     cursor: active.journal_cursor,
                 });
             }
+            let tree_reservation = if let Some(parent_process_id) = request.parent_process_id {
+                let parent = state.processes.get(&parent_process_id).ok_or(
+                    ProcessJournalStoreError::UnknownProcess {
+                        process_id: parent_process_id,
+                    },
+                )?;
+                if !same_lineage_scope(&parent.scope, &request.scope) {
+                    return Err(ProcessJournalStoreError::UnauthorizedScope);
+                }
+                let root_process_id = parent.root_process_id.unwrap_or(parent.process_id);
+                if request.root_process_id != Some(root_process_id) {
+                    return Err(ProcessJournalStoreError::InvalidRequest(
+                        "child root_process_id does not match parent lineage".to_string(),
+                    ));
+                }
+                let cap = request.spawn_tree_descendant_cap.ok_or_else(|| {
+                    ProcessJournalStoreError::InvalidRequest(
+                        "child process submission requires a descendant cap".to_string(),
+                    )
+                })?;
+                let current = state
+                    .tree_reservations
+                    .get(&root_process_id)
+                    .map(|reservation| reservation.descendant_count)
+                    .unwrap_or(0);
+                let next = current
+                    .checked_add(1)
+                    .ok_or(ProcessJournalStoreError::ProcessTreeCapacityExceeded { cap })?;
+                if next > u64::from(cap) {
+                    return Err(ProcessJournalStoreError::ProcessTreeCapacityExceeded { cap });
+                }
+                Some((root_process_id, next))
+            } else {
+                if request.root_process_id.is_some() || request.spawn_tree_descendant_cap.is_some()
+                {
+                    return Err(ProcessJournalStoreError::InvalidRequest(
+                        "root lineage requires a parent process".to_string(),
+                    ));
+                }
+                None
+            };
             let cursor = state.next_cursor();
             let snapshot = JournaledProcessSnapshot {
                 process_id: request.process_id,
@@ -177,6 +225,21 @@ where
             state
                 .processes
                 .insert(snapshot.process_id, snapshot.clone());
+            if let Some((root_process_id, descendant_count)) = tree_reservation {
+                let released_processes = state
+                    .tree_reservations
+                    .get(&root_process_id)
+                    .map(|reservation| reservation.released_processes.clone())
+                    .unwrap_or_default();
+                state.tree_reservations.insert(
+                    root_process_id,
+                    ProcessTreeReservation {
+                        root_process_id,
+                        descendant_count,
+                        released_processes,
+                    },
+                );
+            }
             state.remember_submission_result(replay_key.clone(), snapshot.clone());
             Ok((snapshot, true))
         })
@@ -809,6 +872,132 @@ where
     }
 }
 
+#[async_trait]
+impl<F> ProcessTreePort for ProcessJournalStore<F>
+where
+    F: RootFilesystem + Send + Sync + 'static,
+{
+    type Error = ProcessJournalStoreError;
+
+    async fn child_processes(
+        &self,
+        scope: &ResourceScope,
+        parent_process_id: ProcessId,
+    ) -> Result<Vec<JournaledProcessSnapshot>, Self::Error> {
+        let (state, _) = self.load_state().await?;
+        let Some(parent) = state.processes.get(&parent_process_id) else {
+            return Ok(Vec::new());
+        };
+        if !same_scope_owner(&parent.scope, scope) {
+            return Ok(Vec::new());
+        }
+        let mut children = state
+            .processes
+            .values()
+            .filter(|snapshot| snapshot.parent_process_id == Some(parent_process_id))
+            .filter(|snapshot| same_lineage_scope(&snapshot.scope, scope))
+            .cloned()
+            .collect::<Vec<_>>();
+        children.sort_by_key(|snapshot| snapshot.created_at);
+        Ok(children)
+    }
+
+    async fn reserve_process_tree(
+        &self,
+        request: ReserveProcessTreeRequest,
+    ) -> Result<ProcessTreeReservation, Self::Error> {
+        if request.delta == 0 {
+            return Err(ProcessJournalStoreError::InvalidRequest(
+                "reservation delta must be greater than zero".to_string(),
+            ));
+        }
+        let _guard = self.mutation_lock.lock().await;
+        self.mutate(|state| {
+            validate_tree_root(state, &request.scope, request.root_process_id)?;
+            let current = state
+                .tree_reservations
+                .get(&request.root_process_id)
+                .map(|reservation| reservation.descendant_count)
+                .unwrap_or(0);
+            let next = current.checked_add(u64::from(request.delta)).ok_or(
+                ProcessJournalStoreError::ProcessTreeCapacityExceeded { cap: request.cap },
+            )?;
+            if next > u64::from(request.cap) {
+                return Err(ProcessJournalStoreError::ProcessTreeCapacityExceeded {
+                    cap: request.cap,
+                });
+            }
+            let released_processes = state
+                .tree_reservations
+                .get(&request.root_process_id)
+                .map(|reservation| reservation.released_processes.clone())
+                .unwrap_or_default();
+            let reservation = ProcessTreeReservation {
+                root_process_id: request.root_process_id,
+                descendant_count: next,
+                released_processes,
+            };
+            state
+                .tree_reservations
+                .insert(request.root_process_id, reservation.clone());
+            Ok(reservation)
+        })
+        .await
+    }
+
+    async fn release_process_tree(
+        &self,
+        request: ReleaseProcessTreeRequest,
+    ) -> Result<(), Self::Error> {
+        let _guard = self.mutation_lock.lock().await;
+        self.mutate(|state| {
+            validate_tree_root(state, &request.scope, request.root_process_id)?;
+            let Some(reservation) = state.tree_reservations.get_mut(&request.root_process_id)
+            else {
+                return Ok(());
+            };
+            if !reservation
+                .released_processes
+                .insert(request.idempotency_process_id)
+            {
+                return Ok(());
+            }
+            if reservation.descendant_count < u64::from(request.delta) {
+                reservation
+                    .released_processes
+                    .remove(&request.idempotency_process_id);
+                return Err(ProcessJournalStoreError::InvalidRequest(
+                    "release delta exceeds current reservation count".to_string(),
+                ));
+            }
+            reservation.descendant_count -= u64::from(request.delta);
+            if reservation.descendant_count == 0 {
+                state.tree_reservations.remove(&request.root_process_id);
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    async fn prune_released_process(
+        &self,
+        request: PruneReleasedProcessRequest,
+    ) -> Result<(), Self::Error> {
+        let _guard = self.mutation_lock.lock().await;
+        self.mutate(|state| {
+            if !state.processes.contains_key(&request.root_process_id) {
+                return Ok(());
+            }
+            validate_tree_root(state, &request.scope, request.root_process_id)?;
+            if let Some(reservation) = state.tree_reservations.get_mut(&request.root_process_id) {
+                reservation.released_processes.remove(&request.process_id);
+            }
+            Ok(())
+        })
+        .await
+    }
+}
+
 struct ProcessTransitionMutation {
     status: ProcessLifecycleStatus,
     kind: ProcessJournalKind,
@@ -984,6 +1173,8 @@ struct ProcessJournalMaterializedState {
     submission_idempotency: HashMap<String, JournaledProcessSnapshot>,
     #[serde(default)]
     submission_idempotency_order: VecDeque<String>,
+    #[serde(default)]
+    tree_reservations: HashMap<ProcessId, ProcessTreeReservation>,
 }
 
 impl Default for ProcessJournalMaterializedState {
@@ -996,6 +1187,7 @@ impl Default for ProcessJournalMaterializedState {
             control_idempotency_order: VecDeque::new(),
             submission_idempotency: HashMap::new(),
             submission_idempotency_order: VecDeque::new(),
+            tree_reservations: HashMap::new(),
         }
     }
 }
@@ -1234,6 +1426,37 @@ fn process_gate_snapshot_matches(
 
 fn process_scope_visible(stored: &ResourceScope, requested: &ResourceScope) -> bool {
     *requested == ResourceScope::system() || same_scope_owner(stored, requested)
+}
+
+fn same_lineage_scope(left: &ResourceScope, right: &ResourceScope) -> bool {
+    left.tenant_id == right.tenant_id
+        && left.user_id == right.user_id
+        && left.agent_id == right.agent_id
+        && left.project_id == right.project_id
+        && left.mission_id == right.mission_id
+}
+
+fn validate_tree_root(
+    state: &ProcessJournalMaterializedState,
+    scope: &ResourceScope,
+    root_process_id: ProcessId,
+) -> Result<(), ProcessJournalStoreError> {
+    let root =
+        state
+            .processes
+            .get(&root_process_id)
+            .ok_or(ProcessJournalStoreError::UnknownProcess {
+                process_id: root_process_id,
+            })?;
+    if !same_lineage_scope(&root.scope, scope) {
+        return Err(ProcessJournalStoreError::UnauthorizedScope);
+    }
+    if root.root_process_id.unwrap_or(root.process_id) != root.process_id {
+        return Err(ProcessJournalStoreError::InvalidRequest(
+            "root_process_id must identify the process tree root".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn journal_state_path() -> Result<ScopedPath, ProcessJournalStoreError> {

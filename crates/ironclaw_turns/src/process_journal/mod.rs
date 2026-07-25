@@ -20,8 +20,10 @@ use ironclaw_processes::{
     ProcessJournalPage, ProcessJournalSource, ProcessKind, ProcessLeaseRequest,
     ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleStatus, ProcessOperationId,
     ProcessOutcome, ProcessSubmissionPort, ProcessSuspension, ProcessSuspensionKind,
-    ProcessWorkerId, RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse,
-    ResumeProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
+    ProcessTreePort, ProcessWorkerId, PruneReleasedProcessRequest,
+    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse,
+    ReleaseProcessTreeRequest, ReserveProcessTreeRequest, ResumeProcessRequest,
+    SubmitProcessRequest, SuspendProcessRequest,
 };
 #[cfg(feature = "test-support")]
 use ironclaw_processes::{
@@ -50,6 +52,7 @@ use crate::{
         FailRunRequest, HeartbeatRequest, RecordRunnerFailureRequest, RecoverExpiredLeasesRequest,
         RecoverExpiredLeasesResponse, RelinquishRunRequest, TurnRunnerOutcome,
     },
+    store::SpawnTreeReservation,
 };
 
 pub const AGENT_TURN_PROCESS_KIND: &str = "agent_turn";
@@ -118,6 +121,7 @@ pub struct AgentTurnProcessRuntime {
     submission: Arc<dyn ProcessSubmissionPort<Error = TurnError>>,
     journal: Arc<dyn ProcessJournalSource<Error = TurnError>>,
     controls: Arc<dyn ProcessControlPort<Error = TurnError>>,
+    trees: Arc<dyn ProcessTreePort<Error = TurnError>>,
 }
 
 impl AgentTurnProcessRuntime {
@@ -125,11 +129,13 @@ impl AgentTurnProcessRuntime {
         submission: Arc<dyn ProcessSubmissionPort<Error = TurnError>>,
         journal: Arc<dyn ProcessJournalSource<Error = TurnError>>,
         controls: Arc<dyn ProcessControlPort<Error = TurnError>>,
+        trees: Arc<dyn ProcessTreePort<Error = TurnError>>,
     ) -> Self {
         Self {
             submission,
             journal,
             controls,
+            trees,
         }
     }
 
@@ -181,6 +187,7 @@ impl AgentTurnProcessRuntime {
                 .as_deref()
                 .and_then(LoopModelRouteSnapshot::advisory),
             model_usage: None,
+            subagent_depth: 0,
             product_context: request.product_context,
             resume_disposition: None,
         };
@@ -197,6 +204,7 @@ impl AgentTurnProcessRuntime {
                 owner_user_id: Some(request.actor.user_id),
                 parent_process_id: None,
                 root_process_id: None,
+                spawn_tree_descendant_cap: None,
                 checkpoint_ref: None,
                 created_at: request.received_at,
                 metadata: json!({ "agent_turn": metadata }),
@@ -217,41 +225,85 @@ impl AgentTurnProcessRuntime {
 
     pub async fn submit_child_turn(
         &self,
-        request: &SubmitChildRunRequest,
-        record: &TurnRunRecord,
+        request: SubmitChildRunRequest,
+        admission_policy: &dyn TurnAdmissionPolicy,
+        run_profile_resolver: &dyn RunProfileResolver,
     ) -> Result<SubmitTurnResponse, TurnError> {
+        let parent = self
+            .journal
+            .get_process_snapshot(GetProcessSnapshotRequest {
+                scope: request.parent_scope.to_resource_scope(),
+                process_id: process_id_from_turn_run_id(request.parent_run_id),
+            })
+            .await?;
+        let parent_metadata = agent_turn_metadata_from_process_snapshot(&parent)?;
+        let subagent_depth = parent_metadata
+            .subagent_depth
+            .checked_add(1)
+            .ok_or_else(|| TurnError::InvalidRequest {
+                reason: "subagent depth would overflow".to_string(),
+            })?;
+        let root_process_id = parent.root_process_id.unwrap_or(parent.process_id);
+        let submit_template = SubmitTurnRequest {
+            requested_model: None,
+            scope: request.child_scope.clone(),
+            actor: request.actor.clone(),
+            accepted_message_ref: request.accepted_message_ref.clone(),
+            source_binding_ref: request.source_binding_ref.clone(),
+            reply_target_binding_ref: request.reply_target_binding_ref.clone(),
+            requested_run_profile: request.requested_run_profile.clone(),
+            idempotency_key: request.idempotency_key.clone(),
+            received_at: request.received_at,
+            requested_run_id: request.requested_run_id,
+            parent_run_id: Some(request.parent_run_id),
+            subagent_depth,
+            spawn_tree_root_run_id: Some(turn_run_id_from_process_id(root_process_id)),
+            product_context: parent_metadata.product_context.clone(),
+        };
+        admission_policy
+            .check_submit(&submit_template)
+            .map_err(TurnError::AdmissionRejected)?;
+        let resolved = run_profile_resolver
+            .resolve_run_profile(RunProfileResolutionRequest {
+                requested_run_profile: request.requested_run_profile.clone(),
+                ..RunProfileResolutionRequest::interactive_default()
+            })
+            .await
+            .map_err(profile_resolution_error_to_turn_error)?;
+        let profile = TurnRunProfile::from_resolved(resolved.clone());
+        let run_id = request.requested_run_id.unwrap_or_default();
         let metadata = AgentTurnProcessStateMetadata {
-            turn_id: record.turn_id,
+            turn_id: TurnId::new(),
             actor: Some(request.actor.clone()),
-            accepted_message_ref: record.accepted_message_ref.clone(),
-            source_binding_ref: record.source_binding_ref.clone(),
-            reply_target_binding_ref: record.reply_target_binding_ref.clone(),
-            resolved_run_profile_id: record.profile.id.clone(),
-            resolved_run_profile_version: record.profile.version,
-            resolved_run_profile: Some(record.profile.resolved.clone()),
-            resolved_model_route: record.resolved_model_route.clone(),
-            model_usage: record.model_usage,
-            product_context: record.product_context.clone(),
-            resume_disposition: record.resume_disposition.clone(),
+            accepted_message_ref: request.accepted_message_ref.clone(),
+            source_binding_ref: request.source_binding_ref.clone(),
+            reply_target_binding_ref: request.reply_target_binding_ref.clone(),
+            resolved_run_profile_id: profile.id.clone(),
+            resolved_run_profile_version: profile.version,
+            resolved_run_profile: Some(resolved),
+            resolved_model_route: None,
+            model_usage: None,
+            subagent_depth,
+            product_context: parent_metadata.product_context,
+            resume_disposition: None,
         };
         let snapshot = self
             .submission
             .submit_process(SubmitProcessRequest {
-                process_id: process_id_from_turn_run_id(record.run_id),
+                process_id: process_id_from_turn_run_id(run_id),
                 process_kind: ProcessKind::AgentTurn,
-                scope: record.scope.to_resource_scope(),
+                scope: request.child_scope.to_resource_scope(),
                 exclusive_within_scope: true,
                 operation_id: Some(ProcessOperationId::from_trusted(format!(
                     "child:{}",
                     request.idempotency_key.as_str()
                 ))),
                 owner_user_id: Some(request.actor.user_id.clone()),
-                parent_process_id: record.parent_run_id.map(process_id_from_turn_run_id),
-                root_process_id: record
-                    .spawn_tree_root_run_id
-                    .map(process_id_from_turn_run_id),
-                checkpoint_ref: record.checkpoint_id.map(process_checkpoint_ref),
-                created_at: record.received_at,
+                parent_process_id: Some(parent.process_id),
+                root_process_id: Some(root_process_id),
+                spawn_tree_descendant_cap: Some(request.spawn_tree_descendant_cap),
+                checkpoint_ref: None,
+                created_at: request.received_at,
                 metadata: json!({ "agent_turn": metadata }),
             })
             .await?;
@@ -408,6 +460,7 @@ impl AgentTurnProcessRuntime {
                 owner_user_id: snapshot.owner_user_id,
                 parent_process_id: snapshot.parent_process_id,
                 root_process_id: snapshot.root_process_id,
+                spawn_tree_descendant_cap: None,
                 checkpoint_ref: snapshot.checkpoint_ref,
                 created_at: Utc::now(),
                 metadata: json!({ "agent_turn": metadata }),
@@ -460,6 +513,119 @@ impl crate::TurnStateStore for AgentTurnProcessRuntime {
     }
 }
 
+#[async_trait]
+impl crate::TurnSpawnTreeStateStore for AgentTurnProcessRuntime {
+    async fn submit_child_turn(
+        &self,
+        request: SubmitChildRunRequest,
+        admission_policy: &dyn TurnAdmissionPolicy,
+        run_profile_resolver: &dyn RunProfileResolver,
+    ) -> Result<SubmitTurnResponse, TurnError> {
+        AgentTurnProcessRuntime::submit_child_turn(
+            self,
+            request,
+            admission_policy,
+            run_profile_resolver,
+        )
+        .await
+    }
+
+    async fn children_of(
+        &self,
+        scope: &TurnScope,
+        run_id: TurnRunId,
+    ) -> Result<Vec<TurnRunRecord>, TurnError> {
+        self.trees
+            .child_processes(
+                &scope.to_resource_scope(),
+                process_id_from_turn_run_id(run_id),
+            )
+            .await?
+            .into_iter()
+            .map(turn_run_record_from_process_snapshot)
+            .collect()
+    }
+
+    async fn get_run_record(
+        &self,
+        scope: &TurnScope,
+        run_id: TurnRunId,
+    ) -> Result<Option<TurnRunRecord>, TurnError> {
+        match self
+            .journal
+            .get_process_snapshot(GetProcessSnapshotRequest {
+                scope: scope.to_resource_scope(),
+                process_id: process_id_from_turn_run_id(run_id),
+            })
+            .await
+        {
+            Ok(snapshot) => turn_run_record_from_process_snapshot(snapshot).map(Some),
+            Err(TurnError::ScopeNotFound) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn reserve_tree_descendants(
+        &self,
+        scope: &TurnScope,
+        root_run_id: TurnRunId,
+        delta: u32,
+        cap: u32,
+    ) -> Result<SpawnTreeReservation, TurnError> {
+        let reservation = self
+            .trees
+            .reserve_process_tree(ReserveProcessTreeRequest {
+                scope: scope.to_resource_scope(),
+                root_process_id: process_id_from_turn_run_id(root_run_id),
+                delta,
+                cap,
+            })
+            .await?;
+        Ok(SpawnTreeReservation {
+            scope: scope.clone(),
+            root_run_id,
+            descendant_count: reservation.descendant_count,
+            released_children: reservation
+                .released_processes
+                .into_iter()
+                .map(turn_run_id_from_process_id)
+                .collect(),
+        })
+    }
+
+    async fn release_tree_descendants(
+        &self,
+        scope: &TurnScope,
+        root_run_id: TurnRunId,
+        delta: u32,
+        idempotency_key: TurnRunId,
+    ) -> Result<(), TurnError> {
+        self.trees
+            .release_process_tree(ReleaseProcessTreeRequest {
+                scope: scope.to_resource_scope(),
+                root_process_id: process_id_from_turn_run_id(root_run_id),
+                delta,
+                idempotency_process_id: process_id_from_turn_run_id(idempotency_key),
+            })
+            .await
+    }
+
+    async fn prune_released_child(
+        &self,
+        scope: &TurnScope,
+        root_run_id: TurnRunId,
+        child_run_id: TurnRunId,
+    ) -> Result<(), TurnError> {
+        self.trees
+            .prune_released_process(PruneReleasedProcessRequest {
+                scope: scope.to_resource_scope(),
+                root_process_id: process_id_from_turn_run_id(root_run_id),
+                process_id: process_id_from_turn_run_id(child_run_id),
+            })
+            .await
+    }
+}
+
 fn profile_resolution_error_to_turn_error(error: RunProfileResolutionError) -> TurnError {
     let reason = match error {
         RunProfileResolutionError::Unauthorized { .. } => AdmissionRejectionReason::Unauthorized,
@@ -494,6 +660,8 @@ pub struct AgentTurnProcessMetadata {
     pub resolved_model_route: Option<LoopModelRouteSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_usage: Option<LoopModelUsage>,
+    #[serde(default)]
+    pub subagent_depth: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub product_context: Option<ProductTurnContext>,
     #[serde(
@@ -515,6 +683,7 @@ impl AgentTurnProcessMetadata {
             resolved_run_profile_version: record.profile.version,
             resolved_model_route: record.resolved_model_route.clone(),
             model_usage: record.model_usage,
+            subagent_depth: record.subagent_depth,
             product_context: record.product_context.clone(),
             resume_disposition: record.resume_disposition.clone(),
         }
@@ -537,6 +706,8 @@ pub struct AgentTurnProcessStateMetadata {
     pub resolved_model_route: Option<LoopModelRouteSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_usage: Option<LoopModelUsage>,
+    #[serde(default)]
+    pub subagent_depth: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub product_context: Option<ProductTurnContext>,
     #[serde(
@@ -560,6 +731,7 @@ impl AgentTurnProcessStateMetadata {
             resolved_run_profile: None,
             resolved_model_route: state.resolved_model_route.clone(),
             model_usage: state.model_usage,
+            subagent_depth: 0,
             product_context: state.product_context.clone(),
             resume_disposition: state.resume_disposition.clone(),
         }
@@ -825,6 +997,60 @@ fn agent_turn_metadata_from_process_snapshot(
     };
     serde_json::from_value(metadata.clone()).map_err(|error| TurnError::InvalidRequest {
         reason: format!("invalid agent-turn process metadata: {error}"),
+    })
+}
+
+fn turn_run_record_from_process_snapshot(
+    snapshot: JournaledProcessSnapshot,
+) -> Result<TurnRunRecord, TurnError> {
+    let metadata = agent_turn_metadata_from_process_snapshot(&snapshot)?;
+    let resolved =
+        metadata
+            .resolved_run_profile
+            .clone()
+            .ok_or_else(|| TurnError::InvalidRequest {
+                reason: "agent-turn process record missing resolved_run_profile metadata"
+                    .to_string(),
+            })?;
+    let mut profile = TurnRunProfile::from_resolved(resolved);
+    profile.id = metadata.resolved_run_profile_id.clone();
+    profile.version = metadata.resolved_run_profile_version;
+    let lease = snapshot.lease.clone();
+    let state = turn_run_state_from_process_snapshot(snapshot.clone())?;
+    Ok(TurnRunRecord {
+        run_id: state.run_id,
+        turn_id: state.turn_id,
+        scope: state.scope,
+        accepted_message_ref: state.accepted_message_ref,
+        source_binding_ref: state.source_binding_ref,
+        reply_target_binding_ref: state.reply_target_binding_ref,
+        status: state.status,
+        profile,
+        resolved_model_route: state.resolved_model_route,
+        model_usage: state.model_usage,
+        checkpoint_id: state.checkpoint_id,
+        gate_ref: state.gate_ref,
+        blocked_activity_id: state.blocked_activity_id,
+        credential_requirements: state.credential_requirements,
+        failure: state.failure,
+        event_cursor: state.event_cursor,
+        runner_id: lease
+            .as_ref()
+            .map(|lease| turn_runner_id_from_worker(&lease.worker_id))
+            .transpose()?,
+        lease_token: lease
+            .as_ref()
+            .map(|lease| turn_lease_token_from_process(&lease.lease_token))
+            .transpose()?,
+        lease_expires_at: lease.as_ref().and_then(|lease| lease.lease_expires_at),
+        last_heartbeat_at: lease.as_ref().and_then(|lease| lease.last_heartbeat_at),
+        claim_count: lease.as_ref().map(|lease| lease.claim_count).unwrap_or(0),
+        received_at: state.received_at,
+        parent_run_id: snapshot.parent_process_id.map(turn_run_id_from_process_id),
+        subagent_depth: metadata.subagent_depth,
+        spawn_tree_root_run_id: snapshot.root_process_id.map(turn_run_id_from_process_id),
+        product_context: state.product_context,
+        resume_disposition: state.resume_disposition,
     })
 }
 
