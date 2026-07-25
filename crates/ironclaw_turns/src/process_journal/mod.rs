@@ -314,6 +314,44 @@ impl AgentTurnProcessRuntime {
     }
 }
 
+#[async_trait]
+impl crate::TurnStateStore for AgentTurnProcessRuntime {
+    async fn submit_turn(
+        &self,
+        request: SubmitTurnRequest,
+        admission_policy: &dyn TurnAdmissionPolicy,
+        run_profile_resolver: &dyn RunProfileResolver,
+    ) -> Result<SubmitTurnResponse, TurnError> {
+        AgentTurnProcessRuntime::submit_turn(self, request, admission_policy, run_profile_resolver)
+            .await
+    }
+
+    async fn resume_turn(
+        &self,
+        request: ResumeTurnRequest,
+    ) -> Result<ResumeTurnResponse, TurnError> {
+        AgentTurnProcessRuntime::resume_turn(self, request).await
+    }
+
+    async fn retry_turn(&self, request: RetryTurnRequest) -> Result<RetryTurnResponse, TurnError> {
+        AgentTurnProcessRuntime::retry_turn(self, request).await
+    }
+
+    async fn request_cancel(
+        &self,
+        request: CancelRunRequest,
+    ) -> Result<CancelRunResponse, TurnError> {
+        AgentTurnProcessRuntime::cancel_run(self, request).await
+    }
+
+    async fn get_run_state(
+        &self,
+        request: crate::GetRunStateRequest,
+    ) -> Result<TurnRunState, TurnError> {
+        AgentTurnProcessRuntime::get_run_state(self, &request.scope, request.run_id).await
+    }
+}
+
 fn profile_resolution_error_to_turn_error(error: RunProfileResolutionError) -> TurnError {
     let reason = match error {
         RunProfileResolutionError::Unauthorized { .. } => AdmissionRejectionReason::Unauthorized,

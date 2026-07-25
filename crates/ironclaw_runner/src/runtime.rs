@@ -683,7 +683,8 @@ where
             ProductLiveRuntimeReadinessComponent::CancellationFactory,
         ));
     }
-    let turn_state_store: Arc<dyn TurnStateStore> = parts.turn_state.clone();
+    let turn_state_store: Arc<dyn TurnStateStore> =
+        Arc::new(parts.process_system.agent_turn_runtime());
     let await_dependent_run_evidence: Arc<dyn AwaitDependentRunEvidenceStore> =
         parts.subagent_await_edge_evidence.clone();
     parts.loop_exit_evidence = Arc::new(
@@ -811,7 +812,7 @@ where
         .bind_coordinator(Arc::clone(&coordinator))
         .map_err(|error| DefaultPlannedRuntimeBuildError::SubagentCompletion(error.to_string()))?;
 
-    let turn_state_store: Arc<dyn TurnStateStore> = turn_state.clone();
+    let turn_state_store: Arc<dyn TurnStateStore> = Arc::new(process_system.agent_turn_runtime());
     let subagent_prompt_source: Arc<dyn SubagentPromptMaterialSource> =
         Arc::new(GateBackedSubagentPromptMaterialSource::new(
             Arc::clone(&parts.subagent_goal_store),
