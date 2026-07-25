@@ -17,8 +17,9 @@ use ironclaw_processes::{
     JournaledProcessSnapshot, ProcessCheckpointRef, ProcessControlPort, ProcessJournalCursor,
     ProcessJournalEntry, ProcessJournalKind, ProcessJournalPage, ProcessJournalSource, ProcessKind,
     ProcessLeaseRequest, ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleStatus,
-    ProcessOperationId, ProcessOutcome, ProcessSuspension, ProcessSuspensionKind, ProcessWorkerId,
-    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, ResumeProcessRequest,
+    ProcessOperationId, ProcessOutcome, ProcessSubmissionPort, ProcessSuspension,
+    ProcessSuspensionKind, ProcessWorkerId, RecoverExpiredProcessLeasesRequest,
+    RecoverExpiredProcessLeasesResponse, ResumeProcessRequest, SubmitProcessRequest,
     SuspendProcessRequest,
 };
 #[cfg(feature = "test-support")]
@@ -29,16 +30,18 @@ use ironclaw_processes::{
 #[cfg(feature = "test-support")]
 use crate::runner::{ClaimRunsRequest, TurnRunTransitionPort};
 use crate::{
-    AcceptedMessageRef, BlockedReason, GateKind, GateResumeDisposition, ProductTurnContext,
-    ReplyTargetBindingRef, ResolvedRunProfile, RunProfileId, RunProfileVersion, SourceBindingRef,
-    TurnActor, TurnCheckpointId, TurnError, TurnEventKind, TurnLifecycleEvent, TurnRunId,
-    TurnRunRecord, TurnRunState, TurnRunnerId, TurnScope, TurnStatus,
+    AcceptedMessageRef, AdmissionRejection, AdmissionRejectionReason, BlockedReason, GateKind,
+    GateResumeDisposition, ProductTurnContext, ReplyTargetBindingRef, ResolvedRunProfile,
+    RunProfileId, RunProfileResolutionError, RunProfileResolutionRequest, RunProfileResolver,
+    RunProfileVersion, SourceBindingRef, TurnActor, TurnAdmissionPolicy, TurnCheckpointId,
+    TurnError, TurnEventKind, TurnId, TurnLifecycleEvent, TurnRunId, TurnRunProfile, TurnRunRecord,
+    TurnRunState, TurnRunnerId, TurnScope, TurnStatus,
     events::{
         EventCursor, TurnBlockedGateKind, TurnBlockedGateMetadata, TurnEventPage,
         TurnEventProjectionSource,
     },
-    request::{CancelRunRequest, ResumeTurnRequest},
-    response::{CancelRunResponse, ResumeTurnResponse},
+    request::{CancelRunRequest, ResumeTurnRequest, SubmitTurnRequest},
+    response::{CancelRunResponse, ResumeTurnResponse, SubmitTurnResponse},
     run_profile::{LoopModelRouteSnapshot, LoopModelUsage},
     runner::{
         BlockRunRequest, CancelRunCompletionRequest, ClaimedTurnRun, CompleteRunRequest,
@@ -56,16 +59,22 @@ pub use store_adapter::{
 
 #[derive(Clone)]
 pub struct AgentTurnProcessRuntime {
+    submission: Arc<dyn ProcessSubmissionPort<Error = TurnError>>,
     journal: Arc<dyn ProcessJournalSource<Error = TurnError>>,
     controls: Arc<dyn ProcessControlPort<Error = TurnError>>,
 }
 
 impl AgentTurnProcessRuntime {
     pub fn new(
+        submission: Arc<dyn ProcessSubmissionPort<Error = TurnError>>,
         journal: Arc<dyn ProcessJournalSource<Error = TurnError>>,
         controls: Arc<dyn ProcessControlPort<Error = TurnError>>,
     ) -> Self {
-        Self { journal, controls }
+        Self {
+            submission,
+            journal,
+            controls,
+        }
     }
 
     pub async fn get_run_state(
@@ -81,6 +90,72 @@ impl AgentTurnProcessRuntime {
             })
             .await?;
         turn_run_state_from_process_snapshot(snapshot)
+    }
+
+    pub async fn submit_turn(
+        &self,
+        request: SubmitTurnRequest,
+        admission_policy: &dyn TurnAdmissionPolicy,
+        run_profile_resolver: &dyn RunProfileResolver,
+    ) -> Result<SubmitTurnResponse, TurnError> {
+        admission_policy
+            .check_submit(&request)
+            .map_err(TurnError::AdmissionRejected)?;
+        let resolved = run_profile_resolver
+            .resolve_run_profile(RunProfileResolutionRequest {
+                requested_run_profile: request.requested_run_profile.clone(),
+                ..RunProfileResolutionRequest::interactive_default()
+            })
+            .await
+            .map_err(profile_resolution_error_to_turn_error)?;
+        let profile = TurnRunProfile::from_resolved(resolved.clone());
+        let run_id = request.requested_run_id.unwrap_or_default();
+        let turn_id = TurnId::new();
+        let metadata = AgentTurnProcessStateMetadata {
+            turn_id,
+            actor: Some(request.actor.clone()),
+            accepted_message_ref: request.accepted_message_ref.clone(),
+            source_binding_ref: request.source_binding_ref.clone(),
+            reply_target_binding_ref: request.reply_target_binding_ref.clone(),
+            resolved_run_profile_id: profile.id.clone(),
+            resolved_run_profile_version: profile.version,
+            resolved_run_profile: Some(resolved),
+            resolved_model_route: request
+                .requested_model
+                .as_deref()
+                .and_then(LoopModelRouteSnapshot::advisory),
+            model_usage: None,
+            product_context: request.product_context,
+            resume_disposition: None,
+        };
+        let snapshot = self
+            .submission
+            .submit_process(SubmitProcessRequest {
+                process_id: process_id_from_turn_run_id(run_id),
+                process_kind: ProcessKind::AgentTurn,
+                scope: request.scope.to_resource_scope(),
+                exclusive_within_scope: true,
+                operation_id: Some(ProcessOperationId::from_trusted(
+                    request.idempotency_key.as_str(),
+                )),
+                owner_user_id: Some(request.actor.user_id),
+                parent_process_id: None,
+                root_process_id: None,
+                created_at: request.received_at,
+                metadata: json!({ "agent_turn": metadata }),
+            })
+            .await?;
+        let state = turn_run_state_from_process_snapshot(snapshot)?;
+        Ok(SubmitTurnResponse::Accepted {
+            turn_id: state.turn_id,
+            run_id: state.run_id,
+            status: state.status,
+            resolved_run_profile_id: state.resolved_run_profile_id,
+            resolved_run_profile_version: state.resolved_run_profile_version,
+            event_cursor: state.event_cursor,
+            accepted_message_ref: state.accepted_message_ref,
+            reply_target_binding_ref: state.reply_target_binding_ref,
+        })
     }
 
     pub async fn resume_turn(
@@ -179,6 +254,17 @@ impl AgentTurnProcessRuntime {
             actor: state.actor,
         })
     }
+}
+
+fn profile_resolution_error_to_turn_error(error: RunProfileResolutionError) -> TurnError {
+    let reason = match error {
+        RunProfileResolutionError::Unauthorized { .. } => AdmissionRejectionReason::Unauthorized,
+        RunProfileResolutionError::ProfileUnavailable { .. }
+        | RunProfileResolutionError::InvalidRequest { .. } => {
+            AdmissionRejectionReason::ProfileRejected
+        }
+    };
+    TurnError::AdmissionRejected(AdmissionRejection::new(reason))
 }
 
 fn resumed_agent_turn_metadata(

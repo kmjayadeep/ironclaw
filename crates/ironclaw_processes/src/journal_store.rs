@@ -105,8 +105,28 @@ where
         &self,
         request: SubmitProcessRequest,
     ) -> Result<JournaledProcessSnapshot, ProcessJournalStoreError> {
+        let replay_key = request
+            .operation_id
+            .as_ref()
+            .map(|operation_id| {
+                serde_json::to_string(&request.scope).map(|scope| {
+                    format!(
+                        "submit:{scope}:{:?}:{}",
+                        request.process_kind,
+                        operation_id.as_str()
+                    )
+                })
+            })
+            .transpose()
+            .map_err(|error| ProcessJournalStoreError::Serialization(error.to_string()))?;
         let _guard = self.mutation_lock.lock().await;
         self.mutate(|state| {
+            if let Some(snapshot) = replay_key
+                .as_ref()
+                .and_then(|key| state.submission_idempotency.get(key))
+            {
+                return Ok(snapshot.clone());
+            }
             if state.processes.contains_key(&request.process_id) {
                 return Err(ProcessJournalStoreError::ProcessAlreadyExists {
                     process_id: request.process_id,
@@ -152,6 +172,7 @@ where
             state
                 .processes
                 .insert(snapshot.process_id, snapshot.clone());
+            state.remember_submission_result(replay_key.clone(), snapshot.clone());
             Ok(snapshot)
         })
         .await
@@ -870,6 +891,10 @@ struct ProcessJournalMaterializedState {
     control_idempotency: HashMap<String, ProcessControlResult>,
     #[serde(default)]
     control_idempotency_order: VecDeque<String>,
+    #[serde(default)]
+    submission_idempotency: HashMap<String, JournaledProcessSnapshot>,
+    #[serde(default)]
+    submission_idempotency_order: VecDeque<String>,
 }
 
 impl Default for ProcessJournalMaterializedState {
@@ -880,6 +905,8 @@ impl Default for ProcessJournalMaterializedState {
             journal: Vec::new(),
             control_idempotency: HashMap::new(),
             control_idempotency_order: VecDeque::new(),
+            submission_idempotency: HashMap::new(),
+            submission_idempotency_order: VecDeque::new(),
         }
     }
 }
@@ -912,6 +939,29 @@ impl ProcessJournalMaterializedState {
         }
         self.control_idempotency_order.push_back(key.clone());
         self.control_idempotency.insert(key, result);
+    }
+
+    fn remember_submission_result(
+        &mut self,
+        key: Option<String>,
+        snapshot: JournaledProcessSnapshot,
+    ) {
+        let Some(key) = key else {
+            return;
+        };
+        if let Some(existing) = self.submission_idempotency.get_mut(&key) {
+            *existing = snapshot;
+            return;
+        }
+        while self.submission_idempotency.len() >= MAX_CONTROL_IDEMPOTENCY_RECORDS {
+            let Some(oldest) = self.submission_idempotency_order.pop_front() else {
+                self.submission_idempotency.clear();
+                break;
+            };
+            self.submission_idempotency.remove(&oldest);
+        }
+        self.submission_idempotency_order.push_back(key.clone());
+        self.submission_idempotency.insert(key, snapshot);
     }
 
     fn process_mut(

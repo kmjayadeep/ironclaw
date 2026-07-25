@@ -337,6 +337,8 @@ pub struct SubmitProcessRequest {
     #[serde(default)]
     pub exclusive_within_scope: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<ProcessOperationId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_user_id: Option<UserId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_process_id: Option<ProcessId>,

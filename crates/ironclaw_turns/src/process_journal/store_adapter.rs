@@ -8,15 +8,16 @@ use ironclaw_processes::{
     ProcessControlResult, ProcessGateQuery, ProcessGateQuerySource, ProcessGateRecord,
     ProcessJournalCursor, ProcessJournalPage, ProcessJournalSource, ProcessJournalStoreError,
     ProcessLeaseRequest, ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult,
-    ProcessLifecycleLookupSource, ProcessStateTransitionRequest, ProcessTransitionPort,
-    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, ResumeProcessRequest,
-    StopProcessRequest, SuspendProcessRequest,
+    ProcessLifecycleLookupSource, ProcessStateTransitionRequest, ProcessSubmissionPort,
+    ProcessTransitionPort, RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse,
+    ResumeProcessRequest, StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
 };
 
 use crate::TurnError;
 
 #[derive(Clone)]
 pub struct ProcessJournalStoreTurnAdapter {
+    submission: Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
     transitions: Arc<dyn ProcessTransitionPort<Error = ProcessJournalStoreError>>,
     controls: Arc<dyn ProcessControlPort<Error = ProcessJournalStoreError>>,
     journal: Arc<dyn ProcessJournalSource<Error = ProcessJournalStoreError>>,
@@ -25,6 +26,7 @@ pub struct ProcessJournalStoreTurnAdapter {
 }
 impl ProcessJournalStoreTurnAdapter {
     pub fn new(
+        submission: Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
         transitions: Arc<dyn ProcessTransitionPort<Error = ProcessJournalStoreError>>,
         controls: Arc<dyn ProcessControlPort<Error = ProcessJournalStoreError>>,
         journal: Arc<dyn ProcessJournalSource<Error = ProcessJournalStoreError>>,
@@ -32,12 +34,28 @@ impl ProcessJournalStoreTurnAdapter {
         gates: Arc<dyn ProcessGateQuerySource<Error = ProcessJournalStoreError>>,
     ) -> Self {
         Self {
+            submission,
             transitions,
             controls,
             journal,
             lifecycle,
             gates,
         }
+    }
+}
+
+#[async_trait]
+impl ProcessSubmissionPort for ProcessJournalStoreTurnAdapter {
+    type Error = TurnError;
+
+    async fn submit_process(
+        &self,
+        request: SubmitProcessRequest,
+    ) -> Result<JournaledProcessSnapshot, Self::Error> {
+        self.submission
+            .submit_process(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
     }
 }
 

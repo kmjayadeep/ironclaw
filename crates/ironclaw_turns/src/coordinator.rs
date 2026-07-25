@@ -348,15 +348,27 @@ where
             return Err(TurnError::Unauthorized);
         }
         let scope = request.scope.clone();
-        let response = match self
-            .store
-            .submit_turn(
-                request,
-                self.admission_policy.as_ref(),
-                self.run_profile_resolver.as_ref(),
-            )
-            .await
-        {
+        let response = match &self.process_runtime {
+            Some(runtime) => {
+                runtime
+                    .submit_turn(
+                        request,
+                        self.admission_policy.as_ref(),
+                        self.run_profile_resolver.as_ref(),
+                    )
+                    .await
+            }
+            None => {
+                self.store
+                    .submit_turn(
+                        request,
+                        self.admission_policy.as_ref(),
+                        self.run_profile_resolver.as_ref(),
+                    )
+                    .await
+            }
+        };
+        let response = match response {
             Ok(response) => {
                 let SubmitTurnResponse::Accepted { run_id, .. } = &response;
                 trace_coordinator_latency_ok(

@@ -277,6 +277,7 @@ impl SchedulerWakeWiring {
 #[derive(Clone)]
 pub struct ProcessRuntimeSystem {
     submission: Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
+    turn_submission: Arc<dyn ProcessSubmissionPort<Error = ironclaw_turns::TurnError>>,
     transitions: Arc<dyn ProcessTransitionPort<Error = ironclaw_turns::TurnError>>,
     controls: Arc<dyn ironclaw_processes::ProcessControlPort<Error = ironclaw_turns::TurnError>>,
     journal: Arc<dyn ProcessJournalSource<Error = ironclaw_turns::TurnError>>,
@@ -294,6 +295,7 @@ impl ProcessRuntimeSystem {
         F: ironclaw_filesystem::RootFilesystem + Send + Sync + 'static,
     {
         let adapter = Arc::new(ProcessJournalStoreTurnAdapter::new(
+            Arc::clone(&store) as Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
             Arc::clone(&store) as Arc<dyn ProcessTransitionPort<Error = ProcessJournalStoreError>>,
             Arc::clone(&store)
                 as Arc<
@@ -313,6 +315,8 @@ impl ProcessRuntimeSystem {
         ));
         Self {
             submission: store as Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
+            turn_submission: Arc::clone(&adapter)
+                as Arc<dyn ProcessSubmissionPort<Error = ironclaw_turns::TurnError>>,
             transitions: Arc::clone(&adapter)
                 as Arc<dyn ProcessTransitionPort<Error = ironclaw_turns::TurnError>>,
             controls: Arc::clone(&adapter)
@@ -340,7 +344,7 @@ impl ProcessRuntimeSystem {
         let mounts = ironclaw_host_api::MountView::new(vec![ironclaw_host_api::MountGrant::new(
             ironclaw_host_api::MountAlias::new("/processes")
                 .map_err(|error| format!("process mount alias: {error}"))?,
-            ironclaw_host_api::VirtualPath::new("/runtime/processes")
+            ironclaw_host_api::VirtualPath::new("/engine/processes")
                 .map_err(|error| format!("process mount path: {error}"))?,
             ironclaw_host_api::MountPermissions::read_write_list_delete(),
         )])
@@ -387,7 +391,11 @@ impl ProcessRuntimeSystem {
     }
 
     pub fn agent_turn_runtime(&self) -> ironclaw_turns::AgentTurnProcessRuntime {
-        ironclaw_turns::AgentTurnProcessRuntime::new(self.journal(), self.controls())
+        ironclaw_turns::AgentTurnProcessRuntime::new(
+            Arc::clone(&self.turn_submission),
+            self.journal(),
+            self.controls(),
+        )
     }
 }
 

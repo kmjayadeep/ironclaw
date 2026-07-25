@@ -58,7 +58,7 @@ use ironclaw_loop_host::{
 };
 use ironclaw_memory::{MemoryInvocation, MemoryService, MemoryServiceReadRequest};
 use ironclaw_memory_native::NativeMemoryService;
-use ironclaw_processes::ProcessServices;
+use ironclaw_processes::{ClaimProcessesRequest, ProcessServices, ProcessWorkerId};
 use ironclaw_resources::InMemoryResourceGovernor;
 use ironclaw_runner::after_turn_memory::AfterTurnMemoryRecorder;
 use ironclaw_runner::app_loop_family::build_loop_family_registry_with_overrides;
@@ -2095,7 +2095,8 @@ async fn build_default_planned_runtime_wires_after_turn_memory_writer() {
 
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
-            let state = turn_store
+            let state = composition
+                .coordinator
                 .get_run_state(GetRunStateRequest {
                     scope: fixture.context.scope.clone(),
                     run_id,
@@ -4000,11 +4001,12 @@ async fn default_planned_runtime_composes_no_profile_coordinator_and_profiled_ho
         await_edge_store.clone() as Arc<dyn AwaitDependentRunEvidenceStore>,
     ));
     let event_sink = Arc::new(InMemoryTurnEventSink::default());
+    let process_system = ProcessRuntimeSystem::in_memory_ephemeral().expect("process system");
     let composition = build_default_planned_runtime(DefaultPlannedRuntimeParts {
         attachment_read_port: None,
         gate_record_store: None,
         turn_state: turn_store.clone(),
-        process_system: ProcessRuntimeSystem::in_memory_ephemeral().expect("process system"),
+        process_system: process_system.clone(),
         thread_service: fixture.thread_service.clone() as Arc<dyn SessionThreadService>,
         thread_scope: fixture.thread_scope.clone(),
         model_gateway: fixture.gateway.clone(),
@@ -4076,20 +4078,30 @@ async fn default_planned_runtime_composes_no_profile_coordinator_and_profiled_ho
         .await
         .unwrap();
     assert_eq!(status, TurnStatus::Queued);
-    let events = event_sink.events();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].run_id, run_id);
-    assert_eq!(events[0].status, TurnStatus::Queued);
+    let page = process_system
+        .journal()
+        .read_process_journal_after(&fixture.context.scope.to_resource_scope(), None, None, 10)
+        .await
+        .unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].process_id.as_uuid(), run_id.as_uuid());
 
-    let claimed = turn_store
-        .claim_next_run(ClaimRunRequest {
-            runner_id: TurnRunnerId::new(),
-            lease_token: TurnLeaseToken::new(),
-            scope_filter: Some(fixture.context.scope.clone()),
+    let mut claimed = process_system
+        .transitions()
+        .claim_next_processes(ClaimProcessesRequest {
+            worker_id: ProcessWorkerId::from_trusted(TurnRunnerId::new().as_uuid().to_string()),
+            scope_filter: Some(fixture.context.scope.to_resource_scope()),
+            max_processes: 1,
         })
         .await
         .unwrap()
-        .expect("submitted planned run should be claimable");
+        .into_iter();
+    let claimed = ironclaw_turns::claimed_turn_run_from_process_claim(
+        claimed
+            .next()
+            .expect("submitted planned run should be claimable"),
+    )
+    .unwrap();
     assert_eq!(claimed.state.run_id, run_id);
     assert_eq!(
         claimed.resolved_run_profile.profile_id.as_str(),
@@ -4258,7 +4270,8 @@ async fn pre_minted_scheduler_wake_wiring_drives_scheduler_on_coordinator_submit
     // can only succeed if the pre-minted notifier actually woke the scheduler.
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            let state = turn_store
+            let state = composition
+                .coordinator
                 .get_run_state(GetRunStateRequest {
                     scope: fixture.context.scope.clone(),
                     run_id,

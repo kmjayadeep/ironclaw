@@ -4641,6 +4641,8 @@ async fn build_backend_production(
     )));
     let process_journal_adapter = Arc::new(ProcessJournalStoreTurnAdapter::new(
         Arc::clone(&process_journal_store)
+            as Arc<dyn ironclaw_processes::ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
+        Arc::clone(&process_journal_store)
             as Arc<dyn ironclaw_processes::ProcessTransitionPort<Error = ProcessJournalStoreError>>,
         Arc::clone(&process_journal_store)
             as Arc<dyn ironclaw_processes::ProcessControlPort<Error = ProcessJournalStoreError>>,
