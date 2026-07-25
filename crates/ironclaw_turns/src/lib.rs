@@ -92,7 +92,8 @@ pub use process_journal::{
     KernelProcessStateSnapshot, KernelProcessStatus, KernelProcessSuspension,
     KernelProcessSuspensionKind, KernelProcessWorkerId, KernelRecordModelRouteRequest,
     KernelRecoverExpiredLeasesRequest, KernelRecoverExpiredLeasesResponse,
-    KernelSuspendProcessRequest, TurnEventProjectionFromProcessJournal,
+    KernelSuspendProcessRequest, ProcessBackedTurnRunTransitionPort,
+    ProcessJournalStoreTurnAdapter, TurnEventProjectionFromProcessJournal,
     claimed_turn_run_from_process_claim, turn_run_state_from_process_snapshot,
 };
 pub use request::{

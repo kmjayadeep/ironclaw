@@ -848,6 +848,7 @@ impl RebornBinaryE2EHarness {
         let turn_state_for_runtime: Arc<dyn RuntimeTurnStateStore> = turn_store.clone();
         let composition = build_default_planned_runtime(DefaultPlannedRuntimeParts {
             turn_state: turn_state_for_runtime,
+            process_system: None,
             thread_service: thread_harness.service.clone()
                 as Arc<dyn ironclaw_threads::SessionThreadService>,
             thread_scope: thread_scope.clone(),

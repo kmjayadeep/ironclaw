@@ -14,12 +14,14 @@ use uuid::Uuid;
 use ironclaw_host_api::{ProcessId, ResourceScope, SYSTEM_RESERVED_ID};
 use ironclaw_processes::{
     ClaimProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
-    GetProcessSnapshotRequest, JournaledProcessSnapshot, ProcessCheckpointRef,
-    ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind, ProcessJournalPage,
-    ProcessJournalSource, ProcessKind, ProcessLeaseRequest, ProcessLeaseSnapshot,
-    ProcessLeaseToken, ProcessLifecycleStatus, ProcessOutcome, ProcessSuspension,
-    ProcessSuspensionKind, ProcessTransitionPort, ProcessWorkerId,
-    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, SuspendProcessRequest,
+    GetProcessSnapshotRequest, JournaledProcessSnapshot, ProcessCheckpointRef, ProcessGateQuery,
+    ProcessGateQuerySource, ProcessGateRecord, ProcessJournalCursor, ProcessJournalEntry,
+    ProcessJournalKind, ProcessJournalPage, ProcessJournalSource, ProcessJournalStoreError,
+    ProcessKind, ProcessLeaseRequest, ProcessLeaseSnapshot, ProcessLeaseToken,
+    ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,
+    ProcessLifecycleStatus, ProcessOutcome, ProcessSuspension, ProcessSuspensionKind,
+    ProcessTransitionPort, ProcessWorkerId, RecoverExpiredProcessLeasesRequest,
+    RecoverExpiredProcessLeasesResponse, SuspendProcessRequest,
 };
 
 use crate::{
@@ -67,6 +69,448 @@ pub type KernelClaimProcessesRequest = ClaimProcessesRequest;
 pub type KernelProcessJournalPage = ProcessJournalPage;
 
 pub const AGENT_TURN_PROCESS_KIND: &str = "agent_turn";
+
+#[derive(Clone)]
+pub struct ProcessJournalStoreTurnAdapter {
+    transitions: Arc<dyn ProcessTransitionPort<Error = ProcessJournalStoreError>>,
+    journal: Arc<dyn ProcessJournalSource<Error = ProcessJournalStoreError>>,
+    lifecycle: Arc<dyn ProcessLifecycleLookupSource<Error = ProcessJournalStoreError>>,
+    gates: Arc<dyn ProcessGateQuerySource<Error = ProcessJournalStoreError>>,
+}
+
+#[derive(Clone)]
+pub struct ProcessBackedTurnRunTransitionPort {
+    transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
+    journal: Arc<dyn ProcessJournalSource<Error = TurnError>>,
+}
+
+impl ProcessBackedTurnRunTransitionPort {
+    pub fn new(
+        transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
+        journal: Arc<dyn ProcessJournalSource<Error = TurnError>>,
+    ) -> Self {
+        Self {
+            transitions,
+            journal,
+        }
+    }
+
+    async fn process_state(&self, process_id: ProcessId) -> Result<TurnRunState, TurnError> {
+        let snapshot = self
+            .journal
+            .get_process_snapshot(GetProcessSnapshotRequest {
+                scope: ResourceScope::system(),
+                process_id,
+            })
+            .await?;
+        turn_run_state_from_process_snapshot(snapshot)
+    }
+}
+
+#[async_trait]
+impl TurnRunTransitionPort for ProcessBackedTurnRunTransitionPort {
+    async fn claim_next_run(
+        &self,
+        request: ClaimRunRequest,
+    ) -> Result<Option<ClaimedTurnRun>, TurnError> {
+        let claimed = self
+            .transitions
+            .claim_next_process(ClaimProcessRequest {
+                worker_id: ProcessWorkerId::from_trusted(request.runner_id.to_wire_string()),
+                lease_token: ProcessLeaseToken::from_trusted(request.lease_token.to_wire_string()),
+                scope_filter: request.scope_filter.map(|scope| scope.to_resource_scope()),
+            })
+            .await?;
+        claimed.map(claimed_turn_run_from_process_claim).transpose()
+    }
+
+    async fn claim_next_runs(
+        &self,
+        request: ClaimRunsRequest,
+    ) -> Result<Vec<ClaimedTurnRun>, TurnError> {
+        let claimed = self
+            .transitions
+            .claim_next_processes(ClaimProcessesRequest {
+                worker_id: ProcessWorkerId::from_trusted(request.runner_id.to_wire_string()),
+                scope_filter: request.scope_filter.map(|scope| scope.to_resource_scope()),
+                max_processes: request.max_runs,
+            })
+            .await?;
+        claimed
+            .into_iter()
+            .map(claimed_turn_run_from_process_claim)
+            .collect()
+    }
+
+    async fn heartbeat(&self, request: HeartbeatRequest) -> Result<EventCursor, TurnError> {
+        let cursor = self
+            .transitions
+            .heartbeat_process(process_lease_request_from_turn(
+                request.run_id,
+                request.runner_id,
+                request.lease_token,
+            ))
+            .await?;
+        Ok(EventCursor(cursor.0))
+    }
+
+    async fn recover_expired_leases(
+        &self,
+        request: RecoverExpiredLeasesRequest,
+    ) -> Result<RecoverExpiredLeasesResponse, TurnError> {
+        let response = self
+            .transitions
+            .recover_expired_process_leases(process_recover_request_from_turn(request))
+            .await?;
+        Ok(RecoverExpiredLeasesResponse {
+            recovered: response
+                .recovered
+                .into_iter()
+                .map(turn_run_state_from_process_snapshot)
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+
+    async fn record_model_route_snapshot(
+        &self,
+        request: RecordModelRouteSnapshotRequest,
+    ) -> Result<TurnRunState, TurnError> {
+        self.process_state(process_id_from_turn_run_id(request.run_id))
+            .await
+    }
+
+    async fn block_run(&self, request: BlockRunRequest) -> Result<TurnRunState, TurnError> {
+        let snapshot = self
+            .transitions
+            .suspend_process(SuspendProcessRequest {
+                process_id: process_id_from_turn_run_id(request.run_id),
+                worker_id: ProcessWorkerId::from_trusted(request.runner_id.to_wire_string()),
+                lease_token: ProcessLeaseToken::from_trusted(request.lease_token.to_wire_string()),
+                checkpoint_ref: process_checkpoint_ref(request.checkpoint_id),
+                suspension: process_suspension_from_blocked_reason(request.reason),
+            })
+            .await?;
+        turn_run_state_from_process_snapshot(snapshot)
+    }
+
+    async fn complete_run(&self, request: CompleteRunRequest) -> Result<TurnRunState, TurnError> {
+        let snapshot = self
+            .transitions
+            .complete_process(process_lease_request_from_turn(
+                request.run_id,
+                request.runner_id,
+                request.lease_token,
+            ))
+            .await?;
+        turn_run_state_from_process_snapshot(snapshot)
+    }
+
+    async fn cancel_run(
+        &self,
+        request: CancelRunCompletionRequest,
+    ) -> Result<TurnRunState, TurnError> {
+        let snapshot = self
+            .transitions
+            .cancel_process(process_lease_request_from_turn(
+                request.run_id,
+                request.runner_id,
+                request.lease_token,
+            ))
+            .await?;
+        turn_run_state_from_process_snapshot(snapshot)
+    }
+
+    async fn fail_run(&self, request: FailRunRequest) -> Result<TurnRunState, TurnError> {
+        let snapshot = self
+            .transitions
+            .fail_process(FailProcessRequest {
+                process_id: process_id_from_turn_run_id(request.run_id),
+                worker_id: ProcessWorkerId::from_trusted(request.runner_id.to_wire_string()),
+                lease_token: ProcessLeaseToken::from_trusted(request.lease_token.to_wire_string()),
+                failure: request.failure,
+            })
+            .await?;
+        turn_run_state_from_process_snapshot(snapshot)
+    }
+
+    async fn record_runner_failure(
+        &self,
+        request: RecordRunnerFailureRequest,
+    ) -> Result<TurnRunState, TurnError> {
+        self.fail_run(FailRunRequest {
+            run_id: request.run_id,
+            runner_id: request.runner_id,
+            lease_token: request.lease_token,
+            failure: request.failure,
+        })
+        .await
+    }
+
+    async fn relinquish_run(
+        &self,
+        request: RelinquishRunRequest,
+    ) -> Result<TurnRunState, TurnError> {
+        let snapshot = self
+            .transitions
+            .relinquish_process(process_lease_request_from_turn(
+                request.run_id,
+                request.runner_id,
+                request.lease_token,
+            ))
+            .await?;
+        turn_run_state_from_process_snapshot(snapshot)
+    }
+
+    async fn apply_validated_loop_exit(
+        &self,
+        request: ApplyValidatedLoopExitRequest,
+    ) -> Result<TurnRunState, TurnError> {
+        match request.mapping {
+            LoopExitMapping::RunnerOutcome(TurnRunnerOutcome::Completed) => {
+                self.complete_run(CompleteRunRequest {
+                    run_id: request.run_id,
+                    runner_id: request.runner_id,
+                    lease_token: request.lease_token,
+                })
+                .await
+            }
+            LoopExitMapping::RunnerOutcome(TurnRunnerOutcome::Cancelled) => {
+                self.cancel_run(CancelRunCompletionRequest {
+                    run_id: request.run_id,
+                    runner_id: request.runner_id,
+                    lease_token: request.lease_token,
+                })
+                .await
+            }
+            LoopExitMapping::RunnerOutcome(TurnRunnerOutcome::Blocked {
+                checkpoint_id,
+                reason,
+                ..
+            }) => {
+                self.block_run(BlockRunRequest {
+                    run_id: request.run_id,
+                    runner_id: request.runner_id,
+                    lease_token: request.lease_token,
+                    checkpoint_id,
+                    state_ref: crate::run_profile::LoopCheckpointStateRef::legacy_unknown(),
+                    reason,
+                })
+                .await
+            }
+            LoopExitMapping::RunnerOutcome(TurnRunnerOutcome::Failed { failure })
+            | LoopExitMapping::RecoveryRequired { failure } => {
+                self.fail_run(FailRunRequest {
+                    run_id: request.run_id,
+                    runner_id: request.runner_id,
+                    lease_token: request.lease_token,
+                    failure,
+                })
+                .await
+            }
+        }
+    }
+}
+
+impl ProcessJournalStoreTurnAdapter {
+    pub fn new(
+        transitions: Arc<dyn ProcessTransitionPort<Error = ProcessJournalStoreError>>,
+        journal: Arc<dyn ProcessJournalSource<Error = ProcessJournalStoreError>>,
+        lifecycle: Arc<dyn ProcessLifecycleLookupSource<Error = ProcessJournalStoreError>>,
+        gates: Arc<dyn ProcessGateQuerySource<Error = ProcessJournalStoreError>>,
+    ) -> Self {
+        Self {
+            transitions,
+            journal,
+            lifecycle,
+            gates,
+        }
+    }
+}
+
+#[async_trait]
+impl ProcessTransitionPort for ProcessJournalStoreTurnAdapter {
+    type Error = TurnError;
+
+    async fn claim_next_process(
+        &self,
+        request: ClaimProcessRequest,
+    ) -> Result<Option<ClaimedProcess>, Self::Error> {
+        self.transitions
+            .claim_next_process(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+
+    async fn claim_next_processes(
+        &self,
+        request: ClaimProcessesRequest,
+    ) -> Result<Vec<ClaimedProcess>, Self::Error> {
+        self.transitions
+            .claim_next_processes(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+
+    async fn heartbeat_process(
+        &self,
+        request: ProcessLeaseRequest,
+    ) -> Result<ProcessJournalCursor, Self::Error> {
+        self.transitions
+            .heartbeat_process(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+
+    async fn recover_expired_process_leases(
+        &self,
+        request: RecoverExpiredProcessLeasesRequest,
+    ) -> Result<RecoverExpiredProcessLeasesResponse, Self::Error> {
+        self.transitions
+            .recover_expired_process_leases(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+
+    async fn suspend_process(
+        &self,
+        request: SuspendProcessRequest,
+    ) -> Result<JournaledProcessSnapshot, Self::Error> {
+        self.transitions
+            .suspend_process(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+
+    async fn complete_process(
+        &self,
+        request: ProcessLeaseRequest,
+    ) -> Result<JournaledProcessSnapshot, Self::Error> {
+        self.transitions
+            .complete_process(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+
+    async fn cancel_process(
+        &self,
+        request: ProcessLeaseRequest,
+    ) -> Result<JournaledProcessSnapshot, Self::Error> {
+        self.transitions
+            .cancel_process(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+
+    async fn fail_process(
+        &self,
+        request: FailProcessRequest,
+    ) -> Result<JournaledProcessSnapshot, Self::Error> {
+        self.transitions
+            .fail_process(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+
+    async fn relinquish_process(
+        &self,
+        request: ProcessLeaseRequest,
+    ) -> Result<JournaledProcessSnapshot, Self::Error> {
+        self.transitions
+            .relinquish_process(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+}
+
+#[async_trait]
+impl ProcessJournalSource for ProcessJournalStoreTurnAdapter {
+    type Error = TurnError;
+
+    async fn get_process_snapshot(
+        &self,
+        request: GetProcessSnapshotRequest,
+    ) -> Result<JournaledProcessSnapshot, Self::Error> {
+        self.journal
+            .get_process_snapshot(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+
+    async fn read_process_journal_after(
+        &self,
+        scope: &ResourceScope,
+        owner_user_id: Option<&ironclaw_host_api::UserId>,
+        after: Option<ProcessJournalCursor>,
+        limit: usize,
+    ) -> Result<ProcessJournalPage, Self::Error> {
+        self.journal
+            .read_process_journal_after(scope, owner_user_id, after, limit)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+
+    async fn read_process_journal_log_after(
+        &self,
+        after: Option<ProcessJournalCursor>,
+        limit: usize,
+    ) -> Result<ProcessJournalPage, Self::Error> {
+        self.journal
+            .read_process_journal_log_after(after, limit)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+}
+
+#[async_trait]
+impl ProcessLifecycleLookupSource for ProcessJournalStoreTurnAdapter {
+    type Error = TurnError;
+
+    async fn process_lifecycle_states(
+        &self,
+        request: ProcessLifecycleLookupBatchRequest,
+    ) -> Vec<Result<ProcessLifecycleLookupResult, Self::Error>> {
+        self.lifecycle
+            .process_lifecycle_states(request)
+            .await
+            .into_iter()
+            .map(|result| result.map_err(turn_error_from_process_journal_store_error))
+            .collect()
+    }
+}
+
+#[async_trait]
+impl ProcessGateQuerySource for ProcessJournalStoreTurnAdapter {
+    type Error = TurnError;
+
+    async fn query_process_gates(
+        &self,
+        request: ProcessGateQuery,
+    ) -> Result<Vec<ProcessGateRecord>, Self::Error> {
+        self.gates
+            .query_process_gates(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+}
+
+pub fn turn_error_from_process_journal_store_error(error: ProcessJournalStoreError) -> TurnError {
+    match error {
+        ProcessJournalStoreError::UnknownProcess { .. } => TurnError::ScopeNotFound,
+        ProcessJournalStoreError::ProcessAlreadyExists { .. } => TurnError::Conflict {
+            reason: error.to_string(),
+        },
+        ProcessJournalStoreError::InvalidTransition { from, to, .. } => TurnError::InvalidRequest {
+            reason: format!("invalid process journal transition from {from:?} to {to:?}"),
+        },
+        ProcessJournalStoreError::InvalidLease { .. }
+        | ProcessJournalStoreError::InvalidPath(_)
+        | ProcessJournalStoreError::Filesystem(_)
+        | ProcessJournalStoreError::Serialization(_)
+        | ProcessJournalStoreError::Deserialization(_) => TurnError::Unavailable {
+            reason: error.to_string(),
+        },
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTurnProcessMetadata {
@@ -243,6 +687,18 @@ pub fn process_id_from_turn_run_id(run_id: TurnRunId) -> ProcessId {
 
 fn process_checkpoint_ref(checkpoint_id: TurnCheckpointId) -> ProcessCheckpointRef {
     ProcessCheckpointRef::from_trusted(checkpoint_id.as_uuid().to_string())
+}
+
+fn process_lease_request_from_turn(
+    run_id: TurnRunId,
+    runner_id: TurnRunnerId,
+    lease_token: crate::TurnLeaseToken,
+) -> ProcessLeaseRequest {
+    ProcessLeaseRequest {
+        process_id: process_id_from_turn_run_id(run_id),
+        worker_id: ProcessWorkerId::from_trusted(runner_id.to_wire_string()),
+        lease_token: ProcessLeaseToken::from_trusted(lease_token.to_wire_string()),
+    }
 }
 
 pub fn process_status_from_turn_status(status: TurnStatus) -> ProcessLifecycleStatus {

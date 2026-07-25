@@ -5,8 +5,16 @@ use std::{
 
 use async_trait::async_trait;
 use chrono::Utc;
+use ironclaw_processes::{
+    ProcessJournalStoreError, ProcessKind, ProcessSubmissionPort, SubmitProcessRequest,
+};
+use serde_json::json;
 use tracing::debug;
 
+use crate::process_journal::{
+    AgentTurnProcessMetadata, process_id_from_turn_run_id,
+    turn_error_from_process_journal_store_error,
+};
 use crate::{
     CancelRunRequest, CancelRunResponse, GetRunStateRequest, ResumeTurnRequest, ResumeTurnResponse,
     RetryTurnRequest, RetryTurnResponse, RunProfileResolver, SubmitChildRunRequest,
@@ -216,6 +224,7 @@ impl TurnLifecycleEventBus for DefaultTurnLifecycleEventBus {
 pub struct LifecyclePublishingTurnStateStore<S: ?Sized> {
     inner: Arc<S>,
     bus: Arc<dyn TurnLifecycleEventBus>,
+    process_submission: Option<Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>>,
     delivered_event_cursors: Mutex<HashSet<EventCursor>>,
     deferred_publication_errors: Mutex<HashMap<EventCursor, TurnError>>,
 }
@@ -225,9 +234,18 @@ impl<S: ?Sized> LifecyclePublishingTurnStateStore<S> {
         Self {
             inner,
             bus,
+            process_submission: None,
             delivered_event_cursors: Mutex::new(HashSet::new()),
             deferred_publication_errors: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn with_process_submission_port(
+        mut self,
+        process_submission: Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
+    ) -> Self {
+        self.process_submission = Some(process_submission);
+        self
     }
 
     /// Returns true when this cursor has not yet been published successfully
@@ -347,6 +365,108 @@ impl<S: ?Sized> LifecyclePublishingTurnStateStore<S> {
             Err(error) => {
                 debug!(error = %error, "turn lifecycle publication failed after {context}");
             }
+        }
+    }
+
+    async fn submit_process_for_turn(
+        &self,
+        request: &SubmitTurnRequest,
+        response: &SubmitTurnResponse,
+    ) -> Result<(), TurnError> {
+        let Some(process_submission) = &self.process_submission else {
+            return Ok(());
+        };
+        let SubmitTurnResponse::Accepted {
+            turn_id,
+            run_id,
+            resolved_run_profile_id,
+            resolved_run_profile_version,
+            accepted_message_ref,
+            reply_target_binding_ref,
+            ..
+        } = response;
+        let metadata = AgentTurnProcessMetadata {
+            turn_id: *turn_id,
+            accepted_message_ref: accepted_message_ref.clone(),
+            source_binding_ref: request.source_binding_ref.clone(),
+            reply_target_binding_ref: reply_target_binding_ref.clone(),
+            resolved_run_profile_id: resolved_run_profile_id.clone(),
+            resolved_run_profile_version: *resolved_run_profile_version,
+            resolved_model_route: None,
+            model_usage: None,
+            product_context: None,
+            resume_disposition: None,
+        };
+        match process_submission
+            .submit_process(SubmitProcessRequest {
+                process_id: process_id_from_turn_run_id(*run_id),
+                process_kind: ProcessKind::AgentTurn,
+                scope: request.scope.to_resource_scope(),
+                owner_user_id: lifecycle_owner_user_id(
+                    &request.scope,
+                    Some(&request.actor.user_id),
+                ),
+                parent_process_id: request.parent_run_id.map(process_id_from_turn_run_id),
+                root_process_id: request
+                    .spawn_tree_root_run_id
+                    .map(process_id_from_turn_run_id),
+                created_at: request.received_at,
+                metadata: json!({ "agent_turn": metadata }),
+            })
+            .await
+        {
+            Ok(_) | Err(ProcessJournalStoreError::ProcessAlreadyExists { .. }) => Ok(()),
+            Err(error) => Err(turn_error_from_process_journal_store_error(error)),
+        }
+    }
+
+    async fn submit_process_for_child_turn(
+        &self,
+        request: &SubmitChildRunRequest,
+        response: &SubmitTurnResponse,
+    ) -> Result<(), TurnError> {
+        let Some(process_submission) = &self.process_submission else {
+            return Ok(());
+        };
+        let SubmitTurnResponse::Accepted {
+            turn_id,
+            run_id,
+            resolved_run_profile_id,
+            resolved_run_profile_version,
+            accepted_message_ref,
+            reply_target_binding_ref,
+            ..
+        } = response;
+        let metadata = AgentTurnProcessMetadata {
+            turn_id: *turn_id,
+            accepted_message_ref: accepted_message_ref.clone(),
+            source_binding_ref: request.source_binding_ref.clone(),
+            reply_target_binding_ref: reply_target_binding_ref.clone(),
+            resolved_run_profile_id: resolved_run_profile_id.clone(),
+            resolved_run_profile_version: *resolved_run_profile_version,
+            resolved_model_route: None,
+            model_usage: None,
+            product_context: None,
+            resume_disposition: None,
+        };
+        match process_submission
+            .submit_process(SubmitProcessRequest {
+                process_id: process_id_from_turn_run_id(*run_id),
+                process_kind: ProcessKind::AgentTurn,
+                scope: request.child_scope.to_resource_scope(),
+                owner_user_id: lifecycle_owner_user_id(
+                    &request.child_scope,
+                    Some(&request.actor.user_id),
+                ),
+                parent_process_id: Some(process_id_from_turn_run_id(request.parent_run_id)),
+                root_process_id: Some(process_id_from_turn_run_id(request.parent_run_id)),
+                created_at: request.received_at,
+                metadata: json!({ "agent_turn": metadata }),
+            })
+            .await
+        {
+            Ok(_) | Err(ProcessJournalStoreError::ProcessAlreadyExists { .. }) => Ok(()),
+            Err(error) => Err(turn_error_from_process_journal_store_error(error)),
         }
     }
 }
@@ -515,6 +635,8 @@ where
             .inner
             .submit_turn(request, admission_policy, run_profile_resolver)
             .await?;
+        self.submit_process_for_turn(&event_request, &response)
+            .await?;
         self.publish_event_once_deferred(submit_event(&event_request, &response))
             .await?;
         Ok(response)
@@ -578,6 +700,8 @@ where
         let response = self
             .inner
             .submit_child_turn(request, admission_policy, run_profile_resolver)
+            .await?;
+        self.submit_process_for_child_turn(&event_request, &response)
             .await?;
         self.publish_event_once_deferred(child_submit_event(&event_request, &response))
             .await?;

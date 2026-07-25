@@ -318,6 +318,22 @@ pub struct ProcessLifecycleLookupBatchRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubmitProcessRequest {
+    pub process_id: ProcessId,
+    pub process_kind: ProcessKind,
+    pub scope: ResourceScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_user_id: Option<UserId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_process_id: Option<ProcessId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_process_id: Option<ProcessId>,
+    pub created_at: Timestamp,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ProcessLifecycleLookupResult {
     Missing,
     Found {
@@ -406,6 +422,16 @@ pub trait ProcessJournalSource: Send + Sync {
         after: Option<ProcessJournalCursor>,
         limit: usize,
     ) -> Result<ProcessJournalPage, Self::Error>;
+}
+
+#[async_trait]
+pub trait ProcessSubmissionPort: Send + Sync {
+    type Error: Send + Sync + 'static;
+
+    async fn submit_process(
+        &self,
+        request: SubmitProcessRequest,
+    ) -> Result<JournaledProcessSnapshot, Self::Error>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

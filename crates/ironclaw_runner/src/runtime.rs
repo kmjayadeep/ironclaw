@@ -16,14 +16,16 @@ use ironclaw_loop_host::{
     SubagentSpawnGoalStore, SubagentSpawnLimits, verify_product_live_cancellation_probe,
 };
 use ironclaw_memory::MemoryService;
-use ironclaw_processes::ProcessTransitionPort;
+use ironclaw_processes::{
+    ProcessJournalSource, ProcessJournalStoreError, ProcessSubmissionPort, ProcessTransitionPort,
+};
 use ironclaw_threads::{SessionThreadService, ThreadScope};
 use ironclaw_turns::{
     AgentLoopDriverError, AgentTurnProcessTransitionAdapter, CheckpointStateStorePort,
     DefaultTurnCoordinator, DefaultTurnLifecycleEventBus, LifecyclePublicationErrorPort,
-    LifecyclePublishingTurnStateStore, LoopCheckpointStore, RunProfileResolver,
-    TurnCommittedEventObserver, TurnEventSink, TurnLifecycleEventBus, TurnRunWakeNotifier,
-    TurnSpawnTreePort, TurnSpawnTreeStateStore, TurnStateStore,
+    LifecyclePublishingTurnStateStore, LoopCheckpointStore, ProcessBackedTurnRunTransitionPort,
+    RunProfileResolver, TurnCommittedEventObserver, TurnEventSink, TurnLifecycleEventBus,
+    TurnRunWakeNotifier, TurnSpawnTreePort, TurnSpawnTreeStateStore, TurnStateStore,
     loop_exit::LoopExitEvidencePort,
     run_profile::{
         AgentLoopHostError, CommunicationContextProvider, InstructionSafetyContext,
@@ -281,11 +283,45 @@ impl SchedulerWakeWiring {
     }
 }
 
+#[derive(Clone)]
+pub struct ProcessRuntimeSystem {
+    submission: Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
+    transitions: Arc<dyn ProcessTransitionPort<Error = ironclaw_turns::TurnError>>,
+    journal: Arc<dyn ProcessJournalSource<Error = ironclaw_turns::TurnError>>,
+}
+
+impl ProcessRuntimeSystem {
+    pub fn new(
+        submission: Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
+        transitions: Arc<dyn ProcessTransitionPort<Error = ironclaw_turns::TurnError>>,
+        journal: Arc<dyn ProcessJournalSource<Error = ironclaw_turns::TurnError>>,
+    ) -> Self {
+        Self {
+            submission,
+            transitions,
+            journal,
+        }
+    }
+
+    pub fn submission(&self) -> Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>> {
+        Arc::clone(&self.submission)
+    }
+
+    pub fn transitions(&self) -> Arc<dyn ProcessTransitionPort<Error = ironclaw_turns::TurnError>> {
+        Arc::clone(&self.transitions)
+    }
+
+    pub fn journal(&self) -> Arc<dyn ProcessJournalSource<Error = ironclaw_turns::TurnError>> {
+        Arc::clone(&self.journal)
+    }
+}
+
 pub struct DefaultPlannedRuntimeParts<G>
 where
     G: HostManagedModelGateway + ?Sized + Send + Sync + 'static,
 {
     pub turn_state: Arc<dyn RuntimeTurnStateStore>,
+    pub process_system: Option<ProcessRuntimeSystem>,
     pub thread_service: Arc<dyn SessionThreadService>,
     pub thread_scope: ThreadScope,
     pub model_gateway: Arc<G>,
@@ -673,10 +709,13 @@ where
                 DefaultPlannedRuntimeBuildError::SubagentCompletion(error.to_string())
             })?;
     }
-    let turn_state = Arc::new(LifecyclePublishingTurnStateStore::new(
-        Arc::clone(&parts.turn_state),
-        lifecycle_bus,
-    ));
+    let mut turn_state_builder =
+        LifecyclePublishingTurnStateStore::new(Arc::clone(&parts.turn_state), lifecycle_bus);
+    if let Some(process_system) = parts.process_system.clone() {
+        turn_state_builder =
+            turn_state_builder.with_process_submission_port(process_system.submission());
+    }
+    let turn_state = Arc::new(turn_state_builder);
     let publication_error_port: Arc<dyn LifecyclePublicationErrorPort> = turn_state.clone();
     let base_coordinator = DefaultTurnCoordinator::new(Arc::clone(&turn_state))
         .with_run_profile_resolver(Arc::clone(&run_profile_resolver))
@@ -835,11 +874,22 @@ where
     }
     let host_factory = Arc::new(host_factory);
 
-    let transition_port: Arc<dyn TurnRunTransitionPort> = turn_state;
+    let transition_port: Arc<dyn TurnRunTransitionPort> = match parts.process_system.clone() {
+        Some(process_system) => Arc::new(ProcessBackedTurnRunTransitionPort::new(
+            process_system.transitions(),
+            process_system.journal(),
+        )),
+        None => turn_state,
+    };
     let process_transition_port: Arc<dyn ProcessTransitionPort<Error = ironclaw_turns::TurnError>> =
-        Arc::new(AgentTurnProcessTransitionAdapter::new(Arc::clone(
-            &transition_port,
-        )));
+        parts.process_system.map_or_else(
+            || {
+                Arc::new(AgentTurnProcessTransitionAdapter::new(Arc::clone(
+                    &transition_port,
+                ))) as Arc<_>
+            },
+            |process_system| process_system.transitions(),
+        );
     let loop_exit_applier = Arc::new(LoopExitApplier::new(
         Arc::clone(&transition_port),
         parts.loop_exit_evidence,

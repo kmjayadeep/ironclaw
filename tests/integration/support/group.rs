@@ -991,6 +991,7 @@ impl RebornIntegrationGroupBuilder {
         let milestone_sink_for_assertions = Arc::clone(&milestone_sink);
         let parts = DefaultPlannedRuntimeParts {
             turn_state: turn_state_for_runtime,
+            process_system: None,
             thread_service: group_thread_harness.service.clone() as Arc<dyn SessionThreadService>,
             thread_scope: group_thread_scope,
             model_gateway,

@@ -387,6 +387,7 @@ impl ProductLiveAgentLoopHarness {
             attachment_read_port: None,
             gate_record_store: turn_executor_gate_store,
             turn_state: turn_state_for_runtime,
+            process_system: None,
             thread_service: Arc::new(thread_service.clone()),
             thread_scope: thread_scope.clone(),
             model_gateway,

@@ -77,7 +77,7 @@ use ironclaw_runner::milestone_events::{
 };
 use ironclaw_runner::runtime::{
     DefaultPlannedRuntimeBuildError, DefaultPlannedRuntimeConfig, DefaultPlannedRuntimeParts,
-    RuntimeSubagentGoalStore, RuntimeTurnStateStore, ToolDisclosureMode,
+    ProcessRuntimeSystem, RuntimeSubagentGoalStore, RuntimeTurnStateStore, ToolDisclosureMode,
     build_default_planned_runtime,
 };
 use ironclaw_runner::subagent::await_edge::{
@@ -90,12 +90,11 @@ use ironclaw_threads::{
     SessionThreadService, ThreadHistoryRequest, ThreadScope,
 };
 use ironclaw_turns::{
-    AcceptedMessageRef, AgentTurnProcessJournalAdapter, CancelRunRequest, CancelRunResponse,
-    GetRunStateRequest, IdempotencyKey, LoopGateRef, ReplyTargetBindingRef,
-    RunProfileResolutionRequest, SanitizedCancelReason, SourceBindingRef, SubmitTurnRequest,
-    SubmitTurnResponse, TurnActor, TurnCoordinator, TurnError, TurnEventProjectionSource, TurnId,
-    TurnRunId, TurnRunState, TurnRunWake, TurnScope, TurnSpawnTreeStateStore, TurnStateRowStore,
-    TurnStateStoreLimits, TurnStatus,
+    AcceptedMessageRef, CancelRunRequest, CancelRunResponse, GetRunStateRequest, IdempotencyKey,
+    LoopGateRef, ReplyTargetBindingRef, RunProfileResolutionRequest, SanitizedCancelReason,
+    SourceBindingRef, SubmitTurnRequest, SubmitTurnResponse, TurnActor, TurnCoordinator, TurnError,
+    TurnEventProjectionSource, TurnId, TurnRunId, TurnRunState, TurnRunWake, TurnScope,
+    TurnSpawnTreeStateStore, TurnStateRowStore, TurnStateStoreLimits, TurnStatus,
     events::EventCursor,
     run_profile::{LoopHostMilestoneSink, LoopRunContext},
 };
@@ -111,7 +110,7 @@ use ironclaw_outbound::OutboundError;
 #[cfg(any(test, feature = "test-support"))]
 use ironclaw_product::RebornOutboundDeliveryTargetId;
 use ironclaw_turns::run_profile::{MemoryPromptContextService, UserProfileContext};
-use ironclaw_turns::{AgentTurnProcessTransitionAdapter, ExternalToolCatalog};
+use ironclaw_turns::{ExternalToolCatalog, ProcessJournalStoreTurnAdapter};
 
 use self::latency::{trace_runtime_latency_error, trace_runtime_latency_ok};
 use self::runtime_turn_scheduler::RuntimeTurnScheduler;
@@ -367,12 +366,21 @@ impl HostUserProfileSource for MemoryBackedUserProfileSourceAdapter {
     }
 }
 
+#[derive(Clone)]
+struct RuntimeProcessSystem {
+    planned: ProcessRuntimeSystem,
+    transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
+    journal: Arc<dyn ProcessJournalSource<Error = TurnError>>,
+    lifecycle: Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
+    #[cfg(feature = "test-support")]
+    gates: Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
+}
+
 struct RuntimeStoreParts {
     scoped_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
     turn_state_store: Arc<dyn RuntimeTurnStateStore>,
     turn_state_flush: Arc<dyn TurnStateFlush>,
-    process_transition_port: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
-    process_journal_source: Arc<dyn ProcessJournalSource<Error = TurnError>>,
+    processes: RuntimeProcessSystem,
     checkpoint_state_store: Arc<dyn ironclaw_turns::CheckpointStateStorePort>,
     loop_checkpoint_store: Arc<dyn ironclaw_turns::LoopCheckpointStore>,
     thread_service: Arc<dyn SessionThreadService>,
@@ -396,9 +404,6 @@ struct RuntimeStoreParts {
     trigger_repository: Arc<dyn ironclaw_triggers::TriggerRepository>,
     /// Process lifecycle source for trigger active-run lookup. Every substrate
     /// now provides the same typed turn-backed process projection.
-    process_lifecycle_lookup_source: Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
-    #[cfg(feature = "test-support")]
-    process_gate_query_source: Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
     admin_secret_provisioner: Arc<dyn crate::admin_secrets::AdminSecretProvisioner>,
     project_service: Arc<dyn ironclaw_product::ProjectService>,
     trigger_conversation_services: Option<RebornFilesystemConversationServices>,
@@ -455,23 +460,61 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
         )
     };
 
+    let process_journal_store = Arc::new(ironclaw_processes::ProcessJournalStore::new(Arc::clone(
+        &scoped_filesystem,
+    )));
+    let process_adapter = Arc::new(ProcessJournalStoreTurnAdapter::new(
+        Arc::clone(&process_journal_store)
+            as Arc<
+                dyn ironclaw_processes::ProcessTransitionPort<
+                        Error = ironclaw_processes::ProcessJournalStoreError,
+                    >,
+            >,
+        Arc::clone(&process_journal_store)
+            as Arc<
+                dyn ironclaw_processes::ProcessJournalSource<
+                        Error = ironclaw_processes::ProcessJournalStoreError,
+                    >,
+            >,
+        Arc::clone(&process_journal_store)
+            as Arc<
+                dyn ironclaw_processes::ProcessLifecycleLookupSource<
+                        Error = ironclaw_processes::ProcessJournalStoreError,
+                    >,
+            >,
+        Arc::clone(&process_journal_store)
+            as Arc<
+                dyn ironclaw_processes::ProcessGateQuerySource<
+                        Error = ironclaw_processes::ProcessJournalStoreError,
+                    >,
+            >,
+    ));
+
     RuntimeStoreParts {
         scoped_filesystem,
         turn_state_store: Arc::clone(&turn_state) as Arc<dyn RuntimeTurnStateStore>,
         turn_state_flush: Arc::clone(&turn_state) as Arc<dyn TurnStateFlush>,
-        process_transition_port: Arc::new(AgentTurnProcessTransitionAdapter::new(Arc::clone(
-            &turn_state,
-        )
-            as Arc<dyn ironclaw_turns::runner::TurnRunTransitionPort>)),
-        process_journal_source: Arc::new(AgentTurnProcessJournalAdapter::new(
-            Arc::clone(&turn_state) as Arc<dyn ironclaw_turns::TurnStateStore>,
-            Arc::clone(&turn_state) as Arc<dyn TurnEventProjectionSource>,
-        )),
-        process_lifecycle_lookup_source: Arc::clone(&turn_state)
-            as Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
-        #[cfg(feature = "test-support")]
-        process_gate_query_source: Arc::clone(&turn_state)
-            as Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
+        processes: RuntimeProcessSystem {
+            planned: ProcessRuntimeSystem::new(
+                Arc::clone(&process_journal_store)
+                    as Arc<
+                        dyn ironclaw_processes::ProcessSubmissionPort<
+                                Error = ironclaw_processes::ProcessJournalStoreError,
+                            >,
+                    >,
+                Arc::clone(&process_adapter) as Arc<dyn ProcessTransitionPort<Error = TurnError>>,
+                Arc::clone(&process_adapter) as Arc<dyn ProcessJournalSource<Error = TurnError>>,
+            ),
+            transitions: Arc::clone(&process_adapter)
+                as Arc<dyn ProcessTransitionPort<Error = TurnError>>,
+            journal: Arc::clone(&process_adapter)
+                as Arc<dyn ProcessJournalSource<Error = TurnError>>,
+            lifecycle: Arc::clone(&process_adapter)
+                as Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
+            #[cfg(feature = "test-support")]
+            gates: Arc::clone(&process_adapter)
+                as Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
+        },
         checkpoint_state_store,
         loop_checkpoint_store,
         thread_service,
@@ -3553,11 +3596,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         scoped_filesystem,
         turn_state_store,
         turn_state_flush,
-        process_transition_port,
-        process_journal_source,
-        process_lifecycle_lookup_source,
-        #[cfg(feature = "test-support")]
-        process_gate_query_source,
+        processes,
         checkpoint_state_store,
         loop_checkpoint_store,
         thread_service,
@@ -3575,6 +3614,11 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         project_service,
         trigger_conversation_services,
     } = runtime_parts;
+    let process_transition_port = Arc::clone(&processes.transitions);
+    let process_journal_source = Arc::clone(&processes.journal);
+    let process_lifecycle_lookup_source = Arc::clone(&processes.lifecycle);
+    #[cfg(feature = "test-support")]
+    let process_gate_query_source = Arc::clone(&processes.gates);
     let filesystem_skill_context_runtime = filesystem_skill_context_runtime(&services);
     let (skill_context_source, skill_activation_source, skill_execution_adapter) = match (
         configured_skill_context_source,
@@ -4071,6 +4115,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     let runtime_skill_context_source = skill_context_source.clone();
     let planned_runtime_parts = DefaultPlannedRuntimeParts {
         turn_state: Arc::clone(&turn_state_store),
+        process_system: Some(processes.planned.clone()),
         thread_service: Arc::clone(&thread_service),
         thread_scope: thread_scope.clone(),
         // Read landed attachment bytes back through the project workspace

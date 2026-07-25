@@ -23,6 +23,7 @@
 mod cancellation;
 mod host;
 mod journal;
+mod journal_store;
 mod process_store;
 mod services;
 #[cfg(any(test, feature = "test-support"))]
@@ -41,11 +42,12 @@ pub use journal::{
     ProcessJournalProjectionSnapshot, ProcessJournalSource, ProcessKind, ProcessLeaseRequest,
     ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleLookupBatchRequest,
     ProcessLifecycleLookupRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,
-    ProcessLifecycleStatus, ProcessOutcome, ProcessSuspension, ProcessSuspensionKind,
-    ProcessTransitionPort, ProcessWorkerId, RecoverExpiredProcessLeasesRequest,
-    RecoverExpiredProcessLeasesResponse, ResumeProcessRequest, StopProcessRequest,
-    SuspendProcessRequest,
+    ProcessLifecycleStatus, ProcessOutcome, ProcessSubmissionPort, ProcessSuspension,
+    ProcessSuspensionKind, ProcessTransitionPort, ProcessWorkerId,
+    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, ResumeProcessRequest,
+    StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
 };
+pub use journal_store::{ProcessJournalStore, ProcessJournalStoreError};
 pub use process_store::{ProcessResultStore, ProcessStore};
 pub use services::{
     BackgroundErrorHandler, BackgroundFailure, BackgroundFailureStage, BackgroundProcessManager,
