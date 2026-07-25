@@ -852,7 +852,7 @@ mod tests {
         let transitions: Arc<dyn TurnRunTransitionPort> =
             Arc::new(RecordingTransitionPort::default());
         let evidence = Arc::new(InMemoryLoopExitEvidencePort::new());
-        let loop_exit_applier = Arc::new(LoopExitApplier::new(transitions, evidence));
+        let loop_exit_applier = Arc::new(LoopExitApplier::from_turn(transitions, evidence));
         let driver_registry = Arc::new(DriverRegistry::new()); // empty — no drivers registered
         let host_factory = Arc::new(FailingHostFactory);
         RebornTurnRunExecutor::new(loop_exit_applier, driver_registry, host_factory, None)
@@ -1122,7 +1122,7 @@ mod tests {
         let transitions: Arc<dyn TurnRunTransitionPort> =
             Arc::new(RecordingTransitionPort::default());
         let evidence = Arc::new(InMemoryLoopExitEvidencePort::new());
-        let loop_exit_applier = Arc::new(LoopExitApplier::new(transitions, evidence));
+        let loop_exit_applier = Arc::new(LoopExitApplier::from_turn(transitions, evidence));
         // Register a driver matching `test_claimed_run`'s descriptor.
         let mut registry = DriverRegistry::new();
         registry
@@ -1144,7 +1144,10 @@ mod tests {
         transitions: Arc<dyn TurnRunTransitionPort>,
     ) -> RebornTurnRunExecutor {
         let evidence = Arc::new(InMemoryLoopExitEvidencePort::new());
-        let loop_exit_applier = Arc::new(LoopExitApplier::new(Arc::clone(&transitions), evidence));
+        let loop_exit_applier = Arc::new(LoopExitApplier::from_turn(
+            Arc::clone(&transitions),
+            evidence,
+        ));
         let mut registry = DriverRegistry::new();
         registry
             .register_driver(
@@ -1200,7 +1203,7 @@ mod tests {
         let transitions: Arc<dyn TurnRunTransitionPort> =
             Arc::new(RecordingTransitionPort::default());
         let evidence = Arc::new(InMemoryLoopExitEvidencePort::new());
-        let loop_exit_applier = Arc::new(LoopExitApplier::new(transitions, evidence));
+        let loop_exit_applier = Arc::new(LoopExitApplier::from_turn(transitions, evidence));
         let mut registry = DriverRegistry::new();
         registry
             .register_driver(
@@ -1634,7 +1637,10 @@ mod tests {
         let transitions = Arc::new(RecordingTransitionPort::default());
         let transitions_arc: Arc<dyn TurnRunTransitionPort> = transitions.clone();
         let evidence = Arc::new(InMemoryLoopExitEvidencePort::new());
-        let loop_exit_applier = Arc::new(LoopExitApplier::new(transitions_arc.clone(), evidence));
+        let loop_exit_applier = Arc::new(LoopExitApplier::from_turn(
+            transitions_arc.clone(),
+            evidence,
+        ));
         let executor = RebornTurnRunExecutor::new(
             loop_exit_applier,
             Arc::new(DriverRegistry::new()),

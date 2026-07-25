@@ -109,43 +109,28 @@ pub struct LoopExitApplier {
     evidence_port: Arc<dyn LoopExitEvidencePort>,
 }
 
-pub trait LoopExitTransitionInput {
-    fn into_process_transition_port(self) -> Arc<dyn ProcessTransitionPort<Error = TurnError>>;
-}
-
-impl LoopExitTransitionInput for Arc<dyn ProcessTransitionPort<Error = TurnError>> {
-    fn into_process_transition_port(self) -> Arc<dyn ProcessTransitionPort<Error = TurnError>> {
-        self
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl LoopExitTransitionInput for Arc<dyn TurnRunTransitionPort> {
-    fn into_process_transition_port(self) -> Arc<dyn ProcessTransitionPort<Error = TurnError>> {
-        Arc::new(crate::AgentTurnProcessTransitionAdapter::new(self))
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl<T> LoopExitTransitionInput for Arc<T>
-where
-    T: TurnRunTransitionPort + 'static,
-{
-    fn into_process_transition_port(self) -> Arc<dyn ProcessTransitionPort<Error = TurnError>> {
-        let transition: Arc<dyn TurnRunTransitionPort> = self;
-        Arc::new(crate::AgentTurnProcessTransitionAdapter::new(transition))
-    }
-}
-
 impl LoopExitApplier {
-    pub fn new<T>(transition_port: T, evidence_port: Arc<dyn LoopExitEvidencePort>) -> Self
-    where
-        T: LoopExitTransitionInput,
-    {
+    pub fn new(
+        transition_port: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
+        evidence_port: Arc<dyn LoopExitEvidencePort>,
+    ) -> Self {
         Self {
-            transition_port: transition_port.into_process_transition_port(),
+            transition_port,
             evidence_port,
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_turn(
+        transition_port: Arc<dyn TurnRunTransitionPort>,
+        evidence_port: Arc<dyn LoopExitEvidencePort>,
+    ) -> Self {
+        Self::new(
+            Arc::new(crate::AgentTurnProcessTransitionAdapter::new(
+                transition_port,
+            )),
+            evidence_port,
+        )
     }
 
     /// Derive policy from durable evidence, validate the exit, and apply the

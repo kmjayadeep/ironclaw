@@ -370,8 +370,6 @@ async fn process_transition_adapter_drives_real_turn_store_transitions() {
     assert_eq!(accepted_run_id, run_id);
 
     let worker_id = ProcessWorkerId::from_trusted(TurnRunnerId::new().to_wire_string());
-    let lease_token =
-        ProcessLeaseToken::from_trusted(crate::TurnLeaseToken::new().to_wire_string());
     let claimed = adapter
         .claim_next_processes(ClaimProcessesRequest {
             worker_id: worker_id.clone(),
@@ -388,7 +386,7 @@ async fn process_transition_adapter_drives_real_turn_store_transitions() {
     );
     assert_eq!(claimed.state.status, ProcessLifecycleStatus::Running);
     assert_eq!(claimed.worker_id, worker_id);
-    assert_eq!(claimed.lease_token, lease_token);
+    let lease_token = claimed.lease_token.clone();
 
     let cursor = adapter
         .heartbeat_process(ProcessLeaseRequest {

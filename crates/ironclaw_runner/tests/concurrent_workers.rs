@@ -623,7 +623,7 @@ async fn scheduler_executor_two_runs_concurrently() {
     // Use InMemoryLoopExitEvidencePort (fail-closed defaults) — the barrier driver
     // never reaches the applier (it returns Err), so the evidence port is never
     // consulted; the scheduler's record_runner_failure path handles the failure.
-    let loop_exit_applier = Arc::new(LoopExitApplier::new(
+    let loop_exit_applier = Arc::new(LoopExitApplier::from_turn(
         Arc::clone(&transition_port),
         Arc::new(InMemoryLoopExitEvidencePort::new()) as Arc<dyn LoopExitEvidencePort>,
     ));
@@ -902,7 +902,7 @@ async fn scheduler_executor_applies_loop_exit_end_to_end() {
     }
 
     let evidence_port = Arc::new(AcceptAllEvidencePort) as Arc<dyn LoopExitEvidencePort>;
-    let loop_exit_applier = Arc::new(LoopExitApplier::new(
+    let loop_exit_applier = Arc::new(LoopExitApplier::from_turn(
         Arc::clone(&transition_port),
         evidence_port,
     ));

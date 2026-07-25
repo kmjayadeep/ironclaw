@@ -2356,7 +2356,7 @@ async fn turn_runner_worker_completes_after_libsql_turn_and_thread_services_reop
             loop_checkpoint_store.clone(),
             in_memory_await_edge_evidence_store(),
         ));
-    let applier = Arc::new(LoopExitApplier::new(transition_port, evidence));
+    let applier = Arc::new(LoopExitApplier::from_turn(transition_port, evidence));
     let gateway = Arc::new(RecordingGateway::reply("model says hi"));
     let milestone_sink = Arc::new(InMemoryLoopHostMilestoneSink::default());
     let factory = RebornLoopDriverHostFactory::new(
@@ -3320,7 +3320,7 @@ async fn turn_runner_blocks_on_approval_then_coordinator_resume_completes_same_r
         .unwrap();
 
     let executor = Arc::new(RebornTurnRunExecutor::new(
-        Arc::new(LoopExitApplier::new(
+        Arc::new(LoopExitApplier::from_turn(
             turn_store.clone() as Arc<dyn ironclaw_turns::runner::TurnRunTransitionPort>,
             Arc::new(AlwaysVerifiedLoopExitEvidence),
         )),
@@ -9178,7 +9178,7 @@ fn loop_exit_applier_for_fixture(
         )
         .with_checkpoint_state_store(fixture.checkpoint_state_store.clone()),
     );
-    Arc::new(LoopExitApplier::new(turn_store, evidence))
+    Arc::new(LoopExitApplier::from_turn(turn_store, evidence))
 }
 
 fn planned_driver_for_full_reborn_test() -> Arc<PlannedDriver> {
