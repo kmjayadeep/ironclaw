@@ -2379,7 +2379,11 @@ fn collect_forbidden_turns_identifier_uses(
         if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
             continue;
         }
-        if path.file_name().and_then(|name| name.to_str()) == Some("process_journal.rs") {
+        if path
+            .components()
+            .any(|component| component.as_os_str() == "process_journal")
+            || path.file_name().and_then(|name| name.to_str()) == Some("process_journal.rs")
+        {
             continue;
         }
         let mut contents = std::fs::read_to_string(&path)

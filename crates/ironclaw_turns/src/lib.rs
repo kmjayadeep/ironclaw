@@ -85,17 +85,9 @@ pub use origin::{ProductTurnContext, RunOriginAdapter, TurnOriginKind, TurnSurfa
 pub use process_journal::AgentTurnProcessTransitionAdapter;
 pub use process_journal::{
     AGENT_TURN_PROCESS_KIND, AgentTurnProcessMetadata, AgentTurnProcessStateMetadata,
-    KernelApplyValidatedExitRequest, KernelClaimProcessRequest, KernelClaimProcessesRequest,
-    KernelClaimedProcess, KernelFailProcessRequest, KernelProcessCheckpointRef, KernelProcessId,
-    KernelProcessJournalCursor, KernelProcessJournalEntry, KernelProcessJournalKind,
-    KernelProcessJournalPage, KernelProcessKind, KernelProcessLeaseRequest,
-    KernelProcessLeaseSnapshot, KernelProcessOutcome, KernelProcessSnapshot,
-    KernelProcessStateSnapshot, KernelProcessStatus, KernelProcessSuspension,
-    KernelProcessSuspensionKind, KernelProcessWorkerId, KernelRecordModelRouteRequest,
-    KernelRecoverExpiredLeasesRequest, KernelRecoverExpiredLeasesResponse,
-    KernelSuspendProcessRequest, ProcessBackedTurnRunTransitionPort,
-    ProcessJournalStoreTurnAdapter, TurnEventProjectionFromProcessJournal,
-    claimed_turn_run_from_process_claim, turn_run_state_from_process_snapshot,
+    ProcessBackedTurnRunTransitionPort, ProcessJournalStoreTurnAdapter,
+    TurnEventProjectionFromProcessJournal, claimed_turn_run_from_process_claim,
+    turn_run_state_from_process_snapshot,
 };
 pub use request::{
     CancelRunRequest, GateResumeDisposition, GetRunStateRequest, ResumeTurnPrecondition,

@@ -372,7 +372,6 @@ struct RuntimeProcessSystem {
     transitions: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
     journal: Arc<dyn ProcessJournalSource<Error = TurnError>>,
     lifecycle: Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
-    #[cfg(feature = "test-support")]
     gates: Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
 }
 
@@ -511,7 +510,6 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
                 as Arc<dyn ProcessJournalSource<Error = TurnError>>,
             lifecycle: Arc::clone(&process_adapter)
                 as Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
-            #[cfg(feature = "test-support")]
             gates: Arc::clone(&process_adapter)
                 as Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
         },
@@ -845,7 +843,10 @@ pub struct RebornRuntime {
     pub(crate) process_journal_source: Arc<dyn ProcessJournalSource<Error = TurnError>>,
     pub(crate) process_lifecycle_lookup_source:
         Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
-    #[cfg(feature = "test-support")]
+    #[allow(
+        dead_code,
+        reason = "read by local-runtime approval/auth composition and test-support accessors"
+    )]
     pub(crate) process_gate_query_source: Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
     turn_tree_store: Arc<dyn TurnSpawnTreeStateStore>,
     thread_service: Arc<dyn SessionThreadService>,
@@ -964,7 +965,7 @@ pub(crate) fn build_approval_interaction_service(
         builtin_capability_policy,
         turn_coordinator,
         audit_sink,
-        Arc::clone(&runtime.turn_state) as Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
+        Arc::clone(&runtime.process_gate_query_source),
     )
 }
 
@@ -3617,7 +3618,6 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     let process_transition_port = Arc::clone(&processes.transitions);
     let process_journal_source = Arc::clone(&processes.journal);
     let process_lifecycle_lookup_source = Arc::clone(&processes.lifecycle);
-    #[cfg(feature = "test-support")]
     let process_gate_query_source = Arc::clone(&processes.gates);
     let filesystem_skill_context_runtime = filesystem_skill_context_runtime(&services);
     let (skill_context_source, skill_activation_source, skill_execution_adapter) = match (
@@ -4330,8 +4330,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     let auth_interaction_service = if let Some(local_runtime) = local_runtime {
         build_webui_auth_interaction_service(
             services.product_auth.as_ref(),
-            Arc::clone(&local_runtime.turn_state)
-                as Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
+            Arc::clone(&local_runtime.process_gate_query_source),
             Arc::clone(&planned_turn_coordinator),
         )
     } else {
@@ -4747,7 +4746,6 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         turn_coordinator,
         _channel_host_assembly: channel_host_assembly,
         turn_state_flush,
-        #[cfg(feature = "test-support")]
         process_gate_query_source,
         turn_tree_store: turn_state_store,
         thread_service,

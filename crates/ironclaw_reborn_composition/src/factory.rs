@@ -141,7 +141,7 @@ use ironclaw_outbound::CommunicationPreferenceRepository;
 use ironclaw_outbound::{
     DeliveredGateRouteStore, OutboundStateStore, OutboundStateStorePort, TriggeredRunDeliveryStore,
 };
-use ironclaw_processes::ProcessServices;
+use ironclaw_processes::{ProcessJournalStore, ProcessJournalStoreError, ProcessServices};
 use ironclaw_product::{
     ChannelConnectionNoticePolicy, ChannelConnectionRequirement, ExtensionAccountSetupDescriptor,
     ExtensionAccountSetupRegistry, LifecycleProductSurfaceContext,
@@ -168,7 +168,10 @@ use ironclaw_turns::TurnStateRowStore;
 use ironclaw_turns::{
     CheckpointStateStorePort, ExternalToolCatalog, InMemoryExternalToolCatalog, LoopCheckpointStore,
 };
-use ironclaw_turns::{GetRunStateRequest, InMemoryRunProfileResolver, TurnScope, TurnStateStore};
+use ironclaw_turns::{
+    GetRunStateRequest, InMemoryRunProfileResolver, ProcessJournalStoreTurnAdapter, TurnScope,
+    TurnStateStore,
+};
 use secrecy::SecretString;
 
 /// Display name sent with RFC 7591 dynamic client registration.
@@ -1027,6 +1030,8 @@ pub(crate) struct RebornRuntimeStores {
     pub(crate) outbound_state: Arc<dyn OutboundStateStorePort>,
     pub(crate) delivered_gate_routes: Arc<dyn DeliveredGateRouteStore>,
     pub(crate) triggered_run_delivery: Arc<dyn TriggeredRunDeliveryStore>,
+    pub(crate) process_gate_query_source:
+        Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = ironclaw_turns::TurnError>>,
     /// Late-rebindable process lifecycle source the trigger active-run lookup
     /// reads. Production points it at this runtime's own turn-backed process
     /// lifecycle adapter; a `test-support` harness can repoint it at its own
@@ -4631,6 +4636,31 @@ async fn build_backend_production(
         Arc::clone(&turn_state_filesystem),
         turn_state_store_limits,
     ));
+    let process_journal_store = Arc::new(ProcessJournalStore::new(Arc::clone(
+        &stores.scoped_filesystem,
+    )));
+    let process_journal_adapter = Arc::new(ProcessJournalStoreTurnAdapter::new(
+        Arc::clone(&process_journal_store)
+            as Arc<dyn ironclaw_processes::ProcessTransitionPort<Error = ProcessJournalStoreError>>,
+        Arc::clone(&process_journal_store)
+            as Arc<dyn ironclaw_processes::ProcessJournalSource<Error = ProcessJournalStoreError>>,
+        Arc::clone(&process_journal_store)
+            as Arc<
+                dyn ironclaw_processes::ProcessLifecycleLookupSource<
+                        Error = ProcessJournalStoreError,
+                    >,
+            >,
+        Arc::clone(&process_journal_store)
+            as Arc<
+                dyn ironclaw_processes::ProcessGateQuerySource<Error = ProcessJournalStoreError>,
+            >,
+    ));
+    let process_lifecycle_lookup_source = Arc::clone(&process_journal_adapter)
+        as Arc<
+            dyn ironclaw_processes::ProcessLifecycleLookupSource<Error = ironclaw_turns::TurnError>,
+        >;
+    let process_gate_query_source = Arc::clone(&process_journal_adapter)
+        as Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = ironclaw_turns::TurnError>>;
     // Rebindable source-turn-state slot for the trigger delivery-target
     // service — same repoint seam as the sibling snapshot slot below.
     #[cfg(any(test, feature = "test-support"))]
@@ -4716,7 +4746,7 @@ async fn build_backend_production(
     // Same store-backed lookup the WebUI automations panel builds from the
     // runtime's process lifecycle source (#5886). Read through a rebindable
     // source so a test-support harness can repoint the trigger subsystem at its
-    // own turn store; production installs this runtime's own store and never
+    // own source; production installs this runtime's process journal and never
     // repoints it.
     let trigger_source_turn_state: Arc<
         std::sync::RwLock<
@@ -4726,10 +4756,9 @@ async fn build_backend_production(
                     >,
             >,
         >,
-    > = Arc::new(std::sync::RwLock::new(Arc::clone(&turn_state)
-        as Arc<
-            dyn ironclaw_processes::ProcessLifecycleLookupSource<Error = ironclaw_turns::TurnError>,
-        >));
+    > = Arc::new(std::sync::RwLock::new(Arc::clone(
+        &process_lifecycle_lookup_source,
+    )));
     let trigger_active_run_lookup: Arc<dyn TriggerActiveRunLookup> = Arc::new(
         crate::automation::trigger_poller::SnapshotActiveRunLookup::new(Arc::new(
             crate::automation::trigger_poller::RebindableProcessLifecycleLookupSource::new(
@@ -4870,17 +4899,11 @@ async fn build_backend_production(
         compose_product_auth_services(ProductAuthServicesCompositionInput {
             ports: product_auth_ports,
             turn_coordinator: turn_coordinator.clone(),
-            // Blocked-auth fan-out over this builder's own durable turn-state
-            // store: a completed connect resumes every run the same owner has
-            // parked on the same provider, matching the local-dev builder. The
-            // `ProcessGateQuerySource` is implemented directly for the
-            // generic filesystem-backed turn store.
-            blocked_auth_snapshot_source: Some(Arc::clone(&turn_state)
-                as Arc<
-                    dyn ironclaw_processes::ProcessGateQuerySource<
-                            Error = ironclaw_turns::TurnError,
-                        >,
-                >),
+            // Blocked-auth fan-out over this builder's process journal: a
+            // completed connect resumes every process the same owner has parked
+            // on the same provider, matching the local-dev builder without
+            // deriving a process view from turn rows.
+            blocked_auth_snapshot_source: Some(Arc::clone(&process_gate_query_source)),
             provider_composition,
             security_audit_sink,
             secret_store: Arc::clone(&secret_store),
@@ -5590,6 +5613,7 @@ async fn build_backend_production(
         outbound_state: outbound_stores.outbound_state,
         delivered_gate_routes: outbound_stores.delivered_gate_routes,
         triggered_run_delivery: outbound_stores.triggered_run_delivery,
+        process_gate_query_source,
         #[cfg(any(test, feature = "test-support"))]
         trigger_source_turn_state,
         #[cfg(any(test, feature = "test-support"))]

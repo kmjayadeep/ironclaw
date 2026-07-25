@@ -28,6 +28,7 @@ mod events_index;
 mod io;
 mod journal;
 mod load;
+#[cfg(any(test, feature = "test-support"))]
 mod process_projection;
 mod traits;
 mod write_behind;
