@@ -515,6 +515,107 @@ fn user_message_envelope_for_conversation(
     )
 }
 
+fn command_envelope(event_id: &str, command: &str) -> ProductInboundEnvelope {
+    envelope(
+        ProductInboundPayload::Command(
+            ironclaw_product::InboundCommandPayload::new(
+                command,
+                "",
+                ProductTriggerReason::DirectChat,
+            )
+            .expect("command payload"),
+        ),
+        event_id,
+    )
+}
+
+#[tokio::test]
+async fn observer_posts_rendered_command_result_to_the_source_conversation() {
+    let harness = build_harness(
+        vec![scripted_state(TurnStatus::Completed, None)],
+        false,
+        None,
+        Duration::from_secs(5),
+    );
+    let view = ironclaw_product::CommandResultView {
+        title: "Model".to_string(),
+        fields: vec![ironclaw_product::CommandResultField {
+            label: "Provider".to_string(),
+            value: "acme".to_string(),
+        }],
+        lines: vec!["Providers: acme".to_string()],
+    };
+    harness
+        .observer
+        .observe_ack(
+            command_envelope("evt-cmd-result", "model"),
+            ProductInboundAck::CommandResult {
+                command: "model".to_string(),
+                payload: ironclaw_product::ProductCommandResultPayload::new(
+                    serde_json::to_value(&view).expect("view json"),
+                ),
+            },
+        )
+        .await;
+
+    let texts = harness.adapter.texts();
+    assert_eq!(
+        texts,
+        vec!["Model\nProvider: acme\nProviders: acme".to_string()]
+    );
+    let envelopes = harness.adapter.envelopes();
+    assert_eq!(envelopes[0].target.conversation.conversation_id(), "conv-1");
+}
+
+#[tokio::test]
+async fn observer_posts_inventory_help_for_user_correctable_command_rejections() {
+    let harness = build_harness(
+        vec![scripted_state(TurnStatus::Completed, None)],
+        false,
+        None,
+        Duration::from_secs(5),
+    );
+    harness
+        .observer
+        .observe_ack(
+            command_envelope("evt-cmd-unknown", "status"),
+            ProductInboundAck::Rejected(ironclaw_product::ProductRejection::permanent(
+                ironclaw_product::ProductRejectionKind::InvalidRequest,
+                "unknown product command: nope",
+            )),
+        )
+        .await;
+
+    let texts = harness.adapter.texts();
+    assert_eq!(texts.len(), 1, "one help notice: {texts:?}");
+    assert!(texts[0].contains("/model"), "{}", texts[0]);
+    assert!(texts[0].contains("/status"), "{}", texts[0]);
+}
+
+#[tokio::test]
+async fn observer_posts_direct_conversation_notice_for_policy_denied_commands() {
+    let harness = build_harness(
+        vec![scripted_state(TurnStatus::Completed, None)],
+        false,
+        None,
+        Duration::from_secs(5),
+    );
+    harness
+        .observer
+        .observe_ack(
+            command_envelope("evt-cmd-denied", "model"),
+            ProductInboundAck::Rejected(ironclaw_product::ProductRejection::permanent(
+                ironclaw_product::ProductRejectionKind::PolicyDenied,
+                "commands are limited to direct conversations",
+            )),
+        )
+        .await;
+
+    let texts = harness.adapter.texts();
+    assert_eq!(texts.len(), 1);
+    assert!(texts[0].contains("direct conversation"), "{}", texts[0]);
+}
+
 fn accepted_ack(run_id: TurnRunId) -> ProductInboundAck {
     ProductInboundAck::Accepted {
         accepted_message_ref: AcceptedMessageRef::new("msg:accepted").expect("ref"),

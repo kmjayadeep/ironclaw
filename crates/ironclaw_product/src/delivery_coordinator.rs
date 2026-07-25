@@ -62,6 +62,8 @@ pub enum DeliveryIntent {
     ConnectRequired,
     /// Pairing or account-connection status feedback.
     ConnectionStatus,
+    /// A product command's synchronous result or rejection feedback.
+    CommandFeedback,
     /// A transient "working on it" indicator.
     Working,
     /// Remove an earlier delivery (e.g. delete the working indicator).
@@ -96,6 +98,7 @@ impl DeliveryIntent {
             Self::FailureNotice => "failure-notice",
             Self::ConnectRequired => "connect-required",
             Self::ConnectionStatus => "connection-status",
+            Self::CommandFeedback => "command-feedback",
             Self::Working => "working",
             Self::Cleanup => "cleanup",
             Self::TriggeredDelivery => "triggered-delivery",

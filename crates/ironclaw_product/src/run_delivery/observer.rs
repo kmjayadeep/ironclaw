@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::time::Instant;
 
+use crate::commands::{CommandResultView, command_help_text, render_command_result_text};
 use crate::{
     ExternalActorRef, ExternalConversationRef, ExternalEventId, OutboundPart, ProductAdapterError,
     ProductInboundAck, ProductInboundEnvelope, ProductInboundPayload, ProductRejection,
@@ -210,6 +211,11 @@ impl RunDeliveryObserver {
     /// entry point the composition's post-admission observer seam calls.
     pub async fn observe_ack(&self, envelope: ProductInboundEnvelope, ack: ProductInboundAck) {
         self.close_connect_nudge_epoch_after_accepted_user_message(&envelope, &ack);
+        // Product commands settle synchronously; their result or rejection is
+        // the only reply the channel will ever see, so post it here one-shot.
+        if self.post_command_feedback(&envelope, &ack).await {
+            return;
+        }
         // Rejected approval/auth feedback is a single best-effort post, not
         // a long-running delivery — handle before taking the semaphore.
         if self
@@ -789,6 +795,70 @@ impl RunDeliveryObserver {
                 .unwrap_or_else(|_| self.services.fallback_notice_scope.clone()),
             Err(_) => self.services.fallback_notice_scope.clone(),
         }
+    }
+
+    /// One-shot feedback for product-command envelopes: the rendered result
+    /// view for executed commands, inventory-derived help for user-correctable
+    /// rejections, and the direct-conversation notice for policy denials.
+    /// Returns true for every command envelope — command feedback is owned
+    /// here regardless of delivery success (the notice is best-effort).
+    async fn post_command_feedback(
+        &self,
+        envelope: &ProductInboundEnvelope,
+        ack: &ProductInboundAck,
+    ) -> bool {
+        if !matches!(envelope.payload(), ProductInboundPayload::Command(_)) {
+            return false;
+        }
+        let text = match ack {
+            ProductInboundAck::CommandResult { command, payload } => {
+                match serde_json::from_value::<CommandResultView>(payload.as_value().clone()) {
+                    Ok(view) => render_command_result_text(&view),
+                    // Non-view command output (lifecycle responses until they
+                    // adopt the shared view) still deserves an acknowledgement.
+                    Err(_) => format!("/{command} completed."),
+                }
+            }
+            ProductInboundAck::Rejected(rejection) => match rejection.kind {
+                ProductRejectionKind::InvalidRequest => format!(
+                    "That command isn't available here.\n{}",
+                    command_help_text()
+                ),
+                ProductRejectionKind::PolicyDenied => {
+                    "Commands can only be used in a direct conversation with the assistant."
+                        .to_string()
+                }
+                // Other rejection families (e.g. binding-required) have their
+                // own feedback paths; transport retries replay as Duplicate.
+                _ => return true,
+            },
+            _ => return true,
+        };
+        let scope = match self
+            .services
+            .binding_service
+            .lookup_binding(ResolveBindingRequest::from_envelope(envelope))
+            .await
+        {
+            Ok(binding) => thread_scope_from_binding(&binding)
+                .and_then(|thread_scope| turn_scope_from_thread_scope(&binding, &thread_scope))
+                .unwrap_or_else(|_| self.services.fallback_notice_scope.clone()),
+            // Rejected commands can come from conversations with no binding
+            // yet; the notice replies to the sender's own conversation with
+            // fixed host-authored text, so the fallback scope leaks nothing.
+            Err(_) => self.services.fallback_notice_scope.clone(),
+        };
+        self.services
+            .post_notice(
+                DeliveryIntent::CommandFeedback,
+                scope,
+                None,
+                envelope.external_conversation_ref(),
+                &text,
+                format!("command-feedback:{}", envelope.external_event_id().as_str()),
+            )
+            .await;
+        true
     }
 
     async fn post_rejection_hint_if_authorized(
