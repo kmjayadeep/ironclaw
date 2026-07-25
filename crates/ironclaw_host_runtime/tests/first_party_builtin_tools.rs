@@ -9992,6 +9992,7 @@ impl ironclaw_host_runtime::AttestedRaiseHook for RecordingAttestedRaiseHook {
                 capability_id: request.capability_id,
                 expected_tx_hash: "deadbeef".to_string(),
                 reason: ironclaw_host_runtime::RuntimeBlockedReason::AttestedSigningRequired,
+                review_url: None,
             },
         )
     }

@@ -184,7 +184,28 @@ impl SecretsIntentSigner {
     }
 }
 
+#[async_trait::async_trait]
 impl IntentSigner for SecretsIntentSigner {
+    async fn active_key_id(
+        &self,
+        tenant: &ironclaw_signing_provider::TenantId,
+        agent: &str,
+        now_ms: i64,
+    ) -> Result<AgentKeyId, IntentSignerError> {
+        match self.public_keys.active_key(tenant, agent).await {
+            Ok(key) => Ok(key.key_id),
+            // First use for this agent: mint generation 1. A key is provisioned
+            // lazily rather than at agent creation so an agent that never
+            // requests a signature never holds key material.
+            Err(AgentKeyError::NotFound) => {
+                let key_id = AgentKeyId::new(tenant.clone(), agent, 1);
+                self.provision_key(&key_id, now_ms).await?;
+                Ok(key_id)
+            }
+            Err(other) => Err(map_key_error(other)),
+        }
+    }
+
     fn sign_intent(
         &self,
         key_id: &AgentKeyId,

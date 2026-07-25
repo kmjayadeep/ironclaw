@@ -333,7 +333,22 @@ fn push_lp(out: &mut Vec<u8>, bytes: &[u8]) {
 /// sealed agent keystore (`ironclaw_secrets` is a forbidden dependency here).
 /// This crate hands it opaque pre-image bytes and receives a signature; no
 /// private key material ever crosses into the attestation core.
+#[async_trait::async_trait]
 pub trait IntentSigner: Send + Sync {
+    /// The key `(tenant, agent)` should sign with right now, provisioning one
+    /// on first use (§B4: keys are minted lazily, per agent).
+    ///
+    /// Returning the id rather than taking one keeps generation selection —
+    /// and therefore rotation — entirely inside the implementation: a caller
+    /// cannot ask to sign under a retired or revoked generation because it
+    /// never names one.
+    async fn active_key_id(
+        &self,
+        tenant: &TenantId,
+        agent: &str,
+        now_ms: i64,
+    ) -> Result<AgentKeyId, IntentSignerError>;
+
     /// Sign `preimage` with the agent key identified by `key_id`.
     ///
     /// Implementations MUST fail closed when the key is unknown, revoked, or
