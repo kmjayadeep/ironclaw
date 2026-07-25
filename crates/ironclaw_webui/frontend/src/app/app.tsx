@@ -17,6 +17,7 @@ import { ExtensionsPage } from "../pages/extensions/extensions-page";
 import { SettingsPage } from "../pages/settings/settings-page";
 import { AdminPage } from "../pages/admin/admin-page";
 import { LogsPage } from "../pages/logs/logs-page";
+import { ReviewPage } from "../pages/review/review-page";
 import { Button } from "../design-system/button";
 
 function AuthLoading() {
@@ -187,6 +188,12 @@ export function App() {
           <Route path="extensions" element={(<ExtensionsPage isAdmin={auth.isAdmin} />)} />
           <Route path="extensions/:tab" element={(<ExtensionsPage isAdmin={auth.isAdmin} />)} />
           <Route path="logs" element={(<LogsPage />)} />
+          {/* Attested-signing review link target. Inside the authenticated
+              layout on purpose: the public /intent/{token} route reveals
+              nothing and only redirects here, and the page's read is
+              authorized against the session's bound approver. An
+              unauthenticated visitor is bounced to login and returned. */}
+          <Route path="review/:intentId" element={(<ReviewPage />)} />
           <Route path="settings" element={(<SettingsPage />)} />
           <Route path="settings/:tab" element={(<SettingsPage />)} />
           <Route path="admin" element={(<AdminRoute auth={auth} />)} />

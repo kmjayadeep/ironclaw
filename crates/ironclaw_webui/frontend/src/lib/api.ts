@@ -809,3 +809,18 @@ export async function logout() {
     // will eventually expire the session.
   }
 }
+
+// --- Attested signing: intent review (attested-signing Phase C) ---
+
+/**
+ * Load one intent's reviewable detail.
+ *
+ * The public `/intent/{token}` link revealed nothing and only redirected here;
+ * this is the call the server authorizes, against the session, requiring the
+ * caller to BE the intent's bound approver. Every refusal — unknown id, wrong
+ * approver, wrong tenant, expired — is the same bodyless 404, so the page must
+ * treat a 404 as "nothing to show you" and never as "it exists but...".
+ */
+export function fetchIntentDetail({ intentId } = {}) {
+  return apiFetch(`${V2_BASE}/intents/${encodeURIComponent(intentId)}`);
+}

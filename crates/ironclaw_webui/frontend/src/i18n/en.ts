@@ -1286,6 +1286,21 @@ registerPack("en", {
   "admin.usage.cost": "Cost",
 
   // Logs page
+  // Attested-signing transaction review
+  "review.title": "Review this transaction",
+  "review.hash.label": "Transaction hash",
+  "review.hash.compare": "Check that this matches the hash shown on your device, in full, before you approve.",
+  "review.details.label": "Details",
+  "review.details.chain": "Network",
+  "review.expiresIn": "Expires in {minutes} min",
+  "review.state.pending": "Waiting for your approval",
+  "review.state.approved": "Approved",
+  "review.state.rejected": "Declined",
+  "review.state.expired": "Expired",
+  "review.unavailable.title": "This request is not available",
+  "review.unavailable.body": "The link may have expired, already been used, or was not meant for this account.",
+  "review.error.title": "Could not load this request",
+
   "logs.levelAll": "All levels",
   "logs.level.trace": "TRACE",
   "logs.level.debug": "DEBUG",
