@@ -50,6 +50,7 @@
 
 mod binding;
 mod driver;
+mod intent_signer;
 mod port;
 mod ship_gate;
 mod trust;
@@ -71,6 +72,9 @@ pub use driver::{
     AttestedSignerContinuationDriver, BindingOwner, BroadcastDisposition, BroadcastOutcome,
     Broadcaster, ContinuationError, CustodialSignerLike, EvmSignable, ProviderRegistry,
     RebuildError, SignerContinuationOutcome, VerifiedContinuation,
+};
+pub use intent_signer::{
+    InMemorySealedAgentKeyStore, SealedAgentKey, SealedAgentKeyStore, SecretsIntentSigner,
 };
 pub use port::{
     InMemoryResumeGuard, ResumeGuard, RuntimeAttestedResumePort, approved_tx_hash_ref_hex,
