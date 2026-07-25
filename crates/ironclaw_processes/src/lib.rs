@@ -34,8 +34,10 @@ pub use cancellation::{ProcessCancellationRegistry, ProcessCancellationToken};
 pub use host::{ProcessHost, ProcessSubscription};
 pub use journal::{
     ClaimProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
-    JournaledProcessSnapshot, KillProcessRequest, ProcessCheckpointRef, ProcessJournalCursor,
-    ProcessJournalEntry, ProcessJournalError, ProcessJournalKind, ProcessKind, ProcessLeaseRequest,
+    GetProcessSnapshotRequest, JournaledProcessSnapshot, KillProcessRequest, ProcessCheckpointRef,
+    ProcessJournalCursor, ProcessJournalEntry, ProcessJournalError, ProcessJournalKind,
+    ProcessJournalPage, ProcessJournalProjectionCursor, ProcessJournalProjectionRequest,
+    ProcessJournalProjectionSnapshot, ProcessJournalSource, ProcessKind, ProcessLeaseRequest,
     ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleStatus, ProcessOutcome,
     ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort, ProcessWorkerId,
     RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, ResumeProcessRequest,

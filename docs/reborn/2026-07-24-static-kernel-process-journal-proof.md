@@ -65,6 +65,24 @@ payloads (`ResolvedRunProfile`, loop driver context, and turn scope). That is
 the next hard boundary: full claim migration needs either an agent-turn process
 claim payload or post-claim profile resolution behind the executor adapter.
 
+## Read-Side Journal Slice
+
+`ironclaw_processes` now owns `ProcessJournalSource`, the canonical read-side
+contract for process snapshots and ordered process journal pages. It covers
+scoped reads and global durable projection reads without depending upward on
+turn types.
+
+`ironclaw_turns::AgentTurnProcessJournalAdapter` exposes the existing turn row
+store and turn event log through that process-owned source. The reverse adapter,
+`TurnEventProjectionFromProcessJournal`, implements the old
+`TurnEventProjectionSource` as a compatibility view over `ProcessJournalSource`.
+Tests prove both directions against the real in-memory row store:
+
+- submit through `TurnStateStore`, then read the snapshot and submitted event
+  through `ProcessJournalSource`;
+- submit through `TurnStateStore`, expose the journal as process entries, then
+  read old `TurnLifecycleEvent` entries through the process-backed turn view.
+
 ## Boundary Found
 
 The kernel should own the durable process state machine and journal. It should
@@ -88,9 +106,11 @@ This proves the next cut should be a rename-and-collapse, not a parallel layer:
    `agent_turn` process.
 
 The first item is now implemented and production-wired as a migration façade.
-The next reducer is the third item: rename/move the backing transition engine
-and row-store contracts in place, with `TurnRunTransitionPort` becoming the
-compatibility adapter rather than the canonical port.
+The read-side journal source is now also implemented and production-wired as a
+migration façade. The next reducer is the third item: rename/move the backing
+transition engine and row-store contracts in place, with `TurnRunTransitionPort`
+and `TurnEventProjectionSource` becoming compatibility adapters rather than
+canonical ports.
 
 The design would become counterproductive if a second process store or scheduler
 is added beside `TurnStateStore` / `TurnRunTransitionPort`. The simplification

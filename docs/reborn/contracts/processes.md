@@ -120,6 +120,20 @@ pub trait ProcessTransitionPort: Send + Sync {
 }
 ```
 
+The journal module also owns the process read/projection source:
+
+```rust
+pub trait ProcessJournalSource: Send + Sync {
+    async fn get_process_snapshot(...) -> Result<JournaledProcessSnapshot, Self::Error>;
+    async fn read_process_journal_after(...) -> Result<ProcessJournalPage, Self::Error>;
+    async fn read_process_journal_log_after(...) -> Result<ProcessJournalPage, Self::Error>;
+}
+```
+
+`ProcessJournalSource` is the canonical read-side process contract for current
+state and ordered lifecycle facts. Turn lifecycle streams are compatibility
+views over this source during the migration, not a second journal authority.
+
 During migration, `ironclaw_turns::AgentTurnProcessTransitionAdapter` implements
 this port over the existing `TurnRunTransitionPort`. This is intentionally an
 adapter, not a second store: process-named callers must converge onto the

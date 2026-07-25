@@ -56,7 +56,7 @@ use ironclaw_loop_host::{
     LoopCapabilityResultWriter, ModelGatewayBackedSystemInferencePort,
 };
 use ironclaw_observability::live_latency_started_at;
-use ironclaw_processes::ProcessTransitionPort;
+use ironclaw_processes::{ProcessJournalSource, ProcessTransitionPort};
 use ironclaw_product::ProjectionStream;
 use ironclaw_product::{
     ApprovalBlockedTurnRun, ApprovalInteractionScope, ApprovalInteractionService,
@@ -87,12 +87,12 @@ use ironclaw_threads::{
     SessionThreadService, ThreadHistoryRequest, ThreadScope,
 };
 use ironclaw_turns::{
-    AcceptedMessageRef, CancelRunRequest, CancelRunResponse, GetRunStateRequest, IdempotencyKey,
-    LoopGateRef, ReplyTargetBindingRef, RunProfileResolutionRequest, SanitizedCancelReason,
-    SourceBindingRef, SubmitTurnRequest, SubmitTurnResponse, TurnActor, TurnCoordinator, TurnError,
-    TurnEventProjectionSource, TurnId, TurnPersistenceSnapshot, TurnRunId, TurnRunRecord,
-    TurnRunState, TurnRunWake, TurnScope, TurnSpawnTreeStateStore, TurnStateRowStore,
-    TurnStateStoreLimits, TurnStatus,
+    AcceptedMessageRef, AgentTurnProcessJournalAdapter, CancelRunRequest, CancelRunResponse,
+    GetRunStateRequest, IdempotencyKey, LoopGateRef, ReplyTargetBindingRef,
+    RunProfileResolutionRequest, SanitizedCancelReason, SourceBindingRef, SubmitTurnRequest,
+    SubmitTurnResponse, TurnActor, TurnCoordinator, TurnError, TurnEventProjectionSource, TurnId,
+    TurnPersistenceSnapshot, TurnRunId, TurnRunRecord, TurnRunState, TurnRunWake, TurnScope,
+    TurnSpawnTreeStateStore, TurnStateRowStore, TurnStateStoreLimits, TurnStatus,
     events::EventCursor,
     run_profile::{LoopHostMilestoneSink, LoopRunContext},
 };
@@ -371,6 +371,7 @@ struct RuntimeStoreParts {
     turn_state_store: Arc<dyn RuntimeTurnStateStore>,
     turn_state_flush: Arc<dyn TurnStateFlush>,
     process_transition_port: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
+    process_journal_source: Arc<dyn ProcessJournalSource<Error = TurnError>>,
     checkpoint_state_store: Arc<dyn ironclaw_turns::CheckpointStateStorePort>,
     loop_checkpoint_store: Arc<dyn ironclaw_turns::LoopCheckpointStore>,
     thread_service: Arc<dyn SessionThreadService>,
@@ -460,6 +461,10 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
             &turn_state,
         )
             as Arc<dyn ironclaw_turns::runner::TurnRunTransitionPort>)),
+        process_journal_source: Arc::new(AgentTurnProcessJournalAdapter::new(
+            Arc::clone(&turn_state) as Arc<dyn ironclaw_turns::TurnStateStore>,
+            Arc::clone(&turn_state) as Arc<dyn TurnEventProjectionSource>,
+        )),
         checkpoint_state_store,
         loop_checkpoint_store,
         thread_service,
@@ -778,6 +783,11 @@ pub struct RebornRuntime {
         reason = "migration handle for process-journal cutover; wired before runner call sites move"
     )]
     pub(crate) process_transition_port: Arc<dyn ProcessTransitionPort<Error = TurnError>>,
+    #[allow(
+        dead_code,
+        reason = "migration handle for process-journal cutover; wired before projection call sites move"
+    )]
+    pub(crate) process_journal_source: Arc<dyn ProcessJournalSource<Error = TurnError>>,
     pub(crate) turn_run_snapshot_source: Arc<dyn TurnRunSnapshotSource>,
     turn_tree_store: Arc<dyn TurnSpawnTreeStateStore>,
     thread_service: Arc<dyn SessionThreadService>,
@@ -3628,6 +3638,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         turn_state_store,
         turn_state_flush,
         process_transition_port,
+        process_journal_source,
         checkpoint_state_store,
         loop_checkpoint_store,
         thread_service,
@@ -4374,7 +4385,10 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     } else {
         Arc::new(auth_interaction::UnavailableAuthInteractionService)
     };
-    let turn_event_source: Arc<dyn TurnEventProjectionSource> = turn_state_store.clone();
+    let turn_event_source: Arc<dyn TurnEventProjectionSource> =
+        Arc::new(ironclaw_turns::TurnEventProjectionFromProcessJournal::new(
+            Arc::clone(&process_journal_source),
+        ));
     let mut projection_services = projection_services
         .with_turn_events(turn_event_source, Arc::clone(&planned_turn_coordinator))
         .with_model_failure_explainer_factory(failure_explanation_inference);
@@ -4819,6 +4833,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         poll_settings: poll,
         admin_api_token_minter,
         process_transition_port,
+        process_journal_source,
         actor_user_id,
         source_binding_ref: validated_identity.source_binding_ref,
         reply_target_binding_ref: validated_identity.reply_target_binding_ref,

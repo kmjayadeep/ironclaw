@@ -11,22 +11,27 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use ironclaw_host_api::ProcessId;
+use ironclaw_host_api::{ProcessId, ResourceScope, SYSTEM_RESERVED_ID};
 use ironclaw_processes::{
     ClaimProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
-    JournaledProcessSnapshot, ProcessCheckpointRef, ProcessJournalCursor, ProcessJournalEntry,
-    ProcessJournalKind, ProcessKind, ProcessLeaseRequest, ProcessLeaseSnapshot, ProcessLeaseToken,
-    ProcessLifecycleStatus, ProcessOutcome, ProcessSuspension, ProcessSuspensionKind,
-    ProcessTransitionPort, ProcessWorkerId, RecoverExpiredProcessLeasesRequest,
-    RecoverExpiredProcessLeasesResponse, SuspendProcessRequest,
+    GetProcessSnapshotRequest, JournaledProcessSnapshot, ProcessCheckpointRef,
+    ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind, ProcessJournalPage,
+    ProcessJournalSource, ProcessKind, ProcessLeaseRequest, ProcessLeaseSnapshot,
+    ProcessLeaseToken, ProcessLifecycleStatus, ProcessOutcome, ProcessSuspension,
+    ProcessSuspensionKind, ProcessTransitionPort, ProcessWorkerId,
+    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, SuspendProcessRequest,
 };
 
 use crate::{
-    AcceptedMessageRef, BlockedReason, GateKind, GateResumeDisposition, LoopExitMapping,
-    ProductTurnContext, ReplyTargetBindingRef, ResolvedRunProfile, RunProfileId, RunProfileVersion,
-    SourceBindingRef, TurnCheckpointId, TurnError, TurnEventKind, TurnLifecycleEvent, TurnRunId,
-    TurnRunRecord, TurnRunState, TurnRunnerId, TurnScope, TurnStatus,
-    events::TurnBlockedGateKind,
+    AcceptedMessageRef, BlockedReason, GateKind, GateResumeDisposition, GetRunStateRequest,
+    LoopExitMapping, ProductTurnContext, ReplyTargetBindingRef, ResolvedRunProfile, RunProfileId,
+    RunProfileVersion, SourceBindingRef, TurnCheckpointId, TurnError, TurnEventKind,
+    TurnLifecycleEvent, TurnRunId, TurnRunRecord, TurnRunState, TurnRunnerId, TurnScope,
+    TurnStatus,
+    events::{
+        EventCursor, TurnBlockedGateKind, TurnBlockedGateMetadata, TurnEventPage,
+        TurnEventProjectionSource,
+    },
     run_profile::{LoopModelRouteSnapshot, LoopModelUsage},
     runner::{
         ApplyValidatedLoopExitRequest, BlockRunRequest, CancelRunCompletionRequest,
@@ -35,6 +40,7 @@ use crate::{
         RecoverExpiredLeasesRequest, RecoverExpiredLeasesResponse, RelinquishRunRequest,
         TurnRunTransitionPort, TurnRunnerOutcome,
     },
+    store::TurnStateStore,
 };
 
 pub type KernelProcessId = ProcessId;
@@ -58,6 +64,7 @@ pub type KernelRecoverExpiredLeasesResponse = RecoverExpiredProcessLeasesRespons
 pub type KernelProcessOutcome = ProcessOutcome;
 pub type KernelClaimProcessRequest = ClaimProcessRequest;
 pub type KernelClaimProcessesRequest = ClaimProcessesRequest;
+pub type KernelProcessJournalPage = ProcessJournalPage;
 
 pub const AGENT_TURN_PROCESS_KIND: &str = "agent_turn";
 
@@ -404,24 +411,149 @@ impl AgentTurnProcessTransitionAdapter {
     }
 }
 
+#[derive(Clone)]
+pub struct AgentTurnProcessJournalAdapter {
+    state: Arc<dyn TurnStateStore>,
+    events: Arc<dyn TurnEventProjectionSource>,
+}
+
+impl AgentTurnProcessJournalAdapter {
+    pub fn new(state: Arc<dyn TurnStateStore>, events: Arc<dyn TurnEventProjectionSource>) -> Self {
+        Self { state, events }
+    }
+}
+
+#[async_trait]
+impl ProcessJournalSource for AgentTurnProcessJournalAdapter {
+    type Error = TurnError;
+
+    async fn get_process_snapshot(
+        &self,
+        request: GetProcessSnapshotRequest,
+    ) -> Result<JournaledProcessSnapshot, Self::Error> {
+        let scope = turn_scope_from_process_scope(request.scope)?;
+        let state = self
+            .state
+            .get_run_state(GetRunStateRequest {
+                scope,
+                run_id: turn_run_id_from_process_id(request.process_id),
+            })
+            .await?;
+        Ok(state.to_process_state_snapshot())
+    }
+
+    async fn read_process_journal_after(
+        &self,
+        scope: &ResourceScope,
+        owner_user_id: Option<&ironclaw_host_api::UserId>,
+        after: Option<ProcessJournalCursor>,
+        limit: usize,
+    ) -> Result<ProcessJournalPage, Self::Error> {
+        let scope = turn_scope_from_process_scope(scope.clone())?;
+        let page = self
+            .events
+            .read_turn_events_after(
+                &scope,
+                owner_user_id,
+                after.map(|cursor| EventCursor(cursor.0)),
+                limit,
+            )
+            .await?;
+        Ok(process_journal_page_from_turn(page))
+    }
+
+    async fn read_process_journal_log_after(
+        &self,
+        after: Option<ProcessJournalCursor>,
+        limit: usize,
+    ) -> Result<ProcessJournalPage, Self::Error> {
+        let page = self
+            .events
+            .read_turn_event_log_after(after.map(|cursor| EventCursor(cursor.0)), limit)
+            .await?;
+        Ok(process_journal_page_from_turn(page))
+    }
+}
+
+#[derive(Clone)]
+pub struct TurnEventProjectionFromProcessJournal {
+    source: Arc<dyn ProcessJournalSource<Error = TurnError>>,
+}
+
+impl TurnEventProjectionFromProcessJournal {
+    pub fn new(source: Arc<dyn ProcessJournalSource<Error = TurnError>>) -> Self {
+        Self { source }
+    }
+}
+
+#[async_trait]
+impl TurnEventProjectionSource for TurnEventProjectionFromProcessJournal {
+    async fn read_turn_events_after(
+        &self,
+        scope: &TurnScope,
+        owner_user_id: Option<&ironclaw_host_api::UserId>,
+        after: Option<EventCursor>,
+        limit: usize,
+    ) -> Result<TurnEventPage, TurnError> {
+        let page = self
+            .source
+            .read_process_journal_after(
+                &scope.to_resource_scope(),
+                owner_user_id,
+                after.map(|cursor| ProcessJournalCursor(cursor.0)),
+                limit,
+            )
+            .await?;
+        turn_event_page_from_process_journal(page)
+    }
+
+    async fn read_turn_event_log_after(
+        &self,
+        after: Option<EventCursor>,
+        limit: usize,
+    ) -> Result<TurnEventPage, TurnError> {
+        let page = self
+            .source
+            .read_process_journal_log_after(
+                after.map(|cursor| ProcessJournalCursor(cursor.0)),
+                limit,
+            )
+            .await?;
+        turn_event_page_from_process_journal(page)
+    }
+}
+
 fn turn_scope_filter_from_process(
     scope_filter: Option<ironclaw_host_api::ResourceScope>,
 ) -> Result<Option<TurnScope>, TurnError> {
     let Some(scope) = scope_filter else {
         return Ok(None);
     };
+    turn_scope_from_process_scope(scope).map(Some)
+}
+
+fn turn_scope_from_process_scope(scope: ResourceScope) -> Result<TurnScope, TurnError> {
     let Some(thread_id) = scope.thread_id else {
         return Err(TurnError::InvalidRequest {
             reason: "process scope filter for agent turns requires thread_id".to_string(),
         });
     };
-    Ok(Some(TurnScope::new_with_owner(
-        scope.tenant_id,
-        scope.agent_id,
-        scope.project_id,
-        thread_id,
-        Some(scope.user_id),
-    )))
+    if scope.user_id.as_str() == SYSTEM_RESERVED_ID {
+        Ok(TurnScope::new(
+            scope.tenant_id,
+            scope.agent_id,
+            scope.project_id,
+            thread_id,
+        ))
+    } else {
+        Ok(TurnScope::new_with_owner(
+            scope.tenant_id,
+            scope.agent_id,
+            scope.project_id,
+            thread_id,
+            Some(scope.user_id),
+        ))
+    }
 }
 
 fn turn_recover_request_from_process(
@@ -697,6 +829,159 @@ pub fn process_recover_response_from_turn(
             .iter()
             .map(TurnRunStateProcessExt::to_process_state_snapshot)
             .collect(),
+    }
+}
+
+pub fn process_journal_page_from_turn(page: TurnEventPage) -> ProcessJournalPage {
+    ProcessJournalPage {
+        entries: page
+            .entries
+            .iter()
+            .map(TurnLifecycleProcessExt::to_process_journal_entry)
+            .collect(),
+        next_cursor: ProcessJournalCursor(page.next_cursor.0),
+        truncated: page.truncated,
+        rebase_required: page
+            .rebase_required
+            .map(|cursor| ProcessJournalCursor(cursor.0)),
+    }
+}
+
+pub fn turn_event_page_from_process_journal(
+    page: ProcessJournalPage,
+) -> Result<TurnEventPage, TurnError> {
+    Ok(TurnEventPage {
+        entries: page
+            .entries
+            .into_iter()
+            .filter(|entry| entry.process_kind == ProcessKind::AgentTurn)
+            .map(turn_lifecycle_event_from_process_journal_entry)
+            .collect::<Result<Vec<_>, _>>()?,
+        next_cursor: EventCursor(page.next_cursor.0),
+        truncated: page.truncated,
+        rebase_required: page.rebase_required.map(|cursor| EventCursor(cursor.0)),
+    })
+}
+
+pub fn turn_lifecycle_event_from_process_journal_entry(
+    entry: ProcessJournalEntry,
+) -> Result<TurnLifecycleEvent, TurnError> {
+    if entry.process_kind != ProcessKind::AgentTurn {
+        return Err(TurnError::InvalidRequest {
+            reason: "process journal entry is not an agent turn".to_string(),
+        });
+    }
+    let status = turn_status_from_process_status(entry.status, entry.suspension.as_ref())?;
+    let kind = turn_event_kind_from_process_journal_kind(entry.kind);
+    let scope = turn_scope_from_process_scope(entry.scope)?;
+    let blocked_gate = if kind == TurnEventKind::Blocked {
+        entry
+            .suspension
+            .map(turn_blocked_gate_metadata_from_process_suspension)
+            .transpose()?
+    } else {
+        None
+    };
+    Ok(TurnLifecycleEvent {
+        cursor: EventCursor(entry.cursor.0),
+        scope,
+        occurred_at: entry.occurred_at,
+        owner_user_id: entry.owner_user_id,
+        run_id: turn_run_id_from_process_id(entry.process_id),
+        status,
+        kind,
+        blocked_gate,
+        sanitized_reason: entry.sanitized_reason,
+        retryable: entry.retryable,
+        detail: entry.detail,
+    })
+}
+
+pub fn turn_status_from_process_status(
+    status: ProcessLifecycleStatus,
+    suspension: Option<&ProcessSuspension>,
+) -> Result<TurnStatus, TurnError> {
+    Ok(match status {
+        ProcessLifecycleStatus::Queued => TurnStatus::Queued,
+        ProcessLifecycleStatus::Running => TurnStatus::Running,
+        ProcessLifecycleStatus::Suspended => {
+            let Some(suspension) = suspension else {
+                return Err(TurnError::InvalidRequest {
+                    reason: "suspended agent-turn process requires suspension metadata".to_string(),
+                });
+            };
+            turn_status_from_process_suspension_kind(suspension.kind)
+        }
+        ProcessLifecycleStatus::CancelRequested | ProcessLifecycleStatus::StopRequested => {
+            TurnStatus::CancelRequested
+        }
+        ProcessLifecycleStatus::Stopped | ProcessLifecycleStatus::Completed => {
+            TurnStatus::Completed
+        }
+        ProcessLifecycleStatus::Cancelled | ProcessLifecycleStatus::Killed => TurnStatus::Cancelled,
+        ProcessLifecycleStatus::Failed => TurnStatus::Failed,
+        ProcessLifecycleStatus::RecoveryRequired => TurnStatus::RecoveryRequired,
+    })
+}
+
+fn turn_status_from_process_suspension_kind(kind: ProcessSuspensionKind) -> TurnStatus {
+    match kind {
+        ProcessSuspensionKind::Approval => TurnStatus::BlockedApproval,
+        ProcessSuspensionKind::Authorization => TurnStatus::BlockedAuth,
+        ProcessSuspensionKind::Resource => TurnStatus::BlockedResource,
+        ProcessSuspensionKind::AwaitingChildProcess => TurnStatus::BlockedDependentRun,
+        ProcessSuspensionKind::ExternalTool
+        | ProcessSuspensionKind::ExternalProcess
+        | ProcessSuspensionKind::ExtensionDefined => TurnStatus::BlockedExternalTool,
+    }
+}
+
+fn turn_event_kind_from_process_journal_kind(kind: ProcessJournalKind) -> TurnEventKind {
+    match kind {
+        ProcessJournalKind::Submitted | ProcessJournalKind::Spawned => TurnEventKind::Submitted,
+        ProcessJournalKind::Resumed => TurnEventKind::Resumed,
+        ProcessJournalKind::Claimed => TurnEventKind::RunnerClaimed,
+        ProcessJournalKind::Heartbeat => TurnEventKind::RunnerHeartbeat,
+        ProcessJournalKind::RecoveryRequired => TurnEventKind::RecoveryRequired,
+        ProcessJournalKind::Suspended => TurnEventKind::Blocked,
+        ProcessJournalKind::CancelRequested | ProcessJournalKind::StopRequested => {
+            TurnEventKind::CancelRequested
+        }
+        ProcessJournalKind::Cancelled
+        | ProcessJournalKind::Stopped
+        | ProcessJournalKind::Killed => TurnEventKind::Cancelled,
+        ProcessJournalKind::Completed => TurnEventKind::Completed,
+        ProcessJournalKind::Failed => TurnEventKind::Failed,
+    }
+}
+
+fn turn_blocked_gate_metadata_from_process_suspension(
+    suspension: ProcessSuspension,
+) -> Result<TurnBlockedGateMetadata, TurnError> {
+    let Some(gate_ref) = suspension.gate_ref else {
+        return Err(TurnError::InvalidRequest {
+            reason: "blocked agent-turn process requires gate_ref".to_string(),
+        });
+    };
+    Ok(TurnBlockedGateMetadata {
+        gate_ref,
+        gate_kind: turn_blocked_gate_kind_from_process_suspension_kind(suspension.kind),
+        activity_id: suspension.activity_id,
+        credential_requirements: suspension.credential_requirements,
+    })
+}
+
+fn turn_blocked_gate_kind_from_process_suspension_kind(
+    kind: ProcessSuspensionKind,
+) -> TurnBlockedGateKind {
+    match kind {
+        ProcessSuspensionKind::Approval => TurnBlockedGateKind::Approval,
+        ProcessSuspensionKind::Authorization => TurnBlockedGateKind::Auth,
+        ProcessSuspensionKind::Resource => TurnBlockedGateKind::Resource,
+        ProcessSuspensionKind::AwaitingChildProcess => TurnBlockedGateKind::AwaitDependentRun,
+        ProcessSuspensionKind::ExternalTool
+        | ProcessSuspensionKind::ExternalProcess
+        | ProcessSuspensionKind::ExtensionDefined => TurnBlockedGateKind::ExternalTool,
     }
 }
 
@@ -1147,6 +1432,87 @@ mod tests {
             .await
             .expect("complete process");
         assert_eq!(completed.status, ProcessLifecycleStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn process_journal_source_reads_real_turn_store_as_process_journal() {
+        let store = Arc::new(crate::test_support::in_memory_turn_state_store());
+        let source = AgentTurnProcessJournalAdapter::new(
+            store.clone() as Arc<dyn TurnStateStore>,
+            store.clone() as Arc<dyn TurnEventProjectionSource>,
+        );
+        let run_id = TurnRunId::new();
+        let response = store
+            .submit_turn(
+                submit_request(run_id),
+                &AllowAllAdmissionPolicy,
+                &InMemoryRunProfileResolver::default(),
+            )
+            .await
+            .expect("submit turn");
+        let SubmitTurnResponse::Accepted {
+            run_id: accepted_run_id,
+            ..
+        } = response;
+        assert_eq!(accepted_run_id, run_id);
+
+        let process_scope = scope().to_resource_scope();
+        let snapshot = source
+            .get_process_snapshot(GetProcessSnapshotRequest {
+                scope: process_scope.clone(),
+                process_id: process_id_from_turn_run_id(run_id),
+            })
+            .await
+            .expect("process snapshot");
+        assert_eq!(snapshot.process_id, process_id_from_turn_run_id(run_id));
+        assert_eq!(snapshot.process_kind, ProcessKind::AgentTurn);
+        assert_eq!(snapshot.status, ProcessLifecycleStatus::Queued);
+
+        let page = source
+            .read_process_journal_after(&process_scope, None, None, 10)
+            .await
+            .expect("process journal page");
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(
+            page.entries[0].process_id,
+            process_id_from_turn_run_id(run_id)
+        );
+        assert_eq!(page.entries[0].kind, ProcessJournalKind::Submitted);
+        assert_eq!(page.next_cursor, page.entries[0].cursor);
+    }
+
+    #[tokio::test]
+    async fn turn_event_projection_can_be_a_view_over_process_journal() {
+        let store = Arc::new(crate::test_support::in_memory_turn_state_store());
+        let process_source: Arc<dyn ProcessJournalSource<Error = TurnError>> =
+            Arc::new(AgentTurnProcessJournalAdapter::new(
+                store.clone() as Arc<dyn TurnStateStore>,
+                store.clone() as Arc<dyn TurnEventProjectionSource>,
+            ));
+        let turn_view = TurnEventProjectionFromProcessJournal::new(process_source);
+        let run_id = TurnRunId::new();
+        let response = store
+            .submit_turn(
+                submit_request(run_id),
+                &AllowAllAdmissionPolicy,
+                &InMemoryRunProfileResolver::default(),
+            )
+            .await
+            .expect("submit turn");
+        let SubmitTurnResponse::Accepted {
+            run_id: accepted_run_id,
+            ..
+        } = response;
+        assert_eq!(accepted_run_id, run_id);
+
+        let page = turn_view
+            .read_turn_events_after(&scope(), None, None, 10)
+            .await
+            .expect("turn view page");
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].run_id, run_id);
+        assert_eq!(page.entries[0].kind, TurnEventKind::Submitted);
+        assert_eq!(page.entries[0].status, TurnStatus::Queued);
     }
 
     #[test]

@@ -251,6 +251,87 @@ pub struct ProcessJournalEntry {
     pub metadata: Value,
 }
 
+/// Scope-bound process journal cursor.
+///
+/// The scope rides with the cursor so product adapters cannot replay a cursor
+/// minted for one scope as bearer authority for another.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ProcessJournalProjectionCursor {
+    pub journal: ProcessJournalCursor,
+    pub scope: ResourceScope,
+}
+
+impl ProcessJournalProjectionCursor {
+    pub fn for_scope(scope: ResourceScope, journal: ProcessJournalCursor) -> Self {
+        Self { journal, scope }
+    }
+
+    pub fn origin_for_scope(scope: ResourceScope) -> Self {
+        Self {
+            journal: ProcessJournalCursor(0),
+            scope,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetProcessSnapshotRequest {
+    pub scope: ResourceScope,
+    pub process_id: ProcessId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessJournalProjectionRequest {
+    pub scope: ResourceScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_user_id: Option<UserId>,
+    pub after: Option<ProcessJournalProjectionCursor>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProcessJournalPage {
+    pub entries: Vec<ProcessJournalEntry>,
+    pub next_cursor: ProcessJournalCursor,
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rebase_required: Option<ProcessJournalCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProcessJournalProjectionSnapshot {
+    pub entries: Vec<ProcessJournalEntry>,
+    pub next_cursor: ProcessJournalProjectionCursor,
+    pub truncated: bool,
+}
+
+#[async_trait]
+pub trait ProcessJournalSource: Send + Sync {
+    type Error: Send + Sync + 'static;
+
+    async fn get_process_snapshot(
+        &self,
+        request: GetProcessSnapshotRequest,
+    ) -> Result<JournaledProcessSnapshot, Self::Error>;
+
+    async fn read_process_journal_after(
+        &self,
+        scope: &ResourceScope,
+        owner_user_id: Option<&UserId>,
+        after: Option<ProcessJournalCursor>,
+        limit: usize,
+    ) -> Result<ProcessJournalPage, Self::Error>;
+
+    /// Read the authoritative process journal in global cursor order for
+    /// host-owned durable projection consumers.
+    async fn read_process_journal_log_after(
+        &self,
+        after: Option<ProcessJournalCursor>,
+        limit: usize,
+    ) -> Result<ProcessJournalPage, Self::Error>;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessLeaseRequest {
     pub process_id: ProcessId,
