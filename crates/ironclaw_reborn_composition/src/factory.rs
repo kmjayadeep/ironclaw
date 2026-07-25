@@ -1027,17 +1027,24 @@ pub(crate) struct RebornRuntimeStores {
     pub(crate) outbound_state: Arc<dyn OutboundStateStorePort>,
     pub(crate) delivered_gate_routes: Arc<dyn DeliveredGateRouteStore>,
     pub(crate) triggered_run_delivery: Arc<dyn TriggeredRunDeliveryStore>,
-    /// Late-rebindable turn-run source the trigger active-run lookup reads
-    /// (`crate::turn_run_snapshot`). Production points it at this runtime's own
-    /// turn-state store; a `test-support` harness can repoint it at its own
+    /// Late-rebindable process lifecycle source the trigger active-run lookup
+    /// reads. Production points it at this runtime's own turn-backed process
+    /// lifecycle adapter; a `test-support` harness can repoint it at its own
     /// store so its runs are visible to the trigger subsystem.
     #[cfg(any(test, feature = "test-support"))]
     #[allow(
         dead_code,
         reason = "held for test-support rebinding after runtime construction"
     )]
-    pub(crate) trigger_source_turn_state:
-        Arc<std::sync::RwLock<Arc<dyn crate::turn_run_snapshot::TurnRunSnapshotSource>>>,
+    pub(crate) trigger_source_turn_state: Arc<
+        std::sync::RwLock<
+            Arc<
+                dyn ironclaw_processes::ProcessLifecycleLookupSource<
+                        Error = ironclaw_turns::TurnError,
+                    >,
+            >,
+        >,
+    >,
     /// Sibling rebindable slot, `TurnStateStore`-typed, read by the trigger
     /// delivery-target service; repointed together with the snapshot slot.
     #[cfg(any(test, feature = "test-support"))]
@@ -4708,22 +4715,33 @@ async fn build_backend_production(
                 reason: format!("trigger conversation services unavailable: {error}"),
             })?;
     // Same store-backed lookup the WebUI automations panel builds from the
-    // runtime's turn-state snapshot source (#5886). Read through a rebindable
+    // runtime's process lifecycle source (#5886). Read through a rebindable
     // source so a test-support harness can repoint the trigger subsystem at its
     // own turn store; production installs this runtime's own store and never
     // repoints it.
     let trigger_source_turn_state: Arc<
-        std::sync::RwLock<Arc<dyn crate::turn_run_snapshot::TurnRunSnapshotSource>>,
-    > = Arc::new(std::sync::RwLock::new(
-        Arc::clone(&turn_state) as Arc<dyn crate::turn_run_snapshot::TurnRunSnapshotSource>
-    ));
+        std::sync::RwLock<
+            Arc<
+                dyn ironclaw_processes::ProcessLifecycleLookupSource<
+                        Error = ironclaw_turns::TurnError,
+                    >,
+            >,
+        >,
+    > = Arc::new(std::sync::RwLock::new(Arc::clone(&turn_state)
+        as Arc<
+            dyn ironclaw_processes::ProcessLifecycleLookupSource<Error = ironclaw_turns::TurnError>,
+        >));
     let trigger_active_run_lookup: Arc<dyn TriggerActiveRunLookup> = Arc::new(
         crate::automation::trigger_poller::SnapshotActiveRunLookup::new(Arc::new(
-            crate::turn_run_snapshot::RebindableTurnRunSnapshotSource::new(Arc::clone(
+            crate::turn_run_snapshot::RebindableProcessLifecycleLookupSource::new(Arc::clone(
                 &trigger_source_turn_state,
             )),
         )
-            as Arc<dyn crate::turn_run_snapshot::TurnRunSnapshotSource>),
+            as Arc<
+                dyn ironclaw_processes::ProcessLifecycleLookupSource<
+                        Error = ironclaw_turns::TurnError,
+                    >,
+            >),
     );
     let mut first_party_registry = production_first_party_registry_with_trigger_create_hook(
         Arc::clone(&trigger_repository),

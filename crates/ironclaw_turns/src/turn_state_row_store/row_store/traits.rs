@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use ironclaw_filesystem::RootFilesystem;
 use ironclaw_host_api::UserId;
+use ironclaw_processes::{
+    ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,
+};
 use tracing::Instrument;
 
 use crate::{
@@ -27,6 +30,9 @@ use super::{
         run_state_with_idempotency_targeted_delta, submit_turn_targeted_delta,
     },
     turn_state_write_span,
+};
+use crate::process_journal::{
+    process_id_from_turn_run_id, process_status_from_turn_status, process_suspension_from_record,
 };
 use crate::turn_state_row_store::{
     profile_resolver::PreResolvedRunProfileResolver, projection, runner_lease::RunnerLeaseOverlay,
@@ -389,6 +395,54 @@ where
             Some(&root_run_id),
         ))
         .await
+    }
+}
+
+#[async_trait]
+impl<F> ProcessLifecycleLookupSource for TurnStateRowStore<F>
+where
+    F: RootFilesystem + Send + Sync + 'static,
+{
+    type Error = TurnError;
+
+    async fn process_lifecycle_states(
+        &self,
+        request: ProcessLifecycleLookupBatchRequest,
+    ) -> Vec<Result<ProcessLifecycleLookupResult, Self::Error>> {
+        let snapshot = match self.persistence_snapshot().await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let reason = error.to_string();
+                return request
+                    .processes
+                    .into_iter()
+                    .map(|_| {
+                        Err(TurnError::Unavailable {
+                            reason: reason.clone(),
+                        })
+                    })
+                    .collect();
+            }
+        };
+        request
+            .processes
+            .into_iter()
+            .map(|lookup| {
+                let result = snapshot
+                    .runs
+                    .iter()
+                    .find(|run| {
+                        process_id_from_turn_run_id(run.run_id) == lookup.process_id
+                            && run.scope.tenant_id == lookup.tenant_id
+                    })
+                    .map(|run| ProcessLifecycleLookupResult::Found {
+                        status: process_status_from_turn_status(run.status),
+                        suspension: process_suspension_from_record(run),
+                    })
+                    .unwrap_or(ProcessLifecycleLookupResult::Missing);
+                Ok(result)
+            })
+            .collect()
     }
 }
 

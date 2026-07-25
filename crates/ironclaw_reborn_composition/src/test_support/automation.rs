@@ -6,12 +6,12 @@
 use std::sync::Arc;
 
 use ironclaw_filesystem::RootFilesystem;
+use ironclaw_processes::ProcessLifecycleLookupSource;
 use ironclaw_product::AutomationProductService;
 use ironclaw_triggers::{TriggerActiveRunLookup, TriggerRepository};
-use ironclaw_turns::{TurnStateRowStore, TurnStateStore};
+use ironclaw_turns::{TurnError, TurnStateRowStore, TurnStateStore};
 
 use crate::automation::trigger_poller::SnapshotActiveRunLookup;
-use crate::turn_run_snapshot::TurnRunSnapshotSource;
 
 /// Build the production `RebornAutomationProductService` over
 /// `trigger_repository` plus the harness's own turn-state store, for
@@ -28,7 +28,7 @@ where
     F: RootFilesystem + Send + Sync + 'static,
 {
     let active_run_lookup = Arc::new(SnapshotActiveRunLookup::new(
-        turn_state as Arc<dyn TurnRunSnapshotSource>,
+        turn_state as Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
     ));
     Arc::new(
         crate::automation::service::RebornAutomationProductService::new(
@@ -53,7 +53,7 @@ where
     F: RootFilesystem + Send + Sync + 'static,
 {
     Arc::new(SnapshotActiveRunLookup::new(
-        turn_state as Arc<dyn TurnRunSnapshotSource>,
+        turn_state as Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
     ))
 }
 
@@ -69,13 +69,14 @@ pub fn rebind_local_dev_trigger_source_turn_state_for_test<F>(
 where
     F: RootFilesystem + Send + Sync + 'static,
 {
-    let snapshot_source = Arc::clone(&turn_state) as Arc<dyn TurnRunSnapshotSource>;
+    let lifecycle_source =
+        Arc::clone(&turn_state) as Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>;
     let state_store = turn_state as Arc<dyn TurnStateStore>;
     *runtime
         .trigger_source_turn_state
         .write()
-        .map_err(|error| format!("trigger source snapshot lock unavailable: {error}"))? =
-        snapshot_source;
+        .map_err(|error| format!("trigger source lifecycle lock unavailable: {error}"))? =
+        lifecycle_source;
     *runtime
         .trigger_source_turn_state_store
         .write()

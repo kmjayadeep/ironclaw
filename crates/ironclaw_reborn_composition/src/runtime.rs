@@ -56,7 +56,9 @@ use ironclaw_loop_host::{
     LoopCapabilityResultWriter, ModelGatewayBackedSystemInferencePort,
 };
 use ironclaw_observability::live_latency_started_at;
-use ironclaw_processes::{ProcessJournalSource, ProcessTransitionPort};
+use ironclaw_processes::{
+    ProcessJournalSource, ProcessLifecycleLookupSource, ProcessTransitionPort,
+};
 use ironclaw_product::ProjectionStream;
 use ironclaw_product::{
     ApprovalBlockedTurnRun, ApprovalInteractionScope, ApprovalInteractionService,
@@ -391,9 +393,12 @@ struct RuntimeStoreParts {
     subagent_await_edge_settler: Arc<dyn AwaitEdgeSettler>,
     subagent_await_edge_evidence: Arc<dyn AwaitDependentRunEvidenceStore>,
     trigger_repository: Arc<dyn ironclaw_triggers::TriggerRepository>,
-    /// Unified turn-run snapshot source for the substrate-agnostic trigger
-    /// poller's active-run lookup. Every substrate now provides the same typed
-    /// turn-state row store.
+    /// Process lifecycle source for trigger active-run lookup. Every substrate
+    /// now provides the same typed turn-backed process projection.
+    process_lifecycle_lookup_source: Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
+    /// Unified turn-run snapshot source for approval/auth locators that still
+    /// need richer turn-specific state.
+    #[cfg(feature = "test-support")]
     turn_run_snapshot_source: Arc<dyn TurnRunSnapshotSource>,
     admin_secret_provisioner: Arc<dyn crate::admin_secrets::AdminSecretProvisioner>,
     project_service: Arc<dyn ironclaw_product::ProjectService>,
@@ -463,6 +468,8 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
             Arc::clone(&turn_state) as Arc<dyn ironclaw_turns::TurnStateStore>,
             Arc::clone(&turn_state) as Arc<dyn TurnEventProjectionSource>,
         )),
+        process_lifecycle_lookup_source: Arc::clone(&turn_state)
+            as Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
         checkpoint_state_store,
         loop_checkpoint_store,
         thread_service,
@@ -476,6 +483,7 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
         subagent_await_edge_settler,
         subagent_await_edge_evidence,
         trigger_repository: Arc::clone(&services.trigger_repository),
+        #[cfg(feature = "test-support")]
         turn_run_snapshot_source: turn_state as Arc<dyn TurnRunSnapshotSource>,
         admin_secret_provisioner,
         project_service,
@@ -717,8 +725,11 @@ pub struct RebornRuntime {
         dead_code,
         reason = "held for test-support rebinding after runtime construction"
     )]
-    pub(crate) trigger_source_turn_state:
-        Arc<std::sync::RwLock<Arc<dyn crate::turn_run_snapshot::TurnRunSnapshotSource>>>,
+    pub(crate) trigger_source_turn_state: Arc<
+        std::sync::RwLock<
+            Arc<dyn ironclaw_processes::ProcessLifecycleLookupSource<Error = TurnError>>,
+        >,
+    >,
     /// Sibling rebindable slot for the trigger delivery-target service; the
     /// test-support repoint seam swaps both slots together.
     #[cfg(any(test, feature = "test-support"))]
@@ -789,6 +800,9 @@ pub struct RebornRuntime {
         reason = "migration handle for process-journal cutover; wired before projection call sites move"
     )]
     pub(crate) process_journal_source: Arc<dyn ProcessJournalSource<Error = TurnError>>,
+    pub(crate) process_lifecycle_lookup_source:
+        Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
+    #[cfg(feature = "test-support")]
     pub(crate) turn_run_snapshot_source: Arc<dyn TurnRunSnapshotSource>,
     turn_tree_store: Arc<dyn TurnSpawnTreeStateStore>,
     thread_service: Arc<dyn SessionThreadService>,
@@ -1139,9 +1153,9 @@ where
 }
 
 fn build_trigger_active_run_lookup(
-    snapshot_source: Arc<dyn TurnRunSnapshotSource>,
+    lifecycle_source: Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
 ) -> Arc<dyn ironclaw_triggers::TriggerActiveRunLookup> {
-    Arc::new(SnapshotActiveRunLookup::new(snapshot_source))
+    Arc::new(SnapshotActiveRunLookup::new(lifecycle_source))
 }
 
 /// Resolve the fire-time `TenantMembership` user directory from the runtime's
@@ -3607,6 +3621,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         turn_state_flush,
         process_transition_port,
         process_journal_source,
+        process_lifecycle_lookup_source,
         checkpoint_state_store,
         loop_checkpoint_store,
         thread_service,
@@ -3620,6 +3635,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         subagent_await_edge_settler,
         subagent_await_edge_evidence,
         trigger_repository,
+        #[cfg(feature = "test-support")]
         turn_run_snapshot_source,
         admin_secret_provisioner,
         project_service,
@@ -4542,7 +4558,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
             validated_identity.agent_id.clone(),
         )?;
         let active_run_lookup =
-            build_trigger_active_run_lookup(Arc::clone(&turn_run_snapshot_source));
+            build_trigger_active_run_lookup(Arc::clone(&process_lifecycle_lookup_source));
         let trigger_repository = trigger_repository.clone();
         #[cfg(any(test, feature = "test-support"))]
         {
@@ -4751,6 +4767,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         turn_coordinator,
         _channel_host_assembly: channel_host_assembly,
         turn_state_flush,
+        #[cfg(feature = "test-support")]
         turn_run_snapshot_source,
         turn_tree_store: turn_state_store,
         thread_service,
@@ -4768,6 +4785,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         admin_api_token_minter,
         process_transition_port,
         process_journal_source,
+        process_lifecycle_lookup_source,
         actor_user_id,
         source_binding_ref: validated_identity.source_binding_ref,
         reply_target_binding_ref: validated_identity.reply_target_binding_ref,

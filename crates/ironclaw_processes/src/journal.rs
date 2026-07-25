@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use ironclaw_host_api::{
     CapabilityActivityId, ProcessId, ResourceScope, RuntimeCredentialAuthRequirement,
-    SanitizedFailure, Timestamp, TurnGateRef, UserId,
+    SanitizedFailure, TenantId, Timestamp, TurnGateRef, UserId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -304,6 +304,37 @@ pub struct ProcessJournalProjectionSnapshot {
     pub entries: Vec<ProcessJournalEntry>,
     pub next_cursor: ProcessJournalProjectionCursor,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessLifecycleLookupRequest {
+    pub tenant_id: TenantId,
+    pub process_id: ProcessId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessLifecycleLookupBatchRequest {
+    pub processes: Vec<ProcessLifecycleLookupRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ProcessLifecycleLookupResult {
+    Missing,
+    Found {
+        status: ProcessLifecycleStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        suspension: Option<ProcessSuspension>,
+    },
+}
+
+#[async_trait]
+pub trait ProcessLifecycleLookupSource: Send + Sync {
+    type Error: Send + Sync + 'static;
+
+    async fn process_lifecycle_states(
+        &self,
+        request: ProcessLifecycleLookupBatchRequest,
+    ) -> Vec<Result<ProcessLifecycleLookupResult, Self::Error>>;
 }
 
 #[async_trait]

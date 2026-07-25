@@ -299,7 +299,7 @@ pub fn process_journal_kind_from_turn_event_kind(kind: TurnEventKind) -> Process
     }
 }
 
-fn process_suspension_from_record(record: &TurnRunRecord) -> Option<ProcessSuspension> {
+pub(crate) fn process_suspension_from_record(record: &TurnRunRecord) -> Option<ProcessSuspension> {
     let kind = GateKind::from_status(record.status).map(process_suspension_kind_from_gate_kind)?;
     Some(ProcessSuspension {
         kind,

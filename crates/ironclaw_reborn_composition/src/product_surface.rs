@@ -52,14 +52,16 @@ use crate::{
 /// automations panel (#5886).
 pub(crate) struct AutomationBacking {
     pub(crate) repository: Arc<dyn TriggerRepository>,
-    pub(crate) snapshot_source: Arc<dyn crate::turn_run_snapshot::TurnRunSnapshotSource>,
+    pub(crate) lifecycle_source: Arc<
+        dyn ironclaw_processes::ProcessLifecycleLookupSource<Error = ironclaw_turns::TurnError>,
+    >,
 }
 
 /// Resolves the [`AutomationBacking`] pair from the runtime-owned stores.
 pub(crate) fn automation_backing(runtime: &RebornRuntime) -> AutomationBacking {
     AutomationBacking {
         repository: Arc::clone(&runtime.trigger_repository),
-        snapshot_source: Arc::clone(&runtime.turn_run_snapshot_source),
+        lifecycle_source: Arc::clone(&runtime.process_lifecycle_lookup_source),
     }
 }
 
@@ -228,7 +230,7 @@ pub(crate) fn build_product_surface_with_channel_connection(
     )));
     let backing = automation_backing(runtime);
     let active_run_lookup: Arc<dyn ironclaw_triggers::TriggerActiveRunLookup> = Arc::new(
-        crate::automation::trigger_poller::SnapshotActiveRunLookup::new(backing.snapshot_source),
+        crate::automation::trigger_poller::SnapshotActiveRunLookup::new(backing.lifecycle_source),
     );
     api = api.with_automation_product_service(Arc::new(
         RebornAutomationProductService::new(backing.repository, active_run_lookup)

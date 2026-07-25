@@ -22,33 +22,46 @@
 //! this shared substrate trait picking a consumer's error type.
 
 use async_trait::async_trait;
+use ironclaw_processes::{
+    ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,
+};
 use ironclaw_turns::{TurnError, TurnPersistenceSnapshot};
-use std::sync::{Arc, RwLock};
 
 #[async_trait]
 pub(crate) trait TurnRunSnapshotSource: Send + Sync {
     async fn turn_run_snapshot(&self) -> Result<TurnPersistenceSnapshot, TurnError>;
 }
 
-pub(crate) struct RebindableTurnRunSnapshotSource {
-    source: Arc<RwLock<Arc<dyn TurnRunSnapshotSource>>>,
+pub(crate) struct RebindableProcessLifecycleLookupSource {
+    inner: std::sync::Arc<
+        std::sync::RwLock<std::sync::Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>>,
+    >,
 }
 
-impl RebindableTurnRunSnapshotSource {
-    pub(crate) fn new(source: Arc<RwLock<Arc<dyn TurnRunSnapshotSource>>>) -> Self {
-        Self { source }
+impl RebindableProcessLifecycleLookupSource {
+    pub(crate) fn new(
+        inner: std::sync::Arc<
+            std::sync::RwLock<std::sync::Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>>,
+        >,
+    ) -> Self {
+        Self { inner }
     }
 }
 
 #[async_trait]
-impl TurnRunSnapshotSource for RebindableTurnRunSnapshotSource {
-    async fn turn_run_snapshot(&self) -> Result<TurnPersistenceSnapshot, TurnError> {
+impl ProcessLifecycleLookupSource for RebindableProcessLifecycleLookupSource {
+    type Error = TurnError;
+
+    async fn process_lifecycle_states(
+        &self,
+        request: ProcessLifecycleLookupBatchRequest,
+    ) -> Vec<Result<ProcessLifecycleLookupResult, Self::Error>> {
         let source = self
-            .source
+            .inner
             .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        source.turn_run_snapshot().await
+        source.process_lifecycle_states(request).await
     }
 }
 

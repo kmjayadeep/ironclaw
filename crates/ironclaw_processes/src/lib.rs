@@ -38,10 +38,12 @@ pub use journal::{
     ProcessJournalCursor, ProcessJournalEntry, ProcessJournalError, ProcessJournalKind,
     ProcessJournalPage, ProcessJournalProjectionCursor, ProcessJournalProjectionRequest,
     ProcessJournalProjectionSnapshot, ProcessJournalSource, ProcessKind, ProcessLeaseRequest,
-    ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleStatus, ProcessOutcome,
-    ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort, ProcessWorkerId,
-    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse, ResumeProcessRequest,
-    StopProcessRequest, SuspendProcessRequest,
+    ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleLookupBatchRequest,
+    ProcessLifecycleLookupRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,
+    ProcessLifecycleStatus, ProcessOutcome, ProcessSuspension, ProcessSuspensionKind,
+    ProcessTransitionPort, ProcessWorkerId, RecoverExpiredProcessLeasesRequest,
+    RecoverExpiredProcessLeasesResponse, ResumeProcessRequest, StopProcessRequest,
+    SuspendProcessRequest,
 };
 pub use process_store::{ProcessResultStore, ProcessStore};
 pub use services::{
