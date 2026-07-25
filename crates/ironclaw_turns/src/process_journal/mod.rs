@@ -6,6 +6,7 @@
 //! implementation.
 
 use async_trait::async_trait;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -40,8 +41,8 @@ use crate::{
         EventCursor, TurnBlockedGateKind, TurnBlockedGateMetadata, TurnEventPage,
         TurnEventProjectionSource,
     },
-    request::{CancelRunRequest, ResumeTurnRequest, SubmitTurnRequest},
-    response::{CancelRunResponse, ResumeTurnResponse, SubmitTurnResponse},
+    request::{CancelRunRequest, ResumeTurnRequest, RetryTurnRequest, SubmitTurnRequest},
+    response::{CancelRunResponse, ResumeTurnResponse, RetryTurnResponse, SubmitTurnResponse},
     run_profile::{LoopModelRouteSnapshot, LoopModelUsage},
     runner::{
         BlockRunRequest, CancelRunCompletionRequest, ClaimedTurnRun, CompleteRunRequest,
@@ -141,6 +142,7 @@ impl AgentTurnProcessRuntime {
                 owner_user_id: Some(request.actor.user_id),
                 parent_process_id: None,
                 root_process_id: None,
+                checkpoint_ref: None,
                 created_at: request.received_at,
                 metadata: json!({ "agent_turn": metadata }),
             })
@@ -252,6 +254,62 @@ impl AgentTurnProcessRuntime {
             event_cursor: state.event_cursor,
             already_terminal: result.already_terminal,
             actor: state.actor,
+        })
+    }
+
+    pub async fn retry_turn(
+        &self,
+        request: RetryTurnRequest,
+    ) -> Result<RetryTurnResponse, TurnError> {
+        let snapshot = self
+            .journal
+            .get_process_snapshot(GetProcessSnapshotRequest {
+                scope: request.scope.to_resource_scope(),
+                process_id: process_id_from_turn_run_id(request.run_id),
+            })
+            .await?;
+        let state = turn_run_state_from_process_snapshot(snapshot.clone())?;
+        if state.actor.as_ref() != Some(&request.actor) {
+            return Err(TurnError::Unauthorized);
+        }
+        if !matches!(
+            state.status,
+            TurnStatus::Failed | TurnStatus::RecoveryRequired
+        ) {
+            return Err(TurnError::RunNotRetryable {
+                run_id: request.run_id,
+            });
+        }
+        let mut metadata = agent_turn_metadata_from_process_snapshot(&snapshot)?;
+        metadata.source_binding_ref = request.source_binding_ref;
+        metadata.reply_target_binding_ref = request.reply_target_binding_ref;
+        metadata.model_usage = None;
+        metadata.resume_disposition = None;
+        let run_id = TurnRunId::new();
+        let retried = self
+            .submission
+            .submit_process(SubmitProcessRequest {
+                process_id: process_id_from_turn_run_id(run_id),
+                process_kind: ProcessKind::AgentTurn,
+                scope: request.scope.to_resource_scope(),
+                exclusive_within_scope: true,
+                operation_id: Some(ProcessOperationId::from_trusted(format!(
+                    "retry:{}",
+                    request.idempotency_key.as_str()
+                ))),
+                owner_user_id: snapshot.owner_user_id,
+                parent_process_id: snapshot.parent_process_id,
+                root_process_id: snapshot.root_process_id,
+                checkpoint_ref: snapshot.checkpoint_ref,
+                created_at: Utc::now(),
+                metadata: json!({ "agent_turn": metadata }),
+            })
+            .await?;
+        let state = turn_run_state_from_process_snapshot(retried)?;
+        Ok(RetryTurnResponse {
+            run_id: state.run_id,
+            status: state.status,
+            event_cursor: state.event_cursor,
         })
     }
 }

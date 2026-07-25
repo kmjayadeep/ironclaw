@@ -154,7 +154,7 @@ where
                 scope: request.scope.clone(),
                 status: ProcessLifecycleStatus::Queued,
                 suspension: None,
-                checkpoint_ref: None,
+                checkpoint_ref: request.checkpoint_ref.clone(),
                 failure: None,
                 journal_cursor: cursor,
                 lease: None,

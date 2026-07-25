@@ -344,6 +344,8 @@ pub struct SubmitProcessRequest {
     pub parent_process_id: Option<ProcessId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_process_id: Option<ProcessId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_ref: Option<ProcessCheckpointRef>,
     pub created_at: Timestamp,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub metadata: Value,

@@ -465,7 +465,10 @@ where
 
     async fn retry_turn(&self, request: RetryTurnRequest) -> Result<RetryTurnResponse, TurnError> {
         let scope = request.scope.clone();
-        let response = self.store.retry_turn(request).await?;
+        let response = match &self.process_runtime {
+            Some(runtime) => runtime.retry_turn(request).await?,
+            None => self.store.retry_turn(request).await?,
+        };
         notify_queued_run_best_effort(
             self.wake_notifier.as_ref(),
             retry_wake(scope.clone(), &response),

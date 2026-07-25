@@ -344,6 +344,7 @@ impl<S: ?Sized> LifecyclePublishingTurnStateStore<S> {
                 root_process_id: request
                     .spawn_tree_root_run_id
                     .map(process_id_from_turn_run_id),
+                checkpoint_ref: None,
                 created_at: request.received_at,
                 metadata: json!({ "agent_turn": metadata }),
             })
@@ -398,6 +399,7 @@ impl<S: ?Sized> LifecyclePublishingTurnStateStore<S> {
                 ),
                 parent_process_id: Some(process_id_from_turn_run_id(request.parent_run_id)),
                 root_process_id: Some(process_id_from_turn_run_id(request.parent_run_id)),
+                checkpoint_ref: None,
                 created_at: request.received_at,
                 metadata: json!({ "agent_turn": metadata }),
             })

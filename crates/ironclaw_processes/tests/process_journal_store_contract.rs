@@ -34,6 +34,7 @@ async fn process_journal_store_owns_lifecycle_and_gate_projection() {
             owner_user_id: Some(owner.clone()),
             parent_process_id: None,
             root_process_id: None,
+            checkpoint_ref: None,
             created_at: Utc::now(),
             metadata: json!({
                 "agent_turn": {
@@ -165,6 +166,7 @@ async fn process_journal_store_completes_claimed_process() {
             owner_user_id: Some(scope.user_id.clone()),
             parent_process_id: None,
             root_process_id: None,
+            checkpoint_ref: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
         })
@@ -212,6 +214,7 @@ async fn process_journal_store_relinquishes_claim_with_fresh_reclaim_lease() {
             owner_user_id: Some(scope.user_id.clone()),
             parent_process_id: None,
             root_process_id: None,
+            checkpoint_ref: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
         })
@@ -266,6 +269,7 @@ async fn process_journal_store_rejects_wrong_lease() {
             owner_user_id: Some(scope.user_id.clone()),
             parent_process_id: None,
             root_process_id: None,
+            checkpoint_ref: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
         })
@@ -467,6 +471,7 @@ async fn exclusive_process_submission_uses_authoritative_live_projection() {
         owner_user_id: Some(scope.user_id.clone()),
         parent_process_id: None,
         root_process_id: None,
+        checkpoint_ref: None,
         created_at: Utc::now(),
         metadata: serde_json::Value::Null,
     };
@@ -511,6 +516,7 @@ async fn submit_internal_process(
             owner_user_id: Some(scope.user_id.clone()),
             parent_process_id: None,
             root_process_id: None,
+            checkpoint_ref: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
         })
