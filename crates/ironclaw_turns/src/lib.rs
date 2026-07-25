@@ -15,7 +15,7 @@ mod external_tool_catalog;
 mod ids;
 pub mod loop_exit;
 mod origin;
-pub mod process_journal;
+pub mod process_projection;
 pub mod product_adapter;
 pub mod product_context;
 mod request;
@@ -77,8 +77,8 @@ pub use loop_exit::{
 };
 pub use origin::{ProductTurnContext, RunOriginAdapter, TurnOriginKind, TurnSurfaceType};
 #[cfg(feature = "test-support")]
-pub use process_journal::AgentTurnProcessTransitionAdapter;
-pub use process_journal::{
+pub use process_projection::AgentTurnProcessTransitionAdapter;
+pub use process_projection::{
     AGENT_TURN_PROCESS_KIND, AgentTurnProcessCommitObserver, AgentTurnProcessMetadata,
     AgentTurnProcessRuntime, AgentTurnProcessStateMetadata, ProcessJournalStoreTurnAdapter,
     ProcessLoopCheckpointStore, TurnEventProjectionFromProcessJournal,

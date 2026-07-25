@@ -149,13 +149,13 @@ impl LoopExitApplier {
         let snapshot = self
             .transition_port
             .fail_process(FailProcessRequest {
-                process_id: crate::process_journal::process_id_from_turn_run_id(
+                process_id: crate::process_projection::process_id_from_turn_run_id(
                     claimed.state.run_id,
                 ),
                 worker_id: process_worker_id_from_turn_runner_id(claimed.runner_id),
                 lease_token: process_lease_token_from_turn(claimed.lease_token),
                 failure,
-                metadata: Some(crate::process_journal::agent_turn_metadata_from_claimed(
+                metadata: Some(crate::process_projection::agent_turn_metadata_from_claimed(
                     claimed,
                     claimed.state.model_usage,
                 )),
@@ -312,7 +312,7 @@ async fn apply_validated_process_loop_exit(
         }) => {
             transition_port
                 .suspend_process(SuspendProcessRequest {
-                    process_id: crate::process_journal::process_id_from_turn_run_id(
+                    process_id: crate::process_projection::process_id_from_turn_run_id(
                         claimed.state.run_id,
                     ),
                     worker_id: process_worker_id_from_turn_runner_id(claimed.runner_id),
@@ -321,7 +321,7 @@ async fn apply_validated_process_loop_exit(
                         checkpoint_id.as_uuid().to_string(),
                     ),
                     suspension: process_suspension_from_blocked_reason(reason, blocked_activity_id),
-                    metadata: Some(crate::process_journal::agent_turn_metadata_from_claimed(
+                    metadata: Some(crate::process_projection::agent_turn_metadata_from_claimed(
                         claimed,
                         model_usage,
                     )),
@@ -332,13 +332,13 @@ async fn apply_validated_process_loop_exit(
         | LoopExitMapping::RecoveryRequired { failure } => {
             transition_port
                 .fail_process(FailProcessRequest {
-                    process_id: crate::process_journal::process_id_from_turn_run_id(
+                    process_id: crate::process_projection::process_id_from_turn_run_id(
                         claimed.state.run_id,
                     ),
                     worker_id: process_worker_id_from_turn_runner_id(claimed.runner_id),
                     lease_token: process_lease_token_from_turn(claimed.lease_token),
                     failure,
-                    metadata: Some(crate::process_journal::agent_turn_metadata_from_claimed(
+                    metadata: Some(crate::process_projection::agent_turn_metadata_from_claimed(
                         claimed,
                         model_usage,
                     )),
@@ -350,7 +350,7 @@ async fn apply_validated_process_loop_exit(
 
 fn process_lease_request_from_claimed(claimed: &ClaimedTurnRun) -> ProcessLeaseRequest {
     ProcessLeaseRequest {
-        process_id: crate::process_journal::process_id_from_turn_run_id(claimed.state.run_id),
+        process_id: crate::process_projection::process_id_from_turn_run_id(claimed.state.run_id),
         worker_id: process_worker_id_from_turn_runner_id(claimed.runner_id),
         lease_token: process_lease_token_from_turn(claimed.lease_token),
     }
@@ -362,7 +362,7 @@ fn process_state_transition_request_from_claimed(
 ) -> ProcessStateTransitionRequest {
     ProcessStateTransitionRequest {
         lease: process_lease_request_from_claimed(claimed),
-        metadata: Some(crate::process_journal::agent_turn_metadata_from_claimed(
+        metadata: Some(crate::process_projection::agent_turn_metadata_from_claimed(
             claimed,
             model_usage,
         )),

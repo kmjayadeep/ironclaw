@@ -7,7 +7,7 @@ use ironclaw_processes::{
     ProcessSuspension, ProcessSuspensionKind,
 };
 
-use crate::process_journal::{
+use crate::process_projection::{
     process_id_from_turn_run_id, process_status_from_turn_status, process_suspension_from_record,
 };
 use crate::{TurnError, TurnScope, TurnStatus};

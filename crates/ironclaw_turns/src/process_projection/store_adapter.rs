@@ -327,7 +327,7 @@ pub fn turn_error_from_process_journal_store_error(error: ProcessJournalStoreErr
             ..
         } => TurnError::ThreadBusy(crate::ThreadBusy {
             active_run_id: crate::TurnRunId::from_uuid(process_id.as_uuid()),
-            status: crate::process_journal::turn_status_from_process_status(
+            status: crate::process_projection::turn_status_from_process_status(
                 status,
                 suspension.as_deref(),
             )

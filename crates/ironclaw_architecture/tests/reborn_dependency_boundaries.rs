@@ -2381,15 +2381,15 @@ fn collect_forbidden_turns_identifier_uses(
         }
         if path
             .components()
-            .any(|component| component.as_os_str() == "process_journal")
-            || path.file_name().and_then(|name| name.to_str()) == Some("process_journal.rs")
+            .any(|component| component.as_os_str() == "process_projection")
+            || path.file_name().and_then(|name| name.to_str()) == Some("process_projection.rs")
         {
             continue;
         }
         let mut contents = std::fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
         if path.file_name().and_then(|name| name.to_str()) == Some("lib.rs") {
-            contents = strip_process_journal_reexport_block(&contents);
+            contents = strip_process_projection_reexport_block(&contents);
         }
         for pattern in ["InvocationId", "ProcessId"] {
             if contents.contains(pattern) {
@@ -2402,11 +2402,14 @@ fn collect_forbidden_turns_identifier_uses(
     }
 }
 
-fn strip_process_journal_reexport_block(contents: &str) -> String {
+fn strip_process_projection_reexport_block(contents: &str) -> String {
     let mut stripped = String::new();
     let mut skipping = false;
     for line in contents.lines() {
-        if line.trim_start().starts_with("pub use process_journal::{") {
+        if line
+            .trim_start()
+            .starts_with("pub use process_projection::{")
+        {
             skipping = true;
             continue;
         }

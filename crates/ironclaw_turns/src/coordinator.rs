@@ -61,7 +61,7 @@ use crate::{
     RetryTurnResponse, RunProfileResolver, SubmitChildRunRequest, SubmitTurnRequest,
     SubmitTurnResponse, TurnCapacityResource, TurnError, TurnRunId, TurnRunState, TurnScope,
     TurnSpawnTreeStateStore, TurnStateStore, TurnStatus, events::EventCursor,
-    process_journal::AgentTurnProcessRuntime,
+    process_projection::AgentTurnProcessRuntime,
 };
 
 pub trait TurnAdmissionPolicy: Send + Sync {
