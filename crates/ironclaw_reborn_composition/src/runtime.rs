@@ -90,11 +90,12 @@ use ironclaw_threads::{
     SessionThreadService, ThreadHistoryRequest, ThreadScope,
 };
 use ironclaw_turns::{
-    AcceptedMessageRef, CancelRunRequest, CancelRunResponse, GetRunStateRequest, IdempotencyKey,
-    LoopGateRef, ReplyTargetBindingRef, RunProfileResolutionRequest, SanitizedCancelReason,
-    SourceBindingRef, SubmitTurnRequest, SubmitTurnResponse, TurnActor, TurnCoordinator, TurnError,
-    TurnEventProjectionSource, TurnId, TurnRunId, TurnRunState, TurnRunWake, TurnScope,
-    TurnSpawnTreeStateStore, TurnStateRowStore, TurnStateStoreLimits, TurnStatus,
+    AcceptedMessageRef, AgentTurnProcessRuntime, CancelRunRequest, CancelRunResponse,
+    GetRunStateRequest, IdempotencyKey, LoopGateRef, ReplyTargetBindingRef,
+    RunProfileResolutionRequest, SanitizedCancelReason, SourceBindingRef, SubmitTurnRequest,
+    SubmitTurnResponse, TurnActor, TurnCoordinator, TurnError, TurnEventProjectionSource, TurnId,
+    TurnRunId, TurnRunState, TurnRunWake, TurnScope, TurnSpawnTreeStateStore, TurnStateRowStore,
+    TurnStateStoreLimits, TurnStatus,
     events::EventCursor,
     run_profile::{LoopHostMilestoneSink, LoopRunContext},
 };
@@ -368,7 +369,7 @@ impl HostUserProfileSource for MemoryBackedUserProfileSourceAdapter {
 
 struct RuntimeStoreParts {
     scoped_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
-    turn_state_store: Arc<dyn TurnSpawnTreeStateStore>,
+    turn_projection: Arc<AgentTurnProcessRuntime>,
     turn_state_flush: Arc<dyn TurnStateFlush>,
     processes: ProcessRuntimeSystem,
     checkpoint_state_store: Arc<dyn ironclaw_turns::CheckpointStateStorePort>,
@@ -430,13 +431,17 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
 
     let subagent_goal_store = Arc::new(SubagentGoalStore::new(Arc::clone(&scoped_filesystem)))
         as Arc<dyn RuntimeSubagentGoalStore>;
+    let processes = ProcessRuntimeSystem::from_process_journal_store(Arc::clone(
+        &services.process_journal_store,
+    ));
+    let turn_projection = Arc::new(processes.agent_turn_runtime());
 
     let (subagent_await_edge_writer, subagent_await_edge_settler, subagent_await_edge_evidence) = {
         let store = Arc::new(AwaitEdgeStore::new(Arc::clone(&scoped_filesystem)));
         let resolver = Arc::new(AwaitEdgeResolver::new_unbound_deferred_result_writer(
             Arc::clone(&store),
             Arc::clone(&subagent_goal_store) as Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
-            Arc::clone(&turn_state) as Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore>,
+            Arc::clone(&turn_projection) as Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore>,
             Arc::clone(&thread_service),
         ));
         let driver = Arc::new(ScopeRecoveryDriver::new(
@@ -450,14 +455,11 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
         )
     };
 
-    let process_journal_store = Arc::new(ironclaw_processes::ProcessJournalStore::new(Arc::clone(
-        &scoped_filesystem,
-    )));
     RuntimeStoreParts {
         scoped_filesystem,
-        turn_state_store: Arc::clone(&turn_state) as Arc<dyn TurnSpawnTreeStateStore>,
+        turn_projection,
         turn_state_flush: Arc::clone(&turn_state) as Arc<dyn TurnStateFlush>,
-        processes: ProcessRuntimeSystem::from_process_journal_store(process_journal_store),
+        processes,
         checkpoint_state_store,
         loop_checkpoint_store,
         thread_service,
@@ -3530,7 +3532,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     let runtime_parts = runtime_store_parts(&services);
     let RuntimeStoreParts {
         scoped_filesystem,
-        turn_state_store,
+        turn_projection,
         turn_state_flush,
         processes,
         checkpoint_state_store,
@@ -3724,7 +3726,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         Arc::clone(&subagent_await_edge_evidence);
     let mut loop_exit_evidence = ThreadCheckpointLoopExitEvidencePort::new_with_thread_scope(
         Arc::clone(&thread_service),
-        Arc::clone(&turn_state_store) as Arc<dyn ironclaw_turns::TurnStateStore>,
+        Arc::clone(&turn_projection) as Arc<dyn ironclaw_turns::TurnStateStore>,
         Arc::clone(&loop_checkpoint_store) as Arc<dyn ironclaw_turns::LoopCheckpointStore>,
         await_dependent_run_evidence,
         thread_scope.clone(),
@@ -4680,7 +4682,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         _channel_host_assembly: channel_host_assembly,
         turn_state_flush,
         process_gate_query_source,
-        turn_tree_store: turn_state_store,
+        turn_tree_store: turn_projection,
         thread_service,
         thread_scope,
         turn_scheduler: RuntimeTurnScheduler::new(composition.scheduler_handle, scheduler_notifier),

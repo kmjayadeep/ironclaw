@@ -166,11 +166,11 @@ use ironclaw_triggers::{
 use ironclaw_trust::{AdminConfig, AdminEntry, HostTrustAssignment, HostTrustPolicy};
 use ironclaw_turns::TurnStateRowStore;
 use ironclaw_turns::{
-    CheckpointStateStorePort, ExternalToolCatalog, InMemoryExternalToolCatalog, LoopCheckpointStore,
+    AgentTurnProcessRuntime, GetRunStateRequest, InMemoryRunProfileResolver,
+    ProcessJournalStoreTurnAdapter, TurnScope, TurnStateStore,
 };
 use ironclaw_turns::{
-    GetRunStateRequest, InMemoryRunProfileResolver, ProcessJournalStoreTurnAdapter, TurnScope,
-    TurnStateStore,
+    CheckpointStateStorePort, ExternalToolCatalog, InMemoryExternalToolCatalog, LoopCheckpointStore,
 };
 use secrecy::SecretString;
 
@@ -1091,6 +1091,7 @@ pub(crate) struct RebornRuntimeStores {
     pub(crate) extension_registry: Arc<ExtensionRegistry>,
     pub(crate) shared_extension_registry: Arc<SharedExtensionRegistry>,
     pub(crate) scoped_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
+    pub(crate) process_journal_store: Arc<ProcessJournalStore<CompositeRootFilesystem>>,
     pub(crate) turn_state: Arc<TurnStateRowStore<CompositeRootFilesystem>>,
     pub(crate) checkpoint_state_store: Arc<dyn CheckpointStateStorePort>,
     pub(crate) loop_checkpoint_store: Arc<dyn LoopCheckpointStore>,
@@ -4667,13 +4668,25 @@ async fn build_backend_production(
         >;
     let process_gate_query_source = Arc::clone(&process_journal_adapter)
         as Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = ironclaw_turns::TurnError>>;
+    let process_turn_state = Arc::new(AgentTurnProcessRuntime::new(
+        Arc::clone(&process_journal_adapter)
+            as Arc<
+                dyn ironclaw_processes::ProcessSubmissionPort<Error = ironclaw_turns::TurnError>,
+            >,
+        Arc::clone(&process_journal_adapter)
+            as Arc<dyn ironclaw_processes::ProcessJournalSource<Error = ironclaw_turns::TurnError>>,
+        Arc::clone(&process_journal_adapter)
+            as Arc<dyn ironclaw_processes::ProcessControlPort<Error = ironclaw_turns::TurnError>>,
+        Arc::clone(&process_journal_adapter)
+            as Arc<dyn ironclaw_processes::ProcessTreePort<Error = ironclaw_turns::TurnError>>,
+    ));
     // Rebindable source-turn-state slot for the trigger delivery-target
     // service — same repoint seam as the sibling snapshot slot below.
     #[cfg(any(test, feature = "test-support"))]
     let trigger_source_turn_state_store: Arc<
         std::sync::RwLock<Arc<dyn ironclaw_turns::TurnStateStore>>,
     > = Arc::new(std::sync::RwLock::new(
-        Arc::clone(&turn_state) as Arc<dyn ironclaw_turns::TurnStateStore>
+        Arc::clone(&process_turn_state) as Arc<dyn ironclaw_turns::TurnStateStore>
     ));
     #[cfg(any(test, feature = "test-support"))]
     let trigger_create_source_turn_state: Arc<dyn ironclaw_turns::TurnStateStore> =
@@ -4682,7 +4695,7 @@ async fn build_backend_production(
         });
     #[cfg(not(any(test, feature = "test-support")))]
     let trigger_create_source_turn_state: Arc<dyn ironclaw_turns::TurnStateStore> =
-        Arc::clone(&turn_state) as Arc<dyn ironclaw_turns::TurnStateStore>;
+        process_turn_state as Arc<dyn ironclaw_turns::TurnStateStore>;
     let trigger_create_hook = Arc::new(LocalRuntimeTriggerCreatorPairingHook {
         outbound_delivery_targets: Arc::clone(&outbound_delivery_targets),
         source_turn_state: trigger_create_source_turn_state,
@@ -5647,6 +5660,7 @@ async fn build_backend_production(
         extension_registry: Arc::clone(&extension_registry),
         shared_extension_registry,
         scoped_filesystem: Arc::clone(&stores.scoped_filesystem),
+        process_journal_store,
         turn_state: Arc::clone(&turn_state),
         checkpoint_state_store,
         loop_checkpoint_store: Arc::clone(&turn_state) as Arc<dyn LoopCheckpointStore>,
