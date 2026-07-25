@@ -709,6 +709,7 @@ impl GenericChannelHostAssembly {
             observer: observer
                 .clone()
                 .map(|observer| observer as Arc<dyn PostAdmissionObserver>),
+            commands: channel.commands.clone(),
         });
         if let Some(pairing) = pairing {
             sink = sink.with_pairing(

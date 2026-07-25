@@ -385,6 +385,7 @@ fn fixture() -> Fixture {
 fn pairing_ingress(service: Arc<ChannelPairingService>) -> Arc<GenericChannelInboundSink> {
     Arc::new(
         GenericChannelInboundSink::new(ChannelInboundSinkConfig {
+            commands: Vec::new(),
             adapter_id: ProductAdapterId::new(EXT).expect("adapter id"),
             evidence: VerifiedEvidenceMint::SharedSecretHeader {
                 header: "X-Vendor-Secret".to_string(),
@@ -406,6 +407,7 @@ fn pairing_ingress_with_outcomes(
     let outcomes = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::new(
         GenericChannelInboundSink::new(ChannelInboundSinkConfig {
+            commands: Vec::new(),
             adapter_id: ProductAdapterId::new(EXT).expect("adapter id"),
             evidence: VerifiedEvidenceMint::SharedSecretHeader {
                 header: "X-Vendor-Secret".to_string(),

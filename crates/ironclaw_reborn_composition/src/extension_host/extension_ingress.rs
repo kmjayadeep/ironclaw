@@ -25,7 +25,7 @@ use ironclaw_host_api::{ChannelInboundProductSurface, SecretHandle};
 use ironclaw_product::{
     AdapterInstallationId, ChannelInboundClassification, ExternalConversationRef, ExternalEventId,
     NormalizedInboundMessage, ProductAdapterId, ProductInboundAck, ProductInboundEnvelope,
-    ProductSourceChannel, ProtocolAuthEvidence,
+    ProductSourceChannel, ProtocolAuthEvidence, parse_product_slash_command,
 };
 use ironclaw_product::{
     ChannelInboundSurfaceOutcome, ChannelInboundSurfaceRejectedAdmission,
@@ -322,11 +322,42 @@ pub struct ChannelInboundSinkConfig {
     pub evidence: VerifiedEvidenceMint,
     /// Optional protocol-specific payload reclassification (gate replies).
     pub classifier: Option<Arc<InboundPayloadClassifier>>,
+    /// Canonical product-command names the extension's manifest declares for
+    /// this channel (`channel.commands`). Slash text resolving to one of
+    /// these classifies as a command payload exactly once, here, for every
+    /// channel; everything else stays ordinary user text. Empty disables
+    /// command classification entirely.
+    pub commands: Vec<String>,
     /// The typed channel admission door: durable idempotency ledger →
     /// identity/conversation binding → turn submission.
     pub surface: Arc<dyn ChannelInboundProductSurface>,
     /// Optional post-admission follow-up (e.g. final-reply delivery).
     pub observer: Option<Arc<dyn PostAdmissionObserver>>,
+}
+
+/// Classify manifest-declared slash commands generically — the channel-neutral
+/// grammar counterpart to the transitional per-extension `classifier`. Slash
+/// text that does not resolve to a declared command (unknown name, undeclared
+/// name, malformed slash) deliberately stays an ordinary user message.
+fn classify_declared_command(
+    declared: &[String],
+    message: &NormalizedInboundMessage,
+) -> Option<ChannelInboundClassification> {
+    if declared.is_empty() {
+        return None;
+    }
+    let payload = match parse_product_slash_command(&message.text, message.trigger) {
+        Ok(Some(payload)) => payload,
+        // Not slash-shaped, or malformed slash text ("/", oversized args):
+        // an intentional classification decision, not a dropped error — the
+        // text remains an ordinary user message for the agent.
+        Ok(None) | Err(_) => return None,
+    };
+    let descriptor = ironclaw_host_api::product_commands::find_product_command(&payload.command)?;
+    declared
+        .iter()
+        .any(|name| name == descriptor.name)
+        .then(|| ChannelInboundClassification::Command(payload))
 }
 
 #[derive(Clone)]
@@ -489,7 +520,8 @@ impl InboundSink for GenericChannelInboundSink {
                 .config
                 .classifier
                 .as_ref()
-                .and_then(|classify| classify(&message)),
+                .and_then(|classify| classify(&message))
+                .or_else(|| classify_declared_command(&self.config.commands, &message)),
             message,
         };
         let response = Box::pin(self.config.surface.admit_channel_inbound(request)).await;
@@ -796,17 +828,26 @@ mod tests {
 
     struct CountingSurface {
         submissions: AtomicUsize,
+        payloads: std::sync::Mutex<Vec<ProductInboundPayload>>,
     }
 
     impl CountingSurface {
         fn new() -> Self {
             Self {
                 submissions: AtomicUsize::new(0),
+                payloads: std::sync::Mutex::new(Vec::new()),
             }
         }
 
         fn submit_count(&self) -> usize {
             self.submissions.load(Ordering::SeqCst)
+        }
+
+        fn payloads(&self) -> Vec<ProductInboundPayload> {
+            match self.payloads.lock() {
+                Ok(payloads) => payloads.clone(),
+                Err(poisoned) => poisoned.into_inner().clone(),
+            }
         }
     }
 
@@ -817,6 +858,23 @@ mod tests {
             request: ChannelInboundSurfaceRequest,
         ) -> ChannelInboundSurfaceOutcome {
             self.submissions.fetch_add(1, Ordering::SeqCst);
+            // Mirror the production surface: an explicit classification wins;
+            // otherwise the normalized text becomes an ordinary user message.
+            let payload = match request.classification {
+                Some(classification) => classification.into(),
+                None => ProductInboundPayload::UserMessage(
+                    UserMessagePayload::new(
+                        request.message.text.clone(),
+                        Vec::new(),
+                        request.message.trigger,
+                    )
+                    .expect("user message payload"),
+                ),
+            };
+            match self.payloads.lock() {
+                Ok(mut payloads) => payloads.push(payload.clone()),
+                Err(poisoned) => poisoned.into_inner().push(payload.clone()),
+            }
             let ack = ProductInboundAck::Accepted {
                 accepted_message_ref: AcceptedMessageRef::new("msg:extension-ingress-test")
                     .expect("accepted message ref"),
@@ -835,14 +893,7 @@ mod tests {
                     request.message.event_id,
                     request.message.actor,
                     request.message.conversation,
-                    ProductInboundPayload::UserMessage(
-                        UserMessagePayload::new(
-                            request.message.text,
-                            Vec::new(),
-                            request.message.trigger,
-                        )
-                        .expect("user message payload"),
-                    ),
+                    payload,
                 )
                 .expect("parsed inbound"),
             )
@@ -886,6 +937,95 @@ mod tests {
         }
     }
 
+    fn command_sink(commands: &[&str]) -> (GenericChannelInboundSink, Arc<CountingSurface>) {
+        let workflow = Arc::new(CountingSurface::new());
+        let sink = GenericChannelInboundSink::new(ChannelInboundSinkConfig {
+            adapter_id: ProductAdapterId::new("vendorx").expect("adapter id"),
+            evidence: VerifiedEvidenceMint::SharedSecretHeader {
+                header: "X-Vendor-Secret".to_string(),
+            },
+            classifier: None,
+            commands: commands.iter().map(|name| name.to_string()).collect(),
+            surface: Arc::clone(&workflow) as Arc<dyn ChannelInboundProductSurface>,
+            observer: None,
+        });
+        (sink, workflow)
+    }
+
+    #[tokio::test]
+    async fn declared_slash_command_classifies_as_command_payload() {
+        let (sink, workflow) = command_sink(&["model", "status"]);
+        sink.admit(admission_for("/model set-provider acme --model m1"))
+            .await
+            .expect("admitted");
+        let payloads = workflow.payloads();
+        assert_eq!(payloads.len(), 1);
+        let ProductInboundPayload::Command(command) = &payloads[0] else {
+            panic!("declared slash text must classify as a command: {payloads:?}");
+        };
+        assert_eq!(command.command, "model");
+        assert_eq!(command.arguments, "set-provider acme --model m1");
+    }
+
+    #[tokio::test]
+    async fn alias_of_a_declared_command_classifies() {
+        let (sink, workflow) = command_sink(&["status"]);
+        sink.admit(admission_for("/progress"))
+            .await
+            .expect("admitted");
+        let payloads = workflow.payloads();
+        let ProductInboundPayload::Command(command) = &payloads[0] else {
+            panic!("alias of a declared command must classify: {payloads:?}");
+        };
+        // Canonical resolution happens in the workflow parser; the sink
+        // preserves what the user typed.
+        assert_eq!(command.command, "progress");
+    }
+
+    #[tokio::test]
+    async fn undeclared_unknown_and_malformed_slash_text_stays_user_text() {
+        // "model" is a known product command but the channel declares only
+        // "status" — ordinary text, exactly as before the classifier existed.
+        for (declared, text) in [
+            (vec!["status"], "/model gpt"),
+            (vec!["model", "status"], "/notacommand hello"),
+            (vec!["model", "status"], "/"),
+            (Vec::new(), "/model gpt"),
+        ] {
+            let declared: Vec<&str> = declared;
+            let (sink, workflow) = command_sink(&declared);
+            sink.admit(admission_for(text)).await.expect("admitted");
+            let payloads = workflow.payloads();
+            let ProductInboundPayload::UserMessage(message) = &payloads[0] else {
+                panic!("{text:?} with declared={declared:?} must stay user text: {payloads:?}");
+            };
+            assert_eq!(message.text, text);
+        }
+    }
+
+    #[tokio::test]
+    async fn transitional_classifier_wins_over_command_classification() {
+        let workflow = Arc::new(CountingSurface::new());
+        let sink = GenericChannelInboundSink::new(ChannelInboundSinkConfig {
+            adapter_id: ProductAdapterId::new("vendorx").expect("adapter id"),
+            evidence: VerifiedEvidenceMint::SharedSecretHeader {
+                header: "X-Vendor-Secret".to_string(),
+            },
+            classifier: Some(Arc::new(|_message: &NormalizedInboundMessage| {
+                Some(ChannelInboundClassification::NoOp)
+            })),
+            commands: vec!["model".to_string()],
+            surface: Arc::clone(&workflow) as Arc<dyn ChannelInboundProductSurface>,
+            observer: None,
+        });
+        sink.admit(admission_for("/model")).await.expect("admitted");
+        let payloads = workflow.payloads();
+        assert!(
+            matches!(payloads[0], ProductInboundPayload::NoOp),
+            "the protocol classifier must run before command classification: {payloads:?}"
+        );
+    }
+
     fn pairing_sink(
         interception: ChannelPairingInterception,
     ) -> (
@@ -901,6 +1041,7 @@ mod tests {
                 header: "X-Vendor-Secret".to_string(),
             },
             classifier: None,
+            commands: Vec::new(),
             surface: Arc::clone(&workflow) as Arc<dyn ChannelInboundProductSurface>,
             observer: None,
         })

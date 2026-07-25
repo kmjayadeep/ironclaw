@@ -120,6 +120,7 @@ impl AcmeIngress {
         let observer = Arc::new(RecordingAdmissionObserver::default());
         let surface = harness.product_surface_for_test() as Arc<dyn ChannelInboundProductSurface>;
         let sink = Arc::new(GenericChannelInboundSink::new(ChannelInboundSinkConfig {
+            commands: Vec::new(),
             adapter_id: ironclaw_product::ProductAdapterId::new("acme-messenger")
                 .expect("adapter id"),
             evidence: VerifiedEvidenceMint::RequestSignature {
