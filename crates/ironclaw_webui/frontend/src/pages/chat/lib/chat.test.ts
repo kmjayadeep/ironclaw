@@ -870,6 +870,63 @@ test("Chat deny gate callback routes through approve compatibility path", () => 
   assert.deepEqual(approveCalls, [["request-1", "deny", "gate"]]);
 });
 
+test("Chat intercepts known slash text as a command on an active thread", async () => {
+  const sends = [];
+  const commandRuns = [];
+  const { tree, components } = renderChat({
+    activeThreadId: "thread-1",
+    contextOverrides: {
+      useChatCommands: () => [{ name: "status", aliases: [], usage: "/status" }],
+      matchCommand: (text) => (text.startsWith("/status") ? { name: "status" } : null),
+    },
+    hookState: {
+      messages: [{ id: "message-1" }],
+      isProcessing: false,
+      pendingGate: null,
+      suggestions: [],
+      sseStatus: "open",
+      historyLoading: false,
+      hasMore: false,
+      cooldownSeconds: 0,
+      recoveryNotice: null,
+      activeRun: null,
+      send: async (content) => {
+        sends.push(content);
+        return {};
+      },
+      runCommand: async (text) => {
+        commandRuns.push(text);
+        return {};
+      },
+      cancelRun: async () => {},
+      retryMessage: () => {},
+      approve: () => {},
+      recoverHistory: () => {},
+      loadMore: () => {},
+      setSuggestions: () => {},
+      submitAuthToken: async () => {},
+    },
+  });
+
+  const chatInput = findComponent(tree, components.ChatInput);
+  const props = componentProps(chatInput, components.ChatInput);
+
+  await props.onSend("/status", {});
+  assert.deepEqual(commandRuns, ["/status"], "known slash text executes as a command");
+  assert.deepEqual(sends, [], "commands never submit a turn");
+
+  await props.onSend("/status", { images: [{ id: "img-1" }] });
+  assert.deepEqual(
+    sends,
+    ["/status"],
+    "slash text with an image submits as a message so the image is not dropped"
+  );
+  assert.deepEqual(commandRuns, ["/status"], "no second command run");
+
+  await props.onSend("plain text", {});
+  assert.deepEqual(sends, ["/status", "plain text"], "ordinary text still submits");
+});
+
 test("Chat landing view submits known slash text as a message instead of a command", async () => {
   const sends = [];
   const commandRuns = [];

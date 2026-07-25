@@ -220,6 +220,7 @@ export function Chat({
       // the same first-contact semantics channels have.
       if (
         activeThreadId &&
+        images.length === 0 &&
         attachments.length === 0 &&
         matchCommand(content, chatCommands)
       ) {

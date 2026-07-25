@@ -236,6 +236,38 @@ impl SharedCommandSurface {
     }
 }
 
+#[cfg(test)]
+mod shared_command_surface_tests {
+    use super::*;
+    use ironclaw_host_api::ProductSurface as _;
+
+    /// The boot window before `runtime.command_surface.set(...)` (and any
+    /// harness that never fills) must fail closed retryably — never execute,
+    /// never settle permanently.
+    #[tokio::test]
+    async fn unfilled_shared_command_surface_fails_closed_retryably() {
+        let surface = SharedCommandSurface::default();
+        let error = surface
+            .invoke(
+                ironclaw_host_api::ProductSurfaceCaller::new(
+                    ironclaw_host_api::TenantId::new("tenant:test").expect("tenant"),
+                    ironclaw_host_api::UserId::new("user:test").expect("user"),
+                    None,
+                    None,
+                ),
+                ironclaw_host_api::ProductSurfaceInvokeRequest {
+                    operation_id: ironclaw_host_api::CapabilityId::new("product.model.command")
+                        .expect("operation id"),
+                    input: serde_json::json!({}),
+                    activity_id: ironclaw_host_api::ActivityId::new(),
+                },
+            )
+            .await
+            .expect_err("unfilled surface must not execute");
+        assert!(error.retryable, "boot-window failures are retryable");
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 mod shared_command_surface_test_support {
     impl super::SharedCommandSurface {

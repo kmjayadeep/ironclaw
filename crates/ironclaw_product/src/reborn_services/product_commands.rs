@@ -144,9 +144,12 @@ where
     }
 
     /// Execute composer slash text through the same shared parser, typed
-    /// command model, and handlers the channel dispatch uses. Rejections
-    /// return 200 with a user-safe body (kind + inventory help) so the
-    /// composer renders them like any command result.
+    /// command model, and handlers the channel dispatch uses. Text that
+    /// parses as a command but cannot execute (unknown name, unwired family)
+    /// returns 200 with a user-safe rejection body (kind + inventory help)
+    /// so the composer renders it like any command result; text that is not
+    /// well-formed slash input at all is a 400 — the composer only submits
+    /// inventory-matched slash text, so that is a client contract breach.
     pub async fn execute_product_command(
         &self,
         caller: ProductSurfaceCaller,

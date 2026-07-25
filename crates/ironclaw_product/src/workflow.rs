@@ -1619,20 +1619,12 @@ fn dispatch_kind_from_ack(
     }
 }
 
+/// The sole caller guards on `error.retryable`, so this maps retryable
+/// surface failures only; non-retryable failures settle as rejections in
+/// `dispatch_product_command`.
 fn product_surface_failure(error: ProductSurfaceError) -> ProductSurfaceFailure {
-    if error.retryable {
-        return ProductSurfaceFailure::Transient {
-            reason: format!("product command surface failed: {:?}", error.code),
-        };
-    }
-    match error.code {
-        ProductSurfaceErrorCode::InvalidRequest => ProductSurfaceFailure::InvalidBindingRequest {
-            reason: "product command request was invalid".to_string(),
-        },
-        ProductSurfaceErrorCode::Forbidden => ProductSurfaceFailure::BindingAccessDenied,
-        _ => ProductSurfaceFailure::Transient {
-            reason: format!("product command surface failed: {:?}", error.code),
-        },
+    ProductSurfaceFailure::Transient {
+        reason: format!("product command surface failed: {:?}", error.code),
     }
 }
 

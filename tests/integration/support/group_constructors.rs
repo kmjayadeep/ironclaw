@@ -27,6 +27,19 @@ use super::{
 /// seed) or `multiuser_approvals` (alignment is
 /// `.with_run_owner_scoped_capability_dispatch()`, not a fixed `user_id`
 /// override) — those remain call-site-specific.
+/// Mirror the production command-surface fill (`build_reborn_runtime`'s final
+/// step) for harness-assembled runtimes, so manifest-declared slash commands
+/// execute against the runtime's real `ProductSurface` instead of failing
+/// closed.
+fn mirror_command_surface_fill(host_runtime: &HostRuntimeCapabilityHarness) -> HarnessResult<()> {
+    host_runtime
+        .reborn_services_for_test()
+        .ok_or("group harness is missing its RebornServices bundle")?
+        .fill_command_surface_for_test()
+        .map_err(|error| format!("command-surface fill failed: {error}"))?;
+    Ok(())
+}
+
 async fn build_group_capability_with_base(
     mut profile: ToolsProfile,
     base: &GroupBaseData,
@@ -343,14 +356,7 @@ impl RebornIntegrationGroupBuilder {
         // slot. Identities come from the group's single-source dispatch scope
         // so the service's tenant check matches dispatch-time callers.
         let scope = &base.product_harness.scope;
-        // Mirror the production command-surface fill (`build_reborn_runtime`'s
-        // final step) so manifest-declared slash commands execute against the
-        // runtime's real ProductSurface instead of failing closed.
-        host_runtime
-            .reborn_services_for_test()
-            .ok_or("group harness is missing its RebornServices bundle")?
-            .fill_command_surface_for_test()
-            .map_err(|error| format!("command-surface fill failed: {error}"))?;
+        mirror_command_surface_fill(&host_runtime)?;
         let channel_connection =
             ironclaw_reborn_composition::test_support::build_channel_connection_for_test(
                 host_runtime
@@ -383,14 +389,7 @@ impl RebornIntegrationGroupBuilder {
         // Wire the real generic service over this harness's own
         // `RebornServices`, keyed to the group's dispatch scope.
         let scope = &base.product_harness.scope;
-        // Mirror the production command-surface fill (`build_reborn_runtime`'s
-        // final step) so manifest-declared slash commands execute against the
-        // runtime's real ProductSurface instead of failing closed.
-        host_runtime
-            .reborn_services_for_test()
-            .ok_or("group harness is missing its RebornServices bundle")?
-            .fill_command_surface_for_test()
-            .map_err(|error| format!("command-surface fill failed: {error}"))?;
+        mirror_command_surface_fill(&host_runtime)?;
         let channel_connection =
             ironclaw_reborn_composition::test_support::build_channel_connection_for_test(
                 host_runtime
@@ -421,14 +420,7 @@ impl RebornIntegrationGroupBuilder {
         .await?
         .with_run_owner_scoped_capability_dispatch();
         let scope = &base.product_harness.scope;
-        // Mirror the production command-surface fill (`build_reborn_runtime`'s
-        // final step) so manifest-declared slash commands execute against the
-        // runtime's real ProductSurface instead of failing closed.
-        host_runtime
-            .reborn_services_for_test()
-            .ok_or("extension_delivery harness is missing its RebornServices bundle")?
-            .fill_command_surface_for_test()
-            .map_err(|error| format!("command-surface fill failed: {error}"))?;
+        mirror_command_surface_fill(&host_runtime)?;
         let channel_connection =
             ironclaw_reborn_composition::test_support::build_channel_connection_for_test(
                 host_runtime
