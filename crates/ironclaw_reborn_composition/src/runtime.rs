@@ -1622,14 +1622,6 @@ impl RebornRuntime {
         self.delivery_coordinator.clone()
     }
 
-    /// Test-only mirror of the production fill at the end of
-    /// `build_reborn_runtime`: whether the shared channel command-execution
-    /// surface was filled during construction. Tests only.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn command_surface_is_filled_for_test(&self) -> bool {
-        self.command_surface.is_filled()
-    }
-
     #[cfg(any(test, feature = "test-support"))]
     pub fn start_channel_host_assembly_for_test(
         &self,
@@ -5338,3 +5330,25 @@ fn placeholder_unconfigured_error() -> ironclaw_llm::LlmError {
 #[cfg(test)]
 #[path = "runtime/tests/core.rs"]
 mod tests;
+
+#[cfg(any(test, feature = "test-support"))]
+mod runtime_command_surface_test_support {
+    impl super::RebornRuntime {
+        /// Test-only mirror of the production fill at the end of
+        /// `build_reborn_runtime`: whether the shared channel
+        /// command-execution surface was filled during construction.
+        pub fn command_surface_is_filled_for_test(&self) -> bool {
+            self.command_surface.is_filled()
+        }
+
+        /// Test-only mirror of the production command-surface fill for
+        /// harness-assembled runtimes that do not pass through
+        /// `build_reborn_runtime` (the channel-connection slot has the same
+        /// mirror; see `build_channel_connection_for_test`). First write
+        /// wins, so calling after a production fill is a no-op.
+        pub fn fill_command_surface_for_test(&self) -> Result<(), crate::RebornBuildError> {
+            self.command_surface.set(self.product_surface(None)?);
+            Ok(())
+        }
+    }
+}

@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::time::Instant;
 
-use crate::commands::{CommandResultView, command_help_text, render_command_result_text};
+use crate::commands::{CommandResultView, command_unavailable_reply, render_command_result_text};
 use crate::{
     ExternalActorRef, ExternalConversationRef, ExternalEventId, OutboundPart, ProductAdapterError,
     ProductInboundAck, ProductInboundEnvelope, ProductInboundPayload, ProductRejection,
@@ -820,10 +820,7 @@ impl RunDeliveryObserver {
                 }
             }
             ProductInboundAck::Rejected(rejection) => match rejection.kind {
-                ProductRejectionKind::InvalidRequest => format!(
-                    "That command isn't available here.\n{}",
-                    command_help_text()
-                ),
+                ProductRejectionKind::InvalidRequest => command_unavailable_reply(),
                 ProductRejectionKind::PolicyDenied => {
                     "Commands can only be used in a direct conversation with the assistant."
                         .to_string()
@@ -832,26 +829,23 @@ impl RunDeliveryObserver {
                 // BindingRequired — the connect nudge below owns that
                 // feedback, exactly as for a first-contact user message.
                 ProductRejectionKind::BindingRequired => return false,
-                // Remaining rejection families settle without user feedback;
-                // transport retries replay as Duplicate.
-                _ => return true,
+                // Every other settled command failure gets a generic notice:
+                // silence would strand the user, and the internal reason is
+                // redacted by design.
+                _ => {
+                    let command = match envelope.payload() {
+                        ProductInboundPayload::Command(payload) => payload.command.clone(),
+                        _ => String::new(),
+                    };
+                    format!("Couldn't run /{command} here.")
+                }
             },
             _ => return true,
         };
-        let scope = match self
-            .services
-            .binding_service
-            .lookup_binding(ResolveBindingRequest::from_envelope(envelope))
-            .await
-        {
-            Ok(binding) => thread_scope_from_binding(&binding)
-                .and_then(|thread_scope| turn_scope_from_thread_scope(&binding, &thread_scope))
-                .unwrap_or_else(|_| self.services.fallback_notice_scope.clone()),
-            // Rejected commands can come from conversations with no binding
-            // yet; the notice replies to the sender's own conversation with
-            // fixed host-authored text, so the fallback scope leaks nothing.
-            Err(_) => self.services.fallback_notice_scope.clone(),
-        };
+        // Rejected commands can come from conversations with no binding yet;
+        // the notice replies to the sender's own conversation with fixed
+        // host-authored text, so the shared fallback scope leaks nothing.
+        let scope = self.notice_scope(envelope).await;
         self.services
             .post_notice(
                 DeliveryIntent::CommandFeedback,

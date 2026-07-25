@@ -241,6 +241,13 @@ pub struct RebornCreateThreadResponse {
 }
 
 /// One product-command descriptor projected for the WebUI slash menu.
+///
+/// Deliberate wire mirror of `ironclaw_host_api::ProductCommandDescriptor`
+/// (type-placement.md "mirror must earn its keep"): the canonical descriptor
+/// is a `&'static str` const table that cannot be `DeserializeOwned` across
+/// the capability-dispatch JSON boundary. The projection test in
+/// `commands.rs` pins the key sets so a new descriptor column cannot silently
+/// fail to project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RebornProductCommandInfo {
     pub name: String,
@@ -269,7 +276,7 @@ pub struct RebornExecuteProductCommandRequest {
 /// internal rejection reason.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RebornCommandRejection {
-    pub kind: String,
+    pub kind: crate::ProductRejectionKind,
     pub message: String,
 }
 

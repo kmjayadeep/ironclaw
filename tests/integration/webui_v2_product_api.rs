@@ -2042,3 +2042,112 @@ async fn approval_gate_rediscovered_and_resolved_after_refresh() {
         .await
         .expect("the approved write actually re-dispatched and persisted");
 }
+
+/// The composer slash menu derives everything from this endpoint: the full
+/// standardized inventory (the browser is the operator surface — no manifest
+/// gate), each entry carrying its presentation metadata.
+#[tokio::test]
+async fn commands_endpoint_serves_the_full_inventory() {
+    let h = RebornIntegrationHarness::builder("conv-webui-commands-list")
+        .script([RebornScriptedReply::text("unused")])
+        .build()
+        .await
+        .expect("harness builds");
+    let services = RebornServices::new(h.thread_harness.service.clone(), h.coordinator.clone());
+    let caller = webui_caller_for(&h.binding);
+    let router = mount_webui_v2_router(Arc::new(services), caller);
+
+    let (status, body) = get_json(router, "/api/webchat/v2/commands").await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let commands = body["commands"].as_array().expect("commands array");
+    assert_eq!(
+        commands.len(),
+        ironclaw_host_api::product_commands::PRODUCT_COMMANDS.len(),
+        "the WebUI sees the whole inventory: {body}"
+    );
+    let status_entry = commands
+        .iter()
+        .find(|command| command["name"] == "status")
+        .expect("status command listed");
+    assert_eq!(status_entry["aliases"][0], "progress");
+    assert!(
+        status_entry["usage"]
+            .as_str()
+            .is_some_and(|usage| usage.starts_with("/status")),
+        "usage carries the slash spelling: {status_entry}"
+    );
+}
+
+/// `/status` through the real facade on the caller's own thread: the typed
+/// command executes `product.status.command` and returns the generic result
+/// view derived from canonical thread/run state.
+#[tokio::test]
+async fn status_command_reports_the_callers_own_thread() {
+    let h = RebornIntegrationHarness::builder("conv-webui-commands-status")
+        .script([RebornScriptedReply::text("done and dusted")])
+        .build()
+        .await
+        .expect("harness builds");
+    h.submit_turn("do a thing").await.expect("turn completes");
+    let services = RebornServices::new(h.thread_harness.service.clone(), h.coordinator.clone());
+    let caller = webui_caller_for(&h.binding);
+    let router = mount_webui_v2_router(Arc::new(services), caller);
+
+    let (status, body) = post_json(
+        router,
+        &format!(
+            "/api/webchat/v2/threads/{}/commands",
+            h.binding.thread_id.as_str()
+        ),
+        serde_json::json!({"text": "/status"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["command"], "status");
+    assert!(body["rejection"].is_null(), "no rejection: {body}");
+    assert_eq!(body["result"]["title"], "Status");
+    let fields = body["result"]["fields"].as_array().expect("fields");
+    assert!(
+        fields.iter().any(|field| field["label"] == "State"),
+        "the rendered view reports the run state: {body}"
+    );
+}
+
+/// Security pin: the thread id in the command endpoint is caller-supplied
+/// (unlike the channel path, where it comes from the resolved binding), so a
+/// foreign caller must not be able to status-probe another user's thread.
+#[tokio::test]
+async fn status_command_denies_a_foreign_callers_thread() {
+    let h = RebornIntegrationHarness::builder("conv-webui-commands-foreign")
+        .script([RebornScriptedReply::text("private business")])
+        .build()
+        .await
+        .expect("harness builds");
+    h.submit_turn("owner activity")
+        .await
+        .expect("turn completes");
+    let services = RebornServices::new(h.thread_harness.service.clone(), h.coordinator.clone());
+    let owner_caller = webui_caller_for(&h.binding);
+    let foreign_caller = ProductSurfaceCaller::new(
+        owner_caller.tenant_id.clone(),
+        UserId::new("user:someone-else").expect("user id"),
+        owner_caller.agent_id.clone(),
+        owner_caller.project_id.clone(),
+    );
+    let router = mount_webui_v2_router(Arc::new(services), foreign_caller);
+
+    let (status, body) = post_json(
+        router,
+        &format!(
+            "/api/webchat/v2/threads/{}/commands",
+            h.binding.thread_id.as_str()
+        ),
+        serde_json::json!({"text": "/status"}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a foreign caller must not status-probe another user's thread: {body}"
+    );
+}

@@ -70,6 +70,17 @@ pub fn command_help_text() -> String {
     help
 }
 
+/// The one user-facing reply for a command that parsed but cannot execute on
+/// this surface (unknown, undeclared, malformed, or not-yet-wired). Channels
+/// (the run-delivery observer) and the WebUI endpoint must stay in lockstep,
+/// so both compose it from here.
+pub fn command_unavailable_reply() -> String {
+    format!(
+        "That command isn't available here.\n{}",
+        command_help_text()
+    )
+}
+
 /// Render a result view as plain text for channels without rich formatting.
 pub fn render_command_result_text(view: &CommandResultView) -> String {
     let mut text = view.title.clone();

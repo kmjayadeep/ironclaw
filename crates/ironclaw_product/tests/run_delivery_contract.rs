@@ -593,6 +593,29 @@ async fn observer_posts_inventory_help_for_user_correctable_command_rejections()
 }
 
 #[tokio::test]
+async fn observer_posts_generic_failure_notice_for_settled_command_failures() {
+    let harness = build_harness(
+        vec![scripted_state(TurnStatus::Completed, None)],
+        false,
+        None,
+        Duration::from_secs(5),
+    );
+    harness
+        .observer
+        .observe_ack(
+            command_envelope("evt-cmd-failed", "status"),
+            ProductInboundAck::Rejected(ironclaw_product::ProductRejection::permanent(
+                ironclaw_product::ProductRejectionKind::AccessDenied,
+                "product command surface failed: NotFound",
+            )),
+        )
+        .await;
+
+    let texts = harness.adapter.texts();
+    assert_eq!(texts, vec!["Couldn't run /status here.".to_string()]);
+}
+
+#[tokio::test]
 async fn observer_posts_direct_conversation_notice_for_policy_denied_commands() {
     let harness = build_harness(
         vec![scripted_state(TurnStatus::Completed, None)],

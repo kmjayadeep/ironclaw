@@ -215,6 +215,8 @@ where
 }
 
 /// The command execution surface shared by every extension's workflow.
+/// Generic lazy-`ProductSurface` glue: moves to `ironclaw_extension_host`
+/// with the #6616 slice-2 `GenericChannelHostAssembly` relocation.
 ///
 /// The channel-host assembly starts during runtime construction — before the
 /// runtime's `ProductSurface` can exist — so per-extension graphs receive
@@ -232,11 +234,15 @@ impl SharedCommandSurface {
     pub(crate) fn set(&self, surface: Arc<dyn ironclaw_host_api::ProductSurface>) {
         let _ = self.cell.set(surface);
     }
+}
 
-    /// Test-only observability: whether construction filled the handle.
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn is_filled(&self) -> bool {
-        self.cell.get().is_some()
+#[cfg(any(test, feature = "test-support"))]
+mod shared_command_surface_test_support {
+    impl super::SharedCommandSurface {
+        /// Test-only observability: whether construction filled the handle.
+        pub(crate) fn is_filled(&self) -> bool {
+            self.cell.get().is_some()
+        }
     }
 }
 

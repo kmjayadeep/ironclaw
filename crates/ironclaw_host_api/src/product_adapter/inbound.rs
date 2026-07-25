@@ -274,6 +274,32 @@ pub fn parse_product_slash_command(
         .map_err(|error| ProductSlashCommandParseError::InvalidPayload(error.to_string()))
 }
 
+/// Classify manifest-declared slash commands for a normalized channel
+/// message — the channel-neutral grammar every host sink runs exactly once,
+/// beside the parser it wraps. Slash text that does not resolve to a
+/// *declared* command (unknown name, undeclared name, malformed slash)
+/// deliberately stays an ordinary user message.
+pub fn classify_declared_command(
+    declared: &[String],
+    message: &crate::product_adapter::channel_adapter::NormalizedInboundMessage,
+) -> Option<ChannelInboundClassification> {
+    if declared.is_empty() {
+        return None;
+    }
+    let payload = match parse_product_slash_command(&message.text, message.trigger) {
+        Ok(Some(payload)) => payload,
+        // Not slash-shaped, or malformed slash text ("/", oversized args):
+        // an intentional classification decision, not a dropped error — the
+        // text remains an ordinary user message for the agent.
+        Ok(None) | Err(_) => return None,
+    };
+    let descriptor = crate::product_commands::find_product_command(&payload.command)?;
+    declared
+        .iter()
+        .any(|name| name == descriptor.name)
+        .then(|| ChannelInboundClassification::Command(payload))
+}
+
 #[derive(Deserialize)]
 struct InboundCommandPayloadWire {
     command: String,
@@ -1421,5 +1447,67 @@ mod tests {
             ProductRejectionKind::PolicyDenied.user_facing_hint(),
             "That request was declined by policy."
         );
+    }
+}
+
+#[cfg(test)]
+mod classify_declared_command_tests {
+    use super::*;
+    use crate::product_adapter::channel_adapter::NormalizedInboundMessage;
+    use crate::product_adapter::external::{
+        ExternalActorRef, ExternalConversationRef, ExternalEventId,
+    };
+
+    fn message(text: &str) -> NormalizedInboundMessage {
+        NormalizedInboundMessage {
+            actor: ExternalActorRef::new("user", "u-1", None::<&str>).expect("actor"),
+            conversation: ExternalConversationRef::new(None, "c-1", None, None).expect("conv"),
+            event_id: ExternalEventId::new("e-1").expect("event"),
+            text: text.to_string(),
+            trigger: ProductTriggerReason::DirectChat,
+            attachments: Vec::new(),
+            reply_context: None,
+        }
+    }
+
+    fn declared(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn declared_command_classifies_with_arguments_preserved() {
+        let classified =
+            classify_declared_command(&declared(&["model"]), &message("/model set-provider acme"));
+        let Some(ChannelInboundClassification::Command(payload)) = classified else {
+            panic!("declared slash text must classify: {classified:?}");
+        };
+        assert_eq!(payload.command, "model");
+        assert_eq!(payload.arguments, "set-provider acme");
+    }
+
+    #[test]
+    fn alias_of_a_declared_command_classifies_preserving_the_typed_spelling() {
+        let classified = classify_declared_command(&declared(&["status"]), &message("/progress"));
+        let Some(ChannelInboundClassification::Command(payload)) = classified else {
+            panic!("alias must classify: {classified:?}");
+        };
+        assert_eq!(payload.command, "progress");
+    }
+
+    #[test]
+    fn undeclared_unknown_and_malformed_slash_text_does_not_classify() {
+        for (names, text) in [
+            (vec!["status"], "/model gpt"),
+            (vec!["model"], "/notacommand"),
+            (vec!["model"], "/"),
+            (Vec::new(), "/model"),
+            (vec!["model"], "plain text"),
+        ] {
+            let names: Vec<&str> = names;
+            assert!(
+                classify_declared_command(&declared(&names), &message(text)).is_none(),
+                "{text:?} with declared={names:?} must stay user text"
+            );
+        }
     }
 }

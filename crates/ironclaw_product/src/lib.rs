@@ -113,8 +113,8 @@ pub use commands::{
     CommandResultField, CommandResultView, PRODUCT_LIFECYCLE_COMMAND_OPERATION_ID,
     PRODUCT_MODEL_COMMAND_OPERATION_ID, PRODUCT_STATUS_COMMAND_OPERATION_ID, ProductCommand,
     ProductLifecycleCommandInput, ProductModelCommand, ProductModelCommandInput,
-    ProductStatusCommandInput, command_help_text, product_command_descriptors,
-    render_command_result_text,
+    ProductStatusCommandInput, command_help_text, command_unavailable_reply,
+    product_command_descriptors, render_command_result_text,
 };
 pub use conversation_binding::{
     ProductActorBindingPolicy, ProductActorUserResolutionRequest, ProductActorUserResolver,
@@ -177,7 +177,8 @@ pub use ironclaw_host_api::product_adapter::{
     ProtocolAuthFailure, ProtocolHttpEgress, ProtocolHttpEgressError, REDACTED_PLACEHOLDER,
     RedactedDebug, RedactedString, ScopedApprovalResolutionPayload, TargetCandidate, TargetQuery,
     TrustedInboundContext, UserMessagePayload, VerifiedAuthClaim, VerifiedInbound,
-    parse_interaction_resolution_text, parse_product_slash_command, strip_wrapping_inline_code,
+    classify_declared_command, parse_interaction_resolution_text, parse_product_slash_command,
+    strip_wrapping_inline_code,
 };
 #[cfg(feature = "host-auth-mint")]
 pub use ironclaw_host_api::product_adapter::{

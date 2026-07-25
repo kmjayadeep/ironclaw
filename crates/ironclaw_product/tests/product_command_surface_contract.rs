@@ -371,6 +371,38 @@ async fn paired_dm_admission_enforces_direct_route_and_declared_set() {
 }
 
 #[tokio::test]
+async fn non_retryable_surface_error_settles_as_rejection_not_transient() {
+    let inbound = Arc::new(FakeInboundTurnService::new());
+    let ledger = Arc::new(FakeIdempotencyLedger::new());
+    let binding = Arc::new(FakeConversationBindingService::new());
+    let admission_service = Arc::new(RecordingProductCommandAdmissionService::allowing());
+    let command_surface = Arc::new(RecordingCommandSurface::failing(
+        ProductSurfaceError::from_status(
+            ironclaw_host_api::ProductSurfaceErrorCode::NotFound,
+            404,
+            false,
+        ),
+    ));
+    let workflow = DefaultProductSurface::new(inbound.clone(), ledger.clone(), binding)
+        .with_product_command_admission_service(admission_service)
+        .with_product_command_surface(command_surface);
+    let envelope = sample_command_envelope("command-surface-404", "status", "");
+
+    let ack = workflow.submit_inbound(envelope).await.expect("accept");
+
+    // A non-retryable surface failure settles the action (the vendor gets
+    // its 2xx and never redelivers) instead of bubbling as transient.
+    let ProductInboundAck::Rejected(rejection) = ack else {
+        panic!("expected settled rejection, not transient failure");
+    };
+    assert_eq!(
+        rejection.kind,
+        ironclaw_product::ProductRejectionKind::AccessDenied
+    );
+    assert_eq!(ledger.settled_count(), 1);
+}
+
+#[tokio::test]
 async fn unknown_command_rejects_with_inventory_help() {
     let inbound = Arc::new(FakeInboundTurnService::new());
     let ledger = Arc::new(FakeIdempotencyLedger::new());

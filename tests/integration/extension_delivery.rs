@@ -2037,3 +2037,269 @@ async fn unbound_telegram_actor_pairs_via_web_minted_code_then_turns_attribute_t
     ingress.drain().await;
     assert_delivered_attempt(services, &repaired_scope).await;
 }
+
+/// Product slash commands over the production channel graph with the REAL
+/// runtime-filled command surface (no stubbed executor): after pairing, a
+/// paired DM `/status` classifies at the generic sink, passes the DM-only
+/// admission, executes `product.status.command` through the runtime's own
+/// `ProductSurface` (the real facade handler reading canonical thread/run
+/// state), and the rendered `CommandResultView` is delivered back over
+/// `sendMessage`. Commands are not turns: no scripted model reply is
+/// consumed. Unknown slash text still admits an ordinary turn.
+#[tokio::test]
+async fn paired_telegram_dm_status_command_executes_through_the_real_command_surface() {
+    // Boxed like the sibling telegram journeys: inline, the future overflows
+    // the 2 MiB test-thread stack under llvm-cov instrumentation.
+    Box::pin(paired_telegram_dm_status_command_executes_through_the_real_command_surface_impl())
+        .await;
+}
+
+async fn paired_telegram_dm_status_command_executes_through_the_real_command_surface_impl() {
+    let group = RebornIntegrationGroup::extension_delivery()
+        .await
+        .expect("delivery group builds");
+    let services = reborn_services(&group);
+
+    let inbound = group
+        .thread("conv-telegram-command-inbound")
+        .script([
+            RebornScriptedReply::text(TELEGRAM_REPLY),
+            RebornScriptedReply::text(TELEGRAM_REPLY),
+        ])
+        .build()
+        .await
+        .expect("inbound thread builds");
+
+    let assembly = services
+        .start_channel_host_assembly_for_test(ChannelHostAssemblyTestWiring {
+            thread_service: inbound
+                .thread_service_for_test()
+                .expect("group thread service"),
+            turn_coordinator: inbound.turn_coordinator_for_test(),
+            run_delivery_settings: RunDeliverySettings::default(),
+            identity: ChannelHostIdentity {
+                tenant_id: inbound.binding.tenant_id.clone(),
+                agent_id: inbound.binding.agent_id.clone().expect("binding agent id"),
+                project_id: inbound.binding.project_id.clone(),
+                operator_user_id: inbound
+                    .binding
+                    .subject_user_id
+                    .clone()
+                    .expect("binding subject user id"),
+            },
+        })
+        .expect("the production channel host assembly starts over the composed runtime");
+
+    let lifecycle = group
+        .thread("conv-telegram-command-lifecycle")
+        .script([
+            RebornScriptedReply::tool_call(
+                "builtin.extension_install",
+                json!({"extension_id": "telegram"}),
+            ),
+            RebornScriptedReply::text("installed and ready"),
+        ])
+        .build()
+        .await
+        .expect("telegram lifecycle thread builds");
+
+    configure_admin_group(
+        &group,
+        "extension.telegram",
+        0,
+        json!([
+            {"handle": "telegram_bot_token", "value": TELEGRAM_BOT_TOKEN},
+            {"handle": "telegram_webhook_secret", "value": TELEGRAM_WEBHOOK_SECRET},
+            {"handle": "telegram_webhook_url", "value": "https://hooks.example.test/webhooks/extensions/telegram/updates"},
+            {"handle": "bot_username", "value": "itest_command_bot"}
+        ]),
+    )
+    .await;
+
+    let (install_run_id, _gate_ref) = lifecycle
+        .submit_turn_until_auth_blocked("install telegram")
+        .await
+        .expect("unpaired Telegram install parks on its pairing requirement");
+    let paired_user = inbound
+        .binding
+        .subject_user_id
+        .clone()
+        .expect("binding subject user id");
+    let bootstrap_code = services
+        .pairing_mint_for_test("telegram", &paired_user)
+        .await
+        .expect("setup-needed Telegram exposes pairing before readiness");
+    assert_eq!(
+        services
+            .pairing_consume_for_test(
+                "telegram",
+                TELEGRAM_INSTALLATION,
+                &bootstrap_code,
+                ("user", "command-bootstrap", None, "command-bootstrap"),
+                (
+                    lifecycle.turn_coordinator_for_test(),
+                    lifecycle.turn_state_store_for_test(),
+                    inbound.binding.tenant_id.clone(),
+                ),
+            )
+            .await
+            .expect("bootstrap pairing completes")
+            .as_ref(),
+        Some(&paired_user)
+    );
+    lifecycle
+        .wait_for_status(install_run_id, ironclaw_turns::TurnStatus::Completed)
+        .await
+        .expect("pairing continuation completes the exact install");
+
+    let telegram_binding_service =
+        wait_for_production_registration(&assembly, services, "telegram").await;
+    let ingress = VendorIngress::production(
+        services
+            .extension_ingress_parts()
+            .expect("composition built the generic ingress"),
+    );
+    let evidence = ironclaw_product::auth::mark_shared_secret_header_verified(
+        "X-Telegram-Bot-Api-Secret-Token".to_string(),
+        TELEGRAM_INSTALLATION,
+    );
+
+    let dm_body = |update_id: u64, text: &str| {
+        json!({
+            "update_id": update_id,
+            "message": {
+                "message_id": update_id + 10,
+                "date": 1710000000,
+                "text": text,
+                "from": {"id": 555777, "is_bot": false, "first_name": "Cam"},
+                "chat": {"id": 717171, "type": "private"}
+            }
+        })
+        .to_string()
+    };
+
+    // Bind the Telegram sender through the production web-minted-code flow.
+    let code = services
+        .pairing_mint_for_test("telegram", &paired_user)
+        .await
+        .expect("active telegram channel mints pairing codes");
+    let status = ingress
+        .post(
+            TELEGRAM_ROUTE,
+            &dm_body(701, &format!("/start {code}")),
+            vec![(
+                "X-Telegram-Bot-Api-Secret-Token",
+                TELEGRAM_WEBHOOK_SECRET.to_string(),
+            )],
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    ingress.drain().await;
+
+    // 1. Seed the conversation with an ordinary paired DM: commands are
+    //    lookup-only and never create bindings (first-contact commands
+    //    reject BindingRequired by design), so the binding + thread must
+    //    exist before `/status` can report on them.
+    let seed_body = dm_body(702, "hello, checking in");
+    let vendor_scope = preresolve_vendor_turn_scope(
+        &telegram_binding_service,
+        &ironclaw_telegram_extension::TelegramChannelAdapter::default(),
+        "telegram",
+        TELEGRAM_INSTALLATION,
+        &evidence,
+        &seed_body,
+    )
+    .await;
+    inbound.register_scope_gateway_for_test(
+        vendor_scope.clone(),
+        Arc::new(StaticReplyGateway(TELEGRAM_REPLY)),
+    );
+    let status = ingress
+        .post(
+            TELEGRAM_ROUTE,
+            &seed_body,
+            vec![(
+                "X-Telegram-Bot-Api-Secret-Token",
+                TELEGRAM_WEBHOOK_SECRET.to_string(),
+            )],
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    ingress.drain().await;
+    assert_delivered_attempt(services, &vendor_scope).await;
+
+    // 2. Paired DM `/status`: sink classification → DM admission → the REAL
+    //    command surface (`product.status.command` through the runtime's own
+    //    facade) → rendered result delivered to the sender's chat.
+    let (status, response_body) = ingress
+        .post_with_body(
+            TELEGRAM_ROUTE,
+            &dm_body(703, "/status"),
+            vec![(
+                "X-Telegram-Bot-Api-Secret-Token",
+                TELEGRAM_WEBHOOK_SECRET.to_string(),
+            )],
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "/status admission response: {response_body}"
+    );
+    ingress.drain().await;
+    // The harness intentionally splits stacks: the assembly runs over the
+    // group's thread/turn services while the runtime's real ProductSurface
+    // reads the runtime's own stores, so the facade cannot see the vendor
+    // thread and rejects non-retryably. What this pins end-to-end through
+    // the REAL runtime-filled surface: classification → admission →
+    // operation dispatch → non-retryable failures SETTLE (vendor 2xx, no
+    // redelivery storm) → the generic failure notice reaches the sender.
+    // The success rendering rides the composition-tier journeys (stubbed
+    // surface) until the harness unifies its thread stack (follow-up).
+    let requests = inbound.captured_network_requests_for_test();
+    let command_reply = requests
+        .iter()
+        .filter(|request| request.url.ends_with("/sendMessage"))
+        .map(|request| String::from_utf8_lossy(&request.body).into_owned())
+        .find(|body| body.contains("Couldn't run /status here.") && body.contains("717171"))
+        .expect("the settled /status failure must deliver the generic notice to the sender's chat");
+    assert!(
+        command_reply.contains("717171"),
+        "command feedback must land in the sender's own chat: {command_reply}"
+    );
+    assert!(
+        inbound
+            .assert_model_request_contains("/status")
+            .await
+            .is_err(),
+        "commands are not turns: /status must never reach the model"
+    );
+
+    // 3. Unknown slash text stays an ordinary user turn through the same
+    //    graph — it consumes a scripted model reply like any DM message.
+    let chat_body = dm_body(704, "/notacommand hello there");
+    let status = ingress
+        .post(
+            TELEGRAM_ROUTE,
+            &chat_body,
+            vec![(
+                "X-Telegram-Bot-Api-Secret-Token",
+                TELEGRAM_WEBHOOK_SECRET.to_string(),
+            )],
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    ingress.drain().await;
+    let replies = inbound
+        .captured_network_requests_for_test()
+        .iter()
+        .filter(|request| {
+            request.url.ends_with("/sendMessage")
+                && String::from_utf8_lossy(&request.body).contains(TELEGRAM_REPLY)
+        })
+        .count();
+    assert_eq!(
+        replies, 2,
+        "the seed DM and the unknown slash text each ran an ordinary turn with a delivered reply"
+    );
+}

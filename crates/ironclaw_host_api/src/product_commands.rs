@@ -6,6 +6,13 @@
 //! contract test pins the two tables 1:1. Extension manifests validate their
 //! `channel.commands` opt-in lists against this inventory, which is why the
 //! metadata lives in this vocabulary crate rather than beside the behavior.
+//!
+//! Deliberate trade: the presentation columns (`title`/`description`/`usage`)
+//! are consumed only by the product tier, but keeping the inventory a single
+//! table beats splitting a 12-row lockstep pair across crates. If host_api
+//! fan-in cost ever bites, split name+aliases (validation vocabulary) from a
+//! product-side presentation table folded into the existing 1:1 contract
+//! test.
 
 use serde::Serialize;
 

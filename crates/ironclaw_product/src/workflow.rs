@@ -1657,7 +1657,7 @@ async fn dispatch_product_command(
         binding.agent_id,
         binding.project_id,
     );
-    let response = command_surface
+    let response = match command_surface
         .invoke(
             caller,
             ProductSurfaceInvokeRequest {
@@ -1667,7 +1667,25 @@ async fn dispatch_product_command(
             },
         )
         .await
-        .map_err(product_surface_failure)?;
+    {
+        Ok(response) => response,
+        // Retryable surface failures keep the vendor's redelivery loop alive.
+        Err(error) if error.retryable => return Err(product_surface_failure(error)),
+        // Every non-retryable failure settles the action as a rejection
+        // (user feedback flows through the observer) — bubbling it as
+        // transient would tell the vendor to redeliver a command that can
+        // never succeed.
+        Err(error) => {
+            let kind = match error.code {
+                ProductSurfaceErrorCode::InvalidRequest => ProductRejectionKind::InvalidRequest,
+                _ => ProductRejectionKind::AccessDenied,
+            };
+            return Ok(ProductInboundAck::Rejected(ProductRejection::permanent(
+                kind,
+                format!("product command surface failed: {:?}", error.code),
+            )));
+        }
+    };
     Ok(ProductInboundAck::CommandResult {
         command: command_name,
         payload: ProductCommandResultPayload::new(response.output),

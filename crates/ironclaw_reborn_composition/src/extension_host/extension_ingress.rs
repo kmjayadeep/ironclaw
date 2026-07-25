@@ -25,7 +25,7 @@ use ironclaw_host_api::{ChannelInboundProductSurface, SecretHandle};
 use ironclaw_product::{
     AdapterInstallationId, ChannelInboundClassification, ExternalConversationRef, ExternalEventId,
     NormalizedInboundMessage, ProductAdapterId, ProductInboundAck, ProductInboundEnvelope,
-    ProductSourceChannel, ProtocolAuthEvidence, parse_product_slash_command,
+    ProductSourceChannel, ProtocolAuthEvidence, classify_declared_command,
 };
 use ironclaw_product::{
     ChannelInboundSurfaceOutcome, ChannelInboundSurfaceRejectedAdmission,
@@ -333,31 +333,6 @@ pub struct ChannelInboundSinkConfig {
     pub surface: Arc<dyn ChannelInboundProductSurface>,
     /// Optional post-admission follow-up (e.g. final-reply delivery).
     pub observer: Option<Arc<dyn PostAdmissionObserver>>,
-}
-
-/// Classify manifest-declared slash commands generically — the channel-neutral
-/// grammar counterpart to the transitional per-extension `classifier`. Slash
-/// text that does not resolve to a declared command (unknown name, undeclared
-/// name, malformed slash) deliberately stays an ordinary user message.
-fn classify_declared_command(
-    declared: &[String],
-    message: &NormalizedInboundMessage,
-) -> Option<ChannelInboundClassification> {
-    if declared.is_empty() {
-        return None;
-    }
-    let payload = match parse_product_slash_command(&message.text, message.trigger) {
-        Ok(Some(payload)) => payload,
-        // Not slash-shaped, or malformed slash text ("/", oversized args):
-        // an intentional classification decision, not a dropped error — the
-        // text remains an ordinary user message for the agent.
-        Ok(None) | Err(_) => return None,
-    };
-    let descriptor = ironclaw_host_api::product_commands::find_product_command(&payload.command)?;
-    declared
-        .iter()
-        .any(|name| name == descriptor.name)
-        .then(|| ChannelInboundClassification::Command(payload))
 }
 
 #[derive(Clone)]
