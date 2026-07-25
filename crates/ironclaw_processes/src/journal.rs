@@ -327,6 +327,41 @@ pub enum ProcessLifecycleLookupResult {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessGateOwnerMatch {
+    Explicit,
+    ExplicitOrActor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessGateQuery {
+    pub scope: ResourceScope,
+    pub gate_kind: ProcessSuspensionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_user_id: Option<UserId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_ref: Option<TurnGateRef>,
+    #[serde(default)]
+    pub owner_match: Option<ProcessGateOwnerMatch>,
+    #[serde(default)]
+    pub include_historical: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessGateRecord {
+    pub process_id: ProcessId,
+    pub scope: ResourceScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_user_id: Option<UserId>,
+    pub suspension: ProcessSuspension,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_source_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_target_ref: Option<String>,
+    pub historical: bool,
+}
+
 #[async_trait]
 pub trait ProcessLifecycleLookupSource: Send + Sync {
     type Error: Send + Sync + 'static;
@@ -335,6 +370,16 @@ pub trait ProcessLifecycleLookupSource: Send + Sync {
         &self,
         request: ProcessLifecycleLookupBatchRequest,
     ) -> Vec<Result<ProcessLifecycleLookupResult, Self::Error>>;
+}
+
+#[async_trait]
+pub trait ProcessGateQuerySource: Send + Sync {
+    type Error: Send + Sync + 'static;
+
+    async fn query_process_gates(
+        &self,
+        request: ProcessGateQuery,
+    ) -> Result<Vec<ProcessGateRecord>, Self::Error>;
 }
 
 #[async_trait]

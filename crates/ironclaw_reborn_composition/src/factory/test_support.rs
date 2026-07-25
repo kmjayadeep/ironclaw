@@ -291,7 +291,14 @@ impl RebornRuntimeStores {
             let (turn_coordinator, turn_state, tenant_id) = turn_world;
             let continuation = auth_continuation_dispatcher(
                 turn_coordinator,
-                Some(turn_state as Arc<dyn crate::blocked_auth_resume::BlockedAuthSnapshotSource>),
+                Some(
+                    turn_state
+                        as Arc<
+                            dyn ironclaw_processes::ProcessGateQuerySource<
+                                    Error = ironclaw_turns::TurnError,
+                                >,
+                        >,
+                ),
             );
             service
                 .dispatch_pairing_completion_with_for_test(user_id, tenant_id, continuation)

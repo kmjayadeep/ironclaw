@@ -1366,25 +1366,23 @@ pub(crate) async fn build_runtime_substrate(
 
 pub(crate) fn auth_continuation_dispatcher(
     turn_coordinator: Arc<dyn ironclaw_turns::TurnCoordinator>,
-    blocked_auth_snapshot_source: Option<
-        Arc<dyn crate::blocked_auth_resume::BlockedAuthSnapshotSource>,
+    blocked_auth_gate_source: Option<
+        Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = ironclaw_turns::TurnError>>,
     >,
 ) -> Arc<dyn RebornAuthContinuationDispatcher> {
     let single_run: Arc<dyn RebornAuthContinuationDispatcher> = Arc::new(
         ProductAuthTurnGateResumeDispatcher::new(Arc::clone(&turn_coordinator)),
     );
-    match blocked_auth_snapshot_source {
+    match blocked_auth_gate_source {
         // Local paths fan a completed flow out to the caller's other
         // provider-blocked runs (pair/authorize once, all waiting chats
         // continue). Production-shaped builders pass None until their
         // turn-state snapshot source is wired.
-        Some(snapshot_source) => {
-            Arc::new(crate::blocked_auth_resume::BlockedAuthResumeFanout::new(
-                single_run,
-                snapshot_source,
-                turn_coordinator,
-            ))
-        }
+        Some(gate_source) => Arc::new(crate::blocked_auth_resume::BlockedAuthResumeFanout::new(
+            single_run,
+            gate_source,
+            turn_coordinator,
+        )),
         None => single_run,
     }
 }
@@ -1392,8 +1390,9 @@ pub(crate) fn auth_continuation_dispatcher(
 struct ProductAuthServicesCompositionInput {
     ports: RebornProductAuthServicePorts,
     turn_coordinator: Arc<dyn ironclaw_turns::TurnCoordinator>,
-    blocked_auth_snapshot_source:
-        Option<Arc<dyn crate::blocked_auth_resume::BlockedAuthSnapshotSource>>,
+    blocked_auth_snapshot_source: Option<
+        Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = ironclaw_turns::TurnError>>,
+    >,
     provider_composition: OAuthProviderComposition,
     security_audit_sink: Option<Arc<dyn ironclaw_events::SecurityAuditSink>>,
     secret_store: Arc<dyn SecretStorePort>,
@@ -4874,10 +4873,14 @@ async fn build_backend_production(
             // Blocked-auth fan-out over this builder's own durable turn-state
             // store: a completed connect resumes every run the same owner has
             // parked on the same provider, matching the local-dev builder. The
-            // `BlockedAuthSnapshotSource` is implemented directly for the
+            // `ProcessGateQuerySource` is implemented directly for the
             // generic filesystem-backed turn store.
             blocked_auth_snapshot_source: Some(Arc::clone(&turn_state)
-                as Arc<dyn crate::blocked_auth_resume::BlockedAuthSnapshotSource>),
+                as Arc<
+                    dyn ironclaw_processes::ProcessGateQuerySource<
+                            Error = ironclaw_turns::TurnError,
+                        >,
+                >),
             provider_composition,
             security_audit_sink,
             secret_store: Arc::clone(&secret_store),

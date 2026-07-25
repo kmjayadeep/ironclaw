@@ -5,15 +5,16 @@ use ironclaw_auth::{
     AuthFlowOwnerScope, AuthFlowRecord, AuthFlowRecordSource, AuthGateRef, TurnGateAuthFlowQuery,
     TurnRunRef, flow_matches_turn_gate_query,
 };
+use ironclaw_processes::{
+    ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource, ProcessSuspensionKind,
+};
 use ironclaw_product::{
     AuthGateRecord, AuthInteractionReadModel, AuthInteractionRejectionKind, AuthInteractionScope,
     AuthInteractionService, ListPendingAuthInteractionsRequest,
     ListPendingAuthInteractionsResponse, ProductSurfaceFailure, ResolveAuthInteractionRequest,
     ResolveAuthInteractionResponse,
 };
-use ironclaw_turns::{
-    GateRef, TurnPersistenceSnapshot, TurnRunId, TurnScope, TurnStateRowStore, TurnStatus,
-};
+use ironclaw_turns::{GateRef, TurnRunId, TurnScope};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BlockedAuthRun {
@@ -21,13 +22,8 @@ struct BlockedAuthRun {
     gate_ref: GateRef,
 }
 
-pub(super) struct SnapshotAuthInteractionReadModel<F>
-where
-    F: ironclaw_filesystem::RootFilesystem + Send + Sync + 'static,
-{
-    /// Generic over the row-store filesystem backend so test-support harnesses
-    /// can substitute the store their own runs execute against.
-    turn_state: Arc<TurnStateRowStore<F>>,
+pub(super) struct ProcessGateAuthInteractionReadModel {
+    gates: Arc<dyn ProcessGateQuerySource<Error = ironclaw_turns::TurnError>>,
     flow_records: Arc<dyn AuthFlowRecordSource>,
 }
 
@@ -50,28 +46,37 @@ impl AuthInteractionService for UnavailableAuthInteractionService {
     }
 }
 
-impl<F> SnapshotAuthInteractionReadModel<F>
-where
-    F: ironclaw_filesystem::RootFilesystem + Send + Sync + 'static,
-{
+impl ProcessGateAuthInteractionReadModel {
     pub(super) fn new(
-        turn_state: Arc<TurnStateRowStore<F>>,
+        gates: Arc<dyn ProcessGateQuerySource<Error = ironclaw_turns::TurnError>>,
         flow_records: Arc<dyn AuthFlowRecordSource>,
     ) -> Self {
         Self {
-            turn_state,
+            gates,
             flow_records,
         }
     }
 
-    async fn snapshot(&self) -> Result<TurnPersistenceSnapshot, ProductSurfaceFailure> {
-        self.turn_state
-            .persistence_snapshot()
+    async fn query(
+        &self,
+        scope: &AuthInteractionScope,
+        gate_ref: Option<GateRef>,
+        include_historical: bool,
+    ) -> Result<Vec<ironclaw_processes::ProcessGateRecord>, ProductSurfaceFailure> {
+        self.gates
+            .query_process_gates(ProcessGateQuery {
+                scope: turn_scope_for_interaction(scope).to_resource_scope(),
+                gate_kind: ProcessSuspensionKind::Authorization,
+                owner_user_id: Some(scope.user_id.clone()),
+                gate_ref,
+                owner_match: Some(ProcessGateOwnerMatch::Explicit),
+                include_historical,
+            })
             .await
             .map_err(|error| {
                 tracing::debug!(
                     %error,
-                    "auth interaction read model could not read turn persistence snapshot"
+                    "auth interaction read model could not read process gate projection"
                 );
                 auth_read_model_unavailable()
             })
@@ -81,19 +86,13 @@ where
         &self,
         scope: &AuthInteractionScope,
     ) -> Result<Vec<BlockedAuthRun>, ProductSurfaceFailure> {
-        let turn_scope = turn_scope_for_interaction(scope);
-        let snapshot = self.snapshot().await?;
-        let mut runs = snapshot
-            .runs
-            .iter()
-            .filter(|run| {
-                run.scope == turn_scope
-                    && run.status == TurnStatus::BlockedAuth
-                    && run.gate_ref.is_some()
-            })
-            .filter_map(|run| {
-                run.gate_ref.clone().map(|gate_ref| BlockedAuthRun {
-                    run_id: run.run_id,
+        let mut runs = self
+            .query(scope, None, false)
+            .await?
+            .into_iter()
+            .filter_map(|record| {
+                record.suspension.gate_ref.map(|gate_ref| BlockedAuthRun {
+                    run_id: turn_run_id_from_process_id(record.process_id),
                     gate_ref,
                 })
             })
@@ -107,43 +106,20 @@ where
         scope: &AuthInteractionScope,
         gate_ref: &GateRef,
     ) -> Result<Option<TurnRunId>, ProductSurfaceFailure> {
-        let turn_scope = turn_scope_for_interaction(scope);
-        let snapshot = self.snapshot().await?;
-        let active = snapshot
-            .runs
-            .iter()
-            .find(|run| {
-                run.scope == turn_scope
-                    && run.status == TurnStatus::BlockedAuth
-                    && run.gate_ref.as_ref() == Some(gate_ref)
-            })
-            .map(|run| run.run_id);
-        if active.is_some() {
-            return Ok(active);
-        }
-
-        let mut historical = snapshot
-            .checkpoints
-            .iter()
-            .filter(|checkpoint| {
-                checkpoint.status == TurnStatus::BlockedAuth
-                    && &checkpoint.gate_ref == gate_ref
-                    && checkpoint
-                        .scope
-                        .as_ref()
-                        .is_none_or(|stored| stored == &turn_scope)
-            })
-            .filter_map(|checkpoint| {
-                snapshot
-                    .runs
-                    .iter()
-                    .find(|run| run.run_id == checkpoint.run_id && run.scope == turn_scope)
-                    .map(|run| run.run_id)
+        let mut runs = self
+            .query(scope, Some(gate_ref.clone()), true)
+            .await?
+            .into_iter()
+            .map(|record| {
+                (
+                    record.historical,
+                    turn_run_id_from_process_id(record.process_id),
+                )
             })
             .collect::<Vec<_>>();
-        historical.sort_by_key(|run_id| run_id.as_uuid());
-        historical.dedup();
-        Ok(historical.into_iter().next())
+        runs.sort_by_key(|(historical, run_id)| (*historical, run_id.as_uuid()));
+        runs.dedup_by_key(|(_, run_id)| *run_id);
+        Ok(runs.into_iter().map(|(_, run_id)| run_id).next())
     }
 
     async fn flow_for_gate(
@@ -223,10 +199,11 @@ fn matching_flow_for_run(
         .cloned())
 }
 
-impl<F> SnapshotAuthInteractionReadModel<F>
-where
-    F: ironclaw_filesystem::RootFilesystem + Send + Sync + 'static,
-{
+fn turn_run_id_from_process_id(process_id: ironclaw_host_api::ProcessId) -> TurnRunId {
+    TurnRunId::from_uuid(process_id.as_uuid())
+}
+
+impl ProcessGateAuthInteractionReadModel {
     async fn owner_flows(
         &self,
         scope: &AuthInteractionScope,
@@ -236,10 +213,7 @@ where
 }
 
 #[async_trait]
-impl<F> AuthInteractionReadModel for SnapshotAuthInteractionReadModel<F>
-where
-    F: ironclaw_filesystem::RootFilesystem + Send + Sync + 'static,
-{
+impl AuthInteractionReadModel for ProcessGateAuthInteractionReadModel {
     async fn auth_gates(
         &self,
         scope: &AuthInteractionScope,

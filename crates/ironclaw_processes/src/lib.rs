@@ -35,6 +35,7 @@ pub use host::{ProcessHost, ProcessSubscription};
 pub use journal::{
     ClaimProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
     GetProcessSnapshotRequest, JournaledProcessSnapshot, KillProcessRequest, ProcessCheckpointRef,
+    ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource, ProcessGateRecord,
     ProcessJournalCursor, ProcessJournalEntry, ProcessJournalError, ProcessJournalKind,
     ProcessJournalPage, ProcessJournalProjectionCursor, ProcessJournalProjectionRequest,
     ProcessJournalProjectionSnapshot, ProcessJournalSource, ProcessKind, ProcessLeaseRequest,

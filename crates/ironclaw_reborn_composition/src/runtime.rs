@@ -57,7 +57,8 @@ use ironclaw_loop_host::{
 };
 use ironclaw_observability::live_latency_started_at;
 use ironclaw_processes::{
-    ProcessJournalSource, ProcessLifecycleLookupSource, ProcessTransitionPort,
+    ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource, ProcessJournalSource,
+    ProcessLifecycleLookupSource, ProcessSuspensionKind, ProcessTransitionPort,
 };
 use ironclaw_product::ProjectionStream;
 use ironclaw_product::{
@@ -93,8 +94,8 @@ use ironclaw_turns::{
     GetRunStateRequest, IdempotencyKey, LoopGateRef, ReplyTargetBindingRef,
     RunProfileResolutionRequest, SanitizedCancelReason, SourceBindingRef, SubmitTurnRequest,
     SubmitTurnResponse, TurnActor, TurnCoordinator, TurnError, TurnEventProjectionSource, TurnId,
-    TurnPersistenceSnapshot, TurnRunId, TurnRunRecord, TurnRunState, TurnRunWake, TurnScope,
-    TurnSpawnTreeStateStore, TurnStateRowStore, TurnStateStoreLimits, TurnStatus,
+    TurnRunId, TurnRunState, TurnRunWake, TurnScope, TurnSpawnTreeStateStore, TurnStateRowStore,
+    TurnStateStoreLimits, TurnStatus,
     events::EventCursor,
     run_profile::{LoopHostMilestoneSink, LoopRunContext},
 };
@@ -395,10 +396,8 @@ struct RuntimeStoreParts {
     /// Process lifecycle source for trigger active-run lookup. Every substrate
     /// now provides the same typed turn-backed process projection.
     process_lifecycle_lookup_source: Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
-    /// Unified turn-run snapshot source for approval/auth locators that still
-    /// need richer turn-specific state.
     #[cfg(feature = "test-support")]
-    interaction_turn_state: Arc<TurnStateRowStore<CompositeRootFilesystem>>,
+    process_gate_query_source: Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
     admin_secret_provisioner: Arc<dyn crate::admin_secrets::AdminSecretProvisioner>,
     project_service: Arc<dyn ironclaw_product::ProjectService>,
     trigger_conversation_services: Option<RebornFilesystemConversationServices>,
@@ -469,6 +468,9 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
         )),
         process_lifecycle_lookup_source: Arc::clone(&turn_state)
             as Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
+        #[cfg(feature = "test-support")]
+        process_gate_query_source: Arc::clone(&turn_state)
+            as Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
         checkpoint_state_store,
         loop_checkpoint_store,
         thread_service,
@@ -482,8 +484,6 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
         subagent_await_edge_settler,
         subagent_await_edge_evidence,
         trigger_repository: Arc::clone(&services.trigger_repository),
-        #[cfg(feature = "test-support")]
-        interaction_turn_state: turn_state,
         admin_secret_provisioner,
         project_service,
         trigger_conversation_services: Some(services.trigger_conversation_services.clone()),
@@ -802,7 +802,7 @@ pub struct RebornRuntime {
     pub(crate) process_lifecycle_lookup_source:
         Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
     #[cfg(feature = "test-support")]
-    pub(crate) interaction_turn_state: Arc<TurnStateRowStore<CompositeRootFilesystem>>,
+    pub(crate) process_gate_query_source: Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
     turn_tree_store: Arc<dyn TurnSpawnTreeStateStore>,
     thread_service: Arc<dyn SessionThreadService>,
     thread_scope: ThreadScope,
@@ -920,7 +920,7 @@ pub(crate) fn build_approval_interaction_service(
         builtin_capability_policy,
         turn_coordinator,
         audit_sink,
-        Arc::clone(&runtime.turn_state),
+        Arc::clone(&runtime.turn_state) as Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
     )
 }
 
@@ -934,16 +934,13 @@ pub(crate) fn build_approval_interaction_service(
 /// production entry point and is a thin wrapper over this function with
 /// `local_runtime.turn_state` as the source, so production behavior is
 /// unchanged.
-pub(crate) fn build_approval_interaction_service_with_turn_run_source<F>(
+pub(crate) fn build_approval_interaction_service_with_turn_run_source(
     runtime: &RebornRuntimeStores,
     builtin_capability_policy: Arc<BuiltinCapabilityPolicy>,
     turn_coordinator: Arc<dyn TurnCoordinator>,
     audit_sink: Option<Arc<dyn ironclaw_events::AuditSink>>,
-    turn_run_source: Arc<TurnStateRowStore<F>>,
-) -> Result<Arc<dyn ApprovalInteractionService>, RebornRuntimeError>
-where
-    F: RootFilesystem + Send + Sync + 'static,
-{
+    turn_run_source: Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
+) -> Result<Arc<dyn ApprovalInteractionService>, RebornRuntimeError> {
     let approval_requests = &runtime.approval_requests;
     let capability_leases = &runtime.capability_leases;
     let extension_registry = &runtime.extension_registry;
@@ -953,7 +950,7 @@ where
     let system_extensions_lifecycle_mounts = &runtime.system_extensions_lifecycle_mounts;
     let persistent_approval_policies = &runtime.persistent_approval_policies;
     let tool_permission_overrides = &runtime.tool_permission_overrides;
-    let approval_turn_runs = Arc::new(SnapshotApprovalTurnRunLocator::new(turn_run_source));
+    let approval_turn_runs = Arc::new(ProcessGateApprovalTurnRunLocator::new(turn_run_source));
     let approval_read_model = Arc::new(RunStateApprovalInteractionReadModel::new(
         approval_requests.clone(),
         approval_turn_runs,
@@ -1180,33 +1177,36 @@ fn poller_user_directory(
     )
 }
 
-struct SnapshotApprovalTurnRunLocator<F>
-where
-    F: RootFilesystem + Send + Sync + 'static,
-{
-    /// Generic over the row-store filesystem backend so test-support harnesses
-    /// can substitute the store their own runs execute against.
-    turn_state: Arc<TurnStateRowStore<F>>,
+struct ProcessGateApprovalTurnRunLocator {
+    gates: Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
 }
 
-impl<F> SnapshotApprovalTurnRunLocator<F>
-where
-    F: RootFilesystem + Send + Sync + 'static,
-{
-    fn new(turn_state: Arc<TurnStateRowStore<F>>) -> Self {
-        Self { turn_state }
+impl ProcessGateApprovalTurnRunLocator {
+    fn new(gates: Arc<dyn ProcessGateQuerySource<Error = TurnError>>) -> Self {
+        Self { gates }
     }
 
-    async fn snapshot(
+    async fn query(
         &self,
-    ) -> Result<TurnPersistenceSnapshot, ironclaw_product::ProductSurfaceFailure> {
-        self.turn_state
-            .persistence_snapshot()
+        scope: &ApprovalInteractionScope,
+        gate_ref: Option<ironclaw_turns::GateRef>,
+        include_historical: bool,
+    ) -> Result<Vec<ironclaw_processes::ProcessGateRecord>, ironclaw_product::ProductSurfaceFailure>
+    {
+        self.gates
+            .query_process_gates(ProcessGateQuery {
+                scope: scope.to_resource_scope(),
+                gate_kind: ProcessSuspensionKind::Approval,
+                owner_user_id: Some(scope.user_id.clone()),
+                gate_ref,
+                owner_match: Some(ProcessGateOwnerMatch::ExplicitOrActor),
+                include_historical,
+            })
             .await
             .map_err(|error| {
                 tracing::debug!(
                     %error,
-                    "approval turn-run locator could not read turn persistence snapshot"
+                    "approval turn-run locator could not read process gate projection"
                 );
                 approval_turn_locator_unavailable()
             })
@@ -1339,36 +1339,23 @@ fn approval_request_id_from_gate_ref(gate_ref: &LoopGateRef) -> Option<ApprovalR
 }
 
 #[async_trait::async_trait]
-impl<F> ApprovalTurnRunLocator for SnapshotApprovalTurnRunLocator<F>
-where
-    F: RootFilesystem + Send + Sync + 'static,
-{
+impl ApprovalTurnRunLocator for ProcessGateApprovalTurnRunLocator {
     async fn blocked_approval_runs(
         &self,
         scope: &ApprovalInteractionScope,
     ) -> Result<Vec<ApprovalBlockedTurnRun>, ironclaw_product::ProductSurfaceFailure> {
-        let turn_scope = TurnScope::new(
-            scope.tenant_id.clone(),
-            scope.agent_id.clone(),
-            scope.project_id.clone(),
-            scope.thread_id.clone(),
-        );
-        let actor = TurnActor::new(scope.user_id.clone());
-        let snapshot = self.snapshot().await?;
-        let mut runs = snapshot
-            .runs
-            .iter()
-            .filter(|run| {
-                run.scope.same_thread(&turn_scope)
-                    && run.status == TurnStatus::BlockedApproval
-                    && run.gate_ref.is_some()
-                    && snapshot_run_actor_matches(&snapshot, run, &actor)
-            })
-            .filter_map(|run| {
-                run.gate_ref.clone().map(|gate_ref| ApprovalBlockedTurnRun {
-                    run_id: run.run_id,
-                    gate_ref,
-                })
+        let mut runs = self
+            .query(scope, None, false)
+            .await?
+            .into_iter()
+            .filter_map(|record| {
+                record
+                    .suspension
+                    .gate_ref
+                    .map(|gate_ref| ApprovalBlockedTurnRun {
+                        run_id: turn_run_id_from_process_id(record.process_id),
+                        gate_ref,
+                    })
             })
             .collect::<Vec<_>>();
         runs.sort_by_key(|run| run.run_id.as_uuid());
@@ -1380,65 +1367,25 @@ where
         scope: &ApprovalInteractionScope,
         gate_ref: &ironclaw_turns::GateRef,
     ) -> Result<Option<TurnRunId>, ironclaw_product::ProductSurfaceFailure> {
-        let turn_scope = TurnScope::new(
-            scope.tenant_id.clone(),
-            scope.agent_id.clone(),
-            scope.project_id.clone(),
-            scope.thread_id.clone(),
-        );
-        let actor = TurnActor::new(scope.user_id.clone());
-        let snapshot = self.snapshot().await?;
-        let active = snapshot
-            .runs
-            .iter()
-            .find(|run| {
-                run.scope.same_thread(&turn_scope)
-                    && run.status == TurnStatus::BlockedApproval
-                    && run.gate_ref.as_ref() == Some(gate_ref)
-                    && snapshot_run_actor_matches(&snapshot, run, &actor)
-            })
-            .map(|run| run.run_id);
-        if active.is_some() {
-            return Ok(active);
-        }
-
-        let mut historical = snapshot
-            .checkpoints
-            .iter()
-            .filter(|checkpoint| {
-                checkpoint.status == TurnStatus::BlockedApproval
-                    && &checkpoint.gate_ref == gate_ref
-                    && checkpoint
-                        .scope
-                        .as_ref()
-                        .is_none_or(|stored| stored.same_thread(&turn_scope))
-            })
-            .filter_map(|checkpoint| {
-                snapshot
-                    .runs
-                    .iter()
-                    .find(|run| {
-                        run.run_id == checkpoint.run_id
-                            && run.scope.same_thread(&turn_scope)
-                            && snapshot_run_actor_matches(&snapshot, run, &actor)
-                    })
-                    .map(|run| run.run_id)
+        let mut runs = self
+            .query(scope, Some(gate_ref.clone()), true)
+            .await?
+            .into_iter()
+            .map(|record| {
+                (
+                    record.historical,
+                    turn_run_id_from_process_id(record.process_id),
+                )
             })
             .collect::<Vec<_>>();
-        historical.sort_by_key(|run_id| run_id.as_uuid());
-        historical.dedup();
-        Ok(historical.into_iter().next())
+        runs.sort_by_key(|(historical, run_id)| (*historical, run_id.as_uuid()));
+        runs.dedup_by_key(|(_, run_id)| *run_id);
+        Ok(runs.into_iter().map(|(_, run_id)| run_id).next())
     }
 }
 
-fn snapshot_run_actor_matches(
-    snapshot: &TurnPersistenceSnapshot,
-    run: &TurnRunRecord,
-    actor: &TurnActor,
-) -> bool {
-    snapshot.turns.iter().any(|turn| {
-        turn.turn_id == run.turn_id && turn.scope.same_thread(&run.scope) && turn.actor == *actor
-    })
+fn turn_run_id_from_process_id(process_id: ironclaw_host_api::ProcessId) -> TurnRunId {
+    TurnRunId::from_uuid(process_id.as_uuid())
 }
 
 fn approval_turn_locator_unavailable() -> ironclaw_product::ProductSurfaceFailure {
@@ -1800,7 +1747,7 @@ impl RebornRuntime {
             let (turn_coordinator, turn_state, tenant_id) = turn_world;
             let continuation = crate::factory::auth_continuation_dispatcher(
                 turn_coordinator,
-                Some(turn_state as Arc<dyn crate::blocked_auth_resume::BlockedAuthSnapshotSource>),
+                Some(turn_state as Arc<dyn ProcessGateQuerySource<Error = TurnError>>),
             );
             service
                 .dispatch_pairing_completion_with_for_test(user_id, tenant_id, continuation)
@@ -3634,6 +3581,8 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         process_transition_port,
         process_journal_source,
         process_lifecycle_lookup_source,
+        #[cfg(feature = "test-support")]
+        process_gate_query_source,
         checkpoint_state_store,
         loop_checkpoint_store,
         thread_service,
@@ -3647,8 +3596,6 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         subagent_await_edge_settler,
         subagent_await_edge_evidence,
         trigger_repository,
-        #[cfg(feature = "test-support")]
-        interaction_turn_state,
         admin_secret_provisioner,
         project_service,
         trigger_conversation_services,
@@ -4363,7 +4310,8 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     let auth_interaction_service = if let Some(local_runtime) = local_runtime {
         build_webui_auth_interaction_service(
             services.product_auth.as_ref(),
-            Arc::clone(&local_runtime.turn_state),
+            Arc::clone(&local_runtime.turn_state)
+                as Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
             Arc::clone(&planned_turn_coordinator),
         )
     } else {
@@ -4780,7 +4728,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         _channel_host_assembly: channel_host_assembly,
         turn_state_flush,
         #[cfg(feature = "test-support")]
-        interaction_turn_state,
+        process_gate_query_source,
         turn_tree_store: turn_state_store,
         thread_service,
         thread_scope,
@@ -4836,12 +4784,12 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
 /// `turn_state_store` as the turn-run state source.
 fn build_webui_auth_interaction_service(
     product_auth: &RebornProductAuthServices,
-    turn_state_store: Arc<TurnStateRowStore<CompositeRootFilesystem>>,
+    process_gate_query_source: Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
     turn_coordinator: Arc<dyn TurnCoordinator>,
 ) -> Arc<dyn AuthInteractionService> {
     build_webui_auth_interaction_service_with_turn_run_source(
         product_auth,
-        turn_state_store,
+        process_gate_query_source,
         turn_coordinator,
     )
 }
@@ -4851,14 +4799,11 @@ fn build_webui_auth_interaction_service(
 /// concrete row-store type. See
 /// `build_approval_interaction_service_with_turn_run_source`'s doc
 /// for why this seam exists.
-fn build_webui_auth_interaction_service_with_turn_run_source<F>(
+fn build_webui_auth_interaction_service_with_turn_run_source(
     product_auth: &RebornProductAuthServices,
-    turn_run_source: Arc<TurnStateRowStore<F>>,
+    turn_run_source: Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
     turn_coordinator: Arc<dyn TurnCoordinator>,
-) -> Arc<dyn AuthInteractionService>
-where
-    F: RootFilesystem + Send + Sync + 'static,
-{
+) -> Arc<dyn AuthInteractionService> {
     // `AuthFlowRecordSource` is optional on the product-auth bundle because
     // production may supply a durable read projection that is not the flow
     // manager itself. Local-dev can render pending WebUI auth interactions only
@@ -4868,7 +4813,7 @@ where
         return Arc::new(auth_interaction::UnavailableAuthInteractionService);
     };
     Arc::new(DefaultAuthInteractionService::new(
-        Arc::new(auth_interaction::SnapshotAuthInteractionReadModel::new(
+        Arc::new(auth_interaction::ProcessGateAuthInteractionReadModel::new(
             turn_run_source,
             flow_records,
         )),

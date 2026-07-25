@@ -7,15 +7,12 @@
 
 use super::*;
 
-fn build_approval_interaction_service_with_parts<F>(
+fn build_approval_interaction_service_with_parts(
     parts: &InteractionServiceTestParts,
     turn_coordinator: Arc<dyn TurnCoordinator>,
-    turn_run_source: Arc<ironclaw_turns::TurnStateRowStore<F>>,
-) -> Result<Arc<dyn ApprovalInteractionService>, RebornRuntimeError>
-where
-    F: ironclaw_filesystem::RootFilesystem + Send + Sync + 'static,
-{
-    let approval_turn_runs = Arc::new(SnapshotApprovalTurnRunLocator::new(turn_run_source));
+    turn_run_source: Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = TurnError>>,
+) -> Result<Arc<dyn ApprovalInteractionService>, RebornRuntimeError> {
+    let approval_turn_runs = Arc::new(ProcessGateApprovalTurnRunLocator::new(turn_run_source));
     let approval_read_model = Arc::new(RunStateApprovalInteractionReadModel::new(
         parts.approval_requests.clone(),
         approval_turn_runs,
@@ -70,7 +67,7 @@ impl RebornRuntime {
         build_approval_interaction_service_with_parts(
             parts,
             turn_coordinator,
-            Arc::clone(&self.interaction_turn_state),
+            Arc::clone(&self.process_gate_query_source),
         )
         .map(Some)
     }
@@ -85,7 +82,7 @@ impl RebornRuntime {
     ) -> Option<Arc<dyn AuthInteractionService>> {
         Some(build_webui_auth_interaction_service_with_turn_run_source(
             self.product_auth.as_ref(),
-            Arc::clone(&self.interaction_turn_state),
+            Arc::clone(&self.process_gate_query_source),
             turn_coordinator,
         ))
     }
@@ -116,7 +113,12 @@ impl RebornRuntime {
         let Some(parts) = self.interaction_service_test_parts.as_ref() else {
             return Ok(None);
         };
-        build_approval_interaction_service_with_parts(parts, turn_coordinator, turn_state).map(Some)
+        build_approval_interaction_service_with_parts(
+            parts,
+            turn_coordinator,
+            turn_state as Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = TurnError>>,
+        )
+        .map(Some)
     }
 
     /// Auth-side counterpart of
@@ -138,7 +140,7 @@ impl RebornRuntime {
     {
         Some(build_webui_auth_interaction_service_with_turn_run_source(
             self.product_auth.as_ref(),
-            turn_state,
+            turn_state as Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = TurnError>>,
             turn_coordinator,
         ))
     }
