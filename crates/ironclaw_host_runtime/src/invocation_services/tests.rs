@@ -7,7 +7,7 @@ use ironclaw_host_api::{
     CapabilityId, MountAlias, MountGrant, MountPermissions, ResourceScope, VirtualPath,
     runtime_policy::{RuntimeProfile, SecretMode},
 };
-use ironclaw_secrets::FilesystemSecretStore;
+use ironclaw_secrets::SecretStore;
 
 use crate::{
     CommandExecutionOutput, CommandExecutionRequest, RuntimeProcessError, RuntimeProcessPort,
@@ -121,7 +121,7 @@ async fn local_resolver_routes_post_edit_check_to_the_deployment_isolated_proces
     // tenant-sandbox deployment (so a tenant's command runs isolated in that
     // tenant's sandbox, never on the provider host), and nothing when no backend
     // can run it in isolation.
-    let resolver = LocalInvocationServicesResolver::new(
+    let resolver = ConfiguredInvocationServicesResolver::new(
         Arc::new(DiskFilesystem::new()),
         None,
         Arc::new(NamedProcessPort("local-host")),
@@ -832,7 +832,7 @@ fn local_resolver_rejects_required_network_when_egress_service_is_absent() {
 
 #[test]
 fn local_resolver_accepts_brokered_required_network_with_egress_service() {
-    let resolver = LocalInvocationServicesResolver::new(
+    let resolver = ConfiguredInvocationServicesResolver::new(
         Arc::new(DiskFilesystem::new()),
         Some(Arc::new(NoopRuntimeHttpEgress)),
         Arc::new(NoopProcessPort),
@@ -859,7 +859,7 @@ fn local_resolver_accepts_brokered_required_network_with_egress_service() {
 
 #[test]
 fn local_resolver_accepts_hosted_brokered_required_network() {
-    let resolver = LocalInvocationServicesResolver::new(
+    let resolver = ConfiguredInvocationServicesResolver::new(
         Arc::new(DiskFilesystem::new()),
         Some(Arc::new(NoopRuntimeHttpEgress)),
         Arc::new(NoopProcessPort),
@@ -888,7 +888,7 @@ fn local_resolver_accepts_hosted_brokered_required_network() {
 
 #[test]
 fn local_resolver_accepts_hosted_and_enterprise_allowlist_required_network() {
-    let resolver = LocalInvocationServicesResolver::new(
+    let resolver = ConfiguredInvocationServicesResolver::new(
         Arc::new(DiskFilesystem::new()),
         Some(Arc::new(NoopRuntimeHttpEgress)),
         Arc::new(NoopProcessPort),
@@ -925,7 +925,7 @@ fn local_resolver_accepts_hosted_and_enterprise_allowlist_required_network() {
 
 #[test]
 fn local_resolver_rejects_hosted_direct_required_network() {
-    let resolver = LocalInvocationServicesResolver::new(
+    let resolver = ConfiguredInvocationServicesResolver::new(
         Arc::new(DiskFilesystem::new()),
         Some(Arc::new(NoopRuntimeHttpEgress)),
         Arc::new(NoopProcessPort),
@@ -960,7 +960,7 @@ fn local_resolver_rejects_hosted_direct_required_network() {
 
 #[test]
 fn local_resolver_accepts_direct_required_network_with_egress_service() {
-    let resolver = LocalInvocationServicesResolver::new(
+    let resolver = ConfiguredInvocationServicesResolver::new(
         Arc::new(DiskFilesystem::new()),
         Some(Arc::new(NoopRuntimeHttpEgress)),
         Arc::new(NoopProcessPort),
@@ -987,7 +987,7 @@ fn local_resolver_accepts_direct_required_network_with_egress_service() {
 
 #[test]
 fn local_resolver_allows_raw_diagnostics_only_for_local_dev_and_yolo() {
-    let resolver = LocalInvocationServicesResolver::new(
+    let resolver = ConfiguredInvocationServicesResolver::new(
         Arc::new(DiskFilesystem::new()),
         Some(Arc::new(NoopRuntimeHttpEgress)),
         Arc::new(NoopProcessPort),
@@ -1034,7 +1034,7 @@ fn local_resolver_allows_raw_diagnostics_only_for_local_dev_and_yolo() {
 
 #[test]
 fn local_resolver_hides_runtime_http_egress_when_network_is_not_required() {
-    let resolver = LocalInvocationServicesResolver::new(
+    let resolver = ConfiguredInvocationServicesResolver::new(
         Arc::new(DiskFilesystem::new()),
         Some(Arc::new(NoopRuntimeHttpEgress)),
         Arc::new(NoopProcessPort),
@@ -1061,11 +1061,11 @@ fn local_resolver_hides_runtime_http_egress_when_network_is_not_required() {
 
 #[test]
 fn local_resolver_hides_secret_store_when_secret_is_not_required() {
-    let resolver = LocalInvocationServicesResolver::new(
+    let resolver = ConfiguredInvocationServicesResolver::new(
         Arc::new(DiskFilesystem::new()),
         None,
         Arc::new(NoopProcessPort),
-        Some(Arc::new(FilesystemSecretStore::ephemeral())),
+        Some(Arc::new(SecretStore::ephemeral())),
     );
     let plan = plan(
         ProcessBackendKind::None,
@@ -1114,11 +1114,11 @@ fn local_resolver_rejects_required_secret_when_secret_store_is_absent() {
 
 #[test]
 fn local_resolver_accepts_brokered_required_secret_with_secret_store() {
-    let resolver = LocalInvocationServicesResolver::new(
+    let resolver = ConfiguredInvocationServicesResolver::new(
         Arc::new(DiskFilesystem::new()),
         None,
         Arc::new(NoopProcessPort),
-        Some(Arc::new(FilesystemSecretStore::ephemeral())),
+        Some(Arc::new(SecretStore::ephemeral())),
     );
     let mut plan = plan(
         ProcessBackendKind::None,
@@ -1142,11 +1142,11 @@ fn local_resolver_accepts_brokered_required_secret_with_secret_store() {
 
 #[test]
 fn local_resolver_accepts_tenant_and_org_broker_required_secrets() {
-    let resolver = LocalInvocationServicesResolver::new(
+    let resolver = ConfiguredInvocationServicesResolver::new(
         Arc::new(DiskFilesystem::new()),
         None,
         Arc::new(NoopProcessPort),
-        Some(Arc::new(FilesystemSecretStore::ephemeral())),
+        Some(Arc::new(SecretStore::ephemeral())),
     );
     for (deployment, profile, secret_mode) in [
         (
@@ -1185,11 +1185,11 @@ fn local_resolver_accepts_tenant_and_org_broker_required_secrets() {
 
 #[test]
 fn local_resolver_rejects_hosted_inherited_env_secret() {
-    let resolver = LocalInvocationServicesResolver::new(
+    let resolver = ConfiguredInvocationServicesResolver::new(
         Arc::new(DiskFilesystem::new()),
         None,
         Arc::new(NoopProcessPort),
-        Some(Arc::new(FilesystemSecretStore::ephemeral())),
+        Some(Arc::new(SecretStore::ephemeral())),
     );
     let mut plan = plan(
         ProcessBackendKind::None,
@@ -1221,11 +1221,11 @@ fn local_resolver_rejects_hosted_inherited_env_secret() {
 
 #[test]
 fn local_resolver_accepts_required_secret_when_secret_store_is_available() {
-    let resolver = LocalInvocationServicesResolver::new(
+    let resolver = ConfiguredInvocationServicesResolver::new(
         Arc::new(DiskFilesystem::new()),
         None,
         Arc::new(NoopProcessPort),
-        Some(Arc::new(FilesystemSecretStore::ephemeral())),
+        Some(Arc::new(SecretStore::ephemeral())),
     );
     let plan = plan(
         ProcessBackendKind::None,
@@ -1260,8 +1260,8 @@ fn first_party_tools_do_not_select_process_backends() {
     }
 }
 
-fn resolver_without_http() -> LocalInvocationServicesResolver {
-    LocalInvocationServicesResolver::new(
+fn resolver_without_http() -> ConfiguredInvocationServicesResolver {
+    ConfiguredInvocationServicesResolver::new(
         Arc::new(DiskFilesystem::new()),
         None,
         Arc::new(NoopProcessPort),
@@ -1271,8 +1271,8 @@ fn resolver_without_http() -> LocalInvocationServicesResolver {
 
 fn resolver_with_filesystem(
     filesystem: Arc<dyn RootFilesystem>,
-) -> LocalInvocationServicesResolver {
-    LocalInvocationServicesResolver::new(filesystem, None, Arc::new(NoopProcessPort), None)
+) -> ConfiguredInvocationServicesResolver {
+    ConfiguredInvocationServicesResolver::new(filesystem, None, Arc::new(NoopProcessPort), None)
 }
 
 fn scoped_mount_view() -> MountView {

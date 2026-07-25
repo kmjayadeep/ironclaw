@@ -27,8 +27,9 @@ use ironclaw_host_runtime::{
     SHELL_CAPABILITY_ID, SandboxCommandTransport, TenantSandboxProcessPort, sandbox_network_policy,
 };
 use ironclaw_reborn_composition::{
-    RebornCompositionProfile, RebornRuntimeProcessBinding, build_reborn_services,
-    hosted_single_tenant_volume_sandboxed_runtime_policy, local_runtime_build_input_with_options,
+    RebornCompositionProfile, RebornRuntimeInput, RebornRuntimeProcessBinding,
+    build_reborn_runtime, hosted_single_tenant_volume_sandboxed_runtime_policy,
+    local_runtime_build_input_with_options,
 };
 
 /// `hosted-single-tenant-volume-sandboxed` requires an externally-supplied
@@ -136,7 +137,7 @@ fn shell_execution_context(user: &str) -> ExecutionContext {
             },
         }],
     };
-    ExecutionContext::local_default(
+    let mut context = ExecutionContext::local_default(
         UserId::new(user).unwrap(),
         ExtensionId::new("caller").unwrap(),
         RuntimeKind::FirstParty,
@@ -144,7 +145,14 @@ fn shell_execution_context(user: &str) -> ExecutionContext {
         grants,
         MountView::default(),
     )
-    .unwrap()
+    .unwrap();
+    // The capability kernel's authorize() fold seals dispatch only when the
+    // context resolves an invocation origin (`ExecutionContext::
+    // resolved_origin`); stamping `run_id` reconstructs the legacy `LoopRun`
+    // origin for this direct (non-loop) test invocation, mirroring
+    // `trigger_management_execution_context` in `facade_factory.rs`.
+    context.run_id = Some(ironclaw_host_api::RunId::new());
+    context
 }
 
 #[tokio::test]
@@ -179,18 +187,38 @@ async fn hosted_single_tenant_volume_sandboxed_forwards_distinct_scope_per_user(
     .with_runtime_policy(policy)
     .with_runtime_process_binding(RebornRuntimeProcessBinding::tenant_sandbox(process_port));
 
-    let services = build_reborn_services(input)
+    let runtime = build_reborn_runtime(RebornRuntimeInput::from_build_input(input))
         .await
-        .expect("sandboxed profile services build with a wired TenantSandbox binding");
-    let runtime = services
-        .host_runtime
-        .as_deref()
+        .expect("sandboxed profile runtime builds with a wired TenantSandbox binding");
+    let host_runtime = runtime
+        .host_runtime_for_test()
         .expect("sandboxed profile composes a host runtime");
+    // The Tools-settings global auto-approve switch is authoritative for
+    // first-party tool dispatch (see `local_dev_services_dispatch_trigger_
+    // management_through_composed_runtime` in `facade_factory.rs`); the
+    // `ApprovalPolicy::Minimal` override above is not by itself sufficient to
+    // reach the dispatch path, so enable auto-approve per user's own scope —
+    // still bypassing only the approval gate, not the scope-forwarding logic
+    // under test.
+    let auto_approve = runtime
+        .local_dev_auto_approve_settings_for_test()
+        .expect("runtime exposes auto-approve settings for test");
 
     for user in ["user-a", "user-b"] {
-        let outcome = runtime
+        let context = shell_execution_context(user);
+        auto_approve
+            .set(ironclaw_approvals::AutoApproveSettingInput {
+                updated_by: ironclaw_host_api::Principal::User(
+                    context.resource_scope.user_id.clone(),
+                ),
+                scope: context.resource_scope.clone(),
+                enabled: true,
+            })
+            .await
+            .expect("enable auto-approve for user scope");
+        let outcome = host_runtime
             .invoke_capability((
-                shell_execution_context(user),
+                context,
                 CapabilityId::new(SHELL_CAPABILITY_ID).unwrap(),
                 ResourceEstimate::default(),
                 serde_json::json!({"command": "true"}),

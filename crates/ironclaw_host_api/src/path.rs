@@ -90,6 +90,7 @@ const VIRTUAL_ROOTS: &[&str] = &[
     "/turns",
     "/checkpoint-state",
     "/resources",
+    "/product-results",
     "/tenant-shared",
     "/tenants",
 ];

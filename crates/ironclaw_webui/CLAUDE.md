@@ -2,11 +2,11 @@
 
 The **WebUI host stack** for Reborn WebChat v2 — the single `products`-layer
 crate, above `ironclaw_reborn_composition`, that turns composition's product/API
-surface into a running HTTP server a browser can talk to. It owns three
+surface into a running HTTP server a browser can talk to. It owns four
 subsystems that used to live apart (see `README.md` for the fold-in map):
 
 1. **WebChat v2 route surface + SPA** (`src/webui_v2/`, from the former
-   `ironclaw_webui_v2` crate) — the axum handlers over `RebornServicesApi`, the
+   `ironclaw_webui_v2` crate) — the axum handlers over `ProductSurface`, the
    `webui_v2_routes()` descriptor table, the `WebUiV2HttpError` redacted wire
    shape, SSE/WebSocket streaming, and the Vite SPA bundle.
 2. **Gateway assembly + middleware** (`src/webui_serve.rs`, `src/webui_*.rs`,
@@ -19,6 +19,11 @@ subsystems that used to live apart (see `README.md` for the fold-in map):
    runs `axum::serve`; the `Env`/`Session`/`Oidc` authenticators, the
    signed-token session store, and the `/auth/*` OAuth login surface that mints
    sessions.
+4. **Product-auth HTTP route serving** (`src/product_auth/`) — host-owned
+   routes that parse/bound OAuth/manual-token/account/cleanup HTTP input and
+   call `ironclaw_auth::RebornProductAuthServices`. Auth contracts and durable
+   services stay in `ironclaw_auth`; composition wires the service bundle into
+   this gateway.
 
 Composition deliberately stops at the
 `reborn_product_api_crates_do_not_bind_http_ingress` boundary — it returns a
@@ -27,7 +32,7 @@ host-owned counterpart that binds the `TcpListener` and drives the serve loop.
 
 Path A of `docs/reborn/how-to-port-channel-to-reborn.md` rules apply: host auth
 stays host-owned in this crate, no `src/` (v1) imports, no v1 secrets / settings
-/ DB, and no direct `ironclaw_product_adapters` edge (reach it through
+/ DB, and no direct `ironclaw_product` edge (reach it through
 composition's facade). Enforced by `ironclaw_architecture`
 (`tests/reborn_dependency_boundaries.rs`).
 
@@ -39,9 +44,9 @@ composition's facade). Enforced by `ironclaw_architecture`
 |---|---|
 | `webui_v2_router(state)` / `webui_v2_router_with_options(state, opts)` | Build the WebChat v2 `axum::Router` from a `WebUiV2State`. |
 | `webui_v2_routes() -> Vec<IngressRouteDescriptor>` | The route descriptor table (id, method, pattern, auth, rate/body limit, streaming). Locked by `tests/webui_v2_descriptors_contract.rs`. |
-| `WebUiV2State` | Handler state: the `RebornServicesApi` facade + `SseCapacity` + route options. |
+| `WebUiV2State` | Handler state: the `ProductSurface` facade + `SseCapacity` + route options. |
 | `WebUiV2HttpError` / `WebUiV2HttpErrorBody` | The only path handlers return HTTP errors through — keeps the redacted-error vocabulary intact. |
-| `webui_v2_app(bundle, config) -> WebuiV2App` | Compose composition's `RebornWebuiBundle` + a host `WebuiServeConfig` into the full middleware-wrapped `Router` (also `webui_v2_app_with_lifecycle`). |
+| `webui_v2_app(product_surface, config) -> WebuiV2App` | Compose a host-supplied `ProductSurface` + `WebuiServeConfig` into the full middleware-wrapped `Router` (also `webui_v2_app_with_lifecycle`). |
 | `WebuiServeConfig` | Host-owned serve config (tenant, authenticator, default agent/project, public/protected mounts, Google OAuth). |
 | `WebuiAuthenticator` trait / `WebuiAuthentication` | Host-auth vocabulary the bearer middleware resolves each token through. |
 
@@ -60,6 +65,7 @@ turning the `webui_v2_routes()` descriptors into tower layers.
 | `SessionAuthenticator` | `WebuiAuthenticator` that resolves bearer tokens through `SignedTokenSessionStore` |
 | `OidcAuthenticator` | OIDC bearer-token verifier (JWKS + standard claims); accepted tokens map to non-operator WebUI capabilities |
 | `webui_v2_auth_router(config) -> PublicRouteMount` | OAuth login router + route descriptors. The descriptors travel with the router so composition can fold them into the descriptor-driven per-route rate-limit / body-limit middleware — same machinery the v2 facade and product-auth callback already use, no side door. |
+| `product_auth_route_mount(state) -> ProductAuthRouteMount` | Product-auth route router + descriptors for OAuth start/callback/status, manual-token setup/submit, account selection/recovery/refresh, and lifecycle cleanup. |
 | `PublicRouteMount` | `{ router, descriptors }` pair handed to `WebuiServeConfig::with_public_route_mount` |
 | `OAuthProvider` trait (in `auth/provider.rs`) | Extension point for per-provider URL / code-exchange logic. Deliberately lives in its own module so each provider does not depend on the others. `GoogleProvider` and `GitHubProvider` ship today. |
 | `GoogleProvider` (in `auth/google.rs`) | Google OIDC provider (scopes `openid email profile`, PKCE S256, optional `hd` hosted-domain restriction). Built from `GoogleOAuthConfig`. |
@@ -70,9 +76,9 @@ turning the `webui_v2_routes()` descriptors into tower layers.
 
 ## WebChat v2 route surface (folded from `ironclaw_webui_v2`)
 
-Handlers consume only `ironclaw_product_workflow::RebornServicesApi`. The bearer
+Handlers consume only `ironclaw_host_api::ProductSurface`. The bearer
 middleware (in this crate's `webui_v2_app`) constructs the
-`WebUiAuthenticatedCaller`, carries the matched token's `WebUiV2Capabilities`,
+`ProductSurfaceCaller`, carries the matched token's `WebUiV2Capabilities`,
 and injects both as axum `Extension`s before the handler runs; handlers fail
 closed (`500`) if that layer is missing (locked by
 `missing_caller_extension_returns_500`).
@@ -91,7 +97,7 @@ closed (`500`) if that layer is missing (locked by
 | `webui.v2.stream_events_ws` | GET | `/api/webchat/v2/threads/{thread_id}/ws` | **WebSocket** | `ProjectionOnly` |
 | `webui.v2.cancel_run` / `retry_run` / `resolve_gate` | POST | `…/runs/{run_id}/…` | — | `TurnCoordinator` |
 | `webui.v2.list/pause/resume/rename/delete_automation` | GET/POST/DELETE | `/api/webchat/v2/automations…` | — | `ProductWorkflow` |
-| `webui.v2.list/install/import/activate/remove/get_setup/setup_extension` | GET/POST | `/api/webchat/v2/extensions…` | — | `ProjectionOnly` / `ProductWorkflow` |
+| `webui.v2.list/install/import/remove/get_setup/setup_extension` | GET/POST | `/api/webchat/v2/extensions…` | — | `ProjectionOnly` / `ProductWorkflow` |
 | `webui.v2.*_llm_*` | GET/POST | `/api/webchat/v2/llm/…` | — | `ProjectionOnly` / `ProductWorkflow` |
 | `webui.v2.settings.list_tools` / `set_tools_auto_approve` / `set_tool_permission` | GET/POST | `/api/webchat/v2/settings/tools…` | — | `ProjectionOnly` / `ProductWorkflow` |
 | `webui.v2.operator.*` (setup, config, config/{key}, validate, diagnostics, status, logs, service) | GET/POST | `/api/webchat/v2/operator/…` | — | `ProjectionOnly` / `ProductWorkflow` |
@@ -118,7 +124,7 @@ when the authenticator advertises an operator config surface, and each handler
 still rejects with `403` when the injected `WebUiV2Capabilities` lacks
 `operator_webui_config`. Multi-user session/OIDC authenticators return
 non-operator capabilities. `webui.v2.admin.*` user management is
-admin/operator-gated server-side in `RebornServicesApi` (`AdminUserService`,
+admin/operator-gated server-side in `ProductSurface` (`AdminUserService`,
 last-admin protection); `create_user` returns the one-time API bearer exactly
 once in `api_token`. `webui.v2.settings.tools` is a normal authenticated-caller
 route (tenant/user-scoped tool-approval settings), not an operator route.
@@ -309,7 +315,7 @@ composition):
 - `tests/webui_v2_descriptors_contract.rs` — locks the descriptor table
   (count / methods / patterns / auth / rate limits / SSE).
 - `tests/webui_v2_handlers_contract.rs` — drives a real axum router from
-  `webui_v2_router` against a stub `RebornServicesApi` (test-through-the-caller).
+  `webui_v2_router` against a stub `ProductSurface` (test-through-the-caller).
 - `tests/webui_v2_schema_contract.rs`, `tests/webui_v2_operator_config_key_contract.rs`,
   `tests/webui_v2_operator_route_predicate_contract.rs` — wire schema + operator
   gating.

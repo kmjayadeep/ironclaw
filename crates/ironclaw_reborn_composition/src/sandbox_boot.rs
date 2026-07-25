@@ -109,7 +109,7 @@ pub struct TenantSandboxBinding {
     pub activity: Arc<SandboxActivityRegistry>,
     /// `Some` when this call spawned its own egress-allowlist proxy (the
     /// production case: no `default_broker_port` was supplied). The caller
-    /// threads this onward (`RebornBuildInput::with_sandbox_egress_proxy_handle`)
+    /// threads this onward (`RebornHostBindings::with_sandbox_egress_proxy_handle`)
     /// so `SandboxRuntimeBindings::build` takes ownership of the SAME
     /// instance rather than spawning a second one — one bound proxy per
     /// sandboxed-profile boot, one owner for its shutdown.

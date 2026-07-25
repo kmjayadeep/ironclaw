@@ -150,15 +150,15 @@ pub enum RebornReadinessDiagnosticComponent {
     TrustPolicy,
     Filesystem,
     ResourceGovernor,
-    ProcessStore,
-    ProcessResultStore,
+    ProcessStorePort,
+    ProcessResultStorePort,
     RunState,
     ApprovalRequests,
     CapabilityLeases,
     PersistentApprovalPolicies,
     EventSink,
     AuditSink,
-    SecretStore,
+    SecretStorePort,
     CredentialAccountStore,
     CredentialSessionStore,
     RuntimeHttpEgress,
@@ -183,15 +183,15 @@ impl RebornReadinessDiagnosticComponent {
             Self::TrustPolicy => "trust_policy",
             Self::Filesystem => "filesystem",
             Self::ResourceGovernor => "resource_governor",
-            Self::ProcessStore => "process_store",
-            Self::ProcessResultStore => "process_result_store",
+            Self::ProcessStorePort => "process_store",
+            Self::ProcessResultStorePort => "process_result_store",
             Self::RunState => "run_state",
             Self::ApprovalRequests => "approval_requests",
             Self::CapabilityLeases => "capability_leases",
             Self::PersistentApprovalPolicies => "persistent_approval_policies",
             Self::EventSink => "event_sink",
             Self::AuditSink => "audit_sink",
-            Self::SecretStore => "secret_store",
+            Self::SecretStorePort => "secret_store",
             Self::CredentialAccountStore => "credential_account_store",
             Self::CredentialSessionStore => "credential_session_store",
             Self::RuntimeHttpEgress => "runtime_http_egress",
@@ -231,15 +231,15 @@ impl<'de> Deserialize<'de> for RebornReadinessDiagnosticComponent {
             "trust_policy" => Self::TrustPolicy,
             "filesystem" => Self::Filesystem,
             "resource_governor" => Self::ResourceGovernor,
-            "process_store" => Self::ProcessStore,
-            "process_result_store" => Self::ProcessResultStore,
+            "process_store" => Self::ProcessStorePort,
+            "process_result_store" => Self::ProcessResultStorePort,
             "run_state" => Self::RunState,
             "approval_requests" => Self::ApprovalRequests,
             "capability_leases" => Self::CapabilityLeases,
             "persistent_approval_policies" => Self::PersistentApprovalPolicies,
             "event_sink" => Self::EventSink,
             "audit_sink" => Self::AuditSink,
-            "secret_store" => Self::SecretStore,
+            "secret_store" => Self::SecretStorePort,
             "credential_account_store" => Self::CredentialAccountStore,
             "credential_session_store" => Self::CredentialSessionStore,
             "runtime_http_egress" => Self::RuntimeHttpEgress,
@@ -285,66 +285,18 @@ pub(crate) fn readiness_contract_for_profile(
 }
 
 impl RebornReadinessDiagnostic {
-    pub fn disabled() -> Self {
-        Self {
-            profile: RebornCompositionProfile::Disabled,
-            component: RebornReadinessDiagnosticComponent::CompositionProfile,
-            reason: RebornReadinessDiagnosticReason::Disabled,
-            status: RebornReadinessDiagnosticStatus::Blocking,
-            blocks_production: true,
-        }
-    }
-
-    pub fn local_dev() -> Self {
-        Self::dev_only_profile(RebornCompositionProfile::LocalDev)
-    }
-
-    pub fn local_dev_yolo() -> Self {
-        Self::dev_only_profile(RebornCompositionProfile::LocalDevYolo)
-    }
-
-    pub fn hosted_single_tenant_volume() -> Self {
-        Self {
-            profile: RebornCompositionProfile::HostedSingleTenantVolume,
-            component: RebornReadinessDiagnosticComponent::CompositionProfile,
-            reason: RebornReadinessDiagnosticReason::HostedSingleTenantVolumePreview,
-            status: RebornReadinessDiagnosticStatus::Warning,
-            blocks_production: true,
-        }
-    }
-
-    /// The sandboxed-shell variant of the hosted volume preview: process
-    /// execution routes to a per-tenant Docker sandbox (`TenantSandbox`)
-    /// instead of staying disabled, so it carries its own preview reason
-    /// rather than reusing [`RebornReadinessDiagnostic::hosted_single_tenant_volume`].
-    /// Boots fail-closed until the sandbox transport is wired (A2).
-    pub fn hosted_single_tenant_volume_sandboxed() -> Self {
-        Self {
-            profile: RebornCompositionProfile::HostedSingleTenantVolumeSandboxed,
-            component: RebornReadinessDiagnosticComponent::CompositionProfile,
-            reason: RebornReadinessDiagnosticReason::HostedSingleTenantVolumeSandboxedPreview,
-            status: RebornReadinessDiagnosticStatus::Warning,
-            blocks_production: true,
-        }
-    }
-
-    pub fn hosted_single_tenant() -> Self {
-        Self {
-            profile: RebornCompositionProfile::HostedSingleTenant,
-            component: RebornReadinessDiagnosticComponent::CompositionProfile,
-            reason: RebornReadinessDiagnosticReason::Unverified,
-            status: RebornReadinessDiagnosticStatus::Info,
-            blocks_production: false,
-        }
-    }
-
-    fn dev_only_profile(profile: RebornCompositionProfile) -> Self {
+    pub(crate) fn composition_profile(
+        profile: RebornCompositionProfile,
+        reason: RebornReadinessDiagnosticReason,
+        status: RebornReadinessDiagnosticStatus,
+        blocks_production: bool,
+    ) -> Self {
         Self {
             profile,
             component: RebornReadinessDiagnosticComponent::CompositionProfile,
-            reason: RebornReadinessDiagnosticReason::DevOnlyProfile,
-            status: RebornReadinessDiagnosticStatus::Blocking,
-            blocks_production: true,
+            reason,
+            status,
+            blocks_production,
         }
     }
 
@@ -353,7 +305,7 @@ impl RebornReadinessDiagnostic {
         component: RebornReadinessDiagnosticComponent,
         reason: RebornReadinessDiagnosticReason,
     ) -> Option<Self> {
-        if !profile.requires_production_shape() {
+        if !profile.is_active() {
             return None;
         }
         Some(Self {
@@ -369,7 +321,7 @@ impl RebornReadinessDiagnostic {
         profile: RebornCompositionProfile,
         report: &ProductionWiringReport,
     ) -> Vec<Self> {
-        if !profile.requires_production_shape() {
+        if !profile.is_active() {
             return Vec::new();
         }
 
@@ -396,8 +348,8 @@ impl From<ProductionWiringComponent> for RebornReadinessDiagnosticComponent {
             ProductionWiringComponent::TrustPolicy => Self::TrustPolicy,
             ProductionWiringComponent::Filesystem => Self::Filesystem,
             ProductionWiringComponent::ResourceGovernor => Self::ResourceGovernor,
-            ProductionWiringComponent::ProcessStore => Self::ProcessStore,
-            ProductionWiringComponent::ProcessResultStore => Self::ProcessResultStore,
+            ProductionWiringComponent::ProcessStorePort => Self::ProcessStorePort,
+            ProductionWiringComponent::ProcessResultStorePort => Self::ProcessResultStorePort,
             ProductionWiringComponent::RunState => Self::RunState,
             ProductionWiringComponent::ApprovalRequests => Self::ApprovalRequests,
             ProductionWiringComponent::CapabilityLeases => Self::CapabilityLeases,
@@ -406,7 +358,7 @@ impl From<ProductionWiringComponent> for RebornReadinessDiagnosticComponent {
             }
             ProductionWiringComponent::EventSink => Self::EventSink,
             ProductionWiringComponent::AuditSink => Self::AuditSink,
-            ProductionWiringComponent::SecretStore => Self::SecretStore,
+            ProductionWiringComponent::SecretStorePort => Self::SecretStorePort,
             ProductionWiringComponent::CredentialAccountStore => Self::CredentialAccountStore,
             ProductionWiringComponent::CredentialSessionStore => Self::CredentialSessionStore,
             ProductionWiringComponent::RuntimeHttpEgress => Self::RuntimeHttpEgress,
@@ -457,9 +409,11 @@ impl RebornReadiness {
     /// This is intentionally not `const`: the rich snapshot includes the
     /// diagnostics vector that downstream readiness surfaces consume.
     pub fn disabled() -> Self {
+        let config = crate::deployment::DeploymentConfig::disabled();
+        let contract = config.readiness();
         Self {
-            profile: RebornCompositionProfile::Disabled,
-            state: RebornReadinessState::Disabled,
+            profile: config.profile(),
+            state: contract.state,
             facades: RebornFacadeReadiness {
                 host_runtime: false,
                 turn_coordinator: false,
@@ -469,7 +423,7 @@ impl RebornReadiness {
                 turn_runner: false,
                 trigger_poller: false,
             },
-            diagnostics: vec![RebornReadinessDiagnostic::disabled()],
+            diagnostics: contract.diagnostics.clone(),
         }
     }
 }
@@ -482,7 +436,10 @@ mod tests {
     fn readiness_default_matches_disabled_snapshot() {
         let readiness = RebornReadiness::default();
 
-        assert_eq!(readiness.profile, RebornCompositionProfile::Disabled);
+        assert_eq!(
+            readiness.profile,
+            crate::deployment::DeploymentConfig::disabled().profile()
+        );
         assert_eq!(readiness.state, RebornReadinessState::Disabled);
         assert_eq!(readiness.diagnostics.len(), 1);
         assert_eq!(
@@ -511,7 +468,10 @@ mod tests {
         )
         .expect("readiness deserializes");
 
-        assert_eq!(readiness.profile, RebornCompositionProfile::LocalDev);
+        assert_eq!(
+            readiness.profile,
+            crate::deployment::DeploymentConfig::local_dev().profile()
+        );
         assert_eq!(readiness.state, RebornReadinessState::DevOnly);
         assert_eq!(readiness.workers, RebornWorkerReadiness::default());
         assert!(readiness.diagnostics.is_empty());

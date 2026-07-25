@@ -85,10 +85,8 @@ mod learning {
     };
     use tokio::task::JoinHandle;
 
-    use crate::extension_host::lifecycle::{
-        RebornLocalSkillManagementError, RebornLocalSkillManagementPort,
-    };
-    use crate::projection::LiveProjectionPublisher;
+    use crate::extension_host::lifecycle::{SkillManagementPort, SkillManagementPortError};
+    use ironclaw_product::projection::LiveProjectionPublisher;
 
     /// Cheap pre-filter: skip the (paid) distillation LLM call on runs that
     /// obviously can't yield a reusable skill (pure chat, a single lookup). The
@@ -131,7 +129,7 @@ mod learning {
     static SKILL_LEARNING_SAFETY: LazyLock<Sanitizer> = LazyLock::new(Sanitizer::new);
 
     /// Scoped skill write seam. Composition implements it over the real
-    /// `RebornLocalSkillManagementPort`; tests use a stub. Keeps the sink
+    /// `SkillManagementPort`; tests use a stub. Keeps the sink
     /// testable without a filesystem.
     #[async_trait]
     pub(crate) trait SkillWriter: Send + Sync {
@@ -228,15 +226,12 @@ mod learning {
 
     /// [`SkillWriter`] over the runtime's scoped skill-management port.
     pub(crate) struct PortSkillWriter {
-        port: Arc<RebornLocalSkillManagementPort>,
+        port: Arc<SkillManagementPort>,
         refiner: Arc<dyn SkillRefiner>,
     }
 
     impl PortSkillWriter {
-        pub(crate) fn new(
-            port: Arc<RebornLocalSkillManagementPort>,
-            refiner: Arc<dyn SkillRefiner>,
-        ) -> Self {
+        pub(crate) fn new(port: Arc<SkillManagementPort>, refiner: Arc<dyn SkillRefiner>) -> Self {
             Self { port, refiner }
         }
     }
@@ -312,7 +307,7 @@ mod learning {
                 Ok(result) => Ok(result.name),
                 // install is create-only; only a name CONFLICT means a same-named
                 // skill exists (we are re-learning it), so update it in place.
-                Err(RebornLocalSkillManagementError::Skill(error))
+                Err(SkillManagementPortError::Skill(error))
                     if error.kind() == SkillManagementErrorKind::Conflict =>
                 {
                     self.port

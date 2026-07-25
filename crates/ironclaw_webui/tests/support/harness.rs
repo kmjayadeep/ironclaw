@@ -3,11 +3,11 @@
 //! `network_limits_contract.rs`).
 //!
 //! Each of those files used to carry its own byte-identical copy of the
-//! ~230-line `StubServices` `RebornServicesApi` impl plus the shared
+//! ~230-line `StubServices` `ProductSurface` impl plus the shared
 //! `with_peer` helper and tenant/agent/project constants. They are
 //! consolidated here and pulled in via
 //! `#[path = "support/harness.rs"] mod harness;` so a new
-//! `RebornServicesApi` method only has to be stubbed once. This file is
+//! `ProductSurface` method only has to be stubbed once. This file is
 //! NOT a test binary (it lives under `tests/support/`), and it is
 //! deliberately not referenced from `support/mod.rs`, so the OAuth-route
 //! tests' `mod support;` does not compile it.
@@ -25,16 +25,11 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::Request;
-use ironclaw_host_api::{AgentId, ProjectId, TenantId, ThreadId, UserId};
-use ironclaw_product_workflow::{
-    RebornCancelRunResponse, RebornCreateThreadResponse, RebornDeleteThreadRequest,
-    RebornDeleteThreadResponse, RebornGetRunStateRequest, RebornGetRunStateResponse,
-    RebornResolveGateResponse, RebornRetryRunResponse, RebornServicesApi, RebornServicesError,
-    RebornStreamEventsRequest, RebornStreamEventsResponse, RebornSubmitTurnResponse,
-    RebornTimelineRequest, RebornTimelineResponse, WebUiAuthenticatedCaller, WebUiCancelRunRequest,
-    WebUiCreateThreadRequest, WebUiResolveGateRequest, WebUiRetryRunRequest,
-    WebUiSendMessageRequest,
+use ironclaw_host_api::{
+    AgentId, ProductSurface, ProductSurfaceCaller, ProductSurfaceError, ProjectId, TenantId,
+    ThreadId, UserId,
 };
+use ironclaw_product::RebornCreateThreadResponse;
 use ironclaw_threads::{SessionThreadRecord, ThreadScope};
 
 /// Host-installation tenant the audit apps are composed with.
@@ -44,7 +39,7 @@ pub const AGENT: &str = "agent-default";
 /// Default project stamped onto every authenticated caller.
 pub const PROJECT: &str = "project-default";
 
-/// `RebornServicesApi` stub for the audit suite. `create_thread` and
+/// `ProductSurface` stub for the audit suite. `create_thread` and
 /// `stream_events` record their callers so a test can assert the facade
 /// was (or was not) reached and which `UserId` the bearer / `?token=`
 /// resolved to; `list_threads` returns an empty page defensively; every
@@ -54,18 +49,21 @@ pub const PROJECT: &str = "project-default";
 /// `CatchPanicLayer` boundary can be driven.
 #[derive(Default)]
 pub struct StubServices {
-    pub create_thread_callers: Mutex<Vec<WebUiAuthenticatedCaller>>,
-    pub stream_events_callers: Mutex<Vec<WebUiAuthenticatedCaller>>,
+    pub create_thread_callers: Mutex<Vec<ProductSurfaceCaller>>,
+    pub stream_events_callers: Mutex<Vec<ProductSurfaceCaller>>,
     pub create_thread_panic: Option<&'static str>,
 }
 
 #[async_trait]
-impl RebornServicesApi for StubServices {
-    async fn create_thread(
+impl ProductSurface for StubServices {
+    async fn invoke(
         &self,
-        caller: WebUiAuthenticatedCaller,
-        _request: WebUiCreateThreadRequest,
-    ) -> Result<RebornCreateThreadResponse, RebornServicesError> {
+        caller: ProductSurfaceCaller,
+        request: ironclaw_host_api::ProductSurfaceInvokeRequest,
+    ) -> Result<ironclaw_host_api::ProductSurfaceInvokeResponse, ProductSurfaceError> {
+        if request.operation_id.as_str() != "thread.create" {
+            return Err(ProductSurfaceError::service_unavailable(false));
+        }
         if let Some(message) = self.create_thread_panic {
             panic!("{message}");
         }
@@ -73,7 +71,7 @@ impl RebornServicesApi for StubServices {
             .lock()
             .expect("lock")
             .push(caller);
-        Ok(RebornCreateThreadResponse {
+        let output = serde_json::to_value(RebornCreateThreadResponse {
             thread: SessionThreadRecord {
                 thread_id: ThreadId::new("thread.fake").expect("thread"),
                 scope: ThreadScope {
@@ -91,29 +89,15 @@ impl RebornServicesApi for StubServices {
                 updated_at: None,
             },
         })
-    }
-
-    async fn submit_turn(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: WebUiSendMessageRequest,
-    ) -> Result<RebornSubmitTurnResponse, RebornServicesError> {
-        unreachable!("audit suite does not drive submit_turn")
-    }
-
-    async fn get_timeline(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: RebornTimelineRequest,
-    ) -> Result<RebornTimelineResponse, RebornServicesError> {
-        unreachable!("audit suite does not drive get_timeline")
+        .map_err(ProductSurfaceError::internal_from)?;
+        Ok(ironclaw_host_api::ProductSurfaceInvokeResponse { output })
     }
 
     async fn stream_events(
         &self,
-        caller: WebUiAuthenticatedCaller,
-        _request: RebornStreamEventsRequest,
-    ) -> Result<RebornStreamEventsResponse, RebornServicesError> {
+        caller: ProductSurfaceCaller,
+        _request: ironclaw_host_api::ProductSurfaceStreamRequest,
+    ) -> Result<ironclaw_host_api::ProductSurfaceStreamResponse, ProductSurfaceError> {
         // Record the caller so the `?token=` shim test can assert the
         // query token was consumed as the session credential and stamped
         // as that user. Returns an empty event page so a polled SSE
@@ -123,47 +107,18 @@ impl RebornServicesApi for StubServices {
             .lock()
             .expect("lock")
             .push(caller);
-        Ok(RebornStreamEventsResponse { events: Vec::new() })
+        Ok(ironclaw_host_api::ProductSurfaceStreamResponse {
+            events: Vec::new(),
+            next_cursor: None,
+        })
     }
 
-    async fn get_run_state(
+    async fn query(
         &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: RebornGetRunStateRequest,
-    ) -> Result<RebornGetRunStateResponse, RebornServicesError> {
-        unreachable!("audit suite does not drive get_run_state")
-    }
-
-    async fn cancel_run(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: WebUiCancelRunRequest,
-    ) -> Result<RebornCancelRunResponse, RebornServicesError> {
-        unreachable!("audit suite does not drive cancel_run")
-    }
-
-    async fn retry_run(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: WebUiRetryRunRequest,
-    ) -> Result<RebornRetryRunResponse, RebornServicesError> {
-        unreachable!("audit suite does not drive retry_run")
-    }
-
-    async fn resolve_gate(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: WebUiResolveGateRequest,
-    ) -> Result<RebornResolveGateResponse, RebornServicesError> {
-        unreachable!("audit suite does not drive resolve_gate")
-    }
-
-    async fn delete_thread(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: RebornDeleteThreadRequest,
-    ) -> Result<RebornDeleteThreadResponse, RebornServicesError> {
-        unreachable!("audit suite does not drive delete_thread")
+        _caller: ProductSurfaceCaller,
+        _request: ironclaw_host_api::ProductSurfaceQueryRequest,
+    ) -> Result<ironclaw_host_api::ProductSurfaceQueryPage, ProductSurfaceError> {
+        Err(ProductSurfaceError::service_unavailable(false))
     }
 }
 

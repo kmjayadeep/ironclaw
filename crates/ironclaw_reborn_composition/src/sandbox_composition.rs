@@ -17,7 +17,7 @@ use ironclaw_host_runtime::SandboxActivityRegistry;
 use ironclaw_resources::ResourceGovernor;
 
 use crate::RebornBuildError;
-use crate::input::RebornLocalRuntimeIdentity;
+use crate::input::RuntimeOwnerIdentity;
 
 /// Owned handle to a spawned [`ironclaw_host_runtime::BoundEgressAllowlistProxy::serve`]
 /// task. Declared canonically here (not in `sandbox_egress_proxy_task.rs`)
@@ -28,7 +28,7 @@ use crate::input::RebornLocalRuntimeIdentity;
 /// `pub` (not `pub(crate)`): `tenant_sandbox_process_binding` (`sandbox_boot.rs`) spawns the
 /// production instance and hands it back on `TenantSandboxBinding` so the
 /// assembling binary (`ironclaw_reborn_cli`) can thread it, opaquely, into
-/// `RebornBuildInput` for `SandboxRuntimeBindings::build` to take ownership
+/// `RebornProductionBuildContext` for `SandboxRuntimeBindings::build` to take ownership
 /// of later — the same round-trip-through-the-binary shape
 /// `SandboxActivityRegistry` already uses. Its fields and methods stay
 /// `pub(crate)`, so the binary can only move the value along, never
@@ -86,7 +86,7 @@ impl SandboxEgressProxyRuntimeHandle {
 /// every call site.
 pub(crate) struct SandboxProfileBindingInputs<'a> {
     pub(crate) is_sandboxed_profile: bool,
-    pub(crate) local_runtime_identity: Option<&'a RebornLocalRuntimeIdentity>,
+    pub(crate) local_runtime_identity: Option<&'a RuntimeOwnerIdentity>,
     pub(crate) resource_governor: Arc<dyn ResourceGovernor>,
     /// The activity registry the transport (`sandbox_boot::tenant_sandbox_process_binding`)
     /// already constructed and injected into the exec transport — the reaper
@@ -178,7 +178,7 @@ impl SandboxRuntimeBindings {
 
     /// The one shutdown call site for every sandbox background task.
     /// `RebornRuntime::shutdown` calls this unconditionally (the struct
-    /// is always present on `RebornServices`, never `Option` at that
+    /// is always present on `RebornRuntimeStores`, never `Option` at that
     /// level — `none()` just means every field inside is empty, so this
     /// is a cheap no-op for non-sandboxed profiles).
     pub(crate) async fn shutdown_all(self, timeout: Duration) {

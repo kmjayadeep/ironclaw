@@ -502,7 +502,6 @@ mod tests {
                         hooks: Vec::new(),
                         capabilities: vec![ironclaw_extensions::CapabilityManifest {
                             id: CapabilityId::new(capability_id).unwrap(),
-                            implements: Vec::new(),
                             description: "Search".to_string(),
                             effects: vec![
                                 ironclaw_host_api::EffectKind::DispatchCapability,
@@ -545,6 +544,7 @@ mod tests {
                                 },
                             ],
                             network_targets: Vec::new(),
+                            max_egress_bytes: None,
                             resource_profile: None,
                             origin_gate_matrix: None,
                         }],

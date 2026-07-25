@@ -17,14 +17,31 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
-from emulate_provider import google_headers, slack_post
+from emulate_provider import (
+    github_headers,
+    github_json,
+    google_headers,
+    slack_headers,
+    slack_post,
+)
 from helpers import EMULATE_GITHUB_BEARER, EMULATE_SLACK_BEARER
+from journey_cases import PROVIDER_JOURNEY_RUN_IDS, PROVIDER_JOURNEY_RUNS
+from provider_capability_inventory import (
+    EMULATE_SUPPORTED_TOOLS,
+    capability_id_to_wire_name,
+)
+from provider_fault_cases import PROVIDER_FAULT_CASES
+from provider_fault_proxy import PROVIDER_FAULT_PROFILES
+from provider_operation_cases import PROVIDER_OPERATION_CASES
+from provider_operation_types import ProviderOperationCase
 from reborn_webui_harness import (
     YOLO_PROFILE,
     capability_preview_payload,
+    client_action_id,
     close_reborn_server,
     create_thread,
     enable_reborn_global_auto_approve,
+    fetch_extension_oauth_requirement,
     reborn_bearer_headers,
     send_message,
     start_reborn_webui_v2_server,
@@ -36,12 +53,19 @@ pytest_plugins = ["reborn_webui_harness"]
 ROOT = Path(__file__).resolve().parents[3]
 TRACE_DIR = ROOT / "tests/fixtures/llm_traces/reborn_qa/live_canary"
 MANIFEST_PATH = TRACE_DIR / "case-manifest.json"
+
+GITHUB_RELEASE_WRITE_UNAVAILABLE = {
+    403,
+    404,
+}
+GITHUB_RELEASE_WRITE_PROBE_PAYLOAD = {"tag_name": ""}
 GOOGLE_EXTENSIONS = (
     "gmail",
     "google-calendar",
     "google-drive",
     "google-docs",
     "google-sheets",
+    "google-slides",
 )
 GOOGLE_EXTENSION_SCOPES = {
     "gmail": (
@@ -65,6 +89,10 @@ GOOGLE_EXTENSION_SCOPES = {
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/spreadsheets.readonly",
     ),
+    "google-slides": (
+        "https://www.googleapis.com/auth/presentations",
+        "https://www.googleapis.com/auth/presentations.readonly",
+    ),
 }
 GOOGLE_CUMULATIVE_SCOPES = tuple(
     dict.fromkeys(
@@ -79,66 +107,66 @@ GOOGLE_TOOL_PREFIXES = (
     "google-docs__",
     "google-drive__",
     "google-sheets__",
+    "google-slides__",
 )
-PROVIDER_TOOL_PREFIXES = (
-    *GOOGLE_TOOL_PREFIXES,
-    "github__",
-    "slack__",
-)
+PROVIDER_TOOL_NAMES = EMULATE_SUPPORTED_TOOLS
 ALL_EXTENSIONS = (*GOOGLE_EXTENSIONS, "github", "slack")
 TRACE_BOOTSTRAP_TOOLS = {"builtin__extension_search"}
 
 
-def _provider_journey_cases() -> tuple[str, ...]:
-    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-    no_model = set(manifest["no_model_cases"])
-    cases = []
-    for case in manifest["selected_cases"]:
-        if case in no_model:
-            continue
-        trace = json.loads((TRACE_DIR / f"{case}.json").read_text(encoding="utf-8"))
-        if any(
-            call["name"].startswith(PROVIDER_TOOL_PREFIXES)
-            for step in trace["steps"]
-            for call in step["response"].get("tool_calls", [])
-        ):
-            cases.append(case)
-    return tuple(cases)
-
-
-PROVIDER_JOURNEY_CASES = _provider_journey_cases()
-
-
 @pytest.fixture(scope="module")
-async def reborn_qa_emulate_provider_server(
+async def reborn_qa_emulate_runtime(
     ironclaw_reborn_binary,
     mock_llm_server,
-    emulate_google_server,
-    emulate_github_server,
-    emulate_slack_server,
+    resettable_emulate_provider_world,
+    provider_fault_proxy_world,
     tmp_path_factory,
 ):
-    """Start standalone Reborn with every supported provider routed to Emulate."""
+    """Start one Reborn process against resettable provider URLs."""
+    provider_servers = resettable_emulate_provider_world.servers
+    provider_proxy_servers = provider_fault_proxy_world.servers
+    emulate_google_server = provider_servers["google"]
+    emulate_github_server = provider_servers["github"]
+    emulate_slack_server = provider_servers["slack"]
+    google_proxy_server = provider_proxy_servers["google"]
+    github_proxy_server = provider_proxy_servers["github"]
+    slack_proxy_server = provider_proxy_servers["slack"]
     home_dir = tmp_path_factory.mktemp("reborn-qa-emulate-provider-home")
     mock_llm_address = urlparse(mock_llm_server)
-    emulate_google_address = urlparse(emulate_google_server["url"])
-    emulate_github_address = urlparse(emulate_github_server["url"])
-    emulate_slack_address = urlparse(emulate_slack_server["url"])
+    emulate_google_address = urlparse(google_proxy_server["url"])
+    emulate_github_address = urlparse(github_proxy_server["url"])
+    emulate_slack_address = urlparse(slack_proxy_server["url"])
     rewrite_map = ",".join(
         (
             f"oauth2.googleapis.com={mock_llm_address.hostname}:{mock_llm_address.port}",
-            f"www.googleapis.com={emulate_google_address.hostname}:"
-            f"{emulate_google_address.port}",
-            f"gmail.googleapis.com={emulate_google_address.hostname}:"
-            f"{emulate_google_address.port}",
-            f"docs.googleapis.com={emulate_google_address.hostname}:"
-            f"{emulate_google_address.port}",
-            f"sheets.googleapis.com={emulate_google_address.hostname}:"
-            f"{emulate_google_address.port}",
-            f"api.github.com={emulate_github_address.hostname}:"
-            f"{emulate_github_address.port}",
-            f"slack.com={emulate_slack_address.hostname}:"
-            f"{emulate_slack_address.port}",
+            (
+                f"www.googleapis.com={emulate_google_address.hostname}:"
+                f"{emulate_google_address.port}"
+            ),
+            (
+                f"gmail.googleapis.com={emulate_google_address.hostname}:"
+                f"{emulate_google_address.port}"
+            ),
+            (
+                f"docs.googleapis.com={emulate_google_address.hostname}:"
+                f"{emulate_google_address.port}"
+            ),
+            (
+                f"sheets.googleapis.com={emulate_google_address.hostname}:"
+                f"{emulate_google_address.port}"
+            ),
+            (
+                f"slides.googleapis.com={emulate_google_address.hostname}:"
+                f"{emulate_google_address.port}"
+            ),
+            (
+                f"api.github.com={emulate_github_address.hostname}:"
+                f"{emulate_github_address.port}"
+            ),
+            (
+                f"slack.com={emulate_slack_address.hostname}:"
+                f"{emulate_slack_address.port}"
+            ),
         )
     )
     proc, base_url = await start_reborn_webui_v2_server(
@@ -153,49 +181,102 @@ async def reborn_qa_emulate_provider_server(
             "IRONCLAW_REBORN_GOOGLE_OAUTH_REDIRECT_URI": (
                 "http://127.0.0.1/api/reborn/product-auth/oauth/google/callback"
             ),
-            "IRONCLAW_REBORN_SLACK_PERSONAL_OAUTH_REDIRECT_URI": (
-                "http://127.0.0.1/api/reborn/product-auth/oauth/slack/callback"
-            ),
         },
     )
     await enable_reborn_global_auto_approve(base_url)
     slack_state = await _seed_slack_workspace(emulate_slack_server["url"])
     await _configure_slack(base_url, slack_state)
     await _install_extensions(base_url, ALL_EXTENSIONS)
-    for extension_id, scopes in GOOGLE_EXTENSION_SCOPES.items():
-        await _seed_google_account(base_url, extension_id, scopes)
-        await _activate_extensions(base_url, (extension_id,))
+    for extension_id in GOOGLE_EXTENSION_SCOPES:
+        await _seed_google_account(base_url, extension_id)
     await _seed_github_account(base_url)
-    await _activate_extensions(base_url, ("github",))
     await _seed_slack_account(base_url, emulate_slack_server["url"], slack_state)
-    await _activate_extensions(base_url, ("slack",))
+    await _assert_extensions_active(base_url, ALL_EXTENSIONS)
     try:
         yield {
             "base_url": base_url,
             "emulate_google_url": emulate_google_server["url"],
             "emulate_github_url": emulate_github_server["url"],
             "emulate_slack_url": emulate_slack_server["url"],
+            "provider_fault_proxies": provider_fault_proxy_world.proxies,
             "slack_state": slack_state,
         }
     finally:
         await close_reborn_server(proc)
 
 
+@pytest.fixture
+async def reborn_qa_emulate_provider_server(
+    reborn_qa_emulate_runtime,
+    resettable_emulate_provider_world,
+    journey_case,
+):
+    """Reset mutated providers while reusing the built binary and Reborn."""
+    services = {str(world) for world in journey_case.mutable_provider_worlds}
+    reset_services = services - {"slack"}
+    try:
+        yield reborn_qa_emulate_runtime
+    finally:
+        if "slack" in services:
+            await _cleanup_slack_provider_mutations(
+                reborn_qa_emulate_runtime["emulate_slack_url"],
+                reborn_qa_emulate_runtime["slack_state"],
+                journey_case.case_id,
+            )
+        if reset_services:
+            await resettable_emulate_provider_world.reset(reset_services)
+
+
+@pytest.fixture
+async def reborn_provider_operation_server(
+    reborn_qa_emulate_runtime,
+    resettable_emulate_provider_world,
+    operation_case,
+):
+    """Reuse Reborn but restore the case's provider after execution."""
+    try:
+        yield reborn_qa_emulate_runtime
+    finally:
+        await resettable_emulate_provider_world.reset(
+            {operation_case.provider_service}
+        )
+
+
+@pytest.fixture
+async def reborn_provider_fault_server(
+    reborn_qa_emulate_runtime,
+    resettable_emulate_provider_world,
+    provider_fault_proxy_world,
+    fault_case,
+):
+    """Reset fault and provider state around one representative failure."""
+    provider_fault_proxy_world.reset()
+    try:
+        yield reborn_qa_emulate_runtime
+    finally:
+        provider_fault_proxy_world.reset()
+        await resettable_emulate_provider_world.reset(
+            {fault_case.operation.provider_service}
+        )
+
+
 async def _seed_google_account(
     base_url: str,
     extension_id: str,
-    scopes: tuple[str, ...],
 ) -> None:
     expires_at = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
     async with httpx.AsyncClient(headers=reborn_bearer_headers()) as client:
+        requirement = await fetch_extension_oauth_requirement(
+            client,
+            base_url,
+            extension_id,
+        )
         started = await client.post(
             f"{base_url}/api/webchat/v2/extensions/{extension_id}/setup/oauth/start",
             json={
-                "provider": "google",
-                "account_label": f"Emulate Google account for {extension_id}",
-                "scopes": list(scopes),
+                "requirement": requirement["name"],
                 "expires_at": expires_at,
-                "invocation_id": str(uuid.uuid4()),
+                "invocation_id": requirement["setup"].get("invocation_id"),
             },
             timeout=15,
         )
@@ -359,6 +440,7 @@ async def _seed_github_account(base_url: str) -> None:
             f"{base_url}/api/webchat/v2/extensions/github/setup",
             json={
                 "action": "submit",
+                "client_action_id": client_action_id(),
                 "payload": {
                     "secrets": {"github_runtime_token": EMULATE_GITHUB_BEARER},
                     "fields": {},
@@ -382,18 +464,21 @@ async def _seed_slack_account(
 ) -> None:
     expires_at = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
     async with httpx.AsyncClient(headers=reborn_bearer_headers()) as client:
+        requirement = await fetch_extension_oauth_requirement(
+            client,
+            base_url,
+            "slack",
+        )
         started = await client.post(
             f"{base_url}/api/webchat/v2/extensions/slack/setup/oauth/start",
             json={
-                "provider": "slack",
-                "account_label": "Emulate Slack account",
-                "scopes": [],
+                "requirement": requirement["name"],
                 "expires_at": expires_at,
-                "invocation_id": str(uuid.uuid4()),
+                "invocation_id": requirement["setup"].get("invocation_id"),
             },
             timeout=30,
         )
-        started.raise_for_status()
+        assert started.is_success, started.text
         body = started.json()
         query = parse_qs(urlparse(body["authorization_url"]).query)
         consent = await client.post(
@@ -433,26 +518,36 @@ async def _install_extensions(base_url: str, extension_ids: tuple[str, ...]) -> 
             installed = await client.post(
                 f"{base_url}/api/webchat/v2/extensions/install",
                 json={
-                    "package_ref": {"kind": "extension", "id": extension_id}
+                    "package_ref": {"kind": "extension", "id": extension_id},
+                    "client_action_id": client_action_id(),
                 },
                 timeout=30,
             )
             installed.raise_for_status()
 
 
-async def _activate_extensions(base_url: str, extension_ids: tuple[str, ...]) -> None:
+async def _assert_extensions_active(
+    base_url: str, extension_ids: tuple[str, ...]
+) -> None:
     async with httpx.AsyncClient(headers=reborn_bearer_headers()) as client:
+        listed = await client.get(
+            f"{base_url}/api/webchat/v2/extensions",
+            timeout=30,
+        )
+        listed.raise_for_status()
+        by_id = {
+            extension["package_ref"]["id"]: extension
+            for extension in listed.json()["extensions"]
+        }
         for extension_id in extension_ids:
-            activated = await client.post(
-                f"{base_url}/api/webchat/v2/extensions/{extension_id}/activate",
-                timeout=30,
+            extension = by_id.get(extension_id)
+            assert extension is not None, (
+                f"{extension_id} disappeared after completing its manifest-declared setup"
             )
-            activated.raise_for_status()
-            body = activated.json()
-            assert body.get("activated") is True, body
+            assert extension["installation_state"] == "active", extension
 
 
-def _provider_leg(trace: dict, prefixes: tuple[str, ...]) -> dict:
+def _provider_leg(trace: dict, provider_tools: frozenset[str]) -> dict:
     """Keep the recorded provider decisions and final response in order."""
     provider_steps = []
     final_text = None
@@ -462,7 +557,7 @@ def _provider_leg(trace: dict, prefixes: tuple[str, ...]) -> dict:
             calls = [
                 call
                 for call in response["tool_calls"]
-                if call["name"].startswith(prefixes)
+                if call["name"] in provider_tools
                 or call["name"] in TRACE_BOOTSTRAP_TOOLS
             ]
             if calls:
@@ -491,14 +586,14 @@ def _inject_deferred_tool_disclosure(trace: dict) -> None:
             call["name"]
             for step in trace["steps"]
             for call in step["response"].get("tool_calls", [])
-            if call["name"].startswith(PROVIDER_TOOL_PREFIXES)
+            if call["name"] in PROVIDER_TOOL_NAMES
         )
     )
     first_provider_step = next(
         index
         for index, step in enumerate(trace["steps"])
         if any(
-            call["name"].startswith(PROVIDER_TOOL_PREFIXES)
+            call["name"] in PROVIDER_TOOL_NAMES
             for call in step["response"].get("tool_calls", [])
         )
     )
@@ -525,7 +620,7 @@ def _coalesce_independent_provider_reads(trace: dict, batch_size: int = 25) -> N
         index
         for index, step in enumerate(trace["steps"])
         if any(
-            call["name"].startswith(PROVIDER_TOOL_PREFIXES)
+            call["name"] in PROVIDER_TOOL_NAMES
             for call in step["response"].get("tool_calls", [])
         )
     ]
@@ -555,11 +650,25 @@ def _coalesce_independent_provider_reads(trace: dict, batch_size: int = 25) -> N
 def _normalize_google_arguments(trace: dict, case: str) -> None:
     created_document = False
     created_spreadsheet = False
+    document_upload_contents = []
+    for step in trace["steps"]:
+        for call in step["response"].get("tool_calls", []):
+            if call["name"] == "google-docs__create_document":
+                document_upload_contents.append("")
+            elif call["name"] == "google-docs__insert_text":
+                for index, content in enumerate(document_upload_contents):
+                    if content == "":
+                        document_upload_contents[index] = call["arguments"].get("text", "")
+                        break
+    document_upload_index = 0
     seeded_spreadsheet = (
         "sheet_reborn_bug_tracker" if case.startswith("qa_7") else "sheet_reborn_abc"
     )
 
     for step in trace["steps"]:
+        if "tool_calls" not in step["response"]:
+            continue
+        normalized_calls = []
         for call in step["response"].get("tool_calls", []):
             name = call["name"]
             arguments = call["arguments"]
@@ -567,17 +676,29 @@ def _normalize_google_arguments(trace: dict, case: str) -> None:
 
             if name == "google-docs__create_document":
                 created_document = True
-            elif name.startswith("google-docs__") and "document_id" in arguments:
-                arguments["document_id"] = (
-                    _result_binding(
-                        "google-docs__create_document",
-                        "documentId",
-                        "document_id",
-                        "id",
-                    )
-                    if created_document
-                    else "doc_reborn_strategy"
+                call["name"] = "google-drive__upload_file"
+                content = (
+                    document_upload_contents[document_upload_index]
+                    if document_upload_index < len(document_upload_contents)
+                    else ""
                 )
+                document_upload_index += 1
+                call["arguments"] = {
+                    "name": arguments["title"],
+                    "content": content,
+                    "mime_type": "text/plain",
+                }
+            elif name == "google-docs__insert_text":
+                continue
+            elif name.startswith("google-docs__") and "document_id" in arguments:
+                call["name"] = "google-drive__download_file"
+                call["arguments"] = {
+                    "file_id": (
+                        _result_binding("google-drive__upload_file", "id", "file_id")
+                        if created_document
+                        else "drv_near_ai_strategy"
+                    )
+                }
 
             if name == "google-sheets__create_spreadsheet":
                 created_spreadsheet = True
@@ -602,6 +723,14 @@ def _normalize_google_arguments(trace: dict, case: str) -> None:
                 arguments["message_id"] = "msg_emulate_near_inbound"
             elif name == "google-drive__download_file":
                 arguments["file_id"] = "drv_pepsico_account_brief"
+            normalized_calls.append(call)
+        step["response"]["tool_calls"] = normalized_calls
+    trace["steps"] = [
+        step
+        for step in trace["steps"]
+        if step["response"].get("type") != "tool_calls"
+        or step["response"].get("tool_calls")
+    ]
 
 
 def _normalize_slack_arguments(
@@ -651,12 +780,12 @@ async def _load_trace(
     mock_llm_server: str,
     trace_path: Path,
     *,
-    provider_prefixes: tuple[str, ...] | None = None,
+    provider_tools: frozenset[str] | None = None,
     slack_state: dict[str, str] | None = None,
 ) -> dict:
     trace = json.loads(trace_path.read_text(encoding="utf-8"))
-    if provider_prefixes is not None:
-        trace = _provider_leg(trace, provider_prefixes)
+    if provider_tools is not None:
+        trace = _provider_leg(trace, provider_tools)
     if trace_path.stem == "qa_9c_slack_digest_names_not_ids":
         _coalesce_independent_provider_reads(trace)
         _inject_deferred_tool_disclosure(trace)
@@ -664,7 +793,7 @@ async def _load_trace(
         trace["steps"][-1]["request_hint"] = {
             "expected_failed_tool_result_contains": "channel_not_found"
         }
-    if provider_prefixes is not None:
+    if provider_tools is not None:
         _normalize_google_arguments(trace, trace_path.stem)
     if slack_state is not None:
         _normalize_slack_arguments(trace, slack_state, trace_path.stem)
@@ -676,6 +805,66 @@ async def _load_trace(
         )
         response.raise_for_status()
     return trace
+
+
+async def _install_inline_trace(
+    mock_llm_server: str,
+    source: str,
+    trace: dict,
+) -> None:
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{mock_llm_server}/__mock/llm_trace",
+            json={"source": source, "trace": trace},
+            timeout=15,
+        )
+    response.raise_for_status()
+
+
+def _provider_operation_trace(
+    case: ProviderOperationCase, arguments: dict
+) -> dict:
+    wire_name = capability_id_to_wire_name(case.capability_id)
+    return {
+        "steps": [
+            {
+                "response": {
+                    "type": "user_input",
+                    "content": f"Execute provider contract {case.case_id}",
+                }
+            },
+            {
+                "response": {
+                    "type": "tool_calls",
+                    "tool_calls": [
+                        {
+                            "id": f"disclose_{case.case_id}",
+                            "name": "capability_info",
+                            "arguments": {"name": case.capability_id},
+                        }
+                    ],
+                }
+            },
+            {
+                "response": {
+                    "type": "tool_calls",
+                    "tool_calls": [
+                        {
+                            "id": f"execute_{case.case_id}",
+                            "name": wire_name,
+                            "arguments": arguments,
+                        }
+                    ],
+                }
+            },
+            {
+                "response": {
+                    "type": "text",
+                    "content": "Provider operation completed.",
+                }
+            },
+        ]
+    }
 
 
 async def _wait_for_trace_replay(mock_llm_server: str, timeout: float = 30) -> dict:
@@ -744,8 +933,55 @@ def _recorded_provider_calls(trace: dict) -> list[dict]:
         call
         for step in trace["steps"]
         for call in step["response"].get("tool_calls", [])
-        if call["name"].startswith(PROVIDER_TOOL_PREFIXES)
+        if call["name"] in PROVIDER_TOOL_NAMES
     ]
+
+
+def _google_created_resource_call(calls: list[dict]) -> dict | None:
+    return next(
+        (
+            call
+            for call in calls
+            if call["name"]
+            in {
+                "google-docs__create_document",
+                "google-drive__upload_file",
+                "google-sheets__create_spreadsheet",
+            }
+        ),
+        None,
+    )
+
+
+def _google_created_resource_name(call: dict) -> str:
+    if call["name"] == "google-drive__upload_file":
+        return call["arguments"]["name"]
+    return call["arguments"]["title"]
+
+
+def _raw_trace_uses_tool_prefix(trace_path: Path, prefix: str) -> bool:
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    return any(
+        call["name"].startswith(prefix)
+        for step in trace["steps"]
+        for call in step["response"].get("tool_calls", [])
+    )
+
+
+async def _emulate_github_supports_release_writes(emulate_url: str) -> bool:
+    async with httpx.AsyncClient(headers=github_headers(), timeout=15) as client:
+        response = await client.post(
+            f"{emulate_url}/repos/nearai/ironclaw/releases",
+            json=GITHUB_RELEASE_WRITE_PROBE_PAYLOAD,
+        )
+    if response.status_code in GITHUB_RELEASE_WRITE_UNAVAILABLE:
+        return False
+    if response.status_code != 422:
+        raise AssertionError(
+            "GitHub release write probe must reject the invalid payload "
+            f"without mutation; got {response.status_code}: {response.text}"
+        )
+    return True
 
 
 async def _assert_google_provider_outcome(
@@ -766,22 +1002,11 @@ async def _assert_google_provider_outcome(
             listed.raise_for_status()
             assert listed.json().get("messages"), f"sent message missing for {case}"
 
-        create_call = next(
-            (
-                call
-                for call in calls
-                if call["name"]
-                in {
-                    "google-docs__create_document",
-                    "google-sheets__create_spreadsheet",
-                }
-            ),
-            None,
-        )
+        create_call = _google_created_resource_call(calls)
         if create_call is None:
             return
 
-        title = create_call["arguments"]["title"]
+        title = _google_created_resource_name(create_call)
         files = await client.get(
             f"{emulate_url}/drive/v3/files",
             params={"q": f"name = '{title}' and trashed = false"},
@@ -790,6 +1015,15 @@ async def _assert_google_provider_outcome(
         matching = [item for item in files.json()["files"] if item["name"] == title]
         assert matching, f"created Google resource missing for {case}: {files.text}"
         resource_id = matching[-1]["id"]
+
+        if create_call["name"] == "google-drive__upload_file":
+            media = await client.get(
+                f"{emulate_url}/drive/v3/files/{resource_id}",
+                params={"alt": "media"},
+            )
+            media.raise_for_status()
+            assert media.text == create_call["arguments"].get("content", ""), media.text
+            return
 
         if create_call["name"] == "google-docs__create_document":
             document = await client.get(f"{emulate_url}/v1/documents/{resource_id}")
@@ -815,53 +1049,282 @@ async def _assert_google_provider_outcome(
             assert "REBORN_QA_7E_BUG_ROW" in values.text, values.text
 
 
+async def _assert_google_provider_baseline(
+    emulate_url: str, case: str, trace: dict
+) -> None:
+    """Prove this journey cannot observe mutations from an earlier journey."""
+    calls = _recorded_provider_calls(trace)
+    async with httpx.AsyncClient(headers=google_headers(), timeout=15) as client:
+        send = next(
+            (call for call in calls if call["name"] == "gmail__send_message"),
+            None,
+        )
+        if send is not None:
+            subject = send["arguments"]["message"]["subject"]
+            listed = await client.get(
+                f"{emulate_url}/gmail/v1/users/me/messages",
+                params={"q": f"subject:{subject}"},
+            )
+            listed.raise_for_status()
+            assert not listed.json().get("messages"), (
+                f"provider world for {case} already contains sent mail {subject!r}"
+            )
+
+        create_call = _google_created_resource_call(calls)
+        if create_call is None:
+            return
+        title = _google_created_resource_name(create_call)
+        files = await client.get(
+            f"{emulate_url}/drive/v3/files",
+            params={"q": f"name = '{title}' and trashed = false"},
+        )
+        files.raise_for_status()
+        assert not [item for item in files.json()["files"] if item["name"] == title], (
+            f"provider world for {case} already contains Google resource {title!r}"
+        )
+
+
 async def _assert_slack_provider_outcome(
     emulate_url: str,
     slack_state: dict[str, str],
     trace: dict,
 ) -> None:
-    send = next(
-        (
-            call
-            for call in _recorded_provider_calls(trace)
-            if call["name"] == "slack__send_message"
-        ),
-        None,
-    )
-    if send is None:
+    sends = [
+        call
+        for call in _recorded_provider_calls(trace)
+        if call["name"] == "slack__send_message"
+    ]
+    if not sends:
         return
     async with httpx.AsyncClient(timeout=15) as client:
-        history = await slack_post(
+        for send in sends:
+            messages = await _slack_messages_for_send(
+                client, emulate_url, slack_state, send
+            )
+            assert any(
+                message.get("text") == send["arguments"]["text"]
+                for message in messages
+            ), messages
+
+
+async def _slack_messages_for_send(
+    client: httpx.AsyncClient,
+    emulate_url: str,
+    slack_state: dict[str, str],
+    send: dict,
+) -> list[dict]:
+    """Read a delivery from the Slack surface that can contain it."""
+    payload = {"channel": slack_state["channel_id"], "limit": 100}
+    thread_ts = send["arguments"].get("thread_ts")
+    if thread_ts is None:
+        method = "conversations.history"
+    else:
+        method = "conversations.replies"
+        payload["ts"] = thread_ts
+    page = await slack_post(client, emulate_url, method, payload)
+    return page.get("messages", [])
+
+
+async def _assert_slack_provider_baseline(
+    emulate_url: str,
+    slack_state: dict[str, str],
+    case: str,
+    trace: dict,
+) -> None:
+    """Prove an earlier journey did not leave the expected Slack mutation."""
+    sends = [
+        call
+        for call in _recorded_provider_calls(trace)
+        if call["name"] == "slack__send_message"
+    ]
+    if not sends:
+        return
+    async with httpx.AsyncClient(timeout=15) as client:
+        for send in sends:
+            messages = await _slack_messages_for_send(
+                client, emulate_url, slack_state, send
+            )
+            assert not any(
+                message.get("text") == send["arguments"]["text"]
+                for message in messages
+            ), f"provider world for {case} already contains the expected Slack delivery"
+
+
+async def _cleanup_slack_provider_mutations_from_trace(
+    emulate_url: str,
+    slack_state: dict[str, str],
+    trace: dict,
+) -> None:
+    sends = [
+        call
+        for call in _recorded_provider_calls(trace)
+        if call["name"] == "slack__send_message"
+    ]
+    if not sends:
+        return
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        matches = {}
+        for send in sends:
+            messages = await _slack_messages_for_send(
+                client, emulate_url, slack_state, send
+            )
+            expected_text = send["arguments"]["text"]
+            matches.update(
+                {
+                    message["ts"]: message
+                    for message in messages
+                    if message.get("text") == expected_text
+                }
+            )
+        for message in matches.values():
+            await slack_post(
+                client,
+                emulate_url,
+                "chat.delete",
+                {"channel": slack_state["channel_id"], "ts": message["ts"]},
+            )
+
+
+async def _cleanup_slack_provider_mutations(
+    emulate_url: str,
+    slack_state: dict[str, str],
+    case: str,
+) -> None:
+    """Remove messages created by one journey without rotating OAuth state."""
+    trace = json.loads((TRACE_DIR / f"{case}.json").read_text(encoding="utf-8"))
+    _normalize_slack_arguments(trace, slack_state, case)
+    await _cleanup_slack_provider_mutations_from_trace(
+        emulate_url, slack_state, trace
+    )
+
+
+async def test_slack_mutation_cleanup_covers_thread_replies(
+    resettable_emulate_provider_world,
+) -> None:
+    """Threaded sends must be visible to baseline checks and cleanup."""
+    emulate_url = resettable_emulate_provider_world.servers["slack"]["url"]
+    async with httpx.AsyncClient(timeout=15) as client:
+        channels = await slack_post(
             client,
             emulate_url,
-            "conversations.history",
-            {"channel": slack_state["channel_id"], "limit": 100},
+            "conversations.list",
+            {"types": "public_channel", "exclude_archived": True},
         )
-    assert any(
-        message.get("text") == send["arguments"]["text"]
-        for message in history["messages"]
-    ), history
+        channel = next(
+            item for item in channels["channels"] if item["name"] == "reborn-alerts"
+        )
+        root = await slack_post(
+            client,
+            emulate_url,
+            "chat.postMessage",
+            {"channel": channel["id"], "text": "thread cleanup contract root"},
+        )
+        reply = await slack_post(
+            client,
+            emulate_url,
+            "chat.postMessage",
+            {
+                "channel": channel["id"],
+                "thread_ts": root["ts"],
+                "text": "thread cleanup contract reply",
+            },
+        )
+
+    trace = {
+        "steps": [
+            {
+                "response": {
+                    "tool_calls": [
+                        {
+                            "name": "slack__send_message",
+                            "arguments": {
+                                "channel": channel["id"],
+                                "thread_ts": root["ts"],
+                                "text": reply["message"]["text"],
+                            },
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    slack_state = {"channel_id": channel["id"]}
+    try:
+        await _assert_slack_provider_outcome(emulate_url, slack_state, trace)
+        with pytest.raises(AssertionError, match="already contains"):
+            await _assert_slack_provider_baseline(
+                emulate_url, slack_state, "thread-cleanup-contract", trace
+            )
+
+        await _cleanup_slack_provider_mutations_from_trace(
+            emulate_url, slack_state, trace
+        )
+        await _assert_slack_provider_baseline(
+            emulate_url, slack_state, "thread-cleanup-contract", trace
+        )
+    finally:
+        async with httpx.AsyncClient(timeout=15) as client:
+            for message in (reply, root):
+                await slack_post(
+                    client,
+                    emulate_url,
+                    "chat.delete",
+                    {"channel": channel["id"], "ts": message["ts"]},
+                    expect_ok=False,
+                )
 
 
 @pytest.mark.parametrize(
-    "case", PROVIDER_JOURNEY_CASES, ids=PROVIDER_JOURNEY_CASES
+    "journey_case", PROVIDER_JOURNEY_RUNS, ids=PROVIDER_JOURNEY_RUN_IDS
 )
 async def test_qa_journey_provider_leg_replays_through_emulate(
     reborn_qa_emulate_provider_server,
     mock_llm_server,
-    case,
+    journey_case,
 ):
     """Every harvested provider journey executes through standalone Reborn."""
+    case = journey_case.case_id
     server = reborn_qa_emulate_provider_server["base_url"]
-    trace_path = TRACE_DIR / f"{case}.json"
+    trace_path = ROOT / journey_case.trace
+    if _raw_trace_uses_tool_prefix(
+        trace_path, "google-sheets__"
+    ):
+        async with httpx.AsyncClient(headers=google_headers(), timeout=15) as client:
+            emulate_google_url = reborn_qa_emulate_provider_server[
+                "emulate_google_url"
+            ]
+            response = await client.get(
+                f"{emulate_google_url}/v4/spreadsheets/sheet_reborn_abc"
+            )
+        if response.status_code == 404:
+            pytest.skip("Emulate 0.7.0 does not expose the Google Sheets API")
+    if _raw_trace_uses_tool_prefix(
+        trace_path, "slack__"
+    ):
+        async with httpx.AsyncClient(headers=slack_headers(), timeout=15) as client:
+            emulate_slack_url = reborn_qa_emulate_provider_server["emulate_slack_url"]
+            response = await client.get(f"{emulate_slack_url}/api/auth.test")
+        if response.status_code == 404:
+            pytest.skip("Emulate 0.7.0 does not expose Slack Web API GET routes")
     trace = await _load_trace(
         mock_llm_server,
         trace_path,
-        provider_prefixes=PROVIDER_TOOL_PREFIXES,
+        provider_tools=PROVIDER_TOOL_NAMES,
         slack_state=reborn_qa_emulate_provider_server["slack_state"],
     )
     user_input = trace["steps"][0]["response"]["content"]
     expected_calls = _recorded_provider_calls(trace)
+
+    await _assert_google_provider_baseline(
+        reborn_qa_emulate_provider_server["emulate_google_url"], case, trace
+    )
+    await _assert_slack_provider_baseline(
+        reborn_qa_emulate_provider_server["emulate_slack_url"],
+        reborn_qa_emulate_provider_server["slack_state"],
+        case,
+        trace,
+    )
 
     async with httpx.AsyncClient(headers=reborn_bearer_headers()) as client:
         thread_id = await create_thread(client, server)
@@ -921,6 +1384,160 @@ async def test_qa_journey_provider_leg_replays_through_emulate(
         "source": trace_path.name,
         "next_response": len(trace["steps"]) - 1,
         "response_count": len(trace["steps"]) - 1,
+        "complete": True,
+        "error": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "operation_case",
+    PROVIDER_OPERATION_CASES,
+    ids=lambda case: case.case_id,
+)
+async def test_provider_operation_case_executes_with_provider_readback(
+    reborn_provider_operation_server,
+    mock_llm_server,
+    operation_case,
+):
+    """Typed operation cases cross Reborn and prove provider-observable results."""
+    server = reborn_provider_operation_server["base_url"]
+    emulate_url = reborn_provider_operation_server[
+        f"emulate_{operation_case.provider_service}_url"
+    ]
+    if (
+        operation_case.provider_service == "github"
+        and not await _emulate_github_supports_release_writes(emulate_url)
+    ):
+        pytest.skip("Selected Emulate GitHub fixture does not expose repo write APIs")
+    source = f"provider-operation-{operation_case.case_id}.json"
+    await operation_case.assert_baseline(emulate_url)
+    arguments = await operation_case.resolve_arguments(emulate_url)
+    trace = _provider_operation_trace(operation_case, arguments)
+    await _install_inline_trace(mock_llm_server, source, trace)
+
+    async with httpx.AsyncClient(headers=reborn_bearer_headers()) as client:
+        thread_id = await create_thread(client, server)
+        await send_message(
+            client,
+            server,
+            thread_id,
+            trace["steps"][0]["response"]["content"],
+        )
+        replay = await _wait_for_trace_replay(mock_llm_server, timeout=120)
+        await wait_for_assistant_message(client, server, thread_id, timeout=120)
+        timeline = await _fetch_all_timeline_pages_with_retry(
+            client, server, thread_id
+        )
+
+    matches = [
+        preview
+        for message in timeline.get("messages", [])
+        if (preview := capability_preview_payload(message)) is not None
+        and preview["capability_id"] == operation_case.capability_id
+    ]
+    assert len(matches) == 1, matches
+    assert matches[0]["status"] == "completed", matches[0]
+    await operation_case.assert_outcome(emulate_url, matches[0])
+    assert replay == {
+        "source": source,
+        "next_response": 3,
+        "response_count": 3,
+        "complete": True,
+        "error": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "fault_case",
+    PROVIDER_FAULT_CASES,
+    ids=lambda case: case.case_id,
+)
+async def test_provider_fault_profile_preserves_safe_operation_outcomes(
+    reborn_provider_fault_server,
+    mock_llm_server,
+    fault_case,
+):
+    """Faults stay model-visible and never create an unproven duplicate effect."""
+    operation = fault_case.operation
+    server = reborn_provider_fault_server["base_url"]
+    emulate_url = reborn_provider_fault_server[
+        f"emulate_{operation.provider_service}_url"
+    ]
+    proxy = reborn_provider_fault_server["provider_fault_proxies"][
+        operation.provider_service
+    ]
+
+    await operation.assert_baseline(emulate_url)
+    arguments = await operation.resolve_arguments(emulate_url)
+    trace = _provider_operation_trace(operation, arguments)
+    trace["steps"][-1]["request_hint"] = {
+        "expected_failed_tool_result_contains": fault_case.expected_tool_result
+    }
+    source = f"provider-fault-{fault_case.case_id}.json"
+    await _install_inline_trace(mock_llm_server, source, trace)
+    profile = PROVIDER_FAULT_PROFILES[fault_case.profile]
+    proxy.arm(
+        profile,
+        method=fault_case.method,
+        path=fault_case.path,
+    )
+
+    async with httpx.AsyncClient(headers=reborn_bearer_headers()) as client:
+        thread_id = await create_thread(client, server)
+        await send_message(
+            client,
+            server,
+            thread_id,
+            trace["steps"][0]["response"]["content"],
+        )
+        replay = await _wait_for_trace_replay(mock_llm_server, timeout=120)
+        await wait_for_assistant_message(client, server, thread_id, timeout=120)
+        timeline = await _fetch_all_timeline_pages_with_retry(
+            client, server, thread_id
+        )
+
+    matches = [
+        preview
+        for message in timeline.get("messages", [])
+        if (preview := capability_preview_payload(message)) is not None
+        and preview["capability_id"] == operation.capability_id
+    ]
+    assert len(matches) == 1, matches
+    assert matches[0]["status"] == "failed", matches[0]
+    if fault_case.expected_preview_error is not None:
+        assert fault_case.expected_preview_error in json.dumps(matches[0]), matches[0]
+
+    attempts = [
+        attempt
+        for attempt in proxy.state["requests"]
+        if attempt["method"] == fault_case.method
+        and attempt["path"] == fault_case.path
+    ]
+    assert len(attempts) == 1, attempts
+    assert attempts[0]["forwarded"] is fault_case.expected_forwarded
+    assert attempts[0]["responded"] is (profile.action == "respond")
+
+    async with httpx.AsyncClient(timeout=15) as provider_client:
+        issues = await github_json(
+            provider_client,
+            emulate_url,
+            "GET",
+            "/repos/nearai/ironclaw/issues",
+        )
+    assert isinstance(issues, list)
+    if fault_case.expected_outcome == "committed_without_ack":
+        expected_title = arguments["title"]
+        assert [issue["title"] for issue in issues].count(expected_title) == 1, issues
+    else:
+        assert len(issues) == 1, issues
+        attempted_title = arguments.get("title")
+        if attempted_title is not None:
+            assert issues[0]["title"] != attempted_title, issues
+
+    assert replay == {
+        "source": source,
+        "next_response": 3,
+        "response_count": 3,
         "complete": True,
         "error": None,
     }

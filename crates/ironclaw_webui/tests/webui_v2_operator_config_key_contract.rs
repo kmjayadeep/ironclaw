@@ -6,16 +6,19 @@ use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
-use ironclaw_host_api::{AgentId, ProjectId, TenantId, UserId};
-use ironclaw_product_workflow::*;
+use ironclaw_host_api::{
+    AgentId, ProductSurface, ProductSurfaceCaller, ProductSurfaceError, ProductSurfaceErrorCode,
+    ProductSurfaceErrorKind, ProjectId, TenantId, UserId,
+};
+use ironclaw_product::*;
 use ironclaw_webui::webui_v2::{
     DEFAULT_SSE_MAX_CONCURRENT_PER_CALLER, WebUiV2Capabilities, WebUiV2State, webui_v2_router,
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-fn caller() -> WebUiAuthenticatedCaller {
-    WebUiAuthenticatedCaller::new(
+fn caller() -> ProductSurfaceCaller {
+    ProductSurfaceCaller::new(
         TenantId::new("tenant-alpha").expect("tenant"),
         UserId::new("user-alpha").expect("user"),
         Some(AgentId::new("agent-alpha").expect("agent")),
@@ -23,10 +26,10 @@ fn caller() -> WebUiAuthenticatedCaller {
     )
 }
 
-fn service_unavailable_error() -> RebornServicesError {
-    RebornServicesError {
-        code: RebornServicesErrorCode::Unavailable,
-        kind: RebornServicesErrorKind::ServiceUnavailable,
+fn service_unavailable_error() -> ProductSurfaceError {
+    ProductSurfaceError {
+        code: ProductSurfaceErrorCode::Unavailable,
+        kind: ProductSurfaceErrorKind::ServiceUnavailable,
         status_code: 503,
         retryable: false,
         field: None,
@@ -45,90 +48,27 @@ struct RecordingServices {
     calls: Mutex<Vec<OperatorConfigCall>>,
 }
 
+impl RecordingServices {
+    fn record_set(&self, key: String, value: Value) {
+        self.calls
+            .lock()
+            .expect("lock")
+            .push(OperatorConfigCall::Set { key, value });
+    }
+}
+
 #[async_trait]
-impl RebornServicesApi for RecordingServices {
-    async fn create_thread(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: WebUiCreateThreadRequest,
-    ) -> Result<RebornCreateThreadResponse, RebornServicesError> {
-        unreachable!("not exercised by this test")
-    }
-
-    async fn submit_turn(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: WebUiSendMessageRequest,
-    ) -> Result<RebornSubmitTurnResponse, RebornServicesError> {
-        unreachable!("not exercised by this test")
-    }
-
-    async fn delete_thread(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: RebornDeleteThreadRequest,
-    ) -> Result<RebornDeleteThreadResponse, RebornServicesError> {
-        unreachable!("not exercised by this test")
-    }
-
-    async fn get_timeline(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: RebornTimelineRequest,
-    ) -> Result<RebornTimelineResponse, RebornServicesError> {
-        unreachable!("not exercised by this test")
-    }
-
-    async fn stream_events(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: RebornStreamEventsRequest,
-    ) -> Result<RebornStreamEventsResponse, RebornServicesError> {
-        unreachable!("not exercised by this test")
-    }
-
-    async fn cancel_run(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: WebUiCancelRunRequest,
-    ) -> Result<RebornCancelRunResponse, RebornServicesError> {
-        unreachable!("not exercised by this test")
-    }
-
-    async fn resolve_gate(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: WebUiResolveGateRequest,
-    ) -> Result<RebornResolveGateResponse, RebornServicesError> {
-        unreachable!("not exercised by this test")
-    }
-
-    async fn retry_run(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: WebUiRetryRunRequest,
-    ) -> Result<RebornRetryRunResponse, RebornServicesError> {
-        unreachable!("not exercised by this test")
-    }
-
-    async fn get_run_state(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: RebornGetRunStateRequest,
-    ) -> Result<RebornGetRunStateResponse, RebornServicesError> {
-        unreachable!("not exercised by this test")
-    }
-
+impl ProductSurface for RecordingServices {
     async fn query(
         &self,
-        _caller: WebUiAuthenticatedCaller,
-        query: RebornViewQuery,
-    ) -> Result<RebornViewPage, RebornServicesError> {
-        if query.view_id != OPERATOR_CONFIG_KEY_VIEW.id {
+        _caller: ProductSurfaceCaller,
+        request: ironclaw_host_api::ProductSurfaceQueryRequest,
+    ) -> Result<ironclaw_host_api::ProductSurfaceQueryPage, ProductSurfaceError> {
+        if request.view_id != OPERATOR_CONFIG_KEY_VIEW.id {
             unreachable!("not exercised by this test");
         }
-        let key = query
-            .params
+        let key = request
+            .input
             .get("key")
             .and_then(serde_json::Value::as_str)
             .expect("operator config key param")
@@ -140,19 +80,25 @@ impl RebornServicesApi for RecordingServices {
         Err(service_unavailable_error())
     }
 
-    async fn set_operator_config_key(
+    async fn invoke(
         &self,
-        _caller: WebUiAuthenticatedCaller,
-        key: String,
-        request: RebornOperatorConfigSetRequest,
-    ) -> Result<RebornOperatorConfigGetResponse, RebornServicesError> {
-        self.calls
-            .lock()
-            .expect("lock")
-            .push(OperatorConfigCall::Set {
-                key,
-                value: request.value,
-            });
+        _caller: ProductSurfaceCaller,
+        request: ironclaw_host_api::ProductSurfaceInvokeRequest,
+    ) -> Result<ironclaw_host_api::ProductSurfaceInvokeResponse, ProductSurfaceError> {
+        if request.operation_id.as_str() != "operator.config.set_key" {
+            return Err(service_unavailable_error());
+        }
+        let input: RebornOperatorConfigSetProductRequest =
+            serde_json::from_value(request.input).map_err(ProductSurfaceError::internal_from)?;
+        self.record_set(input.key, input.value);
+        Err(service_unavailable_error())
+    }
+
+    async fn stream_events(
+        &self,
+        _caller: ProductSurfaceCaller,
+        _request: ironclaw_host_api::ProductSurfaceStreamRequest,
+    ) -> Result<ironclaw_host_api::ProductSurfaceStreamResponse, ProductSurfaceError> {
         Err(service_unavailable_error())
     }
 }

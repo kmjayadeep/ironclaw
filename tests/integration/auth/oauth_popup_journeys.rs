@@ -20,12 +20,10 @@ use chrono::{Duration, Utc};
 use common::{authorized_callback_request, hex64, new_flow_request, test_scope};
 use ironclaw_auth::{
     AuthErrorCode, AuthFlowStatus, AuthProviderId, AuthorizationCodeHash,
-    CredentialAccountListRequest, OpaqueStateHash, PkceVerifierHash,
+    CredentialAccountListRequest, OpaqueStateHash, PkceVerifierHash, RebornOAuthCallbackOutcome,
+    RebornOAuthCallbackRequest,
 };
-use ironclaw_reborn_composition::{
-    RebornOAuthCallbackOutcome, RebornOAuthCallbackRequest,
-    test_support::build_oauth_product_auth_for_test,
-};
+use ironclaw_reborn_composition::test_support::build_oauth_product_auth_for_test;
 
 /// Extension-runtime P6 S3: a CHANNEL extension's OAuth connect must bind
 /// the proven vendor identity to the authenticated caller through the
@@ -33,8 +31,8 @@ use ironclaw_reborn_composition::{
 ///
 /// Real flow manager + durable account store + recipe engine with identity
 /// pointers over a scripted token exchange; a real installed v3 channel
-/// manifest in the durable installation store supplies the discovery and
-/// the `[channel.config]` scoping values. Two phases, one flow each:
+/// manifest in the durable installation store supplies discovery while its
+/// administrator schema supplies the scoping values. Two phases, one flow each:
 ///
 /// 1. Scoping mismatch — the workspace claim in the token body does not
 ///    match the configured scoping value: the callback FAILS, no
@@ -53,9 +51,9 @@ async fn oauth_connect_binds_channel_identity_through_the_generic_hook() {
         OAuthProviderCallbackRequest, PkceVerifierSecret, ProviderScope,
     };
     use ironclaw_extensions::{
-        ExtensionActivationState, ExtensionInstallation, ExtensionInstallationId,
-        ExtensionInstallationStore, ExtensionManifestRecord, ExtensionManifestRef,
-        FilesystemExtensionInstallationStore, ManifestSource,
+        ExtensionInstallation, ExtensionInstallationId, ExtensionInstallationStore,
+        ExtensionInstallationStorePort, ExtensionManifestRecord, ExtensionManifestRef,
+        ManifestSource,
     };
     use ironclaw_filesystem::InMemoryBackend;
     use ironclaw_host_api::{ExtensionId, VirtualPath};
@@ -127,6 +125,16 @@ version = "0.1.0"
 description = "generic channel identity binding integration fixture"
 trust = "first_party_requested"
 
+[admin_configuration]
+group_id = "extension.acmechat"
+display_name = "AcmeChat deployment configuration"
+fields = [
+  {{ handle = "acmechat_webhook_secret", label = "Webhook secret", secret = true, required = false }},
+  {{ handle = "acmechat_team_id", label = "Workspace ID", secret = false, required = false }},
+  {{ handle = "acmechat_app_id", label = "App ID", secret = false, required = false }},
+  {{ handle = "acmechat_oauth_client_id", label = "OAuth client ID", secret = false, required = false }},
+]
+
 [runtime]
 kind = "first_party"
 service = "acmechat.extension/v1"
@@ -163,13 +171,6 @@ kind = "shared_secret_header"
 secret_handle = "acmechat_webhook_secret"
 header = "X-AcmeChat-Secret"
 
-[channel.config]
-fields = [
-  {{ handle = "acmechat_webhook_secret", label = "Webhook secret", secret = true }},
-  {{ handle = "acmechat_team_id", label = "Workspace ID", secret = false }},
-  {{ handle = "acmechat_app_id", label = "App ID", secret = false }},
-]
-
 [channel.presentation]
 supports_markdown = false
 supports_threads = false
@@ -192,7 +193,7 @@ app_id = "/app_id"
 "#
     );
     let installation_store = Arc::new(
-        FilesystemExtensionInstallationStore::load_at(
+        ExtensionInstallationStore::load_at(
             Arc::new(InMemoryBackend::new()),
             VirtualPath::new("/system/extensions/.installations/oauth-popup")
                 .expect("valid installation root"),
@@ -218,7 +219,6 @@ app_id = "/app_id"
             ExtensionInstallation::new(
                 ExtensionInstallationId::new(INSTALLATION_ID.to_string()).expect("installation id"),
                 extension_id.clone(),
-                ExtensionActivationState::Installed,
                 ExtensionManifestRef::new(extension_id.clone(), None),
                 Vec::new(),
                 chrono::Utc::now(),
@@ -228,26 +228,20 @@ app_id = "/app_id"
         )
         .await
         .expect("persist install");
-    // Operator-configured connection scoping values ([channel.config]).
-    installation_store
-        .set_channel_config(
-            &extension_id,
-            vec![
-                ("acmechat_team_id".to_string(), "T-team".to_string()),
-                ("acmechat_app_id".to_string(), "A-app".to_string()),
-            ],
-        )
-        .await
-        .expect("store scoping values");
-
     let identity_store = Arc::new(RecordingIdentityStore::default());
     let scope = test_scope();
-    let binding_config = ChannelIdentityBindingConfig::for_test(
+    let binding_config = ChannelIdentityBindingConfig::for_test_with_admin_configuration(
         scope.resource.tenant_id.clone(),
-        Arc::clone(&installation_store) as Arc<dyn ExtensionInstallationStore>,
+        Arc::clone(&installation_store) as Arc<dyn ExtensionInstallationStorePort>,
         identity_store.clone(),
         identity_store.clone(),
-    );
+        vec![
+            ("acmechat_team_id".to_string(), "T-team".to_string()),
+            ("acmechat_app_id".to_string(), "A-app".to_string()),
+        ],
+    )
+    .await
+    .expect("configure manifest-declared administrator values");
     let provider = AuthProviderId::new(VENDOR).unwrap();
 
     let run_callback = |token_body: serde_json::Value, fill: u8| {

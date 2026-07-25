@@ -7,7 +7,7 @@
 //! suite names.
 //!
 //! Drives the BARE crate router (`webui_v2_router()` over a minimal fake
-//! `RebornServicesApi`), not composition's `webui_v2_app` wrapper — the
+//! `ProductSurface`), not composition's `webui_v2_app` wrapper — the
 //! wrapper needs the heavier `build_reborn_runtime` tier (named follow-on).
 //! Composition deliberately does not re-export the bare router/state
 //! (facade-only rule), so this suite carries the root DEV-dependency on
@@ -16,10 +16,10 @@
 //! `MinimalWebuiServices` duplicates the role of the contract suite's
 //! `StubServices`; extraction of a shared in-crate `test_support` module was
 //! reviewed and deferred (production-crate touch outside this batch's
-//! budget). The 24 required methods the scenario never calls return the
-//! shared rejecting error (`rejecting_reborn_services_error`, the public
-//! fakes helper — `RebornServicesError::service_unavailable` is
-//! `pub(super)`) so an unexpected dispatch fails loudly.
+//! budget). Methods the scenario never calls return the shared rejecting
+//! error (`rejecting_product_surface_error`, the public fakes helper —
+//! `ProductSurfaceError::service_unavailable` is `pub(super)`) so an
+//! unexpected dispatch fails loudly.
 //!
 //! Flat suite, no harness mounts: this models an HTTP wire contract, not an
 //! agent turn.
@@ -30,15 +30,15 @@ use async_trait::async_trait;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode};
-use ironclaw_host_api::{AgentId, ProjectId, TenantId, ThreadId, UserId};
-use ironclaw_product_workflow::{
-    RebornCancelRunResponse, RebornCreateThreadResponse, RebornDeleteThreadRequest,
-    RebornDeleteThreadResponse, RebornGetRunStateRequest, RebornGetRunStateResponse,
-    RebornResolveGateResponse, RebornRetryRunResponse, RebornServicesApi, RebornServicesError,
-    RebornStreamEventsRequest, RebornStreamEventsResponse, RebornSubmitTurnResponse,
-    RebornTimelineRequest, RebornTimelineResponse, WebUiAuthenticatedCaller, WebUiCancelRunRequest,
-    WebUiCreateThreadRequest, WebUiResolveGateRequest, WebUiRetryRunRequest,
-    WebUiSendMessageRequest, rejecting_reborn_services_error,
+use ironclaw_host_api::{
+    AgentId, ProductSurface, ProductSurfaceCaller, ProductSurfaceError,
+    ProductSurfaceInvokeRequest, ProductSurfaceInvokeResponse, ProductSurfaceQueryPage,
+    ProductSurfaceQueryRequest, ProductSurfaceStreamRequest, ProductSurfaceStreamResponse,
+    ProjectId, TenantId, ThreadId, UserId,
+};
+use ironclaw_product::{
+    CREATE_THREAD_COMMAND, ProductCreateThreadRequest, RebornCreateThreadResponse,
+    rejecting_product_surface_error,
 };
 use ironclaw_threads::{SessionThreadRecord, ThreadScope};
 use ironclaw_webui::webui_v2::{
@@ -47,21 +47,20 @@ use ironclaw_webui::webui_v2::{
 use serde_json::Value;
 use tower::ServiceExt;
 
-/// Minimal `RebornServicesApi` fake: only `create_thread` is real (records
-/// the request, returns a canned thread); the other 24 required methods
-/// reject with the shared error helper.
+/// Minimal `ProductSurface` fake: only `create_thread` is real (records
+/// the request, returns a canned thread); the other required methods reject
+/// with the shared error helper.
 #[derive(Default)]
 struct MinimalWebuiServices {
-    create_thread_calls: Mutex<Vec<WebUiCreateThreadRequest>>,
+    create_thread_calls: Mutex<Vec<ProductCreateThreadRequest>>,
 }
 
-#[async_trait]
-impl RebornServicesApi for MinimalWebuiServices {
+impl MinimalWebuiServices {
     async fn create_thread(
         &self,
-        _caller: WebUiAuthenticatedCaller,
-        request: WebUiCreateThreadRequest,
-    ) -> Result<RebornCreateThreadResponse, RebornServicesError> {
+        _caller: ProductSurfaceCaller,
+        request: ProductCreateThreadRequest,
+    ) -> Result<RebornCreateThreadResponse, ProductSurfaceError> {
         self.create_thread_calls.lock().expect("lock").push(request);
         Ok(RebornCreateThreadResponse {
             thread: SessionThreadRecord {
@@ -82,69 +81,39 @@ impl RebornServicesApi for MinimalWebuiServices {
             },
         })
     }
+}
 
-    async fn submit_turn(
+#[async_trait]
+impl ProductSurface for MinimalWebuiServices {
+    async fn invoke(
         &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: WebUiSendMessageRequest,
-    ) -> Result<RebornSubmitTurnResponse, RebornServicesError> {
-        Err(rejecting_reborn_services_error())
+        caller: ProductSurfaceCaller,
+        request: ProductSurfaceInvokeRequest,
+    ) -> Result<ProductSurfaceInvokeResponse, ProductSurfaceError> {
+        if request.operation_id.as_str() == CREATE_THREAD_COMMAND.id {
+            let request = serde_json::from_value(request.input)
+                .map_err(ProductSurfaceError::internal_from)?;
+            let output = serde_json::to_value(self.create_thread(caller, request).await?)
+                .map_err(ProductSurfaceError::internal_from)?;
+            return Ok(ProductSurfaceInvokeResponse { output });
+        }
+        Err(rejecting_product_surface_error())
     }
 
-    async fn delete_thread(
+    async fn query(
         &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: RebornDeleteThreadRequest,
-    ) -> Result<RebornDeleteThreadResponse, RebornServicesError> {
-        Err(rejecting_reborn_services_error())
-    }
-
-    async fn get_timeline(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: RebornTimelineRequest,
-    ) -> Result<RebornTimelineResponse, RebornServicesError> {
-        Err(rejecting_reborn_services_error())
+        _caller: ProductSurfaceCaller,
+        _request: ProductSurfaceQueryRequest,
+    ) -> Result<ProductSurfaceQueryPage, ProductSurfaceError> {
+        Err(rejecting_product_surface_error())
     }
 
     async fn stream_events(
         &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: RebornStreamEventsRequest,
-    ) -> Result<RebornStreamEventsResponse, RebornServicesError> {
-        Err(rejecting_reborn_services_error())
-    }
-
-    async fn cancel_run(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: WebUiCancelRunRequest,
-    ) -> Result<RebornCancelRunResponse, RebornServicesError> {
-        Err(rejecting_reborn_services_error())
-    }
-
-    async fn resolve_gate(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: WebUiResolveGateRequest,
-    ) -> Result<RebornResolveGateResponse, RebornServicesError> {
-        Err(rejecting_reborn_services_error())
-    }
-
-    async fn retry_run(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: WebUiRetryRunRequest,
-    ) -> Result<RebornRetryRunResponse, RebornServicesError> {
-        Err(rejecting_reborn_services_error())
-    }
-
-    async fn get_run_state(
-        &self,
-        _caller: WebUiAuthenticatedCaller,
-        _request: RebornGetRunStateRequest,
-    ) -> Result<RebornGetRunStateResponse, RebornServicesError> {
-        Err(rejecting_reborn_services_error())
+        _caller: ProductSurfaceCaller,
+        _request: ProductSurfaceStreamRequest,
+    ) -> Result<ProductSurfaceStreamResponse, ProductSurfaceError> {
+        Err(rejecting_product_surface_error())
     }
 }
 
@@ -157,7 +126,7 @@ fn smoke_router(services: Arc<MinimalWebuiServices>) -> Router {
         services,
         DEFAULT_SSE_MAX_CONCURRENT_PER_CALLER,
     ))
-    .layer(axum::Extension(WebUiAuthenticatedCaller::new(
+    .layer(axum::Extension(ProductSurfaceCaller::new(
         TenantId::new("tenant-smoke").expect("tenant"),
         UserId::new("user-smoke").expect("user"),
         Some(AgentId::new("agent-smoke").expect("agent")),
