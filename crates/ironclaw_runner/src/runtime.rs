@@ -796,16 +796,19 @@ where
         None => scheduler_notifier_base,
     };
     let subagent_await_edge_settler = Arc::clone(&parts.subagent_await_edge_settler);
+    let process_system = parts.process_system.clone();
+    let agent_turn_runtime = Arc::new(process_system.agent_turn_runtime());
+    subagent_await_edge_settler
+        .bind_turn_tree_store(agent_turn_runtime.clone() as Arc<dyn TurnSpawnTreeStateStore>)
+        .map_err(|error| DefaultPlannedRuntimeBuildError::SubagentCompletion(error.to_string()))?;
     let subagent_completion_observer: Arc<dyn TurnCommittedEventObserver> =
         Arc::clone(&subagent_await_edge_settler).as_turn_committed_event_observer();
-    let process_system = parts.process_system.clone();
     process_system
         .subscribe_process_observer(Arc::new(AgentTurnProcessCommitObserver::new(
             subagent_completion_observer,
             parts.turn_event_sink.clone(),
         )))
         .map_err(DefaultPlannedRuntimeBuildError::SubagentCompletion)?;
-    let agent_turn_runtime = Arc::new(process_system.agent_turn_runtime());
     let base_coordinator = DefaultTurnCoordinator::new(Arc::clone(&agent_turn_runtime))
         .with_run_profile_resolver(Arc::clone(&run_profile_resolver))
         .with_wake_notifier(Arc::clone(&wake_notifier))

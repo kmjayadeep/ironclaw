@@ -8,7 +8,7 @@
 //! changed. Boot/lazy recovery split out to `boot_recovery.rs` (plan-review
 //! fix — keeps this file to the reactive settle path only).
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use ironclaw_host_api::{CapabilityId, UserId};
 use ironclaw_loop_host::{AwaitEdgeSettler, DEFAULT_SPAWN_SUBAGENT_CAPABILITY_ID, ResolveOutcome};
@@ -42,7 +42,7 @@ pub struct AwaitEdgeResolver<
 > {
     store: Arc<AwaitEdgeStore<F>>,
     goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
-    turn_state_store: Arc<dyn TurnSpawnTreeStateStore>,
+    turn_state_store: RwLock<Arc<dyn TurnSpawnTreeStateStore>>,
     // Deferred-bind, mirroring `coordinator` below: most callers have a
     // result writer in hand immediately (`new_unbound`, the common case),
     // but `ironclaw_reborn_composition::runtime` constructs its result
@@ -77,7 +77,7 @@ where
         Self {
             store,
             goal_store,
-            turn_state_store,
+            turn_state_store: RwLock::new(turn_state_store),
             result_writer: result_writer_cell,
             coordinator: OnceLock::new(),
             thread_service,
@@ -98,7 +98,7 @@ where
         Self {
             store,
             goal_store,
-            turn_state_store,
+            turn_state_store: RwLock::new(turn_state_store),
             result_writer: OnceLock::new(),
             coordinator: OnceLock::new(),
             thread_service,
@@ -112,6 +112,29 @@ where
             .set(coordinator)
             .map_err(|_| TurnError::InvalidRequest {
                 reason: "await-edge resolver coordinator already bound".to_string(),
+            })
+    }
+
+    pub fn bind_turn_tree_store(
+        &self,
+        store: Arc<dyn TurnSpawnTreeStateStore>,
+    ) -> Result<(), TurnError> {
+        let mut current = self
+            .turn_state_store
+            .write()
+            .map_err(|_| TurnError::Unavailable {
+                reason: "await-edge resolver turn tree store lock poisoned".to_string(),
+            })?;
+        *current = store;
+        Ok(())
+    }
+
+    fn turn_state_store(&self) -> Result<Arc<dyn TurnSpawnTreeStateStore>, TurnError> {
+        self.turn_state_store
+            .read()
+            .map(|store| Arc::clone(&*store))
+            .map_err(|_| TurnError::Unavailable {
+                reason: "await-edge resolver turn tree store lock poisoned".to_string(),
             })
     }
 
@@ -175,7 +198,7 @@ where
             });
         }
         match self
-            .turn_state_store
+            .turn_state_store()?
             .get_run_state(GetRunStateRequest {
                 scope: event.scope.clone(),
                 run_id: event.run_id,
@@ -548,7 +571,7 @@ where
             return Ok(ResolveOutcome::NotApplicable);
         };
         let Some(child_record) = self
-            .turn_state_store
+            .turn_state_store()?
             .get_run_record(&event.scope, event.run_id)
             .await?
         else {
@@ -764,9 +787,9 @@ where
         tree_root_run_id: TurnRunId,
         child_run_id: TurnRunId,
     ) -> Result<(), TurnError> {
-        let turn_state_store = Arc::clone(&self.turn_state_store);
+        let turn_state_store = self.turn_state_store()?;
         let scope_for_release = scope.clone();
-        let turn_state_store_for_prune = Arc::clone(&self.turn_state_store);
+        let turn_state_store_for_prune = Arc::clone(&turn_state_store);
         let scope_for_prune = scope.clone();
         self.store
             .close_with_release(
@@ -1566,6 +1589,13 @@ where
         // priority over trait methods of the same name), not infinite
         // recursion into this trait method.
         AwaitEdgeResolver::bind_coordinator(self, coordinator)
+    }
+
+    fn bind_turn_tree_store(
+        &self,
+        store: Arc<dyn TurnSpawnTreeStateStore>,
+    ) -> Result<(), TurnError> {
+        AwaitEdgeResolver::bind_turn_tree_store(self, store)
     }
 
     fn bind_result_writer(

@@ -137,6 +137,11 @@ pub trait AwaitEdgeSettler: Send + Sync {
     /// concrete, filesystem-backend-generic type.
     fn bind_coordinator(&self, coordinator: Arc<dyn TurnCoordinator>) -> Result<(), TurnError>;
 
+    fn bind_turn_tree_store(
+        &self,
+        store: Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore>,
+    ) -> Result<(), TurnError>;
+
     /// Bind the capability result writer late, mirroring `bind_coordinator`'s
     /// deferred-binding pattern. Needed because some composition call sites
     /// (`ironclaw_reborn_composition::runtime`) construct the result writer
