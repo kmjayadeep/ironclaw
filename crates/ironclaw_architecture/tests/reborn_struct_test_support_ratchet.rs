@@ -119,7 +119,7 @@ const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
         category: "test-support",
         item_kind: "field",
         path: "crates/ironclaw_reborn_composition/src/runtime.rs",
-        count: 8,
+        count: 7,
     },
     FrozenPathCount {
         category: "test-support",

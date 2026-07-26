@@ -22,7 +22,6 @@ pub(crate) struct TriggerPollerServices {
     pub(crate) trusted_submitter: Arc<dyn ironclaw_triggers::TrustedTriggerFireSubmitter>,
     pub(crate) post_submit_hook_slot:
         Arc<OnceLock<Arc<dyn crate::automation::trigger_poller::PostSubmitDeliveryHook>>>,
-    #[cfg(any(test, feature = "test-support"))]
     pub(crate) pairing_service: Arc<dyn ironclaw_conversations::ConversationActorPairingService>,
 }
 
@@ -43,7 +42,6 @@ where
         + 'static,
 {
     let authorizer = build_trigger_fire_authorizer(authorizer_config, access_checker, tenant_id)?;
-    #[cfg(any(test, feature = "test-support"))]
     let pairing_service: Arc<dyn ironclaw_conversations::ConversationActorPairingService> =
         Arc::new(conversation_services.clone());
     let (materializer, trusted_submitter) = build_from_conversation_services(
@@ -58,7 +56,6 @@ where
         materializer,
         trusted_submitter,
         post_submit_hook_slot: Arc::new(OnceLock::new()),
-        #[cfg(any(test, feature = "test-support"))]
         pairing_service,
     })
 }
