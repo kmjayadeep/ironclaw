@@ -2465,9 +2465,6 @@ mod tests {
                 | FailureKind::Unavailable
                 | FailureKind::Backend
                 | FailureKind::Internal => RetrySameCall,
-                // Carry-over of the retired fold's NetworkDenied -> Network
-                // mapping; removed by the dedicated fix commit.
-                FailureKind::NetworkDenied => RetrySameCall,
                 _ => ModelVisibleToolError,
             };
             assert_eq!(
@@ -2494,6 +2491,34 @@ mod tests {
                 "{kind:?}"
             );
         }
+    }
+
+    /// Regression: a `NetworkDenied` dispatch failure is a POLICY denial —
+    /// the policy does not change between attempts, so retrying can never
+    /// succeed and only burns the loop's retry budget. It must NOT be
+    /// retried; it surfaces to the model as a tool error so the loop can
+    /// route around the denied egress. The retired coarsening fold mapped
+    /// `NetworkDenied` onto the retryable `Network` bucket, so this test
+    /// would have failed against it (disposition was `RetrySameCall`).
+    #[test]
+    fn network_denied_dispatch_failure_is_model_visible_not_retried() {
+        let failure = failure_from(
+            dispatch(DispatchFailureKind::Runtime(
+                RuntimeDispatchErrorKind::NetworkDenied,
+            )),
+            cap(),
+        );
+
+        assert_eq!(failure.kind, FailureKind::NetworkDenied);
+        assert_eq!(
+            failure.disposition(),
+            crate::CapabilityFailureDisposition::ModelVisibleToolError,
+            "a policy egress denial must surface model-visibly, never retry"
+        );
+        assert!(
+            !FailureKind::NetworkDenied.is_retryable(),
+            "NetworkDenied must not be in the quiet-retry set"
+        );
     }
 
     // ─── capability_credential_requirements unit tests ──────────────────────────

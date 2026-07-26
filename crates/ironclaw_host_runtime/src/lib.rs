@@ -685,13 +685,6 @@ fn bounded_runtime_failure_summary(summary: &str) -> String {
 /// isolation failures must use a separate quarantine path instead of this
 /// generic failure disposition.
 pub fn capability_failure_disposition(kind: FailureKind) -> CapabilityFailureDisposition {
-    // Carry-over of the retired fold's `NetworkDenied` -> `Network` mapping:
-    // egress policy denials keep retrying through the mechanical migration so
-    // this commit changes no dispositions; the dedicated fix removing this
-    // carve-out (denied egress can never succeed on retry) lands next.
-    if matches!(kind, FailureKind::NetworkDenied) {
-        return CapabilityFailureDisposition::RetrySameCall;
-    }
     match kind.fate() {
         FailureFate::Retry => CapabilityFailureDisposition::RetrySameCall,
         FailureFate::ModelVisible | FailureFate::Park | FailureFate::Terminal => {
