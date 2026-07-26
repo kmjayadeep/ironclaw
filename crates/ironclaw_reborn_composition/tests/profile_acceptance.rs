@@ -32,7 +32,7 @@ fn profile_parse_accepts_kebab_and_snake_case() {
         RebornCompositionProfile::Standalone
     );
     assert_eq!(
-        "standalone_yolo"
+        "local_dev_yolo"
             .parse::<RebornCompositionProfile>()
             .unwrap(),
         RebornCompositionProfile::StandaloneUnrestricted
