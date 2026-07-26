@@ -110,7 +110,7 @@ impl WebuiAuthenticator for TwoUserTokens {
 
 fn local_dev_effective_policy() -> EffectiveRuntimePolicy {
     // Mirrors the policy the in-mod runtime tests use. Avoids the
-    // public `local_dev_runtime_policy()` helper because that returns a
+    // public `standalone_runtime_policy()` helper because that returns a
     // `ResolvedRuntimePolicy` shape; `RebornHostBindings::with_runtime_policy`
     // takes the `EffectiveRuntimePolicy` shape and the two are not
     // interchangeable in this direction yet.
@@ -1969,7 +1969,7 @@ mod operator_llm_config {
             None,
         )
         .expect("valid reborn home");
-        let boot = RebornBootConfig::new(home, RebornProfile::LocalDev);
+        let boot = RebornBootConfig::new(home, RebornProfile::Standalone);
 
         let gateway = Arc::new(ToolCallingGateway::default());
         let input = RebornRuntimeInput::from_build_input(

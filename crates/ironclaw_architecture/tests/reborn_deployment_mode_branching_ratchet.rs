@@ -269,7 +269,7 @@ fn scanner_strips_comments_and_strings() {
     // Self-test (§10: every check ships with its own self-test). Without
     // stripping, this ratchet's own doc comment would put it on the list.
     let source = r#"
-        // RebornCompositionProfile::LocalDev in a line comment
+        // RebornCompositionProfile::Standalone in a line comment
         /* RebornCompositionProfile::Production in a block comment */
         let label = "RebornCompositionProfile::Disabled";
     "#;
@@ -279,7 +279,7 @@ fn scanner_strips_comments_and_strings() {
         "stripped source still contains a variant path: {stripped}"
     );
 
-    let real = "match profile { RebornCompositionProfile::LocalDev => 1, _ => 0 }";
+    let real = "match profile { RebornCompositionProfile::Standalone => 1, _ => 0 }";
     assert!(
         strip_comments_and_strings(real).contains("RebornCompositionProfile::"),
         "real branching must survive stripping"
@@ -291,7 +291,7 @@ fn scanner_strips_comments_and_strings() {
     // was hidden from the scan — a silent ratchet false negative.
     let with_char_literal = r#"
         let quote = '"';
-        match profile { RebornCompositionProfile::LocalDev => 1, _ => 0 }
+        match profile { RebornCompositionProfile::Standalone => 1, _ => 0 }
     "#;
     assert!(
         strip_comments_and_strings(with_char_literal).contains("RebornCompositionProfile::"),

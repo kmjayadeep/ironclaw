@@ -164,7 +164,7 @@ mod tests {
 
     fn local_dev_minimal_approval_policy()
     -> ironclaw_host_api::runtime_policy::EffectiveRuntimePolicy {
-        let mut policy = crate::local_dev_runtime_policy().expect("local-dev policy resolves");
+        let mut policy = crate::standalone_runtime_policy().expect("local-dev policy resolves");
         policy.requested_profile = ironclaw_host_api::runtime_policy::RuntimeProfile::LocalYolo;
         policy.resolved_profile = ironclaw_host_api::runtime_policy::RuntimeProfile::LocalYolo;
         policy.approval_policy = ironclaw_host_api::runtime_policy::ApprovalPolicy::Minimal;
@@ -497,7 +497,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input_with_profile(
-                crate::RebornCompositionProfile::LocalDevYolo,
+                crate::RebornCompositionProfile::StandaloneUnrestricted,
                 "extension-remove-generic-unpair-tool-copy",
                 dir.path().join("local-dev"),
             )
@@ -621,7 +621,7 @@ mod tests {
         .expect("valid test google oauth client config");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input_with_profile(
-                crate::RebornCompositionProfile::LocalDevYolo,
+                crate::RebornCompositionProfile::StandaloneUnrestricted,
                 owner,
                 dir.path().join("local-dev"),
             )
@@ -4797,12 +4797,13 @@ mod tests {
 
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input_with_profile(
-                crate::RebornCompositionProfile::LocalDevYolo,
+                crate::RebornCompositionProfile::StandaloneUnrestricted,
                 "local-dev-yolo-host-owner",
                 storage_root,
             )
             .with_runtime_policy(
-                crate::local_dev_yolo_runtime_policy(true).expect("local-yolo policy resolves"), // safety: test-only helper in #[cfg(test)] module.
+                crate::standalone_unrestricted_runtime_policy(true)
+                    .expect("local-yolo policy resolves"), // safety: test-only helper in #[cfg(test)] module.
             )
             .with_local_runtime_workspace_root(workspace_root.clone())
             .with_local_runtime_confirmed_host_home_root(host_home.clone()),
@@ -5051,7 +5052,7 @@ mod tests {
         let storage_root = dir.path().join("local-dev");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input_with_profile(
-                crate::RebornCompositionProfile::LocalDevYolo,
+                crate::RebornCompositionProfile::StandaloneUnrestricted,
                 "local-dev-skill-port-owner",
                 storage_root.clone(),
             )
@@ -5598,7 +5599,7 @@ mod tests {
         let storage_root = dir.path().join("local-dev");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input_with_profile(
-                crate::RebornCompositionProfile::LocalDevYolo,
+                crate::RebornCompositionProfile::StandaloneUnrestricted,
                 "local-dev-mid-response-owner",
                 storage_root,
             )

@@ -543,7 +543,7 @@ async fn build_runtime_with<G: HostManagedModelGateway + 'static>(
     let host_home_root = root.path().join("host-home");
     std::fs::create_dir_all(&host_home_root).expect("host home root");
     let input = local_runtime_build_input_with_options(
-        RebornCompositionProfile::LocalDevYolo,
+        RebornCompositionProfile::StandaloneUnrestricted,
         USER,
         root.path().join("local-dev"),
         RebornRuntimeProfileOptions {
@@ -575,7 +575,7 @@ async fn build_runtime_with_slack_delivery(
     let host_home_root = root.path().join("host-home");
     std::fs::create_dir_all(&host_home_root).expect("host home root");
     let input = local_runtime_build_input_with_options(
-        RebornCompositionProfile::LocalDevYolo,
+        RebornCompositionProfile::StandaloneUnrestricted,
         USER,
         root.path().join("local-dev"),
         RebornRuntimeProfileOptions {
@@ -849,7 +849,7 @@ async fn build_runtime_with_tool_disclosure<G: HostManagedModelGateway + 'static
     let host_home_root = root.path().join("host-home");
     std::fs::create_dir_all(&host_home_root).expect("host home root");
     let input = local_runtime_build_input_with_options(
-        RebornCompositionProfile::LocalDevYolo,
+        RebornCompositionProfile::StandaloneUnrestricted,
         USER,
         root.path().join("local-dev"),
         RebornRuntimeProfileOptions {

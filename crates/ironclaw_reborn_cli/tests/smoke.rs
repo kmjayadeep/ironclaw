@@ -5820,7 +5820,7 @@ fn onboard_reports_suppressed_master_key_fallback_and_still_succeeds() {
 ///
 /// The dotfile is seeded at the RUNTIME storage root
 /// (`<reborn_home>/local-dev/…`, `local_runtime_storage_root`'s subdir for
-/// `RebornProfile::LocalDev`) — the same root the real resolver
+/// `RebornProfile::Standalone`) — the same root the real resolver
 /// (`resolve_local_dev_secret_master_key_with_env`) reads/writes and
 /// `serve` actually boots against — not the bare `reborn_home` root (PR
 /// #6174 item D: `provision_master_key` used to check the bare root, so its

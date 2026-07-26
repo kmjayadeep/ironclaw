@@ -159,7 +159,7 @@ async fn stub_gateway_send_cancels_recovery_required_and_releases_conversation()
             "runtime-test-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-test-tenant".to_string(),
@@ -350,7 +350,7 @@ async fn inmemory_turn_state_row_store_serves_turn_and_drains_on_shutdown() {
             "wb-durable-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "wb-durable-tenant".to_string(),
@@ -402,7 +402,7 @@ async fn send_user_message_with_cancellation_cancels_submitted_run() {
             "runtime-cancel-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-cancel-tenant".to_string(),
@@ -457,7 +457,7 @@ async fn skill_execution_adapter_prepares_filesystem_bundles_end_to_end() {
             "runtime-skill-execution-owner",
             storage_root,
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-skill-execution-tenant".to_string(),
@@ -569,7 +569,7 @@ async fn build_reborn_runtime_wires_third_party_hooks_when_enabled() {
             "runtime-hooks-owner",
             storage_root,
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-hooks-tenant".to_string(),
@@ -687,7 +687,7 @@ async fn build_reborn_runtime_wires_per_user_cap_from_turn_runner_settings() {
             "cap-wiring-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "cap-wiring-tenant".to_string(),
@@ -764,7 +764,7 @@ async fn multi_worker_runtime_does_not_raise_worker_stopped_while_workers_are_al
             "multi-worker-guard-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "multi-worker-guard-tenant".to_string(),
@@ -812,7 +812,7 @@ async fn local_dev_test_support_interaction_service_accessors_build_real_service
             "test-support-accessors-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "test-support-accessors-tenant".to_string(),
@@ -1019,7 +1019,7 @@ async fn local_dev_test_support_interaction_services_use_supplied_turn_coordinat
             format!("{tag}-owner"),
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: format!("{tag}-tenant"),
@@ -1130,7 +1130,7 @@ async fn local_dev_test_support_interaction_services_use_supplied_turn_coordinat
     runtime.shutdown().await.unwrap();
 }
 
-fn local_dev_runtime_policy() -> EffectiveRuntimePolicy {
+fn standalone_runtime_policy() -> EffectiveRuntimePolicy {
     EffectiveRuntimePolicy {
         deployment: DeploymentMode::LocalSingleUser,
         requested_profile: RuntimeProfile::LocalDev,

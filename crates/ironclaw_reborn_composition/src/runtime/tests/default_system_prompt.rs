@@ -191,7 +191,7 @@ fn runtime_input(
             "runtime-system-prompt-owner",
             storage_root,
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-system-prompt-tenant".to_string(),
@@ -218,7 +218,7 @@ fn recorded_requests(
         .clone()
 }
 
-fn local_dev_runtime_policy() -> EffectiveRuntimePolicy {
+fn standalone_runtime_policy() -> EffectiveRuntimePolicy {
     EffectiveRuntimePolicy {
         deployment: DeploymentMode::LocalSingleUser,
         requested_profile: RuntimeProfile::LocalDev,

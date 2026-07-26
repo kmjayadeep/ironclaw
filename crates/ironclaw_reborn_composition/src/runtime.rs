@@ -3451,8 +3451,8 @@ impl RebornRuntime {
 /// On return, the turn-runner worker is already running in the background and
 /// the returned `RebornRuntime` is ready to accept `send_user_message` calls.
 ///
-/// **Currently supported profiles:** `RebornCompositionProfile::LocalDev`,
-/// `RebornCompositionProfile::LocalDevYolo`,
+/// **Currently supported profiles:** `RebornCompositionProfile::Standalone`,
+/// `RebornCompositionProfile::StandaloneUnrestricted`,
 /// `RebornCompositionProfile::HostedSingleTenant`, and
 /// `RebornCompositionProfile::Production` are wired end-to-end here. Production
 /// starts only after readiness diagnostics validate that live traffic can be

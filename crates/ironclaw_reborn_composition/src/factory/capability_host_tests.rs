@@ -15,7 +15,7 @@ async fn local_yolo_policy_mounts_confirmed_host_home_as_host() {
 
     let services = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input_with_profile(
-            RebornCompositionProfile::LocalDevYolo,
+            RebornCompositionProfile::StandaloneUnrestricted,
             "local-dev-yolo-host-owner",
             storage_root,
         )
@@ -65,7 +65,7 @@ async fn local_yolo_policy_allows_workspace_under_confirmed_host_home() {
 
     let services = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input_with_profile(
-            RebornCompositionProfile::LocalDevYolo,
+            RebornCompositionProfile::StandaloneUnrestricted,
             "local-dev-yolo-host-owner",
             storage_root,
         )
@@ -110,7 +110,7 @@ async fn local_yolo_policy_keeps_symlinked_host_home_raw_alias() {
 
     let services = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input_with_profile(
-            RebornCompositionProfile::LocalDevYolo,
+            RebornCompositionProfile::StandaloneUnrestricted,
             "local-dev-yolo-host-owner",
             storage_root,
         )
@@ -147,7 +147,7 @@ async fn local_yolo_policy_requires_confirmed_host_home_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let error = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input_with_profile(
-            RebornCompositionProfile::LocalDevYolo,
+            RebornCompositionProfile::StandaloneUnrestricted,
             "local-dev-yolo-host-owner",
             dir.path().join("local-dev"),
         )
@@ -187,7 +187,7 @@ async fn local_yolo_policy_rejects_confirmed_host_home_file() {
 
     let error = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input_with_profile(
-            RebornCompositionProfile::LocalDevYolo,
+            RebornCompositionProfile::StandaloneUnrestricted,
             "local-dev-yolo-host-owner",
             dir.path().join("local-dev"),
         )
@@ -205,7 +205,7 @@ async fn local_yolo_policy_rejects_confirmed_host_home_filesystem_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let error = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input_with_profile(
-            RebornCompositionProfile::LocalDevYolo,
+            RebornCompositionProfile::StandaloneUnrestricted,
             "local-dev-yolo-host-owner",
             dir.path().join("local-dev"),
         )
@@ -219,11 +219,11 @@ async fn local_yolo_policy_rejects_confirmed_host_home_filesystem_root() {
 }
 
 fn local_yolo_policy() -> ironclaw_host_api::runtime_policy::EffectiveRuntimePolicy {
-    crate::local_dev_yolo_runtime_policy(true).expect("local-yolo policy resolves") // safety: test-only helper in #[cfg(test)] module.
+    crate::standalone_unrestricted_runtime_policy(true).expect("local-yolo policy resolves") // safety: test-only helper in #[cfg(test)] module.
 }
 
 fn local_dev_policy() -> ironclaw_host_api::runtime_policy::EffectiveRuntimePolicy {
-    crate::local_dev_runtime_policy().expect("local-dev policy resolves") // safety: test-only helper in #[cfg(test)] module.
+    crate::standalone_runtime_policy().expect("local-dev policy resolves") // safety: test-only helper in #[cfg(test)] module.
 }
 
 fn filesystem_root() -> std::path::PathBuf {

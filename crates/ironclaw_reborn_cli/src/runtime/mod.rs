@@ -665,8 +665,8 @@ pub(crate) fn build_services_input_with_options(
     let profile = effective_profile(config, config_file.as_ref())?;
     reject_unsupported_runtime_sections(config_file.as_ref(), caller, profile)?;
     let mut services_input = match profile {
-        RebornProfile::LocalDev
-        | RebornProfile::LocalDevYolo
+        RebornProfile::Standalone
+        | RebornProfile::StandaloneUnrestricted
         | RebornProfile::HostedSingleTenantVolume => {
             build_standalone_local_runtime_services_input(profile, owner_id, config, options)?
         }
@@ -1155,8 +1155,8 @@ pub(crate) fn local_runtime_storage_root(
 
 fn composition_profile(profile: RebornProfile) -> RebornCompositionProfile {
     match profile {
-        RebornProfile::LocalDev => RebornCompositionProfile::LocalDev,
-        RebornProfile::LocalDevYolo => RebornCompositionProfile::LocalDevYolo,
+        RebornProfile::Standalone => RebornCompositionProfile::Standalone,
+        RebornProfile::StandaloneUnrestricted => RebornCompositionProfile::StandaloneUnrestricted,
         RebornProfile::HostedSingleTenant => RebornCompositionProfile::HostedSingleTenant,
         RebornProfile::HostedSingleTenantVolume => {
             RebornCompositionProfile::HostedSingleTenantVolume
@@ -2247,7 +2247,10 @@ regex_activation_enabled = false
         let services = runtime_input.services.expect("services input");
         let policy = services.runtime_policy().expect("runtime policy");
 
-        assert_eq!(services.profile(), RebornCompositionProfile::LocalDevYolo);
+        assert_eq!(
+            services.profile(),
+            RebornCompositionProfile::StandaloneUnrestricted
+        );
         assert_eq!(
             policy.filesystem_backend.as_str(),
             "host_workspace_and_home"

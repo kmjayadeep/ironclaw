@@ -81,7 +81,7 @@ async fn budget_e2e_serial_guard() -> tokio::sync::OwnedMutexGuard<()> {
     gate.lock_owned().await
 }
 
-fn local_dev_runtime_policy() -> EffectiveRuntimePolicy {
+fn standalone_runtime_policy() -> EffectiveRuntimePolicy {
     EffectiveRuntimePolicy {
         deployment: DeploymentMode::LocalSingleUser,
         requested_profile: RuntimeProfile::LocalDev,
@@ -148,7 +148,7 @@ fn build_input(
             format!("{tenant}-owner"),
             owner_root,
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: format!("{tenant}-tenant"),

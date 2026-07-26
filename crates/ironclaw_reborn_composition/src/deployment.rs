@@ -43,12 +43,12 @@ impl RebornReadinessDiagnostic {
         )
     }
 
-    pub fn local_dev() -> Self {
-        Self::dev_only_profile(RebornCompositionProfile::LocalDev)
+    pub fn standalone() -> Self {
+        Self::dev_only_profile(RebornCompositionProfile::Standalone)
     }
 
-    pub fn local_dev_yolo() -> Self {
-        Self::dev_only_profile(RebornCompositionProfile::LocalDevYolo)
+    pub fn standalone_unrestricted() -> Self {
+        Self::dev_only_profile(RebornCompositionProfile::StandaloneUnrestricted)
     }
 
     pub fn hosted_single_tenant_volume() -> Self {
@@ -278,7 +278,7 @@ impl DeploymentConfig {
                 state: RebornReadinessState::Disabled,
                 diagnostics: vec![RebornReadinessDiagnostic::disabled()],
             },
-            event_store_profile: RebornProfile::LocalDev,
+            event_store_profile: RebornProfile::Standalone,
             hosted_extension_installation_state: false,
             storage_shape: StorageShape::None,
             required_runtime_backends: Vec::new(),
@@ -297,9 +297,9 @@ impl DeploymentConfig {
     }
 
     /// Standalone local development on a single-user machine.
-    pub fn local_dev() -> Self {
+    pub fn standalone() -> Self {
         Self {
-            profile: RebornCompositionProfile::LocalDev,
+            profile: RebornCompositionProfile::Standalone,
             policy_request: Some(RuntimePolicyRequest {
                 deployment: DeploymentMode::LocalSingleUser,
                 requested_profile: RuntimeProfile::LocalDev,
@@ -313,9 +313,9 @@ impl DeploymentConfig {
             },
             readiness: ReadinessContract {
                 state: RebornReadinessState::DevOnly,
-                diagnostics: vec![RebornReadinessDiagnostic::local_dev()],
+                diagnostics: vec![RebornReadinessDiagnostic::standalone()],
             },
-            event_store_profile: RebornProfile::LocalDev,
+            event_store_profile: RebornProfile::Standalone,
             hosted_extension_installation_state: false,
             storage_shape: StorageShape::LocalFilesystemRoot,
             required_runtime_backends: Vec::new(),
@@ -336,9 +336,9 @@ impl DeploymentConfig {
     /// Trusted-laptop local development with minimal approvals. Requires the
     /// operator's explicit host-access confirmation; without it the resolver
     /// fails closed with [`ResolveError::YoloRequiresDisclosure`].
-    pub fn local_dev_yolo(confirm_host_access: bool) -> Self {
+    pub fn standalone_unrestricted(confirm_host_access: bool) -> Self {
         Self {
-            profile: RebornCompositionProfile::LocalDevYolo,
+            profile: RebornCompositionProfile::StandaloneUnrestricted,
             policy_request: Some(RuntimePolicyRequest {
                 deployment: DeploymentMode::LocalSingleUser,
                 requested_profile: RuntimeProfile::LocalYolo,
@@ -347,9 +347,9 @@ impl DeploymentConfig {
             }),
             readiness: ReadinessContract {
                 state: RebornReadinessState::DevOnly,
-                diagnostics: vec![RebornReadinessDiagnostic::local_dev_yolo()],
+                diagnostics: vec![RebornReadinessDiagnostic::standalone_unrestricted()],
             },
-            ..Self::local_dev()
+            ..Self::standalone()
         }
     }
 
@@ -373,7 +373,7 @@ impl DeploymentConfig {
                 state: RebornReadinessState::HostedSingleTenantValidated,
                 diagnostics: vec![RebornReadinessDiagnostic::hosted_single_tenant()],
             },
-            event_store_profile: RebornProfile::LocalDev,
+            event_store_profile: RebornProfile::Standalone,
             hosted_extension_installation_state: true,
             storage_shape: StorageShape::HostedSingleTenantPool,
             required_runtime_backends: Vec::new(),
@@ -474,8 +474,10 @@ impl DeploymentConfig {
     pub fn for_profile(profile: RebornCompositionProfile, confirm_host_access: bool) -> Self {
         match profile {
             RebornCompositionProfile::Disabled => Self::disabled(),
-            RebornCompositionProfile::LocalDev => Self::local_dev(),
-            RebornCompositionProfile::LocalDevYolo => Self::local_dev_yolo(confirm_host_access),
+            RebornCompositionProfile::Standalone => Self::standalone(),
+            RebornCompositionProfile::StandaloneUnrestricted => {
+                Self::standalone_unrestricted(confirm_host_access)
+            }
             RebornCompositionProfile::HostedSingleTenant => Self::hosted_single_tenant(),
             RebornCompositionProfile::HostedSingleTenantVolume => {
                 Self::hosted_single_tenant_volume()
@@ -646,7 +648,7 @@ pub fn local_filesystem_build_input(
     root: PathBuf,
 ) -> RebornHostBindings {
     let bindings = RebornHostBindings::local_filesystem_from_deployment(
-        DeploymentConfig::local_dev(),
+        DeploymentConfig::standalone(),
         owner_id,
         root,
     );
@@ -683,7 +685,7 @@ pub fn local_filesystem_build_input_with_profile(
 }
 
 /// Resolved policy for the standalone local development runtime profile.
-pub fn local_dev_runtime_policy() -> Result<EffectiveRuntimePolicy, ResolveError> {
+pub fn standalone_runtime_policy() -> Result<EffectiveRuntimePolicy, ResolveError> {
     local_runtime_policy_for_local_dev_shape("local-dev")
 }
 
@@ -713,11 +715,11 @@ pub fn hosted_single_tenant_volume_runtime_policy() -> Result<EffectiveRuntimePo
 
 /// Resolved policy for trusted single-user local development with inherited
 /// host environment access.
-pub fn local_dev_yolo_runtime_policy(
+pub fn standalone_unrestricted_runtime_policy(
     confirm_host_access: bool,
 ) -> Result<EffectiveRuntimePolicy, ResolveError> {
     local_runtime_policy(
-        RebornCompositionProfile::LocalDevYolo,
+        RebornCompositionProfile::StandaloneUnrestricted,
         RebornRuntimeProfileOptions {
             confirm_host_access,
         },
@@ -746,7 +748,7 @@ fn local_runtime_policy_for_local_dev_shape(
     profile_name: &'static str,
 ) -> Result<EffectiveRuntimePolicy, ResolveError> {
     local_runtime_policy(
-        RebornCompositionProfile::LocalDev,
+        RebornCompositionProfile::Standalone,
         RebornRuntimeProfileOptions::default(),
     )
     .map_err(|error| match error {
@@ -780,8 +782,8 @@ mod tests {
         // cover every variant so nothing downstream needs its own.
         for profile in [
             RebornCompositionProfile::Disabled,
-            RebornCompositionProfile::LocalDev,
-            RebornCompositionProfile::LocalDevYolo,
+            RebornCompositionProfile::Standalone,
+            RebornCompositionProfile::StandaloneUnrestricted,
             RebornCompositionProfile::HostedSingleTenant,
             RebornCompositionProfile::HostedSingleTenantVolume,
             RebornCompositionProfile::Production,
@@ -808,12 +810,12 @@ mod tests {
                 false,
             ),
             (
-                RebornCompositionProfile::LocalDev,
+                RebornCompositionProfile::Standalone,
                 RuntimeSubstrate::ProductionShaped,
                 true,
             ),
             (
-                RebornCompositionProfile::LocalDevYolo,
+                RebornCompositionProfile::StandaloneUnrestricted,
                 RuntimeSubstrate::ProductionShaped,
                 true,
             ),
@@ -869,8 +871,8 @@ mod tests {
         // the two independently, the deployment could never start — so the
         // invariant is pinned here rather than discovered at boot.
         for profile in [
-            RebornCompositionProfile::LocalDev,
-            RebornCompositionProfile::LocalDevYolo,
+            RebornCompositionProfile::Standalone,
+            RebornCompositionProfile::StandaloneUnrestricted,
             RebornCompositionProfile::HostedSingleTenant,
             RebornCompositionProfile::HostedSingleTenantVolume,
             RebornCompositionProfile::Production,
@@ -901,8 +903,8 @@ mod tests {
             }
         );
         for profile in [
-            RebornCompositionProfile::LocalDev,
-            RebornCompositionProfile::LocalDevYolo,
+            RebornCompositionProfile::Standalone,
+            RebornCompositionProfile::StandaloneUnrestricted,
             RebornCompositionProfile::HostedSingleTenant,
             RebornCompositionProfile::HostedSingleTenantVolume,
         ] {
@@ -969,7 +971,7 @@ mod tests {
 
     #[test]
     fn local_dev_resolves_to_local_host_policy() {
-        let policy = resolved(DeploymentConfig::local_dev());
+        let policy = resolved(DeploymentConfig::standalone());
         assert_eq!(policy.deployment, DeploymentMode::LocalSingleUser);
         assert_eq!(policy.resolved_profile, RuntimeProfile::LocalDev);
         assert_eq!(policy.process_backend, ProcessBackendKind::LocalHost);
@@ -978,7 +980,7 @@ mod tests {
 
     #[test]
     fn local_dev_yolo_without_disclosure_fails_closed() {
-        let error = DeploymentConfig::local_dev_yolo(false)
+        let error = DeploymentConfig::standalone_unrestricted(false)
             .resolve()
             .expect_err("yolo without disclosure must fail");
         assert!(matches!(error, ResolveError::YoloRequiresDisclosure { .. }));
@@ -986,7 +988,7 @@ mod tests {
 
     #[test]
     fn local_dev_yolo_with_disclosure_resolves_minimal_approvals() {
-        let policy = resolved(DeploymentConfig::local_dev_yolo(true));
+        let policy = resolved(DeploymentConfig::standalone_unrestricted(true));
         assert_eq!(policy.resolved_profile, RuntimeProfile::LocalYolo);
         assert_eq!(policy.approval_policy, ApprovalPolicy::Minimal);
     }
@@ -1006,12 +1008,12 @@ mod tests {
         // §4.4 claim this module exists to make true. `DeploymentConfig` is no
         // longer `PartialEq` (it now carries non-`Eq` secret/config DATA), so
         // compare the observable axes the claim is actually about.
-        let local = DeploymentConfig::local_dev();
+        let local = DeploymentConfig::standalone();
         let hosted = DeploymentConfig::hosted_single_tenant_volume();
         assert_ne!(local.readiness().state, hosted.readiness().state);
         assert_eq!(
-            DeploymentConfig::local_dev().readiness().state,
-            DeploymentConfig::local_dev().readiness().state
+            DeploymentConfig::standalone().readiness().state,
+            DeploymentConfig::standalone().readiness().state
         );
     }
 }
@@ -1032,7 +1034,7 @@ mod local_runtime_profile_tests {
         // input must carry the config built *here* instead.
         let dir = std::env::temp_dir().join("reborn-yolo-disclosure-test");
         let input = local_runtime_build_input_with_options(
-            RebornCompositionProfile::LocalDevYolo,
+            RebornCompositionProfile::StandaloneUnrestricted,
             "yolo-owner",
             dir,
             RebornRuntimeProfileOptions {
@@ -1043,7 +1045,7 @@ mod local_runtime_profile_tests {
 
         assert_eq!(
             input.profile(),
-            RebornCompositionProfile::LocalDevYolo,
+            RebornCompositionProfile::StandaloneUnrestricted,
             "the carried deployment must keep the requested profile label"
         );
         let carried = input
@@ -1063,7 +1065,7 @@ mod local_runtime_profile_tests {
     fn unconfirmed_yolo_fails_closed_before_an_input_is_built() {
         let dir = std::env::temp_dir().join("reborn-yolo-unconfirmed-test");
         let error = local_runtime_build_input_with_options(
-            RebornCompositionProfile::LocalDevYolo,
+            RebornCompositionProfile::StandaloneUnrestricted,
             "yolo-owner",
             dir,
             RebornRuntimeProfileOptions {

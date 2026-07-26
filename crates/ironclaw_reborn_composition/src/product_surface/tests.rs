@@ -350,7 +350,9 @@ async fn runtime_product_surface_wires_lifecycle_owner_identity() {
             "runtime-owner",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(crate::local_dev_runtime_policy().expect("local-dev policy resolves")),
+        .with_runtime_policy(
+            crate::standalone_runtime_policy().expect("local-dev policy resolves"),
+        ),
     )
     .with_identity(crate::RebornRuntimeIdentity {
         tenant_id: "tenant-alpha".to_string(),
@@ -389,7 +391,9 @@ async fn product_surface_extension_lifecycle_remove_succeeds_after_activation() 
             "product-surface-extension-owner",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(crate::local_dev_runtime_policy().expect("local-dev policy resolves")),
+        .with_runtime_policy(
+            crate::standalone_runtime_policy().expect("local-dev policy resolves"),
+        ),
     )
     .with_identity(crate::RebornRuntimeIdentity {
         tenant_id: "tenant-alpha".to_string(),
@@ -837,7 +841,9 @@ async fn product_surface_channel_extension_remove_deletes_the_durable_membership
             "channel-remove-owner",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(crate::local_dev_runtime_policy().expect("local-dev policy resolves")),
+        .with_runtime_policy(
+            crate::standalone_runtime_policy().expect("local-dev policy resolves"),
+        ),
     )
     .with_identity(crate::RebornRuntimeIdentity {
         tenant_id: "tenant-alpha".to_string(),

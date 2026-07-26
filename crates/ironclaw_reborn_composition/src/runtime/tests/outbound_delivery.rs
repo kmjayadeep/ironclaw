@@ -190,12 +190,13 @@ async fn local_dev_runtime_selects_outbound_delivery_target_before_trigger_creat
     let gateway_for_runtime: Arc<dyn HostManagedModelGateway> = gateway.clone();
     let input = RebornRuntimeInput::from_build_input(
         crate::deployment::local_filesystem_build_input_with_profile(
-            RebornCompositionProfile::LocalDevYolo,
+            RebornCompositionProfile::StandaloneUnrestricted,
             "runtime-outbound-trigger-owner",
             root.path().join("local-dev"),
         )
         .with_runtime_policy(
-            crate::local_dev_yolo_runtime_policy(true).expect("local-yolo policy resolves"),
+            crate::standalone_unrestricted_runtime_policy(true)
+                .expect("local-yolo policy resolves"),
         )
         .with_local_runtime_confirmed_host_home_root(host_home),
     )

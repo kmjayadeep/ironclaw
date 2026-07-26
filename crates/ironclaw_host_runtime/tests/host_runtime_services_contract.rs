@@ -246,7 +246,7 @@ async fn production_wiring_validation_rejects_local_only_runtime_policy() {
         ironclaw_processes::in_memory_backed_process_services(),
         CapabilitySurfaceVersion::new("surface-v1").unwrap(),
     )
-    .with_runtime_policy(local_dev_runtime_policy());
+    .with_runtime_policy(standalone_runtime_policy());
 
     let report = services
         .validate_production_wiring(&ProductionWiringConfig::new([]))
@@ -877,7 +877,7 @@ async fn local_reborn_event_store_config_does_not_satisfy_production_wiring() {
         CapabilitySurfaceVersion::new("surface-v1").unwrap(),
     )
     .with_reborn_event_store_config(
-        RebornProfile::LocalDev,
+        RebornProfile::Standalone,
         RebornEventStoreConfig::Jsonl {
             root: temp.path().join("local-reborn-event-store"),
             accept_single_node_durable: false,
@@ -1670,7 +1670,7 @@ async fn host_runtime_services_writes_runtime_events_to_durable_event_log_metada
 async fn host_runtime_services_consumes_reborn_jsonl_event_store_without_v1_composition() {
     let temp = tempfile::tempdir().unwrap();
     let stores = build_reborn_event_stores(
-        RebornProfile::LocalDev,
+        RebornProfile::Standalone,
         RebornEventStoreConfig::Jsonl {
             root: temp.path().join("reborn-event-store"),
             accept_single_node_durable: false,
@@ -2028,7 +2028,7 @@ async fn host_runtime_services_jsonl_event_store_projects_same_runtime_sequence_
     let temp = tempfile::tempdir().unwrap();
     let store_root = temp.path().join("reborn-event-store");
     let stores = build_reborn_event_stores(
-        RebornProfile::LocalDev,
+        RebornProfile::Standalone,
         RebornEventStoreConfig::Jsonl {
             root: store_root.clone(),
             accept_single_node_durable: false,
@@ -2224,7 +2224,7 @@ async fn host_runtime_services_jsonl_approval_audit_projection_rejects_foreign_c
     let temp = tempfile::tempdir().unwrap();
     let store_root = temp.path().join("reborn-event-store");
     let stores = build_reborn_event_stores(
-        RebornProfile::LocalDev,
+        RebornProfile::Standalone,
         RebornEventStoreConfig::Jsonl {
             root: store_root.clone(),
             accept_single_node_durable: false,
@@ -4729,7 +4729,7 @@ async fn host_runtime_services_projects_resource_network_secret_obligation_audit
     let temp = tempfile::tempdir().unwrap();
     let store_root = temp.path().join("reborn-event-store");
     let stores = build_reborn_event_stores(
-        RebornProfile::LocalDev,
+        RebornProfile::Standalone,
         RebornEventStoreConfig::Jsonl {
             root: store_root.clone(),
             accept_single_node_durable: false,
@@ -6123,7 +6123,7 @@ async fn spawned_obligation_lifecycle_abort_cleans_up_when_process_start_fails()
         "script",
         vec![EffectKind::DispatchCapability, EffectKind::Network],
     );
-    let runtime_policy = local_dev_runtime_policy();
+    let runtime_policy = standalone_runtime_policy();
     let host = CapabilityHost::new(
         fixture.registry.as_ref(),
         fixture.dispatcher.as_ref(),

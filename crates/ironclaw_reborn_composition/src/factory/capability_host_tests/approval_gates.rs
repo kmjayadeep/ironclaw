@@ -168,7 +168,7 @@ async fn local_dev_yolo_shell_invocation_asks_when_global_auto_approve_is_off() 
     std::fs::create_dir_all(&host_home).expect("host home root");
     let services = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input_with_profile(
-            RebornCompositionProfile::LocalDevYolo,
+            RebornCompositionProfile::StandaloneUnrestricted,
             "local-dev-yolo-approval-owner",
             dir.path().join("local-dev"),
         )
@@ -681,7 +681,7 @@ async fn local_dev_yolo_explicit_ask_each_time_still_requires_approval_gate() {
     std::fs::create_dir_all(&host_home).expect("host home root");
     let services = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input_with_profile(
-            RebornCompositionProfile::LocalDevYolo,
+            RebornCompositionProfile::StandaloneUnrestricted,
             "local-dev-yolo-ask-owner",
             dir.path().join("local-dev"),
         )

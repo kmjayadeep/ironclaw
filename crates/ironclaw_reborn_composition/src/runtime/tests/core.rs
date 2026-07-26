@@ -135,7 +135,7 @@ async fn runtime_channel_identity_bind_uses_deployment_channel_before_user_activ
         "runtime-channel-bind-race-owner",
         root.path().join("local-dev"),
     )
-    .with_runtime_policy(local_dev_runtime_policy())
+    .with_runtime_policy(standalone_runtime_policy())
     .with_network_http_egress_for_test(network_egress.clone())
     .with_channel_extension_bindings(vec![crate::input::ChannelExtensionBinding {
         extension_id: "slack".to_string(),
@@ -425,12 +425,12 @@ fn runtime_cutover_gate_rejects_migration_dry_run_runtime_start() {
 #[test]
 fn runtime_cutover_gate_allows_local_dev_readiness() {
     let readiness = readiness_for_runtime_gate(
-        RebornCompositionProfile::LocalDev,
+        RebornCompositionProfile::Standalone,
         RebornReadinessState::DevOnly,
-        vec![crate::RebornReadinessDiagnostic::local_dev()],
+        vec![crate::RebornReadinessDiagnostic::standalone()],
     );
 
-    cutover_gate(RebornCompositionProfile::LocalDev, &readiness)
+    cutover_gate(RebornCompositionProfile::Standalone, &readiness)
         .expect("local-dev runtime is not production traffic");
 }
 
@@ -451,7 +451,7 @@ fn runtime_cutover_gate_rejects_local_dev_readiness_for_hosted_single_tenant() {
     let readiness = readiness_for_runtime_gate(
         RebornCompositionProfile::HostedSingleTenant,
         RebornReadinessState::DevOnly,
-        vec![crate::RebornReadinessDiagnostic::local_dev()],
+        vec![crate::RebornReadinessDiagnostic::standalone()],
     );
 
     let error = cutover_gate(RebornCompositionProfile::HostedSingleTenant, &readiness)
@@ -508,7 +508,7 @@ fn production_scheduler_wake_guard_rejects_migration_dry_run_with_absent_wiring(
 fn production_scheduler_wake_guard_passes_local_dev_with_absent_wiring() {
     // Local-dev never mints scheduler wake wiring; the guard must not
     // reject it (the scheduler loop mints its own channel on that path).
-    super::check_production_scheduler_wake_wiring(RebornCompositionProfile::LocalDev, &None)
+    super::check_production_scheduler_wake_wiring(RebornCompositionProfile::Standalone, &None)
         .expect("local-dev is exempt from the scheduler wake wiring requirement");
 }
 
@@ -580,7 +580,7 @@ async fn stop_turn_runner_worker_for_manual_state_test(runtime: &super::RebornRu
     runtime.turn_scheduler.stop_for_test().await;
 }
 
-fn local_dev_runtime_policy() -> EffectiveRuntimePolicy {
+fn standalone_runtime_policy() -> EffectiveRuntimePolicy {
     EffectiveRuntimePolicy {
         deployment: DeploymentMode::LocalSingleUser,
         requested_profile: RuntimeProfile::LocalDev,
@@ -1844,7 +1844,7 @@ async fn runtime_nearai_mcp_bootstraps_from_nearai_session_token() {
             "runtime-nearai-session-mcp-owner",
             local_dev_root,
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_resolved_llm(llm)
     .with_identity(RebornRuntimeIdentity {
@@ -1897,7 +1897,7 @@ async fn runtime_nearai_mcp_bootstraps_from_stored_nearai_api_key() {
             "runtime-nearai-stored-mcp-owner",
             local_dev_root.clone(),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .await
     .expect("services build for stored key seed");
@@ -1953,7 +1953,7 @@ async fn runtime_nearai_mcp_bootstraps_from_stored_nearai_api_key() {
             "runtime-nearai-stored-mcp-owner",
             local_dev_root,
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_resolved_llm(llm)
     .with_identity(RebornRuntimeIdentity {
@@ -2046,7 +2046,7 @@ async fn runtime_nearai_mcp_prebuild_api_key_is_not_replaced_by_stored_key() {
 
     let services = crate::factory::build_runtime_substrate(
         crate::deployment::local_filesystem_build_input(owner, local_dev_root.clone())
-            .with_runtime_policy(local_dev_runtime_policy()),
+            .with_runtime_policy(standalone_runtime_policy()),
     )
     .await
     .expect("services build for stored key seed");
@@ -2099,7 +2099,7 @@ async fn runtime_nearai_mcp_prebuild_api_key_is_not_replaced_by_stored_key() {
 
     let input = RebornRuntimeInput::from_build_input(
         crate::deployment::local_filesystem_build_input(owner, local_dev_root)
-            .with_runtime_policy(local_dev_runtime_policy()),
+            .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_resolved_llm(llm)
     .with_identity(RebornRuntimeIdentity {
@@ -2488,7 +2488,7 @@ async fn provider_factory_runs_during_production_boot() {
             "provider-factory-boot-owner",
             local_dev_root,
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_resolved_llm(llm)
     .with_identity(RebornRuntimeIdentity {
@@ -2546,7 +2546,7 @@ async fn local_dev_runtime_startup_uses_stored_nearai_api_key_after_restart() {
             "runtime-nearai-stored-key-owner",
             local_dev_root.clone(),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .await
     .expect("services build for stored key seed");
@@ -2584,7 +2584,7 @@ async fn local_dev_runtime_startup_uses_stored_nearai_api_key_after_restart() {
             None,
         )
         .expect("valid reborn home"),
-        RebornProfile::LocalDev,
+        RebornProfile::Standalone,
     );
 
     let input = RebornRuntimeInput::from_build_input(
@@ -2592,7 +2592,7 @@ async fn local_dev_runtime_startup_uses_stored_nearai_api_key_after_restart() {
             "runtime-nearai-stored-key-owner",
             local_dev_root,
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_boot_config(boot)
     .with_identity(RebornRuntimeIdentity {
@@ -2894,7 +2894,7 @@ async fn local_dev_runtime_readiness_reports_trigger_poller_worker() {
             "runtime-trigger-readiness-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-trigger-readiness-tenant".to_string(),
@@ -2928,7 +2928,7 @@ async fn local_dev_runtime_rejects_trigger_poller_without_creator_authorization(
             "runtime-trigger-auth-required-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-trigger-auth-required-tenant".to_string(),
@@ -2970,7 +2970,7 @@ async fn local_dev_runtime_accepts_trigger_poller_with_creator_access_checker() 
             "runtime-trigger-auth-supplied-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-trigger-auth-supplied-tenant".to_string(),
@@ -3005,7 +3005,7 @@ async fn local_dev_runtime_disables_trigger_poller_worker_by_default() {
             "runtime-trigger-disabled-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-trigger-disabled-tenant".to_string(),
@@ -3042,7 +3042,7 @@ async fn local_dev_runtime_rejects_invalid_trigger_poller_worker_config() {
             "runtime-trigger-invalid-config-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-trigger-invalid-config-tenant".to_string(),
@@ -3082,7 +3082,7 @@ async fn local_dev_runtime_shutdown_cancels_trigger_poller_worker() {
             "runtime-trigger-shutdown-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-trigger-shutdown-tenant".to_string(),
@@ -3125,12 +3125,13 @@ async fn local_dev_yolo_message_flow_ignores_model_budget_gate() {
 
     let input = RebornRuntimeInput::from_build_input(
         crate::deployment::local_filesystem_build_input_with_profile(
-            crate::RebornCompositionProfile::LocalDevYolo,
+            crate::RebornCompositionProfile::StandaloneUnrestricted,
             "runtime-yolo-budget-owner",
             root.path().join("local-dev"),
         )
         .with_runtime_policy(
-            crate::local_dev_yolo_runtime_policy(true).expect("local-yolo policy resolves"),
+            crate::standalone_unrestricted_runtime_policy(true)
+                .expect("local-yolo policy resolves"),
         )
         .with_local_runtime_confirmed_host_home_root(host_home),
     )
@@ -3181,7 +3182,7 @@ async fn send_user_message_returns_completed_assistant_text_with_recording_gatew
             "runtime-success-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-success-tenant".to_string(),
@@ -3221,7 +3222,7 @@ async fn send_user_message_preserves_model_unavailable_after_retry_budget() {
             "runtime-model-outage-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-model-outage-tenant".to_string(),
@@ -3293,7 +3294,7 @@ async fn send_user_message_auto_queues_trace_for_enrolled_scope() {
     });
     let input = RebornRuntimeInput::from_build_input(
         crate::deployment::local_filesystem_build_input(&owner, root.path().join("local-dev"))
-            .with_runtime_policy(local_dev_runtime_policy()),
+            .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-trace-capture-tenant".to_string(),
@@ -3397,7 +3398,7 @@ async fn send_user_message_persists_personal_owner_for_webui() {
             actor_owner_id,
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-personal-owner-tenant".to_string(),
@@ -3473,7 +3474,7 @@ async fn send_user_message_renders_cli_origin_in_model_request() {
             "runtime-webui-origin-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-webui-origin-tenant".to_string(),
@@ -3544,12 +3545,13 @@ async fn send_user_message_until_gate_returns_blocked_on_auth_gate() {
     let gateway_for_runtime: Arc<dyn HostManagedModelGateway> = gateway.clone();
     let input = RebornRuntimeInput::from_build_input(
         crate::deployment::local_filesystem_build_input_with_profile(
-            RebornCompositionProfile::LocalDevYolo,
+            RebornCompositionProfile::StandaloneUnrestricted,
             "runtime-auth-gate-owner",
             root.path().join("local-dev"),
         )
         .with_runtime_policy(
-            crate::local_dev_yolo_runtime_policy(true).expect("local-yolo policy resolves"),
+            crate::standalone_unrestricted_runtime_policy(true)
+                .expect("local-yolo policy resolves"),
         )
         .with_local_runtime_confirmed_host_home_root(host_home),
     )
@@ -3653,7 +3655,7 @@ async fn cancel_run_propagates_to_subagent_children() {
             "runtime-cancel-child-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-cancel-child-tenant".to_string(),
@@ -3822,7 +3824,7 @@ async fn send_user_message_uses_caller_supplied_skill_context_source() {
             "runtime-skill-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-skill-tenant".to_string(),
@@ -3874,7 +3876,7 @@ async fn local_dev_runtime_exposes_host_runtime_capabilities_to_model_calls() {
             "runtime-tools-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-tools-tenant".to_string(),
@@ -4018,7 +4020,7 @@ async fn local_dev_runtime_forwards_tool_call_trajectory_to_raw_observer() {
             "runtime-trajectory-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-trajectory-tenant".to_string(),
@@ -4094,7 +4096,7 @@ async fn local_dev_runtime_safe_preview_observer_receives_bounded_payload() {
             "runtime-preview-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-preview-tenant".to_string(),
@@ -4173,7 +4175,7 @@ async fn local_dev_runtime_wires_input_skill_context_source_to_model_calls() {
             "runtime-skill-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-skill-tenant".to_string(),
@@ -4261,7 +4263,7 @@ async fn local_dev_runtime_prefers_configured_skill_context_source_over_filesyst
             "runtime-skill-override-owner",
             storage_root,
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-skill-override-tenant".to_string(),
@@ -4366,7 +4368,7 @@ async fn local_dev_runtime_wires_filesystem_skills_by_default_to_model_calls() {
             "runtime-filesystem-skill-owner",
             storage_root,
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-filesystem-skill-tenant".to_string(),
@@ -4448,7 +4450,7 @@ async fn local_dev_runtime_backfills_legacy_owner_skill_root() {
             "runtime-legacy-skill-owner",
             storage_root.clone(),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     );
     let runtime = build_reborn_runtime(input).await.expect("runtime");
     let conversation = runtime.new_conversation().await.expect("conversation");
@@ -4504,7 +4506,7 @@ async fn execute_skill_message_returns_plan_and_reads_active_bundle_assets() {
     });
     let input = RebornRuntimeInput::from_build_input(
         crate::deployment::local_filesystem_build_input("runtime-skill-exec-owner", storage_root)
-            .with_runtime_policy(local_dev_runtime_policy()),
+            .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-skill-exec-tenant".to_string(),
@@ -4621,7 +4623,7 @@ async fn local_dev_runtime_fails_closed_for_ambiguous_explicit_skill_before_mode
             "runtime-ambiguous-skill-owner",
             storage_root,
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-ambiguous-skill-tenant".to_string(),
@@ -4691,7 +4693,7 @@ async fn local_dev_runtime_suppresses_explicit_setup_skill_when_workspace_marker
     });
     let input = RebornRuntimeInput::from_build_input(
         crate::deployment::local_filesystem_build_input("runtime-setup-marker-owner", storage_root)
-            .with_runtime_policy(local_dev_runtime_policy()),
+            .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-setup-marker-tenant".to_string(),
@@ -4779,7 +4781,7 @@ async fn local_dev_runtime_activates_setup_skill_when_workspace_marker_is_absent
             "runtime-setup-marker-absent-owner",
             storage_root,
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-setup-marker-absent-tenant".to_string(),
@@ -4843,7 +4845,7 @@ async fn local_dev_runtime_rejects_workspace_overlapping_default_skill_roots() {
     let input = RebornRuntimeInput::from_build_input(
         crate::deployment::local_filesystem_build_input("runtime-overlap-owner", storage_root)
             .with_local_runtime_workspace_root(workspace_root)
-            .with_runtime_policy(local_dev_runtime_policy()),
+            .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-overlap-tenant".to_string(),
@@ -4896,7 +4898,7 @@ async fn local_dev_runtime_skips_invalid_filesystem_skill_before_model_call() {
     });
     let input = RebornRuntimeInput::from_build_input(
         crate::deployment::local_filesystem_build_input("runtime-bad-skill-owner", storage_root)
-            .with_runtime_policy(local_dev_runtime_policy()),
+            .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-bad-skill-tenant".to_string(),
@@ -4952,7 +4954,7 @@ async fn local_dev_runtime_maps_workspace_to_configured_root() {
             root.path().join("local-dev"),
         )
         .with_local_runtime_workspace_root(workspace_root.path().to_path_buf())
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-workspace-tenant".to_string(),
@@ -5008,7 +5010,7 @@ async fn local_dev_runtime_webui_bundle_reuses_thread_and_turn_services() {
             "runtime-webui-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-webui-tenant".to_string(),
@@ -5140,7 +5142,7 @@ async fn webui_workspace_filesystem_lands_attachment_with_read_write_mount() {
             "runtime-attachment-mount-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-attachment-mount-tenant".to_string(),
@@ -5382,7 +5384,7 @@ async fn local_dev_webui_bundle_uses_lifecycle_product_service_for_setup_extensi
             "runtime-webui-lifecycle-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-webui-lifecycle-tenant".to_string(),
@@ -5491,7 +5493,7 @@ async fn local_dev_webui_bundle_exposes_outbound_preferences_service() {
             "runtime-webui-outbound-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-webui-outbound-tenant".to_string(),
@@ -5573,7 +5575,7 @@ async fn local_dev_webui_bundle_invokes_skill_install_with_scoped_mounts() {
             "runtime-webui-skill-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-webui-skill-tenant".to_string(),
@@ -5653,7 +5655,7 @@ async fn webui_route_rejects_list_automations_without_agent_binding() {
             "runtime-webui-no-agent-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-webui-no-agent-tenant".to_string(),
@@ -5715,7 +5717,7 @@ async fn webui_operator_diagnostics_route_exposes_composed_readiness_evidence() 
             "runtime-webui-diagnostics-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-webui-diagnostics-tenant".to_string(),
@@ -5801,7 +5803,7 @@ async fn runtime_product_surface_without_local_runtime_still_lists_automations_f
             "runtime-webui-no-host-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-webui-no-host-tenant".to_string(),
@@ -5856,7 +5858,7 @@ async fn local_dev_webui_setup_extension_stores_and_rotates_runtime_credentials(
             "runtime-webui-credential-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-webui-credential-tenant".to_string(),
@@ -5941,7 +5943,7 @@ async fn local_dev_webui_bundle_routes_approval_gates_into_interaction_service()
             "runtime-webui-approval-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-webui-approval-tenant".to_string(),
@@ -6012,7 +6014,7 @@ async fn local_dev_webui_bundle_routes_auth_gates_into_interaction_service() {
             "runtime-webui-auth-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-webui-auth-tenant".to_string(),
@@ -6097,7 +6099,7 @@ async fn local_dev_webui_bundle_records_selectable_filesystem_skill_context() {
     });
     let input = RebornRuntimeInput::from_build_input(
         crate::deployment::local_filesystem_build_input("runtime-webui-skill-owner", storage_root)
-            .with_runtime_policy(local_dev_runtime_policy()),
+            .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-webui-skill-tenant".to_string(),
@@ -6369,7 +6371,7 @@ async fn multi_tool_call_response_survives_surface_change_mid_register() {
             "runtime-multi-tool-surface-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-multi-tool-surface-tenant".to_string(),
@@ -6448,7 +6450,7 @@ async fn rejected_busy_message_not_auto_resubmitted_after_run_cancellation() {
             "runtime-rejected-busy-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-rejected-busy-tenant".to_string(),
@@ -6719,7 +6721,7 @@ async fn scheduler_liveness_not_stopped_under_contention() {
             "scheduler-liveness-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "scheduler-liveness-tenant".to_string(),
@@ -6833,7 +6835,7 @@ async fn scheduler_liveness_stopped_after_test_helper_stops_worker() {
             "scheduler-liveness-helper-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "scheduler-liveness-helper-tenant".to_string(),
@@ -6882,7 +6884,7 @@ async fn scheduler_stopped_rejects_send_user_message() {
             "scheduler-stopped-reject-owner",
             root.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_runtime_policy()),
+        .with_runtime_policy(standalone_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "scheduler-stopped-reject-tenant".to_string(),

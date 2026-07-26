@@ -613,7 +613,7 @@ async fn local_dev_builds_services_without_production_claim() {
             dir.path().to_path_buf(),
         )
         .with_runtime_policy(
-            ironclaw_reborn_composition::local_dev_runtime_policy()
+            ironclaw_reborn_composition::standalone_runtime_policy()
                 .expect("local-dev runtime policy resolves"),
         ),
     )
@@ -695,7 +695,7 @@ async fn local_dev_product_auth_entrypoint_redacts_manual_token_submit() {
             dir.path().to_path_buf(),
         )
         .with_runtime_policy(
-            ironclaw_reborn_composition::local_dev_runtime_policy()
+            ironclaw_reborn_composition::standalone_runtime_policy()
                 .expect("local-dev runtime policy resolves"),
         ),
     )
@@ -1126,7 +1126,7 @@ async fn production_rejects_local_only_runtime_policy() {
     );
     assert_eq!(
         RebornReadinessDiagnostic::from_production_wiring_report(
-            RebornCompositionProfile::LocalDev,
+            RebornCompositionProfile::Standalone,
             &report,
         )
         .len(),

@@ -127,7 +127,7 @@ async fn build_timeline_runtime(root: &tempfile::TempDir) -> RebornRuntime {
     std::fs::create_dir_all(&host_home_root).expect("host home root");
 
     let input = local_runtime_build_input_with_options(
-        RebornCompositionProfile::LocalDevYolo,
+        RebornCompositionProfile::StandaloneUnrestricted,
         USER,
         root.path().join("local-dev"),
         RebornRuntimeProfileOptions {

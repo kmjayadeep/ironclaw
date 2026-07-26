@@ -87,7 +87,7 @@ async fn build_runtime(
     product_auth_ports: Option<RebornProductAuthServicePorts>,
 ) -> Result<RebornRuntime, super::RebornRuntimeError> {
     let mut services = crate::deployment::local_filesystem_build_input(owner, storage_root)
-        .with_runtime_policy(local_dev_runtime_policy())
+        .with_runtime_policy(standalone_runtime_policy())
         .with_runtime_process_binding(RebornRuntimeProcessBinding::None);
     if let Some(ports) = product_auth_ports {
         services = services.with_product_auth_ports(ports);
@@ -112,7 +112,7 @@ async fn build_runtime(
     Ok(runtime)
 }
 
-fn local_dev_runtime_policy() -> EffectiveRuntimePolicy {
+fn standalone_runtime_policy() -> EffectiveRuntimePolicy {
     EffectiveRuntimePolicy {
         deployment: DeploymentMode::LocalSingleUser,
         requested_profile: RuntimeProfile::LocalDev,

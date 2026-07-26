@@ -148,9 +148,9 @@ pub use memory_provider_factory::{
 // it reaches this helper through composition's facade.
 pub use deployment::{
     RebornRuntimeProfileError, RebornRuntimeProfileOptions, hosted_single_tenant_runtime_policy,
-    hosted_single_tenant_volume_runtime_policy, local_dev_runtime_policy,
-    local_dev_yolo_runtime_policy, local_runtime_build_input,
-    local_runtime_build_input_with_options,
+    hosted_single_tenant_volume_runtime_policy, local_runtime_build_input,
+    local_runtime_build_input_with_options, standalone_runtime_policy,
+    standalone_unrestricted_runtime_policy,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use deployment::{local_filesystem_build_input, local_filesystem_build_input_with_profile};

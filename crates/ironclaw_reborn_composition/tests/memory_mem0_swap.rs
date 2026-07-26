@@ -213,8 +213,9 @@ async fn local_dev_swaps_to_mem0_without_an_override() {
         admin_overrides: Vec::new(),
         ..Default::default()
     };
-    let policy = resolve_memory_binding_policy(Some(&section), RebornCompositionProfile::LocalDev)
-        .expect("local-dev allows the third-party binding without an override");
+    let policy =
+        resolve_memory_binding_policy(Some(&section), RebornCompositionProfile::Standalone)
+            .expect("local-dev allows the third-party binding without an override");
     let transport = Arc::new(MockMem0Transport::always_ok(json!({ "id": "m-1" })));
     let resolver =
         build_memory_service_resolver(Some(policy), &deps_over_mock(Arc::clone(&transport)));
