@@ -508,7 +508,7 @@ pub(super) async fn build_backend_production(
     #[cfg(not(any(test, feature = "test-support")))]
     let trigger_create_source_turn_state: Arc<dyn ironclaw_turns::TurnStateStore> =
         Arc::clone(&turn_state) as Arc<dyn ironclaw_turns::TurnStateStore>;
-    let trigger_create_hook = Arc::new(LocalRuntimeTriggerCreatorPairingHook {
+    let trigger_create_hook = Arc::new(TriggerCreatorPairingHook {
         outbound_delivery_targets: Arc::clone(&outbound_delivery_targets),
         source_turn_state: trigger_create_source_turn_state,
         scoped_filesystem: Arc::clone(&stores.scoped_filesystem),

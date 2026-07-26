@@ -1177,8 +1177,24 @@ const ALLOWLIST: &[(&str, &str)] = &[
         "nearaimcp",
     ),
     (
-        "crates/ironclaw_reborn_composition/src/factory.rs",
+        "crates/ironclaw_reborn_composition/src/factory/auth_engine_assembly.rs",
         "nearai_mcp",
+    ),
+    (
+        "crates/ironclaw_reborn_composition/src/factory/production_backend_assembly.rs",
+        "nearai_mcp",
+    ),
+    (
+        "crates/ironclaw_reborn_composition/src/factory/production_backend_assembly.rs",
+        "nearaimcp",
+    ),
+    (
+        "crates/ironclaw_reborn_composition/src/factory/production_build_assembly.rs",
+        "nearai_mcp",
+    ),
+    (
+        "crates/ironclaw_reborn_composition/src/factory/production_build_assembly.rs",
+        "nearaimcp",
     ),
     (
         "crates/ironclaw_reborn_composition/src/input.rs",
@@ -1229,10 +1245,6 @@ const ALLOWLIST: &[(&str, &str)] = &[
         "nearai_mcp",
     ),
     // lane-4: migration — one-time forward-migration call sites naming the v1 vocabulary they fold forward — correct-by-design (same pattern the retired-taxonomy gate sanctions); would become a SANCTIONED_PATHS carve if the sites move into a dedicated migration module
-    (
-        "crates/ironclaw_reborn_composition/src/factory.rs",
-        "nearaimcp",
-    ),
     // lane-4: doc-str — incidental doc-comment / error-string / tool-description examples that NAME an extension but branch on nothing — the code routes by a manifest field (display_name/provider/effects); reword or leave (Ben's call)
     ("crates/ironclaw_filesystem/src/index.rs", "acme"),
     ("crates/ironclaw_host_api/src/capability.rs", "slack"),
@@ -1264,7 +1276,11 @@ const ALLOWLIST: &[(&str, &str)] = &[
         "google",
     ),
     (
-        "crates/ironclaw_reborn_composition/src/factory.rs",
+        "crates/ironclaw_reborn_composition/src/factory/production_backend_assembly.rs",
+        "google",
+    ),
+    (
+        "crates/ironclaw_reborn_composition/src/factory/runtime_lane_assembly.rs",
         "notion",
     ),
     (

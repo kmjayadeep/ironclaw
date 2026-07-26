@@ -460,7 +460,7 @@ async fn local_runtime_trigger_create_hook_maps_conversation_init_error_to_backe
     ))
     .await
     .expect("standalone services build");
-    let hook = LocalRuntimeTriggerCreatorPairingHook {
+    let hook = TriggerCreatorPairingHook {
         outbound_delivery_targets: Arc::clone(&services.outbound_delivery_targets),
         source_turn_state: services.turn_state.clone(),
         scoped_filesystem: failing_trigger_conversation_filesystem(),

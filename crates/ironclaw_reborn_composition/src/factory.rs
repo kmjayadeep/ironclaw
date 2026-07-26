@@ -197,7 +197,7 @@ use auth_engine_assembly::{
 mod trigger_creation_assembly;
 #[cfg(any(test, feature = "test-support"))]
 use trigger_creation_assembly::LateBoundTriggerSourceTurnStateStore;
-use trigger_creation_assembly::LocalRuntimeTriggerCreatorPairingHook;
+use trigger_creation_assembly::TriggerCreatorPairingHook;
 #[cfg(test)]
 use trigger_creation_assembly::{
     pair_trigger_creator, validate_trigger_delivery_target_against_registry,

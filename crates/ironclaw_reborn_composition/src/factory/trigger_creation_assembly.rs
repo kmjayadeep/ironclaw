@@ -129,7 +129,7 @@ impl ironclaw_turns::TurnStateStore for LateBoundTriggerSourceTurnStateStore {
     }
 }
 
-pub(super) struct LocalRuntimeTriggerCreatorPairingHook {
+pub(super) struct TriggerCreatorPairingHook {
     pub(super) outbound_delivery_targets:
         Arc<crate::outbound::MutableOutboundDeliveryTargetRegistry>,
     pub(super) source_turn_state: Arc<dyn TurnStateStore>,
@@ -138,7 +138,7 @@ pub(super) struct LocalRuntimeTriggerCreatorPairingHook {
 }
 
 #[async_trait::async_trait]
-impl TriggerCreateHook for LocalRuntimeTriggerCreatorPairingHook {
+impl TriggerCreateHook for TriggerCreatorPairingHook {
     async fn resolve_implicit_delivery_target(
         &self,
         scope: &ironclaw_host_api::ResourceScope,
