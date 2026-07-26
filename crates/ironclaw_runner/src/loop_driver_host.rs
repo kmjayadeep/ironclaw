@@ -18,14 +18,14 @@ use ironclaw_hooks::middleware::{
 };
 use ironclaw_host_api::{CapabilityId, ExtensionId, Resolution, ResolutionBatch};
 use ironclaw_loop_host::{
-    ACTIVE_TASK_COMPACTION_SYSTEM_PROMPT, CapabilityResolveError, CapabilitySurfaceProfileFilter,
-    CapabilitySurfaceProfileResolver, EmptyLoopCapabilityPort, EmptyUserProfileSource,
-    GuardedSystemInferencePort, HostIdentityContextSource, HostInputQueue, HostManagedModelGateway,
-    HostQueueLoopInputPort, HostSkillContextSource, HostUserProfileSource, LoopAttachmentReadPort,
-    LoopCapabilityInputResolver, LoopCapabilityPortFactory, ModelGatewayBackedSystemInferencePort,
-    RunCancellationFactory, RunCancellationObservationKind, RunStateLoopCancellationPort,
-    SubagentLoopPromptPort, SubagentPromptComposer, ThreadBackedLoopContextPort,
-    ThreadBackedLoopTranscriptPort, ThreadContextWindowCache, TurnStateRunCancellationFactory,
+    ACTIVE_TASK_COMPACTION_SYSTEM_PROMPT, AgentTurnRunCancellationFactory, CapabilityResolveError,
+    CapabilitySurfaceProfileFilter, CapabilitySurfaceProfileResolver, EmptyLoopCapabilityPort,
+    EmptyUserProfileSource, GuardedSystemInferencePort, HostIdentityContextSource, HostInputQueue,
+    HostManagedModelGateway, HostQueueLoopInputPort, HostSkillContextSource, HostUserProfileSource,
+    LoopAttachmentReadPort, LoopCapabilityInputResolver, LoopCapabilityPortFactory,
+    ModelGatewayBackedSystemInferencePort, RunCancellationFactory, RunCancellationObservationKind,
+    RunStateLoopCancellationPort, SubagentLoopPromptPort, SubagentPromptComposer,
+    ThreadBackedLoopContextPort, ThreadBackedLoopTranscriptPort, ThreadContextWindowCache,
     active_task_compaction_prompt_id, host_managed_loop_compaction_port_with_prompt_id,
 };
 use ironclaw_threads::{SessionThreadService, ThreadScope};
@@ -108,9 +108,9 @@ fn trace_host_factory_latency_error<E: ?Sized>(
 }
 
 use ironclaw_turns::{
-    CheckpointStateStorePort, LoopCheckpointStateRef, LoopCheckpointStore, RunProfileId,
-    TurnCheckpointId, TurnError, TurnRunWake, TurnRunWakeNotifier, TurnRunWakeNotifyError,
-    TurnStateStore, TurnStatus,
+    AgentTurnRuntimePort, CheckpointStateStorePort, LoopCheckpointStateRef, LoopCheckpointStore,
+    RunProfileId, TurnCheckpointId, TurnError, TurnRunWake, TurnRunWakeNotifier,
+    TurnRunWakeNotifyError, TurnStatus,
     run_profile::{
         AgentLoopHostError, AgentLoopHostErrorKind, AppendCapabilityResultRef, BeginAssistantDraft,
         CommunicationContextProvider, EphemeralInstructionMaterializationStore,
@@ -1094,14 +1094,14 @@ where
         thread_scope: ThreadScope,
         model_gateway: Arc<G>,
         checkpoint_state_store: Arc<dyn CheckpointStateStorePort>,
-        turn_state_store: Arc<dyn TurnStateStore>,
+        agent_turn_runtime: Arc<dyn AgentTurnRuntimePort>,
         loop_checkpoint_store: Arc<dyn LoopCheckpointStore>,
         milestone_sink: Arc<dyn LoopHostMilestoneSink>,
         config: TextOnlyLoopHostConfig,
         safety_context: InstructionSafetyContext,
     ) -> Self {
         let cancellation_factory: Arc<dyn RunCancellationFactory> = Arc::new(
-            TurnStateRunCancellationFactory::new(Arc::clone(&turn_state_store)),
+            AgentTurnRunCancellationFactory::new(Arc::clone(&agent_turn_runtime)),
         );
         Self {
             thread_service,
@@ -1553,9 +1553,9 @@ where
         });
         // Build the live cancellation handle in parallel with the rest of host
         // setup. The claimed run state is already validated by the scheduler, so
-        // the turn-state-backed factory can avoid a synchronous durable seed
-        // read on the host construction path while still registering for wake
-        // flips and the polling fallback.
+        // the process-backed projection can avoid a second seed read on the
+        // host construction path while still registering for wake flips and
+        // the polling fallback.
         let cancellation_factory = Arc::clone(&self.cancellation_factory);
         let cancellation_state = request.claimed_run.state.clone();
         let cancellation_handle_fetch = tokio::spawn(async move {

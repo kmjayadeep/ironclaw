@@ -1,4 +1,4 @@
-// arch-exempt: large_file, pre-existing size; #6263 only migrated 2 test-double lines to in_memory_turn_state_store(), plan #6263
+// arch-exempt: large_file, pre-existing size; #6263 only migrated 2 test-double lines to in_memory_agent_turn_runtime(), plan #6263
 //! Per-child/per-settle-group settle path (§2, §5.2, §5.5, §8.1) — the
 //! direct successor to `SubagentCompletionObserver` (deleted with this
 //! module). Owner-recovery/reconstruction/framing helpers below are ported
@@ -17,9 +17,9 @@ use ironclaw_threads::{
     ThreadHistoryRequest, ThreadScope, ToolResultSafeSummary, UpdateToolResultReferenceRequest,
 };
 use ironclaw_turns::{
-    GateRef, GetRunStateRequest, IdempotencyKey, ResumeTurnPrecondition, ResumeTurnRequest,
-    TurnActor, TurnCoordinator, TurnError, TurnLifecycleEvent, TurnRunId, TurnRunRecord, TurnScope,
-    TurnSpawnTreeStateStore, TurnStatus,
+    AgentTurnSpawnTreeRuntimePort, GateRef, GetRunStateRequest, IdempotencyKey,
+    ResumeTurnPrecondition, ResumeTurnRequest, TurnActor, TurnCoordinator, TurnError,
+    TurnLifecycleEvent, TurnRunId, TurnRunRecord, TurnScope, TurnStatus,
     run_profile::{AgentLoopHostError, LoopRunContext},
 };
 
@@ -42,7 +42,7 @@ pub struct AwaitEdgeResolver<
 > {
     store: Arc<AwaitEdgeStore<F>>,
     goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
-    turn_state_store: RwLock<Arc<dyn TurnSpawnTreeStateStore>>,
+    agent_turn_runtime: RwLock<Arc<dyn AgentTurnSpawnTreeRuntimePort>>,
     // Deferred-bind, mirroring `coordinator` below: most callers have a
     // result writer in hand immediately (`new_unbound`, the common case),
     // but `ironclaw_reborn_composition::runtime` constructs its result
@@ -67,7 +67,7 @@ where
     pub fn new_unbound(
         store: Arc<AwaitEdgeStore<F>>,
         goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
-        turn_state_store: Arc<dyn TurnSpawnTreeStateStore>,
+        agent_turn_runtime: Arc<dyn AgentTurnSpawnTreeRuntimePort>,
         result_writer: Arc<dyn ironclaw_loop_host::LoopCapabilityResultWriter>,
         thread_service: Arc<S>,
     ) -> Self {
@@ -77,7 +77,7 @@ where
         Self {
             store,
             goal_store,
-            turn_state_store: RwLock::new(turn_state_store),
+            agent_turn_runtime: RwLock::new(agent_turn_runtime),
             result_writer: result_writer_cell,
             coordinator: OnceLock::new(),
             thread_service,
@@ -92,13 +92,13 @@ where
     pub fn new_unbound_deferred_result_writer(
         store: Arc<AwaitEdgeStore<F>>,
         goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
-        turn_state_store: Arc<dyn TurnSpawnTreeStateStore>,
+        agent_turn_runtime: Arc<dyn AgentTurnSpawnTreeRuntimePort>,
         thread_service: Arc<S>,
     ) -> Self {
         Self {
             store,
             goal_store,
-            turn_state_store: RwLock::new(turn_state_store),
+            agent_turn_runtime: RwLock::new(agent_turn_runtime),
             result_writer: OnceLock::new(),
             coordinator: OnceLock::new(),
             thread_service,
@@ -117,10 +117,10 @@ where
 
     pub fn bind_turn_tree_store(
         &self,
-        store: Arc<dyn TurnSpawnTreeStateStore>,
+        store: Arc<dyn AgentTurnSpawnTreeRuntimePort>,
     ) -> Result<(), TurnError> {
         let mut current = self
-            .turn_state_store
+            .agent_turn_runtime
             .write()
             .map_err(|_| TurnError::Unavailable {
                 reason: "await-edge resolver turn tree store lock poisoned".to_string(),
@@ -129,8 +129,8 @@ where
         Ok(())
     }
 
-    fn turn_state_store(&self) -> Result<Arc<dyn TurnSpawnTreeStateStore>, TurnError> {
-        self.turn_state_store
+    fn agent_turn_runtime(&self) -> Result<Arc<dyn AgentTurnSpawnTreeRuntimePort>, TurnError> {
+        self.agent_turn_runtime
             .read()
             .map(|store| Arc::clone(&*store))
             .map_err(|_| TurnError::Unavailable {
@@ -198,7 +198,7 @@ where
             });
         }
         match self
-            .turn_state_store()?
+            .agent_turn_runtime()?
             .get_run_state(GetRunStateRequest {
                 scope: event.scope.clone(),
                 run_id: event.run_id,
@@ -266,7 +266,7 @@ where
     }
 
     /// Rebuild a lost/never-written edge purely from the child's run record +
-    /// thread metadata — a pure data transformation, zero `turn_state_store`
+    /// thread metadata — a pure data transformation, zero `agent_turn_runtime`
     /// calls for the parent. The live parent-record lookup this used to do
     /// was reached from the same synchronous `TurnCommittedEventObserver`
     /// callback the child's own commit invokes, and deadlocked re-entering
@@ -392,7 +392,7 @@ where
 
     /// Returns the parent's `LoopRunContext` straight off the edge —
     /// captured once at open/reconstruct time (see `AwaitEdge::parent_run_context`'s
-    /// doc comment). Deliberately does **not** re-query `turn_state_store`
+    /// doc comment). Deliberately does **not** re-query `agent_turn_runtime`
     /// for the parent's record: doing so from inside the synchronous
     /// `TurnCommittedEventObserver` callback the child's own commit invokes
     /// deadlocks (verified against the live e2e harness — a second
@@ -571,7 +571,7 @@ where
             return Ok(ResolveOutcome::NotApplicable);
         };
         let Some(child_record) = self
-            .turn_state_store()?
+            .agent_turn_runtime()?
             .get_run_record(&event.scope, event.run_id)
             .await?
         else {
@@ -787,9 +787,9 @@ where
         tree_root_run_id: TurnRunId,
         child_run_id: TurnRunId,
     ) -> Result<(), TurnError> {
-        let turn_state_store = self.turn_state_store()?;
+        let agent_turn_runtime = self.agent_turn_runtime()?;
         let scope_for_release = scope.clone();
-        let turn_state_store_for_prune = Arc::clone(&turn_state_store);
+        let agent_turn_runtime_for_prune = Arc::clone(&agent_turn_runtime);
         let scope_for_prune = scope.clone();
         self.store
             .close_with_release(
@@ -797,10 +797,10 @@ where
                 parent_run_id,
                 child_run_id,
                 move || {
-                    let turn_state_store = Arc::clone(&turn_state_store);
+                    let agent_turn_runtime = Arc::clone(&agent_turn_runtime);
                     let scope = scope_for_release;
                     async move {
-                        turn_state_store
+                        agent_turn_runtime
                             .release_tree_descendants(&scope, tree_root_run_id, 1, child_run_id)
                             .await
                             .map_err(|error| super::AwaitEdgeStoreError::Backend {
@@ -809,10 +809,10 @@ where
                     }
                 },
                 move || {
-                    let turn_state_store = Arc::clone(&turn_state_store_for_prune);
+                    let agent_turn_runtime = Arc::clone(&agent_turn_runtime_for_prune);
                     let scope = scope_for_prune;
                     async move {
-                        turn_state_store
+                        agent_turn_runtime
                             .prune_released_child(&scope, tree_root_run_id, child_run_id)
                             .await
                             .map_err(|error| super::AwaitEdgeStoreError::Backend {
@@ -925,7 +925,7 @@ mod tests {
     }
 
     // ─── reconstruct_edge (FIX A): pure data transformation off cached
-    // `SubagentThreadMetadata`, zero `turn_state_store` calls for the
+    // `SubagentThreadMetadata`, zero `agent_turn_runtime` calls for the
     // parent ──────────────────────────────────────────────────────────
 
     struct ReconResultWriter;
@@ -968,14 +968,14 @@ mod tests {
         let store = Arc::new(AwaitEdgeStore::new(recon_scoped_fs()));
         let goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore> =
             Arc::new(crate::subagent::goal_store::in_memory_backed_subagent_goal_store());
-        let turn_state_store: Arc<dyn TurnSpawnTreeStateStore> =
-            Arc::new(ironclaw_turns::test_support::in_memory_turn_state_store());
+        let agent_turn_runtime: Arc<dyn AgentTurnSpawnTreeRuntimePort> =
+            Arc::new(ironclaw_turns::test_support::in_memory_agent_turn_runtime());
         let result_writer: Arc<dyn ironclaw_loop_host::LoopCapabilityResultWriter> =
             Arc::new(ReconResultWriter);
         AwaitEdgeResolver::new_unbound(
             store,
             goal_store,
-            turn_state_store,
+            agent_turn_runtime,
             result_writer,
             thread_service,
         )
@@ -1378,7 +1378,7 @@ mod tests {
             DefaultTurnCoordinator, SubmitChildRunRequest, SubmitTurnRequest, TurnSpawnTreePort,
         };
 
-        let state_store = Arc::new(ironclaw_turns::test_support::in_memory_turn_state_store());
+        let state_store = Arc::new(ironclaw_turns::test_support::in_memory_agent_turn_runtime());
         let coordinator = DefaultTurnCoordinator::new(Arc::clone(&state_store));
         let tenant_id = ironclaw_host_api::TenantId::new("close-edge-tree-root-tenant").unwrap();
         let agent_id = ironclaw_host_api::AgentId::new("close-edge-tree-root-agent").unwrap();
@@ -1549,14 +1549,14 @@ mod tests {
 
         let goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore> =
             Arc::new(crate::subagent::goal_store::in_memory_backed_subagent_goal_store());
-        let turn_state_store: Arc<dyn TurnSpawnTreeStateStore> = state_store;
+        let agent_turn_runtime: Arc<dyn AgentTurnSpawnTreeRuntimePort> = state_store;
         let result_writer: Arc<dyn ironclaw_loop_host::LoopCapabilityResultWriter> =
             Arc::new(ReconResultWriter);
         let thread_service = Arc::new(ironclaw_threads::InMemorySessionThreadService::default());
         let resolver = AwaitEdgeResolver::new_unbound(
             store,
             goal_store,
-            turn_state_store,
+            agent_turn_runtime,
             result_writer,
             thread_service,
         );
@@ -1593,7 +1593,7 @@ where
 
     fn bind_turn_tree_store(
         &self,
-        store: Arc<dyn TurnSpawnTreeStateStore>,
+        store: Arc<dyn AgentTurnSpawnTreeRuntimePort>,
     ) -> Result<(), TurnError> {
         AwaitEdgeResolver::bind_turn_tree_store(self, store)
     }

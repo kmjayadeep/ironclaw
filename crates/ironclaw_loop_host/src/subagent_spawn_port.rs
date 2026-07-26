@@ -19,10 +19,10 @@ use ironclaw_threads::{
     ThreadMessageId, ThreadScope,
 };
 use ironclaw_turns::{
-    AcceptedMessageRef, CancelRunRequest, CapabilityActivityId, GateRef, IdempotencyKey,
-    LoopGateRef, LoopResultRef, ReplyTargetBindingRef, RunProfileRequest, SanitizedCancelReason,
-    SourceBindingRef, SubmitChildRunRequest, SubmitTurnResponse, TurnActor, TurnCoordinator,
-    TurnError, TurnErrorCategory, TurnRunId, TurnScope, TurnSpawnTreePort, TurnSpawnTreeStateStore,
+    AcceptedMessageRef, AgentTurnSpawnTreeRuntimePort, CancelRunRequest, CapabilityActivityId,
+    GateRef, IdempotencyKey, LoopGateRef, LoopResultRef, ReplyTargetBindingRef, RunProfileRequest,
+    SanitizedCancelReason, SourceBindingRef, SubmitChildRunRequest, SubmitTurnResponse, TurnActor,
+    TurnCoordinator, TurnError, TurnErrorCategory, TurnRunId, TurnScope, TurnSpawnTreePort,
     run_profile::{
         AgentLoopHostError, AgentLoopHostErrorKind, CapabilityCallCandidate,
         CapabilityDeniedReasonKind, CapabilityDescriptorView, CapabilityFailureKind,
@@ -294,7 +294,7 @@ pub struct SubagentThreadMetadata {
     /// The spawning parent's `LoopRunContext`, cached verbatim at spawn time
     /// (`finish_spawn` already has it in hand — no new store fetch). Lets
     /// `ironclaw_runner`'s `reconstruct_edge` rebuild a lost/never-opened
-    /// await-edge with zero live `turn_state_store` lookups for the parent,
+    /// await-edge with zero live `agent_turn_runtime` lookups for the parent,
     /// avoiding the re-entrant deadlock of querying the store from inside
     /// the child's own commit-observer callback. New field on fresh threads
     /// only — the capability is deny-filtered in prod, so no old-thread
@@ -378,7 +378,7 @@ impl Default for SubagentSpawnLimits {
 pub struct SubagentSpawnDeps {
     pub coordinator: Arc<dyn TurnCoordinator>,
     pub child_runs: Arc<dyn TurnSpawnTreePort>,
-    pub turn_state_store: Arc<dyn TurnSpawnTreeStateStore>,
+    pub agent_turn_runtime: Arc<dyn AgentTurnSpawnTreeRuntimePort>,
     pub thread_service: Arc<dyn SessionThreadService>,
     pub goal_store: Arc<dyn SubagentSpawnGoalStore>,
     pub await_edge_writer: Arc<dyn crate::AwaitEdgeWriter>,
@@ -429,7 +429,7 @@ impl SpawnCompensationState {
             )) {
                 Ok(idempotency_key) => {
                     let _ = deps
-                        .turn_state_store
+                        .agent_turn_runtime
                         .request_cancel(CancelRunRequest {
                             scope: scope.clone(),
                             actor: actor.clone(),
@@ -469,7 +469,7 @@ impl SpawnCompensationState {
                 .map(|(_, _, run_id)| *run_id)
                 .unwrap_or(*tree_root);
             let _ = deps
-                .turn_state_store
+                .agent_turn_runtime
                 .release_tree_descendants(scope, *tree_root, 1, idempotency_key)
                 .await;
         }
@@ -724,7 +724,7 @@ impl SubagentSpawnCapabilityPort {
         let owner_user_id = actor.user_id.clone();
         let parent_record = self
             .deps
-            .turn_state_store
+            .agent_turn_runtime
             .get_run_record(&self.run_context.scope, self.run_context.run_id)
             .await
             .map_err(map_turn_error)?

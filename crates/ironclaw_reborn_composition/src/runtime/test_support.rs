@@ -88,14 +88,7 @@ impl RebornRuntime {
     }
 
     /// Like [`local_dev_approval_interaction_service_for_test`], but lets
-    /// the caller substitute the turn-state store the interaction
-    /// service's approval locator reads from — for harnesses whose real runs
-    /// live in a DIFFERENT `TurnStateStore` composition than this
-    /// this runtime's own turn state (e.g.
-    /// `RebornIntegrationGroup`, whose runs execute against its own
-    /// `shared.turn_store` via a separate `build_default_planned_runtime`).
-    /// Generic over `F` so any `TurnStateRowStore<F>`-backed store can be
-    /// passed directly.
+    /// harnesses substitute the process gate source that owns their runs.
     ///
     /// For tests only -- gated behind `test-support`, ships zero bytes in
     /// production builds.
@@ -115,13 +108,12 @@ impl RebornRuntime {
     }
 
     /// Auth-side counterpart of
-    /// [`local_dev_approval_interaction_service_with_turn_state_for_test`]. See
-    /// that method's doc for why the turn-state override exists.
+    /// [`local_dev_approval_interaction_service_with_process_gates_for_test`].
     ///
     /// For tests only -- gated behind `test-support`, ships zero bytes in
     /// production builds.
     ///
-    /// [`local_dev_approval_interaction_service_with_turn_state_for_test`]: Self::local_dev_approval_interaction_service_with_turn_state_for_test
+    /// [`local_dev_approval_interaction_service_with_process_gates_for_test`]: Self::local_dev_approval_interaction_service_with_process_gates_for_test
     #[cfg(feature = "test-support")]
     pub fn local_dev_auth_interaction_service_with_process_gates_for_test(
         &self,

@@ -40,18 +40,6 @@ pub(crate) fn render_run_summary(summary: &RunSummary) -> String {
             ),
             ("users", summary.users.to_string()),
             (
-                "turn_state_max_terminal_records",
-                format_optional(summary.turn_state_max_terminal_records),
-            ),
-            (
-                "turn_state_max_events",
-                format_optional(summary.turn_state_max_events),
-            ),
-            (
-                "turn_state_max_idempotency_records",
-                format_optional(summary.turn_state_max_idempotency_records),
-            ),
-            (
                 "active_thread_count",
                 format_active_thread_count(summary.active_thread_count, summary.users),
             ),
@@ -187,20 +175,8 @@ pub(crate) fn render_parent_summary(args: &Args, run_id: &str, summaries: &[RunS
         &[
             ("backend", args.backend.as_str().to_string()),
             (
-                "turn_state_backend",
-                args.turn_state_backend.as_str().to_string(),
-            ),
-            (
-                "turn_state_max_terminal_records",
-                format_optional(args.turn_state_max_terminal_records),
-            ),
-            (
-                "turn_state_max_events",
-                format_optional(args.turn_state_max_events),
-            ),
-            (
-                "turn_state_max_idempotency_records",
-                format_optional(args.turn_state_max_idempotency_records),
+                "process_journal_backend",
+                args.process_journal_backend.as_str().to_string(),
             ),
             ("preset", format_preset(args.preset)),
             ("scenario", args.scenario.as_str().to_string()),

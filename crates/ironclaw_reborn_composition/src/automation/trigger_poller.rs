@@ -25,7 +25,7 @@ pub use ironclaw_extension_host::channel_triggered_delivery::PostSubmitDeliveryH
 
 mod active_run_lookup;
 pub(crate) use active_run_lookup::{
-    RebindableProcessLifecycleLookupSource, SnapshotActiveRunLookup,
+    ProcessActiveRunLookup, RebindableProcessLifecycleLookupSource,
 };
 
 pub(crate) const TRIGGER_POLLER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);

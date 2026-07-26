@@ -53,8 +53,8 @@ use ironclaw_runner::{
 use ironclaw_threads::{InMemorySessionThreadService, SessionThreadService, ThreadScope};
 use ironclaw_trust::{AuthorityCeiling, EffectiveTrustClass, TrustDecision, TrustProvenance};
 use ironclaw_turns::{
-    CheckpointStateStorePort, LoopCheckpointStore, LoopResultRef, RunProfileResolutionRequest,
-    RunProfileResolver, TurnId, TurnRunId, TurnScope, TurnStateStore,
+    AgentTurnRuntimePort, CheckpointStateStorePort, LoopCheckpointStore, LoopResultRef,
+    RunProfileResolutionRequest, RunProfileResolver, TurnId, TurnRunId, TurnScope,
     run_profile::{
         AgentLoopHostError, CapabilityInputRef, InMemoryLoopHostMilestoneSink,
         InstructionSafetyContext, LoopCancelReasonKind, LoopModelBudgetAccountant,
@@ -64,7 +64,7 @@ use ironclaw_turns::{
 };
 
 use ironclaw_loop_host::in_memory_backed_checkpoint_state_store as in_memory_checkpoint_state_store;
-use ironclaw_turns::test_support::{in_memory_loop_checkpoint_store, in_memory_turn_state_store};
+use ironclaw_turns::test_support::{in_memory_agent_turn_runtime, in_memory_loop_checkpoint_store};
 
 async fn build_runtime_for_test(input: RebornHostBindings) -> RebornRuntime {
     build_reborn_runtime(RebornRuntimeInput::from_build_input(input))
@@ -1365,14 +1365,14 @@ async fn adapter_bundle_satisfies_product_live_runtime_readiness_gate() {
     ))
     .await;
     let thread_service = Arc::new(InMemorySessionThreadService::default());
-    let turn_state = Arc::new(in_memory_turn_state_store());
+    let turn_state = Arc::new(in_memory_agent_turn_runtime());
     let checkpoint_state_store = in_memory_checkpoint_state_store();
     let loop_checkpoint_store = Arc::new(in_memory_loop_checkpoint_store());
     let milestone_sink = Arc::new(InMemoryLoopHostMilestoneSink::default());
     let thread_scope = thread_scope("runtime-gate");
     let adapters = adapters_from_runtime(&services, adapter_config()).unwrap();
 
-    let turn_state_for_evidence: Arc<dyn TurnStateStore> = turn_state.clone();
+    let turn_state_for_evidence: Arc<dyn AgentTurnRuntimePort> = turn_state.clone();
     let loop_checkpoint_for_evidence: Arc<dyn LoopCheckpointStore> = loop_checkpoint_store.clone();
     let await_edge_mounts = MountView::new(vec![MountGrant::new(
         MountAlias::new("/turns").unwrap(),
@@ -1387,7 +1387,7 @@ async fn adapter_bundle_satisfies_product_live_runtime_readiness_gate() {
     let await_edge_resolver = Arc::new(AwaitEdgeResolver::new_unbound(
         Arc::clone(&await_edge_store),
         subagent_goal_store.clone() as Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
-        turn_state.clone() as Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore>,
+        turn_state.clone() as Arc<dyn ironclaw_turns::AgentTurnSpawnTreeRuntimePort>,
         adapters.capability_result_writer.clone(),
         Arc::clone(&thread_service),
     ));

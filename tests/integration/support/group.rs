@@ -101,8 +101,8 @@ use ironclaw_turns::run_profile::{
     ModelProfileId,
 };
 use ironclaw_turns::{
-    AgentTurnProcessRuntime, InMemoryTurnEventSink, LoopCheckpointStore,
-    ProcessLoopCheckpointStore, TurnCoordinator, TurnEventSink, TurnScope, TurnStateStore,
+    AgentTurnProcessRuntime, AgentTurnRuntimePort, InMemoryTurnEventSink, LoopCheckpointStore,
+    ProcessLoopCheckpointStore, TurnCoordinator, TurnEventSink, TurnScope,
 };
 
 use super::builder::{
@@ -878,7 +878,7 @@ impl RebornIntegrationGroupBuilder {
         let await_edge_resolver = Arc::new(AwaitEdgeResolver::new_unbound(
             Arc::clone(&await_edge_store),
             await_edge_goal_store.clone() as Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
-            turn_runtime.clone() as Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore>,
+            turn_runtime.clone() as Arc<dyn ironclaw_turns::AgentTurnSpawnTreeRuntimePort>,
             capability_result_writer.clone(),
             group_thread_harness.service.clone(),
         ));
@@ -886,7 +886,7 @@ impl RebornIntegrationGroupBuilder {
             Arc::clone(&await_edge_resolver),
             Arc::clone(&await_edge_store),
         ));
-        let turn_state_for_evidence: Arc<dyn TurnStateStore> = turn_runtime.clone();
+        let turn_state_for_evidence: Arc<dyn AgentTurnRuntimePort> = turn_runtime.clone();
         let mut evidence = ThreadCheckpointLoopExitEvidencePort::new_with_thread_scope(
             group_thread_harness.service.clone(),
             turn_state_for_evidence,
@@ -1038,7 +1038,7 @@ impl RebornIntegrationGroupBuilder {
             model_route_resolver: None,
             // E-GATEWAY: left `None` — it does not gate whether a run reaches
             // `Cancelled`. `RebornLoopDriverHostFactory` always builds its own
-            // default `TurnStateRunCancellationFactory`, whose cancel poll loop
+            // default `AgentTurnRunCancellationFactory`, whose cancel poll loop
             // drives a parked run to `Cancelled` on resume regardless (verified
             // by `reborn_integration_cancel`). Supplying one here would only add
             // the product-live wake-notifier fan-out, unexercised by this test.

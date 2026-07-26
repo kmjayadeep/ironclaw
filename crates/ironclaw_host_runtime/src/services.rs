@@ -56,8 +56,8 @@ use ironclaw_secrets::{
 };
 use ironclaw_trust::{HostTrustPolicy, TrustPolicy};
 use ironclaw_turns::{
-    DefaultTurnCoordinator, NoopTurnRunWakeNotifier, RunProfileResolver, TurnRunWakeNotifier,
-    TurnStateStore,
+    AgentTurnRuntimePort, DefaultTurnCoordinator, NoopTurnRunWakeNotifier, RunProfileResolver,
+    TurnRunWakeNotifier,
 };
 use ironclaw_wasm::{
     DenyWasmHostHttp, EmptyWasmRuntimeCredentials, PreparedWitTool, WasmError,
@@ -166,7 +166,7 @@ where
     mcp_runtime: Option<Arc<dyn McpExecutor>>,
     first_party_runtime: Option<Arc<FirstPartyCapabilityRegistry>>,
     wasm_runtime: Option<Arc<WasmRuntimeAdapter>>,
-    turn_state: Option<Arc<dyn TurnStateStore>>,
+    turn_state: Option<Arc<dyn AgentTurnRuntimePort>>,
     run_profile_resolver: Option<Arc<dyn RunProfileResolver>>,
     turn_run_wake_notifier: Option<Arc<dyn TurnRunWakeNotifier>>,
     /// Late-installed extension-host snapshot resolver (composition builds

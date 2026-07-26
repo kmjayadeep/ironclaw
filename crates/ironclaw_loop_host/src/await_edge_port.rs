@@ -139,7 +139,7 @@ pub trait AwaitEdgeSettler: Send + Sync {
 
     fn bind_turn_tree_store(
         &self,
-        store: Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore>,
+        store: Arc<dyn ironclaw_turns::AgentTurnSpawnTreeRuntimePort>,
     ) -> Result<(), TurnError>;
 
     /// Bind the capability result writer late, mirroring `bind_coordinator`'s

@@ -228,7 +228,7 @@ pub(crate) fn build_product_surface_with_channel_connection(
     )));
     let backing = automation_backing(runtime);
     let active_run_lookup: Arc<dyn ironclaw_triggers::TriggerActiveRunLookup> = Arc::new(
-        crate::automation::trigger_poller::SnapshotActiveRunLookup::new(backing.lifecycle_source),
+        crate::automation::trigger_poller::ProcessActiveRunLookup::new(backing.lifecycle_source),
     );
     api = api.with_automation_product_service(Arc::new(
         RebornAutomationProductService::new(backing.repository, active_run_lookup)

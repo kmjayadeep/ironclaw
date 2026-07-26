@@ -62,10 +62,8 @@ pub fn in_memory_agent_turn_process_system() -> InMemoryAgentTurnProcessSystem {
     InMemoryAgentTurnProcessSystem::new()
 }
 
-/// Compatibility fixture name for tests that only require the turn projection.
-///
-/// This returns a process-backed runtime; there is no turn state store behind it.
-pub fn in_memory_turn_state_store() -> AgentTurnProcessRuntime {
+/// Process-backed agent-turn projection fixture.
+pub fn in_memory_agent_turn_runtime() -> AgentTurnProcessRuntime {
     in_memory_agent_turn_process_system().runtime()
 }
 

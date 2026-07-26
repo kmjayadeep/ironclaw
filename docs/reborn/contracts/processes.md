@@ -131,13 +131,15 @@ pub trait ProcessJournalSource: Send + Sync {
 ```
 
 `ProcessJournalSource` is the canonical read-side process contract for current
-state and ordered lifecycle facts. Turn lifecycle streams are compatibility
-views over this source during the migration, not a second journal authority.
+state and ordered lifecycle facts. Domain lifecycle streams, including agent
+turn events, are projections over this source and are not separate journal
+authorities.
 
-During migration, `ironclaw_turns::AgentTurnProcessTransitionAdapter` implements
-this port over the existing `TurnRunTransitionPort`. This is intentionally an
-adapter, not a second store: process-named callers must converge onto the
-existing transition engine until the backing store itself is renamed/moved.
+`ProcessJournalStore` implements the process mutation and read ports directly.
+`ironclaw_turns::AgentTurnProcessRuntime` projects turn coordination and query
+contracts over those ports. Its `ProcessJournalStoreTurnAdapter` translates
+errors at the crate boundary but owns no state and contains no reverse
+turn-transition engine.
 
 `spawn_json` creates a `Running` process record. `BackgroundProcessManager` then drives `Running -> Completed` or `Running -> Failed` from the attached `ProcessExecutor`. `ProcessHost::kill` drives `Running -> Killed` and, when configured with a shared `ProcessCancellationRegistry`, also signals the running executor's cooperative cancellation token. Terminal states are protected: `Completed`, `Failed`, and `Killed` cannot be overwritten by a late background completion.
 

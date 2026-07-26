@@ -12,10 +12,10 @@ use ironclaw_threads::{
     ThreadMessageId, ThreadMessageRecord, ThreadScope, ToolResultReferenceEnvelope,
 };
 use ironclaw_turns::{
-    CheckpointStateStorePort, GetCheckpointStateRequest, GetLoopCheckpointRequest,
-    GetRunStateRequest, LoopBlockedKind, LoopCheckpointKind, LoopCheckpointStateRef, LoopGateRef,
-    LoopMessageRef, LoopResultRef, TurnError, TurnId, TurnRunId, TurnScope, TurnStateStore,
-    TurnStatus,
+    AgentTurnRuntimePort, CheckpointStateStorePort, GetCheckpointStateRequest,
+    GetLoopCheckpointRequest, GetRunStateRequest, LoopBlockedKind, LoopCheckpointKind,
+    LoopCheckpointStateRef, LoopGateRef, LoopMessageRef, LoopResultRef, TurnError, TurnId,
+    TurnRunId, TurnScope, TurnStatus,
 };
 
 pub use ironclaw_turns::loop_exit::{
@@ -162,7 +162,7 @@ where
     S: SessionThreadService + ?Sized,
 {
     thread_service: Arc<S>,
-    turn_state_store: Arc<dyn TurnStateStore>,
+    agent_turn_runtime: Arc<dyn AgentTurnRuntimePort>,
     loop_checkpoint_store: Arc<dyn ironclaw_turns::LoopCheckpointStore>,
     // arch-exempt: optional_arc, checkpoint evidence is absent in minimal loop-exit tests, plan #4539
     checkpoint_state_store: Option<Arc<dyn CheckpointStateStorePort>>,
@@ -210,13 +210,13 @@ where
 {
     pub fn new(
         thread_service: Arc<S>,
-        turn_state_store: Arc<dyn TurnStateStore>,
+        agent_turn_runtime: Arc<dyn AgentTurnRuntimePort>,
         loop_checkpoint_store: Arc<dyn ironclaw_turns::LoopCheckpointStore>,
         await_dependent_run_evidence: Arc<dyn AwaitDependentRunEvidenceStore>,
     ) -> Self {
         Self {
             thread_service,
-            turn_state_store,
+            agent_turn_runtime,
             loop_checkpoint_store,
             checkpoint_state_store: None,
             approval_gate_evidence: None,
@@ -229,14 +229,14 @@ where
 
     pub fn new_with_thread_scope(
         thread_service: Arc<S>,
-        turn_state_store: Arc<dyn TurnStateStore>,
+        agent_turn_runtime: Arc<dyn AgentTurnRuntimePort>,
         loop_checkpoint_store: Arc<dyn ironclaw_turns::LoopCheckpointStore>,
         await_dependent_run_evidence: Arc<dyn AwaitDependentRunEvidenceStore>,
         thread_scope: ThreadScope,
     ) -> Self {
         Self {
             thread_service,
-            turn_state_store,
+            agent_turn_runtime,
             loop_checkpoint_store,
             checkpoint_state_store: None,
             approval_gate_evidence: None,
@@ -464,7 +464,7 @@ where
             return Ok(true);
         }
         let state = self
-            .turn_state_store
+            .agent_turn_runtime
             .get_run_state(GetRunStateRequest {
                 scope: scope.clone(),
                 run_id,
@@ -533,7 +533,7 @@ where
             );
         } else if thread_scope.owner_user_id.is_some() {
             let run_state = self
-                .turn_state_store
+                .agent_turn_runtime
                 .get_run_state(GetRunStateRequest {
                     scope: scope.clone(),
                     run_id,

@@ -138,7 +138,7 @@ pub(crate) struct Args {
     /// operation blocks its run on a gate (alternating approval/auth), resumes
     /// it, then re-claims and completes. 0 (default) = never block, the pure
     /// claim/complete hot path. Combine with
-    /// `--turn-state-backend memory-persist-on-block` to drive persist-on-block
+    /// `--process-journal-backend memory-persist-on-block` to drive persist-on-block
     /// writes under concurrency and confirm the durable sink does not
     /// reintroduce contention.
     #[arg(long, default_value_t = 0)]
@@ -147,25 +147,11 @@ pub(crate) struct Args {
     #[arg(long, value_enum, default_value_t = Scenario::ReserveRelease)]
     pub(crate) scenario: Scenario,
 
-    /// Turn-state store backend for user-turn scenarios.
-    /// `filesystem-row` = durable typed append-log deltas with a hot
-    /// in-process row cache (the production path); `row-memory` = the same row
-    /// store over an in-memory backend. No effect on non-turn scenarios.
-    #[arg(long, value_enum, default_value_t = TurnStateBackend::FilesystemRow)]
-    pub(crate) turn_state_backend: TurnStateBackend,
-
-    /// Override max retained terminal run records in the turn-state store.
-    /// Useful for measuring filesystem snapshot growth sensitivity.
-    #[arg(long)]
-    pub(crate) turn_state_max_terminal_records: Option<usize>,
-
-    /// Override max retained lifecycle events in the turn-state store.
-    #[arg(long)]
-    pub(crate) turn_state_max_events: Option<usize>,
-
-    /// Override max retained idempotency records per operation family.
-    #[arg(long)]
-    pub(crate) turn_state_max_idempotency_records: Option<usize>,
+    /// Process-journal backend for user-turn scenarios.
+    /// `filesystem-journal` persists the production journal shape;
+    /// `memory-journal` removes durable-backend cost.
+    #[arg(long, value_enum, default_value_t = ProcessJournalBackend::FilesystemJournal)]
+    pub(crate) process_journal_backend: ProcessJournalBackend,
 
     /// Shared run id. Defaults to a fresh UUID.
     #[arg(long)]
@@ -524,20 +510,6 @@ impl Args {
         }
     }
 
-    pub(crate) fn turn_state_store_limits(&self) -> ironclaw_turns::TurnStateStoreLimits {
-        let defaults = ironclaw_turns::TurnStateStoreLimits::default();
-        ironclaw_turns::TurnStateStoreLimits {
-            max_events: self.turn_state_max_events.unwrap_or(defaults.max_events),
-            max_terminal_records: self
-                .turn_state_max_terminal_records
-                .unwrap_or(defaults.max_terminal_records),
-            max_idempotency_records: self
-                .turn_state_max_idempotency_records
-                .unwrap_or(defaults.max_idempotency_records),
-            ..defaults
-        }
-    }
-
     pub(crate) fn warmup_args(&self) -> Option<Self> {
         if self.warmup_seconds == 0 {
             return None;
@@ -605,21 +577,21 @@ impl Backend {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum TurnStateBackend {
+pub(crate) enum ProcessJournalBackend {
     /// Durable typed append-log deltas with one hot in-process store per
     /// tenant/user. The production turn-state store.
-    FilesystemRow,
-    /// The row store over an in-memory `RootFilesystem` backend — the in-memory
+    FilesystemJournal,
+    /// The process journal over an in-memory `RootFilesystem` backend — the in-memory
     /// turn-state authority: coordination in memory with the durable backend
-    /// cost removed. Measures the row-store mechanism's overhead in isolation.
-    RowMemory,
+    /// cost removed. Measures the process-journal mechanism's overhead in isolation.
+    MemoryJournal,
 }
 
-impl TurnStateBackend {
+impl ProcessJournalBackend {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::FilesystemRow => "filesystem-row",
-            Self::RowMemory => "row-memory",
+            Self::FilesystemJournal => "filesystem-journal",
+            Self::MemoryJournal => "memory-journal",
         }
     }
 }
@@ -819,10 +791,7 @@ struct RunSummary {
     users: usize,
     active_thread_count: usize,
     threads_per_owner: usize,
-    turn_state_backend: TurnStateBackend,
-    turn_state_max_terminal_records: Option<usize>,
-    turn_state_max_events: Option<usize>,
-    turn_state_max_idempotency_records: Option<usize>,
+    process_journal_backend: ProcessJournalBackend,
     gate_blocked_every: usize,
     tenants: usize,
     prefill_threads: usize,
@@ -1473,8 +1442,8 @@ fn run_child_processes(args: &Args, run_id: &str) -> Result<Vec<RunSummary>, Str
             .arg(args.prefill_concurrency.to_string())
             .arg("--scenario")
             .arg(args.scenario.as_str())
-            .arg("--turn-state-backend")
-            .arg(args.turn_state_backend.as_str())
+            .arg("--process-journal-backend")
+            .arg(args.process_journal_backend.as_str())
             .arg("--postgres-pool-size")
             .arg(args.postgres_pool_size.to_string())
             .arg("--progress-interval-seconds")
@@ -1536,21 +1505,6 @@ fn run_child_processes(args: &Args, run_id: &str) -> Result<Vec<RunSummary>, Str
         }
         if args.span_log_failures {
             command.arg("--span-log-failures");
-        }
-        if let Some(max_terminal_records) = args.turn_state_max_terminal_records {
-            command
-                .arg("--turn-state-max-terminal-records")
-                .arg(max_terminal_records.to_string());
-        }
-        if let Some(max_events) = args.turn_state_max_events {
-            command
-                .arg("--turn-state-max-events")
-                .arg(max_events.to_string());
-        }
-        if let Some(max_idempotency_records) = args.turn_state_max_idempotency_records {
-            command
-                .arg("--turn-state-max-idempotency-records")
-                .arg(max_idempotency_records.to_string());
         }
         if let Some(path) = &args.trace_jsonl {
             command
@@ -2204,10 +2158,7 @@ fn summarize(args: &Args, run_id: &str, input: SummaryInput) -> RunSummary {
         users: args.users,
         active_thread_count: args.active_thread_count,
         threads_per_owner: args.threads_per_owner,
-        turn_state_backend: args.turn_state_backend,
-        turn_state_max_terminal_records: args.turn_state_max_terminal_records,
-        turn_state_max_events: args.turn_state_max_events,
-        turn_state_max_idempotency_records: args.turn_state_max_idempotency_records,
+        process_journal_backend: args.process_journal_backend,
         gate_blocked_every: args.gate_blocked_every,
         tenants: args.tenants,
         prefill_threads: args.prefill_threads,

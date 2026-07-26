@@ -120,7 +120,7 @@ pub struct AwaitEdge {
     /// `AwaitedChildSetRecord.parent_run_context`, spawn-time-fresh) — a
     /// third additive field beyond §5.6's list, and a deviation found only
     /// at implementation/test time (not caught in review): re-fetching the
-    /// parent's `TurnRunRecord` from `turn_state_store` at settle time, from
+    /// parent's `TurnRunRecord` from `agent_turn_runtime` at settle time, from
     /// *inside* the synchronous `TurnCommittedEventObserver` callback the
     /// child's own commit invokes, deadlocks — the store's commit path holds
     /// a lock across observer dispatch, and a second `get_run_record` call
@@ -128,7 +128,7 @@ pub struct AwaitEdge {
     /// context avoids the re-entrant call entirely. `resolver::reconstruct_edge`
     /// closes the same deadlock class for the recovery path: it sources this
     /// field from `SubagentThreadMetadata.parent_run_context` instead, with
-    /// zero live `turn_state_store` lookup for the parent.
+    /// zero live `agent_turn_runtime` lookup for the parent.
     pub parent_run_context: ironclaw_turns::run_profile::LoopRunContext,
     pub tree_root_run_id: TurnRunId,
     pub gate_ref: GateRef,

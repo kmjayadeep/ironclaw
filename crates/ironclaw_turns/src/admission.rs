@@ -3,8 +3,6 @@ use std::collections::HashMap;
 use ironclaw_host_api::{AgentId, ProjectId, TenantId, UserId};
 use serde::{Deserialize, Serialize};
 
-use crate::TurnRunId;
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct TurnAdmissionClass(String);
@@ -241,12 +239,4 @@ pub struct TurnAdmissionCapacityDenial {
     pub limit: u64,
     pub active_count: u64,
     pub retry_after_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TurnAdmissionReservationRecord {
-    pub run_id: TurnRunId,
-    pub admission_class: TurnAdmissionClass,
-    pub buckets: Vec<TurnAdmissionBucket>,
-    pub released: bool,
 }

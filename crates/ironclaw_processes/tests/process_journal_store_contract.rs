@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use chrono::Utc;
-use ironclaw_filesystem::{InMemoryBackend, ScopedFilesystem};
+use ironclaw_filesystem::{DiskFilesystem, FilesystemError, InMemoryBackend, ScopedFilesystem};
 use ironclaw_host_api::{
-    AgentId, InvocationId, MountAlias, MountGrant, MountPermissions, MountView, ProcessId,
-    ProjectId, ResourceScope, TenantId, ThreadId, TurnGateRef, UserId, VirtualPath,
+    AgentId, HostPath, InvocationId, MountAlias, MountGrant, MountPermissions, MountView,
+    ProcessId, ProjectId, ResourceScope, TenantId, ThreadId, TurnGateRef, UserId, VirtualPath,
 };
 use ironclaw_processes::{
     CancelProcessRequest, ClaimProcessesRequest, GetProcessCheckpointRequest,
@@ -39,6 +39,133 @@ impl ProcessJournalCommitObserver for RecordingProcessObserver {
             .push(commit);
         Ok(())
     }
+}
+
+#[tokio::test]
+async fn process_journal_fails_closed_when_backend_lacks_versioned_cas() {
+    let storage = tempfile::tempdir().expect("temporary process journal directory");
+    let mut backend = DiskFilesystem::new();
+    backend
+        .mount_local(
+            VirtualPath::new("/engine").expect("engine path"),
+            HostPath::from_path_buf(storage.path().to_path_buf()),
+        )
+        .expect("mount process journal directory");
+    let mounts = MountView::new(vec![MountGrant::new(
+        MountAlias::new("/processes").expect("mount alias"),
+        VirtualPath::new("/engine/processes").expect("virtual path"),
+        MountPermissions::read_write_list_delete(),
+    )])
+    .expect("mount view");
+    let store = ProcessJournalStore::new(Arc::new(ScopedFilesystem::with_fixed_view(
+        Arc::new(backend),
+        mounts,
+    )));
+    let scope = scope();
+
+    store
+        .submit_process(SubmitProcessRequest {
+            process_id: ProcessId::new(),
+            process_kind: ProcessKind::Internal,
+            scope: scope.clone(),
+            exclusive_within_scope: false,
+            operation_id: None,
+            owner_user_id: Some(scope.user_id.clone()),
+            concurrency_class: None,
+            parent_process_id: None,
+            root_process_id: None,
+            spawn_tree_descendant_cap: None,
+            checkpoint_ref: None,
+            created_at: Utc::now(),
+            metadata: serde_json::Value::Null,
+        })
+        .await
+        .expect("first write uses absent CAS");
+
+    let error = store
+        .submit_process(SubmitProcessRequest {
+            process_id: ProcessId::new(),
+            process_kind: ProcessKind::Internal,
+            scope: scope.clone(),
+            exclusive_within_scope: false,
+            operation_id: None,
+            owner_user_id: Some(scope.user_id),
+            concurrency_class: None,
+            parent_process_id: None,
+            root_process_id: None,
+            spawn_tree_descendant_cap: None,
+            checkpoint_ref: None,
+            created_at: Utc::now(),
+            metadata: serde_json::Value::Null,
+        })
+        .await
+        .expect_err("versioned write must not downgrade to an unconditional overwrite");
+    assert!(matches!(
+        error,
+        ironclaw_processes::ProcessJournalStoreError::Filesystem(
+            FilesystemError::Unsupported { .. }
+        )
+    ));
+}
+
+#[tokio::test]
+async fn process_journal_cas_serializes_concurrent_store_handles() {
+    let filesystem = in_memory_backed_processes_filesystem();
+    let first = Arc::new(ProcessJournalStore::new(Arc::clone(&filesystem)));
+    let second = Arc::new(ProcessJournalStore::new(filesystem));
+    let scope = scope();
+    let request = |process_id, exclusive_within_scope| SubmitProcessRequest {
+        process_id,
+        process_kind: ProcessKind::Internal,
+        scope: scope.clone(),
+        exclusive_within_scope,
+        operation_id: None,
+        owner_user_id: Some(scope.user_id.clone()),
+        concurrency_class: None,
+        parent_process_id: None,
+        root_process_id: None,
+        spawn_tree_descendant_cap: None,
+        checkpoint_ref: None,
+        created_at: Utc::now(),
+        metadata: serde_json::Value::Null,
+    };
+
+    let (first_result, second_result) = tokio::join!(
+        first.submit_process(request(ProcessId::new(), false)),
+        second.submit_process(request(ProcessId::new(), false)),
+    );
+    first_result.expect("first concurrent submission");
+    second_result.expect("second concurrent submission");
+    let page = first
+        .read_process_journal_log_after(None, 10)
+        .await
+        .expect("read concurrent journal");
+    assert_eq!(page.entries.len(), 2);
+
+    let exclusive_scope = ResourceScope {
+        thread_id: Some(ThreadId::new("exclusive-thread").expect("exclusive thread")),
+        ..scope
+    };
+    let exclusive_request = |process_id| SubmitProcessRequest {
+        process_id,
+        process_kind: ProcessKind::AgentTurn,
+        scope: exclusive_scope.clone(),
+        exclusive_within_scope: true,
+        operation_id: None,
+        owner_user_id: Some(exclusive_scope.user_id.clone()),
+        concurrency_class: None,
+        parent_process_id: None,
+        root_process_id: None,
+        spawn_tree_descendant_cap: None,
+        checkpoint_ref: None,
+        created_at: Utc::now(),
+        metadata: serde_json::Value::Null,
+    };
+    let (first_result, second_result) = tokio::join!(
+        first.submit_process(exclusive_request(ProcessId::new())),
+        second.submit_process(exclusive_request(ProcessId::new())),
+    );
+    assert_ne!(first_result.is_ok(), second_result.is_ok());
 }
 
 #[tokio::test]

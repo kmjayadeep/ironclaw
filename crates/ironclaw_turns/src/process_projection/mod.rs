@@ -1,9 +1,8 @@
 //! Agent-turn adapter for the canonical process journal.
 //!
 //! The process journal vocabulary lives in `ironclaw_processes`. This module
-//! only maps the existing turn-run records and runner envelopes into that
-//! neutral process vocabulary while the turn store is still the backing
-//! implementation.
+//! maps agent-turn requests and projections onto that neutral process
+//! vocabulary. The process journal is authoritative.
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -24,7 +23,6 @@ use ironclaw_processes::{
     ReserveProcessTreeRequest, ResumeProcessRequest, SubmitProcessRequest,
 };
 
-#[cfg(feature = "test-support")]
 use crate::{
     AcceptedMessageRef, AdmissionRejection, AdmissionRejectionReason, BlockedReason, GateKind,
     GateResumeDisposition, ProductTurnContext, ReplyTargetBindingRef, ResolvedRunProfile,
@@ -33,6 +31,7 @@ use crate::{
     TurnCheckpointId, TurnCommittedEventObserver, TurnError, TurnEventKind, TurnEventSink, TurnId,
     TurnLifecycleEvent, TurnOriginKind, TurnRunId, TurnRunProfile, TurnRunRecord, TurnRunState,
     TurnRunnerId, TurnScope, TurnStatus,
+    agent_turn_runtime::SpawnTreeReservation,
     events::{
         EventCursor, TurnBlockedGateKind, TurnBlockedGateMetadata, TurnEventPage,
         TurnEventProjectionSource,
@@ -41,7 +40,6 @@ use crate::{
     response::{CancelRunResponse, ResumeTurnResponse, RetryTurnResponse, SubmitTurnResponse},
     run_profile::{LoopModelRouteSnapshot, LoopModelUsage},
     runner::{ClaimedTurnRun, TurnRunnerOutcome},
-    store::SpawnTreeReservation,
 };
 
 pub const AGENT_TURN_PROCESS_KIND: &str = "agent_turn";
@@ -486,7 +484,7 @@ impl AgentTurnProcessRuntime {
 }
 
 #[async_trait]
-impl crate::TurnStateStore for AgentTurnProcessRuntime {
+impl crate::AgentTurnRuntimePort for AgentTurnProcessRuntime {
     async fn submit_turn(
         &self,
         request: SubmitTurnRequest,
@@ -524,7 +522,7 @@ impl crate::TurnStateStore for AgentTurnProcessRuntime {
 }
 
 #[async_trait]
-impl crate::TurnSpawnTreeStateStore for AgentTurnProcessRuntime {
+impl crate::AgentTurnSpawnTreeRuntimePort for AgentTurnProcessRuntime {
     async fn submit_child_turn(
         &self,
         request: SubmitChildRunRequest,
@@ -1383,22 +1381,6 @@ pub fn process_outcome_from_turn_runner_outcome(outcome: TurnRunnerOutcome) -> P
     }
 }
 
-pub fn turn_runner_outcome_from_process_outcome(
-    outcome: ProcessOutcome,
-) -> Result<TurnRunnerOutcome, TurnError> {
-    Ok(match outcome {
-        ProcessOutcome::Completed | ProcessOutcome::Stopped => TurnRunnerOutcome::Completed,
-        ProcessOutcome::Cancelled | ProcessOutcome::Killed { .. } => TurnRunnerOutcome::Cancelled,
-        ProcessOutcome::Suspended { suspension, .. } => TurnRunnerOutcome::Blocked {
-            checkpoint_id: TurnCheckpointId::new(),
-            state_ref: crate::run_profile::LoopCheckpointStateRef::legacy_unknown(),
-            reason: blocked_reason_from_process_suspension(suspension)?,
-            blocked_activity_id: None,
-        },
-        ProcessOutcome::Failed { failure } => TurnRunnerOutcome::Failed { failure },
-    })
-}
-
 fn process_suspension_from_blocked_reason(reason: BlockedReason) -> ProcessSuspension {
     let kind = process_suspension_kind_from_gate_kind(reason.gate_kind());
     ProcessSuspension {
@@ -1408,31 +1390,6 @@ fn process_suspension_from_blocked_reason(reason: BlockedReason) -> ProcessSuspe
         credential_requirements: reason.credential_requirements().to_vec(),
         detail: None,
     }
-}
-
-fn blocked_reason_from_process_suspension(
-    suspension: ProcessSuspension,
-) -> Result<BlockedReason, TurnError> {
-    let Some(gate_ref) = suspension.gate_ref else {
-        return Err(TurnError::InvalidRequest {
-            reason: "process suspension cannot convert to turn blocked reason without gate_ref"
-                .to_string(),
-        });
-    };
-    Ok(match suspension.kind {
-        ProcessSuspensionKind::Approval => BlockedReason::Approval { gate_ref },
-        ProcessSuspensionKind::Authorization => BlockedReason::Auth {
-            gate_ref,
-            credential_requirements: suspension.credential_requirements,
-        },
-        ProcessSuspensionKind::Resource => BlockedReason::Resource { gate_ref },
-        ProcessSuspensionKind::AwaitingChildProcess => {
-            BlockedReason::AwaitDependentRun { gate_ref }
-        }
-        ProcessSuspensionKind::ExternalTool
-        | ProcessSuspensionKind::ExternalProcess
-        | ProcessSuspensionKind::ExtensionDefined => BlockedReason::ExternalTool { gate_ref },
-    })
 }
 
 #[cfg(test)]

@@ -58,11 +58,12 @@ use ironclaw_threads::{
     ThreadMessageRecord, ThreadScope,
 };
 use ironclaw_turns::{
-    CancelRunRequest, CheckpointStateStorePort, GateRef, GetLoopCheckpointRequest, IdempotencyKey,
-    LoopBlockedKind, LoopCheckpointKind, LoopCheckpointStore, ProcessLoopCheckpointStore,
-    ReplyTargetBindingRef, ResumeTurnRequest, RetryTurnRequest, RetryTurnResponse,
-    SanitizedCancelReason, SourceBindingRef, TurnActor, TurnCoordinator, TurnError, TurnRunId,
-    TurnRunRecord, TurnRunState, TurnScope, TurnSpawnTreeStateStore, TurnStateStore, TurnStatus,
+    AgentTurnRuntimePort, AgentTurnSpawnTreeRuntimePort, CancelRunRequest,
+    CheckpointStateStorePort, GateRef, GetLoopCheckpointRequest, IdempotencyKey, LoopBlockedKind,
+    LoopCheckpointKind, LoopCheckpointStore, ProcessLoopCheckpointStore, ReplyTargetBindingRef,
+    ResumeTurnRequest, RetryTurnRequest, RetryTurnResponse, SanitizedCancelReason,
+    SourceBindingRef, TurnActor, TurnCoordinator, TurnError, TurnRunId, TurnRunRecord,
+    TurnRunState, TurnScope, TurnStatus,
     run_profile::{
         CapabilityCallCandidate, CapabilityInputRef, CapabilitySurfaceVersion, LoopHostMilestone,
         LoopHostMilestoneKind, LoopRequest, ParentLoopOutput, ProviderToolCallReplay,
@@ -808,7 +809,7 @@ impl RebornBinaryE2EHarness {
         let await_edge_resolver = Arc::new(AwaitEdgeResolver::new_unbound(
             Arc::clone(&await_edge_store),
             await_edge_goal_store.clone() as Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
-            turn_runtime.clone() as Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore>,
+            turn_runtime.clone() as Arc<dyn ironclaw_turns::AgentTurnSpawnTreeRuntimePort>,
             capability_result_writer.clone(),
             thread_harness.service.clone(),
         ));
@@ -837,7 +838,7 @@ impl RebornBinaryE2EHarness {
             // production currently disables model-facing spawn by default.
             runtime_config.disabled_capability_ids = Vec::new();
         }
-        let turn_state_for_evidence: Arc<dyn TurnStateStore> = turn_runtime.clone();
+        let turn_state_for_evidence: Arc<dyn AgentTurnRuntimePort> = turn_runtime.clone();
         let evidence = Arc::new(HarnessLoopExitEvidencePort {
             inner: ThreadCheckpointLoopExitEvidencePort::new_with_thread_scope(
                 thread_harness.service.clone(),

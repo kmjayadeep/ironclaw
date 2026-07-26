@@ -113,7 +113,7 @@ pub async fn run(g: &RebornIntegrationGroup) -> HarnessResult<()> {
     // After the fix, the first-party trigger handler sees the typed origin and
     // rejects create and pause independently of model/provider/tool naming.
     let state = h
-        .turn_state_store_for_test()
+        .agent_turn_runtime_for_test()
         .get_run_state(GetRunStateRequest {
             scope: submission.turn_scope.clone(),
             run_id: submission.run_id,

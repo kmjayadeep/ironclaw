@@ -69,7 +69,8 @@ Mechanics: which shared layer owns repeated DB/runtime plumbing?
 Domain crates own typed traits and semantics:
 
 ```text
-ironclaw_turns::TurnStateStore
+ironclaw_processes::ProcessRuntimePort
+ironclaw_turns::AgentTurnRuntimePort
 ironclaw_threads::SessionThreadService
 ironclaw_outbound::OutboundStateStore
 ironclaw_secrets::CredentialAccountStore / CredentialSessionStore / future SecretStore
@@ -97,7 +98,7 @@ TransactionalStore backend transaction boundary for multi-record operations
 ```
 
 These primitives are not replacements for domain APIs. For example, callers
-should still use `TurnStateStore::claim_next_run`,
+should still use `ProcessTransitionPort::claim_next_processes`,
 `SessionThreadService::accept_inbound_message`,
 `OutboundStateStore::advance_subscription_cursor`, and the secret-store APIs
 instead of reaching into primitive stores directly.

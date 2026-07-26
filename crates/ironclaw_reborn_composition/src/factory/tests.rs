@@ -436,10 +436,11 @@ async fn local_runtime_trigger_create_hook_maps_conversation_init_error_to_backe
     ))
     .await
     .expect("local-dev services build");
+    let turn_state = Arc::new(services.processes.agent_turn_runtime());
     let hook = LocalRuntimeTriggerCreatorPairingHook {
         outbound_delivery_targets: Arc::clone(&services.outbound_delivery_targets),
         source_reply_target: Arc::new(std::sync::RwLock::new(Arc::new(
-            TurnStateTriggerSourceReplyTarget::new(services.turn_state.clone()),
+            TurnStateTriggerSourceReplyTarget::new(turn_state),
         ))),
         scoped_filesystem: failing_trigger_conversation_filesystem(),
         conversations: tokio::sync::OnceCell::new(),
@@ -472,7 +473,7 @@ async fn local_dev_services_include_repl_runtime_substrate() {
     let _ = &services.product_auth;
     assert!(services.local_runtime_for_test().is_some());
     let _ = &services.scoped_filesystem;
-    let _ = &services.turn_state;
+    let _ = &services.processes;
     let _ = &services
         .local_runtime_for_test()
         .expect("local runtime")
@@ -1429,7 +1430,7 @@ async fn production_libsql_turn_state_uses_configured_runtime_identity() {
     .await
     .expect("production libsql services build");
 
-    let turn_state = &services.turn_state;
+    let turn_state = services.processes.agent_turn_runtime();
     // Runtime-store unification (branch `unify-runtime-store-graph`): every
     // build — production libsql included — now composes the single unified
     // runtime store graph (`extension_lifecycle_surface_context` is no longer
@@ -1468,8 +1469,8 @@ async fn production_libsql_turn_state_uses_configured_runtime_identity() {
         spawn_tree_root_run_id: None,
         product_context: None,
     };
-    ironclaw_turns::TurnStateStore::submit_turn(
-        turn_state.as_ref(),
+    ironclaw_turns::AgentTurnRuntimePort::submit_turn(
+        &turn_state,
         submit,
         &ironclaw_turns::AllowAllTurnAdmissionPolicy,
         &InMemoryRunProfileResolver::default(),
@@ -1526,7 +1527,7 @@ async fn production_libsql_turn_state_uses_default_runtime_identity_when_unconfi
     .await
     .expect("production libsql services build");
 
-    let turn_state = &services.turn_state;
+    let turn_state = services.processes.agent_turn_runtime();
     let default_identity = RebornRuntimeIdentity::reborn_cli();
     let default_tenant = TenantId::new(default_identity.tenant_id).expect("default tenant");
     let scope = ironclaw_turns::TurnScope::new_with_owner(
@@ -1558,8 +1559,8 @@ async fn production_libsql_turn_state_uses_default_runtime_identity_when_unconfi
         spawn_tree_root_run_id: None,
         product_context: None,
     };
-    ironclaw_turns::TurnStateStore::submit_turn(
-        turn_state.as_ref(),
+    ironclaw_turns::AgentTurnRuntimePort::submit_turn(
+        &turn_state,
         submit,
         &ironclaw_turns::AllowAllTurnAdmissionPolicy,
         &InMemoryRunProfileResolver::default(),

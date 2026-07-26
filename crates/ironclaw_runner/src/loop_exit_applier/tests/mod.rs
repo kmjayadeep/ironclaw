@@ -8,13 +8,14 @@ use ironclaw_threads::{
     MessageKind, MessageStatus, SessionThreadService, ThreadHistoryRequest, ThreadMessageId,
     ThreadMessageRecord, ThreadScope, ToolResultSafeSummary,
 };
-use ironclaw_turns::test_support::{in_memory_loop_checkpoint_store, in_memory_turn_state_store};
+use ironclaw_turns::test_support::{in_memory_agent_turn_runtime, in_memory_loop_checkpoint_store};
 use ironclaw_turns::{
-    CheckpointStateStorePort, GateRef, LoopBlocked, LoopBlockedKind, LoopCheckpointKind,
-    LoopCheckpointStateRef, LoopCheckpointStore, LoopCompleted, LoopCompletionKind, LoopExit,
-    LoopFailed, LoopFailureKind, LoopGateRef, LoopMessageRef, LoopResultRef,
-    PutCheckpointStateRequest, PutLoopCheckpointRequest, TurnActor, TurnCheckpointId, TurnError,
-    TurnId, TurnRunId, TurnScope, TurnStateStore, TurnStatus, run_profile::LoopModelUsage,
+    AgentTurnRuntimePort, CheckpointStateStorePort, GateRef, LoopBlocked, LoopBlockedKind,
+    LoopCheckpointKind, LoopCheckpointStateRef, LoopCheckpointStore, LoopCompleted,
+    LoopCompletionKind, LoopExit, LoopFailed, LoopFailureKind, LoopGateRef, LoopMessageRef,
+    LoopResultRef, PutCheckpointStateRequest, PutLoopCheckpointRequest, TurnActor,
+    TurnCheckpointId, TurnError, TurnId, TurnRunId, TurnScope, TurnStatus,
+    run_profile::LoopModelUsage,
 };
 
 use super::{
@@ -283,7 +284,7 @@ async fn thread_checkpoint_evidence_accepts_durable_cancel_requested_run() {
     let transition = Arc::new(RecordingTransitionPort::new());
     let evidence = Arc::new(ThreadCheckpointLoopExitEvidencePort::new(
         Arc::new(InMemorySessionThreadService::default()),
-        Arc::new(StaticTurnStateStore::new(observed_state)),
+        Arc::new(StaticAgentTurnRuntime::new(observed_state)),
         Arc::new(PanicLoopCheckpointStore),
         empty_await_dependent_run_evidence(),
     ));
@@ -309,7 +310,7 @@ async fn thread_checkpoint_evidence_accepts_durable_cancelled_run() {
     let transition = Arc::new(RecordingTransitionPort::new());
     let evidence = Arc::new(ThreadCheckpointLoopExitEvidencePort::new(
         Arc::new(InMemorySessionThreadService::default()),
-        Arc::new(StaticTurnStateStore::new(observed_state)),
+        Arc::new(StaticAgentTurnRuntime::new(observed_state)),
         Arc::new(PanicLoopCheckpointStore),
         empty_await_dependent_run_evidence(),
     ));
@@ -459,7 +460,7 @@ async fn thread_checkpoint_evidence_accepts_result_refs_with_durable_reply_ref()
     .await;
     let evidence = ThreadCheckpointLoopExitEvidencePort::new_with_thread_scope(
         thread_service,
-        Arc::new(in_memory_turn_state_store()) as Arc<dyn TurnStateStore>,
+        Arc::new(in_memory_agent_turn_runtime()) as Arc<dyn AgentTurnRuntimePort>,
         Arc::new(PanicLoopCheckpointStore),
         empty_await_dependent_run_evidence(),
         thread_scope,
@@ -550,7 +551,7 @@ async fn completion_evidence_reads_thread_under_the_run_caller_owner() {
     );
     let evidence = ThreadCheckpointLoopExitEvidencePort::new_with_thread_scope(
         thread_service,
-        Arc::new(StaticTurnStateStore::new(run_state)) as Arc<dyn TurnStateStore>,
+        Arc::new(StaticAgentTurnRuntime::new(run_state)) as Arc<dyn AgentTurnRuntimePort>,
         Arc::new(PanicLoopCheckpointStore),
         empty_await_dependent_run_evidence(),
         base_scope,
@@ -601,7 +602,7 @@ async fn thread_checkpoint_evidence_rejects_missing_result_ref_records() {
         .expect("thread");
     let evidence = ThreadCheckpointLoopExitEvidencePort::new_with_thread_scope(
         thread_service,
-        Arc::new(in_memory_turn_state_store()) as Arc<dyn TurnStateStore>,
+        Arc::new(in_memory_agent_turn_runtime()) as Arc<dyn AgentTurnRuntimePort>,
         Arc::new(PanicLoopCheckpointStore),
         empty_await_dependent_run_evidence(),
         thread_scope,
@@ -661,7 +662,7 @@ async fn thread_checkpoint_evidence_accepts_result_only_completion_with_durable_
     .await;
     let evidence = ThreadCheckpointLoopExitEvidencePort::new_with_thread_scope(
         thread_service,
-        Arc::new(in_memory_turn_state_store()) as Arc<dyn TurnStateStore>,
+        Arc::new(in_memory_agent_turn_runtime()) as Arc<dyn AgentTurnRuntimePort>,
         Arc::new(PanicLoopCheckpointStore),
         empty_await_dependent_run_evidence(),
         thread_scope,
@@ -726,7 +727,7 @@ async fn thread_checkpoint_evidence_rejects_tool_result_message_as_reply_ref() {
     .await;
     let evidence = ThreadCheckpointLoopExitEvidencePort::new_with_thread_scope(
         thread_service,
-        Arc::new(in_memory_turn_state_store()) as Arc<dyn TurnStateStore>,
+        Arc::new(in_memory_agent_turn_runtime()) as Arc<dyn AgentTurnRuntimePort>,
         Arc::new(PanicLoopCheckpointStore),
         empty_await_dependent_run_evidence(),
         thread_scope,
@@ -797,7 +798,7 @@ async fn thread_checkpoint_evidence_isolates_same_result_ref_across_runs() {
 
     let evidence = ThreadCheckpointLoopExitEvidencePort::new_with_thread_scope(
         thread_service,
-        Arc::new(in_memory_turn_state_store()) as Arc<dyn TurnStateStore>,
+        Arc::new(in_memory_agent_turn_runtime()) as Arc<dyn AgentTurnRuntimePort>,
         Arc::new(PanicLoopCheckpointStore),
         empty_await_dependent_run_evidence(),
         thread_scope,
@@ -919,7 +920,7 @@ async fn thread_checkpoint_evidence_rejects_wrong_run_and_malformed_result_ref_r
     assert!(ToolResultSafeSummary::new("raw tool input includes secret").is_err());
     let evidence = ThreadCheckpointLoopExitEvidencePort::new_with_thread_scope(
         thread_service,
-        Arc::new(in_memory_turn_state_store()) as Arc<dyn TurnStateStore>,
+        Arc::new(in_memory_agent_turn_runtime()) as Arc<dyn AgentTurnRuntimePort>,
         Arc::new(PanicLoopCheckpointStore),
         empty_await_dependent_run_evidence(),
         thread_scope,
@@ -1045,7 +1046,7 @@ async fn thread_checkpoint_evidence_rejects_stored_thread_scope_mismatch() {
         .expect("finalized");
     let evidence = ThreadCheckpointLoopExitEvidencePort::new_with_thread_scope(
         thread_service,
-        Arc::new(in_memory_turn_state_store()) as Arc<dyn TurnStateStore>,
+        Arc::new(in_memory_agent_turn_runtime()) as Arc<dyn AgentTurnRuntimePort>,
         Arc::new(PanicLoopCheckpointStore),
         empty_await_dependent_run_evidence(),
         stored_scope,
@@ -1184,7 +1185,7 @@ async fn thread_checkpoint_evidence_verifies_awaited_child_blocked_checkpoint() 
         ));
     let evidence = ThreadCheckpointLoopExitEvidencePort::new(
         Arc::new(InMemorySessionThreadService::default()),
-        Arc::new(StaticTurnStateStore::new(claimed.state.clone())),
+        Arc::new(StaticAgentTurnRuntime::new(claimed.state.clone())),
         Arc::new(StaticLoopCheckpointStore::new(checkpoint)),
         await_evidence,
     );
@@ -1250,7 +1251,7 @@ async fn thread_checkpoint_evidence_rejects_background_child_gate_for_await_depe
         ));
     let evidence = ThreadCheckpointLoopExitEvidencePort::new(
         Arc::new(InMemorySessionThreadService::default()),
-        Arc::new(StaticTurnStateStore::new(claimed.state.clone())),
+        Arc::new(StaticAgentTurnRuntime::new(claimed.state.clone())),
         Arc::new(StaticLoopCheckpointStore::new(checkpoint)),
         await_evidence,
     );
@@ -1536,7 +1537,7 @@ async fn thread_checkpoint_evidence_rejects_unverified_failure_explanation_ref()
         .expect("loop checkpoint");
     let evidence = ThreadCheckpointLoopExitEvidencePort::new_with_thread_scope(
         thread_service,
-        Arc::new(in_memory_turn_state_store()) as Arc<dyn TurnStateStore>,
+        Arc::new(in_memory_agent_turn_runtime()) as Arc<dyn AgentTurnRuntimePort>,
         loop_checkpoint_store,
         empty_await_dependent_run_evidence(),
         thread_scope,

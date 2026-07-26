@@ -506,8 +506,8 @@ where
     /// `Released` (retrying from whatever sub-state is found), prune the
     /// `released_children` entry, then `delete_if_version` using the
     /// `Released` CAS's own returned version. `release_fn` performs the
-    /// actual `TurnStateStore::release_tree_descendants` call — injected so
-    /// `store.rs` stays independent of `ironclaw_turns::TurnStateStore`'s
+    /// actual `AgentTurnRuntimePort::release_tree_descendants` call — injected so
+    /// `store.rs` stays independent of `ironclaw_turns::AgentTurnRuntimePort`'s
     /// concrete wiring (the resolver supplies it). `crash_hooks` bundles the
     /// two test-only fault-injection points for the crash windows named in
     /// §5.5 round-7: (a) between the `Released` CAS and the prune, (b)

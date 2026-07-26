@@ -23,8 +23,7 @@ use super::model_work::{ModelWorkOutcome, ModelWorkRequest};
 ///
 /// This is a defense-in-depth bound for every provider, not just NEAR AI. Text
 /// progress resets the watchdog so a healthy long response is not cancelled.
-/// It MUST stay below the runner lease
-/// ([`crate::turn_state_row_store::turn_state_engine::DEFAULT_RUNNER_LEASE_TTL_SECONDS`] = 90s) so a hung
+/// It MUST stay below the process runner lease (90s by default) so a hung
 /// provider is surfaced as a retryable `Unavailable` error before the lease
 /// reclaims the runner mid-flight — the failure mode that wedged the Reborn
 /// runtime on 2026-06-24. The invariant is enforced by

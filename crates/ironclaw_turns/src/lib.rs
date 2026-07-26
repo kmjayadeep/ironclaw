@@ -7,6 +7,7 @@
 #![warn(unreachable_pub)]
 
 mod admission;
+mod agent_turn_runtime;
 mod checkpoint_state;
 mod coordinator;
 pub mod events;
@@ -23,7 +24,6 @@ pub mod run_profile;
 pub mod runner;
 pub mod scope;
 mod status;
-mod store;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
@@ -31,7 +31,11 @@ pub use admission::{
     AllowAllTurnAdmissionLimitProvider, StaticTurnAdmissionLimitProvider, TurnAdmissionAxisKind,
     TurnAdmissionBucket, TurnAdmissionBucketKind, TurnAdmissionBucketScope,
     TurnAdmissionCapacityDenial, TurnAdmissionClass, TurnAdmissionLimit,
-    TurnAdmissionLimitProvider, TurnAdmissionLimitUnavailable, TurnAdmissionReservationRecord,
+    TurnAdmissionLimitProvider, TurnAdmissionLimitUnavailable,
+};
+pub use agent_turn_runtime::{
+    AgentTurnRuntimePort, AgentTurnSpawnTreeRuntimePort, SpawnTreeReservation, TurnRunRecord,
+    active_run_ref_state,
 };
 pub use checkpoint_state::{
     CheckpointStateMatchMetadata, CheckpointStateRecord, CheckpointStateStorePort,
@@ -105,11 +109,4 @@ pub use status::{
     AdmissionRejection, AdmissionRejectionReason, BlockedReason, GateKind, TurnActiveRunRefState,
     TurnCapacityResource, TurnError, TurnErrorCategory, TurnRunProfile, TurnRunState, TurnStatus,
     is_recoverability_critical,
-};
-pub use store::{
-    SpawnTreeReservation, SpawnTreeReservationKey, TurnActiveLockKey, TurnActiveLockRecord,
-    TurnCheckpointRecord, TurnIdempotencyErrorReplay, TurnIdempotencyOperationKind,
-    TurnIdempotencyOutcomeKind, TurnIdempotencyRecord, TurnIdempotencyReplay, TurnLockVersion,
-    TurnPersistenceSnapshot, TurnRecord, TurnRunRecord, TurnSpawnTreeStateStore, TurnStateStore,
-    active_run_ref_state,
 };

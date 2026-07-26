@@ -46,10 +46,10 @@ use ironclaw_turns::run_profile::{
     CommunicationContextProvider, InstructionSafetyContext, LoopHostMilestone,
 };
 use ironclaw_turns::{
-    CancelRunRequest, CancelRunResponse, GateRef, GateResumeDisposition, IdempotencyKey,
-    ReplyTargetBindingRef, ResumeTurnPrecondition, ResumeTurnRequest, SanitizedCancelReason,
-    SourceBindingRef, TurnActor, TurnCoordinator, TurnRunId, TurnRunState, TurnScope,
-    TurnStateStore, TurnStatus,
+    AgentTurnRuntimePort, CancelRunRequest, CancelRunResponse, GateRef, GateResumeDisposition,
+    IdempotencyKey, ReplyTargetBindingRef, ResumeTurnPrecondition, ResumeTurnRequest,
+    SanitizedCancelReason, SourceBindingRef, TurnActor, TurnCoordinator, TurnRunId, TurnRunState,
+    TurnScope, TurnStatus,
 };
 
 use super::capability_backend::{
@@ -956,8 +956,8 @@ impl RebornIntegrationHarness {
     /// [`Self::turn_coordinator_for_test`]. Composition test seams that must
     /// inspect or resume the caller's real runs use this pair instead of the
     /// capability harness's disjoint bootstrap store.
-    pub(crate) fn turn_state_store_for_test(&self) -> Arc<dyn TurnStateStore> {
-        Arc::clone(&self._shared.turn_runtime) as Arc<dyn TurnStateStore>
+    pub(crate) fn agent_turn_runtime_for_test(&self) -> Arc<dyn AgentTurnRuntimePort> {
+        Arc::clone(&self._shared.turn_runtime) as Arc<dyn AgentTurnRuntimePort>
     }
 
     pub(crate) fn process_gates_for_test(

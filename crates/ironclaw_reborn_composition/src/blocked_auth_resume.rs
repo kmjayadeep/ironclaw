@@ -248,14 +248,8 @@ mod tests {
     };
     use ironclaw_processes::{ProcessGateRecord, ProcessSuspension};
     use ironclaw_turns::{
-        AcceptedMessageRef, AgentLoopDriverDescriptor, CancelRunRequest, CancelRunResponse,
-        CancellationPolicy, CapabilitySurfaceProfileId, CheckpointPolicy, CheckpointSchemaId,
-        ConcurrencyClass, ContextProfileId, EventCursor, GateRef, GetRunStateRequest, LoopDriverId,
-        ModelProfileId, RedactedRunProfileProvenance, ReplyTargetBindingRef, ResolvedRunProfile,
-        ResourceBudgetPolicy, ResourceBudgetTier, RunClassId, RunProfileFingerprint, RunProfileId,
-        RunProfileVersion, RuntimeProfileConstraints, SchedulingClass, SourceBindingRef,
-        SteeringPolicy, SubmitTurnRequest, SubmitTurnResponse, TurnActor, TurnError, TurnId,
-        TurnPersistenceSnapshot, TurnRecord, TurnRunProfile, TurnRunState, TurnScope, TurnStatus,
+        CancelRunRequest, CancelRunResponse, EventCursor, GateRef, GetRunStateRequest,
+        SubmitTurnRequest, SubmitTurnResponse, TurnError, TurnRunState, TurnScope, TurnStatus,
     };
 
     struct RecordingInnerDispatcher {
@@ -280,12 +274,12 @@ mod tests {
         }
     }
 
-    struct StaticSnapshotSource {
-        snapshot: TurnPersistenceSnapshot,
+    struct StaticGateSource {
+        gates: Vec<ProcessGateRecord>,
     }
 
     #[async_trait]
-    impl ProcessGateQuerySource for StaticSnapshotSource {
+    impl ProcessGateQuerySource for StaticGateSource {
         type Error = TurnError;
 
         async fn query_process_gates(
@@ -293,38 +287,19 @@ mod tests {
             request: ProcessGateQuery,
         ) -> Result<Vec<ProcessGateRecord>, Self::Error> {
             Ok(self
-                .snapshot
-                .runs
+                .gates
                 .iter()
-                .filter(|run| {
-                    run.status == TurnStatus::BlockedAuth
-                        && run.scope.tenant_id == request.scope.tenant_id
+                .filter(|gate| {
+                    gate.scope.tenant_id == request.scope.tenant_id
                         && request
                             .owner_user_id
                             .as_ref()
-                            .is_none_or(|owner| run.scope.explicit_owner_user_id() == Some(owner))
-                        && request
-                            .gate_ref
-                            .as_ref()
-                            .is_none_or(|gate_ref| run.gate_ref.as_ref() == Some(gate_ref))
+                            .is_none_or(|owner| gate.owner_user_id.as_ref() == Some(owner))
+                        && request.gate_ref.as_ref().is_none_or(|gate_ref| {
+                            gate.suspension.gate_ref.as_ref() == Some(gate_ref)
+                        })
                 })
-                .filter_map(|run| {
-                    Some(ProcessGateRecord {
-                        process_id: ProcessId::from_uuid(run.run_id.as_uuid()),
-                        scope: run.scope.to_resource_scope(),
-                        owner_user_id: run.scope.explicit_owner_user_id().cloned(),
-                        suspension: ProcessSuspension {
-                            kind: ProcessSuspensionKind::Authorization,
-                            gate_ref: Some(run.gate_ref.clone()?),
-                            activity_id: run.blocked_activity_id,
-                            credential_requirements: run.credential_requirements.clone(),
-                            detail: None,
-                        },
-                        resume_source_ref: Some(run.source_binding_ref.as_str().to_string()),
-                        reply_target_ref: Some(run.reply_target_binding_ref.as_str().to_string()),
-                        historical: false,
-                    })
-                })
+                .cloned()
                 .collect())
         }
     }
@@ -419,118 +394,31 @@ mod tests {
     fn blocked_run(
         owner: &str,
         run_id: TurnRunId,
-        turn_id: TurnId,
         requirement: RuntimeCredentialAuthRequirement,
-    ) -> ironclaw_turns::TurnRunRecord {
-        let scope = TurnScope::new_with_owner(
-            TenantId::new(TENANT).expect("tenant"),
-            None,
-            None,
-            ThreadId::new(format!("thread-{run_id}")).expect("thread id"),
-            Some(UserId::new(owner).expect("owner")),
-        );
-        ironclaw_turns::TurnRunRecord {
-            run_id,
-            turn_id,
-            scope,
-            accepted_message_ref: AcceptedMessageRef::new(format!("message:{run_id}"))
-                .expect("message ref"),
-            source_binding_ref: SourceBindingRef::new(format!("source:{run_id}"))
-                .expect("source binding ref"),
-            reply_target_binding_ref: ReplyTargetBindingRef::new(format!("reply:{run_id}"))
-                .expect("reply target binding ref"),
-            status: TurnStatus::BlockedAuth,
-            profile: TurnRunProfile::from_resolved(resolved_run_profile()),
-            resolved_model_route: None,
-            model_usage: None,
-            checkpoint_id: None,
-            gate_ref: Some(GateRef::new(format!("gate-{run_id}")).expect("gate ref")),
-            blocked_activity_id: None,
-            credential_requirements: vec![requirement],
-            failure: None,
-            event_cursor: EventCursor(1),
-            runner_id: None,
-            lease_token: None,
-            lease_expires_at: None,
-            last_heartbeat_at: None,
-            claim_count: 0,
-            received_at: Utc::now(),
-            parent_run_id: None,
-            subagent_depth: 0,
-            spawn_tree_root_run_id: None,
-            product_context: None,
-            resume_disposition: None,
-        }
-    }
-
-    fn resolved_run_profile() -> ResolvedRunProfile {
-        let checkpoint_schema_id =
-            CheckpointSchemaId::new("blocked_auth_checkpoint").expect("checkpoint schema");
-        ResolvedRunProfile {
-            run_class_id: RunClassId::new("blocked_auth").expect("run class"),
-            profile_id: RunProfileId::default_profile(),
-            profile_version: RunProfileVersion::new(1),
-            loop_driver: AgentLoopDriverDescriptor {
-                id: LoopDriverId::new("blocked_auth_loop").expect("loop driver"),
-                version: RunProfileVersion::new(1),
-                checkpoint_schema_id: Some(checkpoint_schema_id.clone()),
-                checkpoint_schema_version: Some(RunProfileVersion::new(1)),
+    ) -> ProcessGateRecord {
+        let owner_user_id = UserId::new(owner).expect("owner");
+        ProcessGateRecord {
+            process_id: ProcessId::from_uuid(run_id.as_uuid()),
+            scope: ResourceScope {
+                tenant_id: TenantId::new(TENANT).expect("tenant"),
+                user_id: owner_user_id.clone(),
+                agent_id: None,
+                project_id: None,
+                mission_id: None,
+                thread_id: Some(ThreadId::new(format!("thread-{run_id}")).expect("thread id")),
+                invocation_id: InvocationId::new(),
             },
-            checkpoint_schema_id,
-            checkpoint_schema_version: RunProfileVersion::new(1),
-            model_profile_id: ModelProfileId::new("blocked_auth_model").expect("model profile"),
-            capability_surface_profile_id: CapabilitySurfaceProfileId::new("blocked_auth_caps")
-                .expect("capability surface profile"),
-            context_profile_id: ContextProfileId::new("blocked_auth_context")
-                .expect("context profile"),
-            steering_policy: SteeringPolicy {
-                allow_steering: false,
-                allow_interrupt: true,
-                allow_driver_specific_nudges: false,
+            owner_user_id: Some(owner_user_id),
+            suspension: ProcessSuspension {
+                kind: ProcessSuspensionKind::Authorization,
+                gate_ref: Some(GateRef::new(format!("gate-{run_id}")).expect("gate ref")),
+                activity_id: None,
+                credential_requirements: vec![requirement],
+                detail: None,
             },
-            cancellation_policy: CancellationPolicy {
-                allow_cancel: true,
-                require_checkpoint_before_cancel: false,
-            },
-            checkpoint_policy: CheckpointPolicy {
-                require_before_model: false,
-                require_before_side_effect: true,
-                require_before_block: true,
-                max_checkpoint_bytes: 64 * 1024,
-                require_final_checkpoint: false,
-                allow_no_reply_completion: false,
-            },
-            resource_budget_policy: ResourceBudgetPolicy {
-                tier: ResourceBudgetTier::new("blocked_auth_budget").expect("budget tier"),
-                max_model_calls: 1,
-                max_capability_invocations: 1,
-            },
-            personal_context_policy: Default::default(),
-            runtime_constraints: RuntimeProfileConstraints {
-                allow_raw_runtime_backend_selection: false,
-                allow_broad_capability_surface: false,
-            },
-            runner_pool_id: None,
-            scheduling_class: SchedulingClass::new("blocked_auth").expect("scheduling class"),
-            concurrency_class: ConcurrencyClass::new("blocked_auth").expect("concurrency class"),
-            resolution_fingerprint: RunProfileFingerprint::new("blocked-auth-profile-v1")
-                .expect("run profile fingerprint"),
-            provenance: RedactedRunProfileProvenance {
-                sources: Vec::new(),
-                effective_privileges: Vec::new(),
-            },
-        }
-    }
-
-    fn parent_turn(owner: &str, run: &ironclaw_turns::TurnRunRecord) -> TurnRecord {
-        TurnRecord {
-            turn_id: run.turn_id,
-            scope: run.scope.clone(),
-            actor: TurnActor::new(UserId::new(owner).expect("actor")),
-            accepted_message_ref: run.accepted_message_ref.clone(),
-            source_binding_ref: run.source_binding_ref.clone(),
-            reply_target_binding_ref: run.reply_target_binding_ref.clone(),
-            created_at: Utc::now(),
+            resume_source_ref: Some(format!("source:{run_id}")),
+            reply_target_ref: Some(format!("reply:{run_id}")),
+            historical: false,
         }
     }
 
@@ -555,7 +443,7 @@ mod tests {
     }
 
     fn fanout_with(
-        snapshot: TurnPersistenceSnapshot,
+        gates: Vec<ProcessGateRecord>,
         fail_next_resumes: usize,
     ) -> (
         BlockedAuthResumeFanout,
@@ -571,7 +459,7 @@ mod tests {
         });
         let fanout = BlockedAuthResumeFanout::new(
             inner.clone(),
-            Arc::new(StaticSnapshotSource { snapshot }),
+            Arc::new(StaticGateSource { gates }),
             coordinator.clone(),
         );
         (fanout, coordinator, inner)
@@ -579,38 +467,20 @@ mod tests {
 
     #[tokio::test]
     async fn turn_gate_completion_fans_out_to_other_provider_blocked_runs_only() {
-        let primary = blocked_run(OWNER, TurnRunId::new(), TurnId::new(), slack_requirement());
-        let waiting = blocked_run(OWNER, TurnRunId::new(), TurnId::new(), slack_requirement());
-        let other_provider =
-            blocked_run(OWNER, TurnRunId::new(), TurnId::new(), google_requirement());
-        let foreign_user = blocked_run(
-            "user-mallory",
-            TurnRunId::new(),
-            TurnId::new(),
-            slack_requirement(),
-        );
-        let snapshot = TurnPersistenceSnapshot {
-            turns: vec![
-                parent_turn(OWNER, &primary),
-                parent_turn(OWNER, &waiting),
-                parent_turn(OWNER, &other_provider),
-                parent_turn("user-mallory", &foreign_user),
-            ],
-            runs: vec![
-                primary.clone(),
-                waiting.clone(),
-                other_provider.clone(),
-                foreign_user.clone(),
-            ],
-            ..Default::default()
-        };
-        let (fanout, coordinator, inner) = fanout_with(snapshot, 0);
+        let primary = blocked_run(OWNER, TurnRunId::new(), slack_requirement());
+        let waiting = blocked_run(OWNER, TurnRunId::new(), slack_requirement());
+        let other_provider = blocked_run(OWNER, TurnRunId::new(), google_requirement());
+        let foreign_user = blocked_run("user-mallory", TurnRunId::new(), slack_requirement());
+        let primary_run_id = turn_run_id_from_process_id(primary.process_id);
+        let waiting_run_id = turn_run_id_from_process_id(waiting.process_id);
+        let (fanout, coordinator, inner) =
+            fanout_with(vec![primary, waiting, other_provider, foreign_user], 0);
 
         fanout
             .dispatch_auth_continuation(event(
                 "slack",
                 AuthContinuationRef::TurnGateResume {
-                    turn_run_ref: TurnRunRef::new(primary.run_id.to_string())
+                    turn_run_ref: TurnRunRef::new(primary_run_id.to_string())
                         .expect("turn run ref"),
                     gate_ref: AuthGateRef::new("gate-primary").expect("auth gate ref"),
                 },
@@ -625,7 +495,7 @@ mod tests {
             1,
             "exactly the caller's other slack-blocked run resumes"
         );
-        assert_eq!(resumed[0].run_id, waiting.run_id);
+        assert_eq!(resumed[0].run_id, waiting_run_id);
         assert_eq!(
             resumed[0].precondition,
             ResumeTurnPrecondition::BlockedAuthGate
@@ -634,14 +504,11 @@ mod tests {
 
     #[tokio::test]
     async fn setup_only_completion_resumes_every_provider_blocked_run() {
-        let first = blocked_run(OWNER, TurnRunId::new(), TurnId::new(), slack_requirement());
-        let second = blocked_run(OWNER, TurnRunId::new(), TurnId::new(), slack_requirement());
-        let snapshot = TurnPersistenceSnapshot {
-            turns: vec![parent_turn(OWNER, &first), parent_turn(OWNER, &second)],
-            runs: vec![first.clone(), second.clone()],
-            ..Default::default()
-        };
-        let (fanout, coordinator, _inner) = fanout_with(snapshot, 0);
+        let first = blocked_run(OWNER, TurnRunId::new(), slack_requirement());
+        let second = blocked_run(OWNER, TurnRunId::new(), slack_requirement());
+        let first_run_id = turn_run_id_from_process_id(first.process_id);
+        let second_run_id = turn_run_id_from_process_id(second.process_id);
+        let (fanout, coordinator, _inner) = fanout_with(vec![first, second], 0);
 
         fanout
             .dispatch_auth_continuation(event("slack", AuthContinuationRef::SetupOnly))
@@ -651,7 +518,7 @@ mod tests {
         let resumed = coordinator.resumed.lock().expect("resumed");
         let mut run_ids: Vec<_> = resumed.iter().map(|request| request.run_id).collect();
         run_ids.sort_by_key(|id| id.as_uuid());
-        let mut expected = vec![first.run_id, second.run_id];
+        let mut expected = vec![first_run_id, second_run_id];
         expected.sort_by_key(|id| id.as_uuid());
         assert_eq!(
             run_ids, expected,
@@ -667,13 +534,8 @@ mod tests {
     /// stranded every other parked run (mega-PR review finding).
     #[tokio::test]
     async fn incomplete_fan_out_keeps_the_continuation_retryable() {
-        let waiting = blocked_run(OWNER, TurnRunId::new(), TurnId::new(), slack_requirement());
-        let snapshot = TurnPersistenceSnapshot {
-            turns: vec![parent_turn(OWNER, &waiting)],
-            runs: vec![waiting],
-            ..Default::default()
-        };
-        let (fanout, coordinator, inner) = fanout_with(snapshot, 1);
+        let waiting = blocked_run(OWNER, TurnRunId::new(), slack_requirement());
+        let (fanout, coordinator, inner) = fanout_with(vec![waiting], 1);
 
         let error = fanout
             .dispatch_auth_continuation(event("slack", AuthContinuationRef::SetupOnly))

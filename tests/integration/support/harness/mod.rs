@@ -924,7 +924,7 @@ impl HostRuntimeCapabilityHarness {
     /// The full `RebornServices` bundle this harness was built from, if built
     /// via `new_with_options`. Lets a caller build the REAL approval/auth
     /// interaction services over this harness's own local-dev composition
-    /// (`RebornServices::local_dev_approval_interaction_service_with_turn_state_for_test`
+    /// (`RebornServices::local_dev_approval_interaction_service_with_process_gates_for_test`
     /// et al.), e.g. so a group can wire genuine `submit_inbound`-driven
     /// gate dispatch instead of the harness's direct-resume test shortcut.
     pub(crate) fn reborn_services_for_test(

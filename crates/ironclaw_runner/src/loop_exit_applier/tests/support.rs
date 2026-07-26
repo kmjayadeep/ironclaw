@@ -13,14 +13,14 @@ use ironclaw_threads::{
     ThreadMessageRecord, ThreadScope, ToolResultSafeSummary,
 };
 use ironclaw_turns::{
-    AcceptedMessageRef, CancelRunRequest, CancelRunResponse, EventCursor, GateRef,
-    GetLoopCheckpointRequest, GetRunStateRequest, LoopBlocked, LoopBlockedKind, LoopCheckpointKind,
-    LoopCheckpointRecord, LoopCheckpointStateRef, LoopCheckpointStore, LoopCompleted,
-    LoopCompletionKind, LoopExit, LoopExitId, LoopGateRef, LoopMessageRef, LoopResultRef,
-    PutLoopCheckpointRequest, ReplyTargetBindingRef, ResumeTurnRequest, ResumeTurnResponse,
-    RunProfileVersion, SanitizedFailure, SourceBindingRef, SubmitTurnRequest, SubmitTurnResponse,
-    TurnActor, TurnCheckpointId, TurnError, TurnId, TurnLeaseToken, TurnRunId, TurnRunState,
-    TurnRunnerId, TurnScope, TurnStateStore, TurnStatus,
+    AcceptedMessageRef, AgentTurnRuntimePort, CancelRunRequest, CancelRunResponse, EventCursor,
+    GateRef, GetLoopCheckpointRequest, GetRunStateRequest, LoopBlocked, LoopBlockedKind,
+    LoopCheckpointKind, LoopCheckpointRecord, LoopCheckpointStateRef, LoopCheckpointStore,
+    LoopCompleted, LoopCompletionKind, LoopExit, LoopExitId, LoopGateRef, LoopMessageRef,
+    LoopResultRef, PutLoopCheckpointRequest, ReplyTargetBindingRef, ResumeTurnRequest,
+    ResumeTurnResponse, RunProfileVersion, SanitizedFailure, SourceBindingRef, SubmitTurnRequest,
+    SubmitTurnResponse, TurnActor, TurnCheckpointId, TurnError, TurnId, TurnLeaseToken, TurnRunId,
+    TurnRunState, TurnRunnerId, TurnScope, TurnStatus,
     run_profile::{CheckpointSchemaId, LoopDriverId},
     runner::ClaimedTurnRun,
 };
@@ -99,7 +99,7 @@ pub(super) fn text_checkpoint_evidence(
 ) -> ThreadCheckpointLoopExitEvidencePort<InMemorySessionThreadService> {
     ThreadCheckpointLoopExitEvidencePort::new(
         Arc::new(InMemorySessionThreadService::default()),
-        Arc::new(StaticTurnStateStore::new(claimed_run().state)),
+        Arc::new(StaticAgentTurnRuntime::new(claimed_run().state)),
         loop_checkpoint_store,
         empty_await_dependent_run_evidence(),
     )
@@ -162,18 +162,18 @@ pub(super) fn running_run_state(
     }
 }
 
-pub(super) struct StaticTurnStateStore {
+pub(super) struct StaticAgentTurnRuntime {
     state: TurnRunState,
 }
 
-impl StaticTurnStateStore {
+impl StaticAgentTurnRuntime {
     pub(super) fn new(state: TurnRunState) -> Self {
         Self { state }
     }
 }
 
 #[async_trait]
-impl TurnStateStore for StaticTurnStateStore {
+impl AgentTurnRuntimePort for StaticAgentTurnRuntime {
     async fn submit_turn(
         &self,
         _request: SubmitTurnRequest,

@@ -361,13 +361,13 @@ async fn scope_with_unclosed_edge_is_recovered_before_new_spawns_are_admitted() 
 
     let goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore> =
         Arc::new(ironclaw_runner::subagent::goal_store::in_memory_backed_subagent_goal_store());
-    let turn_state_store: Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore> =
+    let agent_turn_runtime: Arc<dyn ironclaw_turns::AgentTurnSpawnTreeRuntimePort> =
         Arc::new(in_memory_agent_turn_process_system().runtime());
     let thread_service = Arc::new(InMemorySessionThreadService::default());
     let resolver = Arc::new(AwaitEdgeResolver::new_unbound_deferred_result_writer(
         Arc::clone(&store),
         goal_store,
-        turn_state_store,
+        agent_turn_runtime,
         thread_service,
     ));
     let driver = ScopeRecoveryDriver::new(Arc::clone(&resolver), Arc::clone(&store));
@@ -406,13 +406,13 @@ async fn brand_new_scope_with_no_unclosed_edges_is_admitted_immediately() {
     let scope = scope("tenant-fresh", "user-fresh", Some("agent-fresh"), None);
     let goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore> =
         Arc::new(ironclaw_runner::subagent::goal_store::in_memory_backed_subagent_goal_store());
-    let turn_state_store: Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore> =
+    let agent_turn_runtime: Arc<dyn ironclaw_turns::AgentTurnSpawnTreeRuntimePort> =
         Arc::new(in_memory_agent_turn_process_system().runtime());
     let thread_service = Arc::new(InMemorySessionThreadService::default());
     let resolver = Arc::new(AwaitEdgeResolver::new_unbound_deferred_result_writer(
         Arc::clone(&store),
         goal_store,
-        turn_state_store,
+        agent_turn_runtime,
         thread_service,
     ));
     let driver = ScopeRecoveryDriver::new(Arc::clone(&resolver), Arc::clone(&store));
@@ -657,13 +657,14 @@ async fn rollback_deleted_edge_is_reconstructed_so_the_parent_still_gets_the_res
     // makes in production.
     let goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore> =
         Arc::new(ironclaw_runner::subagent::goal_store::in_memory_backed_subagent_goal_store());
-    let turn_state_store: Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore> = state_store.clone();
+    let agent_turn_runtime: Arc<dyn ironclaw_turns::AgentTurnSpawnTreeRuntimePort> =
+        state_store.clone();
     let result_writer: Arc<dyn ironclaw_loop_host::LoopCapabilityResultWriter> =
         Arc::new(AllowResultWriter);
     let resolver = Arc::new(AwaitEdgeResolver::new_unbound(
         Arc::clone(&store),
         goal_store,
-        turn_state_store,
+        agent_turn_runtime,
         result_writer,
         Arc::clone(&thread_service),
     ));
@@ -955,13 +956,14 @@ async fn mixed_status_batch_group_reports_each_members_own_status_and_reason() {
     // child_b completes last and drives the batch drain.
     let goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore> =
         Arc::new(ironclaw_runner::subagent::goal_store::in_memory_backed_subagent_goal_store());
-    let turn_state_store: Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore> = state_store.clone();
+    let agent_turn_runtime: Arc<dyn ironclaw_turns::AgentTurnSpawnTreeRuntimePort> =
+        state_store.clone();
     let result_writer: Arc<dyn ironclaw_loop_host::LoopCapabilityResultWriter> =
         Arc::new(AllowResultWriter);
     let resolver = Arc::new(AwaitEdgeResolver::new_unbound(
         Arc::clone(&store),
         goal_store,
-        turn_state_store,
+        agent_turn_runtime,
         result_writer,
         Arc::clone(&thread_service),
     ));

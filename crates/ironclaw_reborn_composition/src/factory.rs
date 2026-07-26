@@ -165,8 +165,10 @@ use ironclaw_triggers::{
     TriggerRepository,
 };
 use ironclaw_trust::{AdminConfig, AdminEntry, HostTrustAssignment, HostTrustPolicy};
+use ironclaw_turns::{
+    AgentTurnRuntimePort, GetRunStateRequest, InMemoryRunProfileResolver, TurnScope,
+};
 use ironclaw_turns::{CheckpointStateStorePort, ExternalToolCatalog, InMemoryExternalToolCatalog};
-use ironclaw_turns::{GetRunStateRequest, InMemoryRunProfileResolver, TurnScope, TurnStateStore};
 use secrecy::SecretString;
 
 /// Display name sent with RFC 7591 dynamic client registration.
@@ -1028,15 +1030,14 @@ pub(crate) struct RebornRuntimeStores {
     pub(crate) process_gate_query_source:
         Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = ironclaw_turns::TurnError>>,
     /// Late-rebindable process lifecycle source the trigger active-run lookup
-    /// reads. Production points it at this runtime's own turn-backed process
-    /// lifecycle adapter; a `test-support` harness can repoint it at its own
-    /// store so its runs are visible to the trigger subsystem.
+    /// reads. Production points it at this runtime's process journal; a
+    /// `test-support` harness can repoint it at its own process runtime.
     #[cfg(any(test, feature = "test-support"))]
     #[allow(
         dead_code,
         reason = "held for test-support rebinding after runtime construction"
     )]
-    pub(crate) trigger_source_turn_state: Arc<
+    pub(crate) trigger_process_lifecycle_source: Arc<
         std::sync::RwLock<
             Arc<
                 dyn ironclaw_processes::ProcessLifecycleLookupSource<
@@ -1045,8 +1046,8 @@ pub(crate) struct RebornRuntimeStores {
             >,
         >,
     >,
-    /// Sibling read-only reply-target projection; repointed together with the
-    /// snapshot slot by test-support harnesses.
+    /// Sibling read-only reply-target projection; repointed with the lifecycle
+    /// source by test-support harnesses.
     #[cfg(any(test, feature = "test-support"))]
     #[allow(
         dead_code,
@@ -1087,8 +1088,6 @@ pub(crate) struct RebornRuntimeStores {
     pub(crate) shared_extension_registry: Arc<SharedExtensionRegistry>,
     pub(crate) scoped_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
     pub(crate) processes: ProcessRuntimeSystem,
-    #[cfg(test)]
-    pub(crate) turn_state: Arc<ironclaw_turns::AgentTurnProcessRuntime>,
     pub(crate) checkpoint_state_store: Arc<dyn CheckpointStateStorePort>,
     pub(crate) thread_service: Arc<dyn SessionThreadService>,
     pub(crate) trigger_repository: Arc<dyn TriggerRepository>,
@@ -1312,7 +1311,7 @@ impl std::fmt::Debug for RebornRuntimeStores {
             .field("readiness", &self.readiness)
             .field("extension_management", &true)
             .field("scoped_filesystem", &"Arc<ScopedFilesystem>")
-            .field("turn_state", &"Arc<AgentTurnProcessRuntime>");
+            .field("processes", &"ProcessRuntimeSystem");
         debug.finish()
     }
 }
@@ -1374,7 +1373,7 @@ pub(crate) fn auth_continuation_dispatcher(
         // Local paths fan a completed flow out to the caller's other
         // provider-blocked runs (pair/authorize once, all waiting chats
         // continue). Production-shaped builders pass None until their
-        // turn-state snapshot source is wired.
+        // process gate source is wired.
         Some(gate_source) => Arc::new(crate::blocked_auth_resume::BlockedAuthResumeFanout::new(
             single_run,
             gate_source,
@@ -1650,11 +1649,11 @@ pub(crate) trait TriggerSourceReplyTarget: Send + Sync {
 }
 
 pub(crate) struct TurnStateTriggerSourceReplyTarget {
-    turn_state: Arc<dyn TurnStateStore>,
+    turn_state: Arc<dyn AgentTurnRuntimePort>,
 }
 
 impl TurnStateTriggerSourceReplyTarget {
-    pub(crate) fn new(turn_state: Arc<dyn TurnStateStore>) -> Self {
+    pub(crate) fn new(turn_state: Arc<dyn AgentTurnRuntimePort>) -> Self {
         Self { turn_state }
     }
 }
@@ -4559,7 +4558,7 @@ async fn build_backend_production(
     let trigger_source_reply_target: Arc<std::sync::RwLock<Arc<dyn TriggerSourceReplyTarget>>> =
         Arc::new(std::sync::RwLock::new(Arc::new(
             TurnStateTriggerSourceReplyTarget::new(
-                Arc::clone(&process_turn_state) as Arc<dyn ironclaw_turns::TurnStateStore>
+                Arc::clone(&process_turn_state) as Arc<dyn ironclaw_turns::AgentTurnRuntimePort>
             ),
         )));
     let trigger_create_hook = Arc::new(LocalRuntimeTriggerCreatorPairingHook {
@@ -4633,7 +4632,7 @@ async fn build_backend_production(
     // source so a test-support harness can repoint the trigger subsystem at its
     // own source; production installs this runtime's process journal and never
     // repoints it.
-    let trigger_source_turn_state: Arc<
+    let trigger_process_lifecycle_source: Arc<
         std::sync::RwLock<
             Arc<
                 dyn ironclaw_processes::ProcessLifecycleLookupSource<
@@ -4645,9 +4644,9 @@ async fn build_backend_production(
         &process_lifecycle_lookup_source,
     )));
     let trigger_active_run_lookup: Arc<dyn TriggerActiveRunLookup> = Arc::new(
-        crate::automation::trigger_poller::SnapshotActiveRunLookup::new(Arc::new(
+        crate::automation::trigger_poller::ProcessActiveRunLookup::new(Arc::new(
             crate::automation::trigger_poller::RebindableProcessLifecycleLookupSource::new(
-                Arc::clone(&trigger_source_turn_state),
+                Arc::clone(&trigger_process_lifecycle_source),
             ),
         )
             as Arc<
@@ -5500,7 +5499,7 @@ async fn build_backend_production(
         triggered_run_delivery: outbound_stores.triggered_run_delivery,
         process_gate_query_source,
         #[cfg(any(test, feature = "test-support"))]
-        trigger_source_turn_state,
+        trigger_process_lifecycle_source,
         #[cfg(any(test, feature = "test-support"))]
         trigger_source_reply_target,
         extension_management,
@@ -5527,8 +5526,6 @@ async fn build_backend_production(
         shared_extension_registry,
         scoped_filesystem: Arc::clone(&stores.scoped_filesystem),
         processes,
-        #[cfg(test)]
-        turn_state: process_turn_state,
         checkpoint_state_store,
         thread_service,
         trigger_repository: Arc::clone(&trigger_repository),

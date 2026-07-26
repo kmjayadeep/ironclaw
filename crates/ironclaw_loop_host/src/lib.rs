@@ -55,10 +55,10 @@ pub use budget_accountant::GovernorBackedAccountant;
 pub use budget_cost_table::{ModelCost, ModelCostTable, StaticModelCostTable, ZeroCostTable};
 pub use budget_seeding::BudgetSeedingPolicy;
 pub use cancellation_port::{
-    AlwaysAliveLoopCancellationPort, AlwaysAliveRunCancellationFactory,
-    CompositeTurnRunWakeNotifier, ProductLiveCancellationProbe, ProductLiveCancellationReadiness,
-    RunCancellationFactory, RunCancellationHandle, RunCancellationObservationKind,
-    RunStateLoopCancellationPort, TurnStateRunCancellationFactory,
+    AgentTurnRunCancellationFactory, AlwaysAliveLoopCancellationPort,
+    AlwaysAliveRunCancellationFactory, CompositeTurnRunWakeNotifier, ProductLiveCancellationProbe,
+    ProductLiveCancellationReadiness, RunCancellationFactory, RunCancellationHandle,
+    RunCancellationObservationKind, RunStateLoopCancellationPort,
     verify_product_live_cancellation_probe,
 };
 pub use capability_allow_set::{

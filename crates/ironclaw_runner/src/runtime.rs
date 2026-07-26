@@ -16,17 +16,13 @@ use ironclaw_loop_host::{
     SubagentSpawnGoalStore, SubagentSpawnLimits, verify_product_live_cancellation_probe,
 };
 use ironclaw_memory::MemoryService;
-use ironclaw_processes::{
-    ProcessCheckpointPort, ProcessJournalCommitObserver, ProcessJournalObserverRegistry,
-    ProcessJournalSource, ProcessJournalStoreError, ProcessRuntimePort, ProcessSubmissionPort,
-    ProcessTransitionPort,
-};
+use ironclaw_processes::ProcessTransitionPort;
 use ironclaw_threads::{SessionThreadService, ThreadScope};
 use ironclaw_turns::{
-    AgentLoopDriverError, AgentTurnProcessCommitObserver, CheckpointStateStorePort,
-    DefaultTurnCoordinator, LoopCheckpointStore, ProcessJournalStoreTurnAdapter,
-    RunProfileResolver, TurnCommittedEventObserver, TurnEventSink, TurnRunWakeNotifier,
-    TurnSpawnTreePort, TurnSpawnTreeStateStore, TurnStateStore,
+    AgentLoopDriverError, AgentTurnProcessCommitObserver, AgentTurnRuntimePort,
+    AgentTurnSpawnTreeRuntimePort, CheckpointStateStorePort, DefaultTurnCoordinator,
+    LoopCheckpointStore, RunProfileResolver, TurnCommittedEventObserver, TurnEventSink,
+    TurnRunWakeNotifier, TurnSpawnTreePort,
     loop_exit::LoopExitEvidencePort,
     run_profile::{
         AgentLoopHostError, CommunicationContextProvider, InstructionSafetyContext,
@@ -62,6 +58,9 @@ use crate::{
         TurnRunSchedulerHandle, TurnRunWakeChannel,
     },
 };
+
+mod process_system;
+pub use process_system::ProcessRuntimeSystem;
 
 /// Default number of turn-runner worker tasks spawned per runtime instance.
 ///
@@ -262,109 +261,6 @@ impl SchedulerWakeWiring {
     /// so callers can query liveness and request shutdown.
     pub(crate) fn start(self, scheduler: TurnRunScheduler) -> TurnRunSchedulerHandle {
         scheduler.start_with_channel(self.notifier, self.channel)
-    }
-}
-
-#[derive(Clone)]
-pub struct ProcessRuntimeSystem {
-    submission: Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
-    adapter: Arc<ProcessJournalStoreTurnAdapter>,
-    observers: Arc<dyn ProcessJournalObserverRegistry>,
-}
-
-impl ProcessRuntimeSystem {
-    pub fn from_process_journal_store<F>(
-        store: Arc<ironclaw_processes::ProcessJournalStore<F>>,
-    ) -> Self
-    where
-        F: ironclaw_filesystem::RootFilesystem + Send + Sync + 'static,
-    {
-        let adapter = Arc::new(ProcessJournalStoreTurnAdapter::new(
-            Arc::clone(&store) as Arc<dyn ProcessRuntimePort>
-        ));
-        Self {
-            submission: Arc::clone(&store)
-                as Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
-            adapter,
-            observers: store as Arc<dyn ProcessJournalObserverRegistry>,
-        }
-    }
-
-    pub fn in_memory_ephemeral() -> Result<Self, String> {
-        let mounts = ironclaw_host_api::MountView::new(vec![ironclaw_host_api::MountGrant::new(
-            ironclaw_host_api::MountAlias::new("/processes")
-                .map_err(|error| format!("process mount alias: {error}"))?,
-            ironclaw_host_api::VirtualPath::new("/engine/processes")
-                .map_err(|error| format!("process mount path: {error}"))?,
-            ironclaw_host_api::MountPermissions::read_write_list_delete(),
-        )])
-        .map_err(|error| format!("process mount view: {error}"))?;
-        let filesystem = Arc::new(ironclaw_filesystem::ScopedFilesystem::with_fixed_view(
-            Arc::new(ironclaw_filesystem::InMemoryBackend::new()),
-            mounts,
-        ));
-        Ok(Self::from_process_journal_store(Arc::new(
-            ironclaw_processes::ProcessJournalStore::new(filesystem),
-        )))
-    }
-
-    pub fn submission(&self) -> Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>> {
-        Arc::clone(&self.submission)
-    }
-
-    pub fn transitions(&self) -> Arc<dyn ProcessTransitionPort<Error = ironclaw_turns::TurnError>> {
-        Arc::clone(&self.adapter)
-            as Arc<dyn ProcessTransitionPort<Error = ironclaw_turns::TurnError>>
-    }
-
-    pub fn journal(&self) -> Arc<dyn ProcessJournalSource<Error = ironclaw_turns::TurnError>> {
-        Arc::clone(&self.adapter)
-            as Arc<dyn ProcessJournalSource<Error = ironclaw_turns::TurnError>>
-    }
-
-    pub fn controls(
-        &self,
-    ) -> Arc<dyn ironclaw_processes::ProcessControlPort<Error = ironclaw_turns::TurnError>> {
-        Arc::clone(&self.adapter)
-            as Arc<dyn ironclaw_processes::ProcessControlPort<Error = ironclaw_turns::TurnError>>
-    }
-
-    pub fn lifecycle(
-        &self,
-    ) -> Arc<dyn ironclaw_processes::ProcessLifecycleLookupSource<Error = ironclaw_turns::TurnError>>
-    {
-        Arc::clone(&self.adapter)
-            as Arc<
-                dyn ironclaw_processes::ProcessLifecycleLookupSource<
-                        Error = ironclaw_turns::TurnError,
-                    >,
-            >
-    }
-
-    pub fn gates(
-        &self,
-    ) -> Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = ironclaw_turns::TurnError>>
-    {
-        Arc::clone(&self.adapter)
-            as Arc<
-                dyn ironclaw_processes::ProcessGateQuerySource<Error = ironclaw_turns::TurnError>,
-            >
-    }
-
-    pub fn checkpoints(&self) -> Arc<dyn ProcessCheckpointPort<Error = ironclaw_turns::TurnError>> {
-        Arc::clone(&self.adapter)
-            as Arc<dyn ProcessCheckpointPort<Error = ironclaw_turns::TurnError>>
-    }
-
-    pub fn agent_turn_runtime(&self) -> ironclaw_turns::AgentTurnProcessRuntime {
-        ironclaw_turns::AgentTurnProcessRuntime::from_process_adapter(Arc::clone(&self.adapter))
-    }
-
-    pub fn subscribe_process_observer(
-        &self,
-        observer: Arc<dyn ProcessJournalCommitObserver>,
-    ) -> Result<(), String> {
-        self.observers.subscribe_process_observer(observer)
     }
 }
 
@@ -651,14 +547,14 @@ where
             ProductLiveRuntimeReadinessComponent::CancellationFactory,
         ));
     }
-    let turn_state_store: Arc<dyn TurnStateStore> =
+    let agent_turn_runtime: Arc<dyn AgentTurnRuntimePort> =
         Arc::new(parts.process_system.agent_turn_runtime());
     let await_dependent_run_evidence: Arc<dyn AwaitDependentRunEvidenceStore> =
         parts.subagent_await_edge_evidence.clone();
     parts.loop_exit_evidence = Arc::new(
         ThreadCheckpointLoopExitEvidencePort::new_with_thread_scope(
             Arc::clone(&parts.thread_service),
-            turn_state_store,
+            agent_turn_runtime,
             Arc::clone(&parts.loop_checkpoint_store),
             await_dependent_run_evidence,
             parts.thread_scope.clone(),
@@ -751,7 +647,7 @@ where
     let process_system = parts.process_system.clone();
     let agent_turn_runtime = Arc::new(process_system.agent_turn_runtime());
     subagent_await_edge_settler
-        .bind_turn_tree_store(agent_turn_runtime.clone() as Arc<dyn TurnSpawnTreeStateStore>)
+        .bind_turn_tree_store(agent_turn_runtime.clone() as Arc<dyn AgentTurnSpawnTreeRuntimePort>)
         .map_err(|error| DefaultPlannedRuntimeBuildError::SubagentCompletion(error.to_string()))?;
     let subagent_completion_observer: Arc<dyn TurnCommittedEventObserver> =
         Arc::clone(&subagent_await_edge_settler).as_turn_committed_event_observer();
@@ -772,7 +668,7 @@ where
         .bind_coordinator(Arc::clone(&coordinator))
         .map_err(|error| DefaultPlannedRuntimeBuildError::SubagentCompletion(error.to_string()))?;
 
-    let turn_state_store: Arc<dyn TurnStateStore> = agent_turn_runtime.clone();
+    let agent_turn_runtime_port: Arc<dyn AgentTurnRuntimePort> = agent_turn_runtime.clone();
     let subagent_prompt_source: Arc<dyn SubagentPromptMaterialSource> =
         Arc::new(GateBackedSubagentPromptMaterialSource::new(
             Arc::clone(&parts.subagent_goal_store),
@@ -783,7 +679,8 @@ where
         SubagentSpawnDeps {
             coordinator: Arc::clone(&coordinator) as Arc<dyn ironclaw_turns::TurnCoordinator>,
             child_runs,
-            turn_state_store: agent_turn_runtime.clone() as Arc<dyn TurnSpawnTreeStateStore>,
+            agent_turn_runtime: agent_turn_runtime.clone()
+                as Arc<dyn AgentTurnSpawnTreeRuntimePort>,
             thread_service: Arc::clone(&parts.thread_service),
             goal_store: Arc::clone(&parts.subagent_goal_store) as Arc<dyn SubagentSpawnGoalStore>,
             await_edge_writer: Arc::clone(&parts.subagent_await_edge_writer),
@@ -872,7 +769,7 @@ where
         parts.thread_scope,
         Arc::clone(&parts.model_gateway),
         parts.checkpoint_state_store,
-        turn_state_store,
+        agent_turn_runtime_port,
         Arc::clone(&parts.loop_checkpoint_store),
         parts.milestone_sink,
         parts.config.host,

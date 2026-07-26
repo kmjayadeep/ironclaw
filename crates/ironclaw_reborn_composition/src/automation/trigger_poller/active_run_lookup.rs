@@ -13,7 +13,7 @@ use ironclaw_triggers::{
 };
 use ironclaw_turns::{TurnError, TurnRunId};
 
-pub(crate) struct SnapshotActiveRunLookup {
+pub(crate) struct ProcessActiveRunLookup {
     lifecycle_source: Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
 }
 
@@ -50,7 +50,7 @@ impl ProcessLifecycleLookupSource for RebindableProcessLifecycleLookupSource {
     }
 }
 
-impl SnapshotActiveRunLookup {
+impl ProcessActiveRunLookup {
     pub(crate) fn new(
         lifecycle_source: Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
     ) -> Self {
@@ -59,7 +59,7 @@ impl SnapshotActiveRunLookup {
 }
 
 #[async_trait]
-impl TriggerActiveRunLookup for SnapshotActiveRunLookup {
+impl TriggerActiveRunLookup for ProcessActiveRunLookup {
     async fn active_run_state(
         &self,
         request: TriggerActiveRunStateRequest,
@@ -305,7 +305,7 @@ mod tests {
     #[tokio::test]
     async fn active_run_batch_lookup_uses_one_lifecycle_lookup_for_page() {
         let lifecycle_source = Arc::new(CountingLifecycleSource::default());
-        let lookup = SnapshotActiveRunLookup::new(lifecycle_source.clone());
+        let lookup = ProcessActiveRunLookup::new(lifecycle_source.clone());
         let tenant_id = TenantId::new("trigger-active-batch-tenant").expect("tenant id");
         let fire_slot = Utc::now();
 
@@ -357,7 +357,7 @@ mod tests {
                 ),
             ],
         });
-        let lookup = SnapshotActiveRunLookup::new(lifecycle_source);
+        let lookup = ProcessActiveRunLookup::new(lifecycle_source);
         let fire_slot = Utc::now();
 
         let results = lookup
@@ -428,7 +428,7 @@ mod tests {
                 ),
             ],
         });
-        let lookup = SnapshotActiveRunLookup::new(lifecycle_source);
+        let lookup = ProcessActiveRunLookup::new(lifecycle_source);
         let fire_slot = Utc::now();
         let request = |run_id| TriggerActiveRunStateRequest {
             tenant_id: tenant_id.clone(),
@@ -477,7 +477,7 @@ mod tests {
     #[tokio::test]
     async fn active_run_batch_lookup_returns_empty_without_lifecycle_read() {
         let lifecycle_source = Arc::new(CountingLifecycleSource::default());
-        let lookup = SnapshotActiveRunLookup::new(lifecycle_source.clone());
+        let lookup = ProcessActiveRunLookup::new(lifecycle_source.clone());
 
         let results = lookup.active_run_states(Vec::new()).await;
 
@@ -488,7 +488,7 @@ mod tests {
     #[tokio::test]
     async fn lifecycle_source_error_fans_out_to_all_batch_results() {
         let lifecycle_source = Arc::new(FailingLifecycleSource::default());
-        let lookup = SnapshotActiveRunLookup::new(lifecycle_source.clone());
+        let lookup = ProcessActiveRunLookup::new(lifecycle_source.clone());
         let tenant_id = TenantId::new("trigger-active-error-tenant").expect("tenant id");
         let fire_slot = Utc::now();
 

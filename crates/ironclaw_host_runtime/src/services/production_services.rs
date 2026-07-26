@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use super::{
-    DefaultHostRuntime, DefaultTurnCoordinator, HostRuntimeServices, ProcessBackendKind,
-    ProcessResultStorePort, ProcessStorePort, ProductionComponentType,
+    AgentTurnRuntimePort, DefaultHostRuntime, DefaultTurnCoordinator, HostRuntimeServices,
+    ProcessBackendKind, ProcessResultStorePort, ProcessStorePort, ProductionComponentType,
     ProductionEventStoreWiringError, ProductionImplementationReadiness, ProductionWiringComponent,
     ProductionWiringConfig, ProductionWiringIssue, ProductionWiringIssueKind,
     ProductionWiringReport, RebornEventStoreConfig, RebornProfile, ResourceGovernor,
-    RootFilesystem, RuntimeKind, TurnStateStore, component_name, local_only_runtime_policy_reason,
+    RootFilesystem, RuntimeKind, component_name, local_only_runtime_policy_reason,
     production_wiring_report, runtime_http_egress_is_configured,
 };
 
@@ -408,7 +408,7 @@ where
     /// callers.
     pub fn turn_coordinator_for_production(
         &self,
-    ) -> Result<DefaultTurnCoordinator<dyn TurnStateStore>, ProductionWiringReport> {
+    ) -> Result<DefaultTurnCoordinator<dyn AgentTurnRuntimePort>, ProductionWiringReport> {
         self.validate_production_turn_wiring()?;
         let Some(turn_state) = self.turn_state.as_ref() else {
             return Err(production_wiring_report(

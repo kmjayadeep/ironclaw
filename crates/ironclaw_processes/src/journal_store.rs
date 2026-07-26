@@ -1,5 +1,4 @@
 use std::{
-    collections::{HashMap, VecDeque},
     sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
@@ -11,34 +10,34 @@ use ironclaw_filesystem::{
     RootFilesystem, ScopedFilesystem,
 };
 use ironclaw_host_api::{ProcessId, ResourceScope, ScopedPath};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
-use tokio::sync::Mutex;
 
 use crate::ProcessRuntimePort;
 use crate::journal::{
     CancelProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
     GetProcessCheckpointRequest, GetProcessSnapshotRequest, JournaledProcessSnapshot,
-    KillProcessRequest, ProcessCheckpointId, ProcessCheckpointPort, ProcessCheckpointRecord,
-    ProcessConcurrencyLimits, ProcessControlPort, ProcessControlResult, ProcessGateOwnerMatch,
-    ProcessGateQuery, ProcessGateQuerySource, ProcessGateRecord, ProcessJournalCommit,
-    ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind,
-    ProcessJournalObserverRegistry, ProcessJournalPage, ProcessJournalSource, ProcessLeaseRequest,
-    ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleLookupBatchRequest,
-    ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
-    ProcessOperationId, ProcessSubmissionPort, ProcessSuspension, ProcessTransitionPort,
-    ProcessTreePort, ProcessTreeReservation, ProcessWorkerId, PruneReleasedProcessRequest,
+    KillProcessRequest, ProcessCheckpointPort, ProcessCheckpointRecord, ProcessConcurrencyLimits,
+    ProcessControlPort, ProcessControlResult, ProcessGateOwnerMatch, ProcessGateQuery,
+    ProcessGateQuerySource, ProcessGateRecord, ProcessJournalCommit, ProcessJournalCommitObserver,
+    ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind, ProcessJournalObserverRegistry,
+    ProcessJournalPage, ProcessJournalSource, ProcessLeaseRequest, ProcessLeaseSnapshot,
+    ProcessLeaseToken, ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult,
+    ProcessLifecycleLookupSource, ProcessLifecycleStatus, ProcessOperationId,
+    ProcessSubmissionPort, ProcessSuspension, ProcessTransitionPort, ProcessTreePort,
+    ProcessTreeReservation, ProcessWorkerId, PruneReleasedProcessRequest,
     RecordProcessCheckpointRequest, RecoverExpiredProcessLeasesRequest,
     RecoverExpiredProcessLeasesResponse, ReleaseProcessTreeRequest, ReserveProcessTreeRequest,
     ResumeProcessRequest, StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
 };
 use crate::types::{invalid_path, same_scope_owner};
 
+mod state;
+use state::ProcessJournalMaterializedState;
+
 const JOURNAL_STATE_PATH: &str = "/processes/journal/state.json";
 const DEFAULT_LEASE_DURATION: Duration = Duration::from_secs(90);
 const MAX_CAS_RETRIES: usize = 5;
-const MAX_CONTROL_IDEMPOTENCY_RECORDS: usize = 4096;
 
 #[derive(Debug, Error)]
 pub enum ProcessJournalStoreError {
@@ -93,7 +92,6 @@ where
     F: RootFilesystem,
 {
     filesystem: Arc<ScopedFilesystem<F>>,
-    mutation_lock: Mutex<()>,
     observers: StdMutex<Vec<Arc<dyn ProcessJournalCommitObserver>>>,
     lease_duration: Duration,
     concurrency_limits: ProcessConcurrencyLimits,
@@ -106,7 +104,6 @@ where
     pub fn new(filesystem: Arc<ScopedFilesystem<F>>) -> Self {
         Self {
             filesystem,
-            mutation_lock: Mutex::new(()),
             observers: StdMutex::new(Vec::new()),
             lease_duration: DEFAULT_LEASE_DURATION,
             concurrency_limits: ProcessConcurrencyLimits::default(),
@@ -141,7 +138,6 @@ where
             })
             .transpose()
             .map_err(|error| ProcessJournalStoreError::Serialization(error.to_string()))?;
-        let _guard = self.mutation_lock.lock().await;
         self.mutate(|state| {
             if let Some(snapshot) = replay_key
                 .as_ref()
@@ -337,20 +333,11 @@ where
             .map_err(|error| ProcessJournalStoreError::Serialization(error.to_string()))?;
         let expectation = version.map_or(CasExpectation::Absent, CasExpectation::Version);
         let entry = Entry::bytes(body).with_content_type(ContentType::json());
-        match self
-            .filesystem
-            .put(&ResourceScope::system(), &path, entry.clone(), expectation)
+        self.filesystem
+            .put(&ResourceScope::system(), &path, entry, expectation)
             .await
-        {
-            Ok(_) => Ok(()),
-            Err(error) if is_unsupported(&error) && version.is_some() => self
-                .filesystem
-                .put(&ResourceScope::system(), &path, entry, CasExpectation::Any)
-                .await
-                .map(|_| ())
-                .map_err(Into::into),
-            Err(error) => Err(error.into()),
-        }
+            .map(|_| ())
+            .map_err(Into::into)
     }
 }
 
@@ -386,7 +373,6 @@ where
         request: ClaimProcessesRequest,
     ) -> Result<Vec<ClaimedProcess>, Self::Error> {
         let claimed = {
-            let _guard = self.mutation_lock.lock().await;
             self.mutate(|state| {
                 let mut claimed = Vec::new();
                 let process_ids = state.claimable_process_ids(request.scope_filter.as_ref());
@@ -452,7 +438,6 @@ where
         request: ProcessLeaseRequest,
     ) -> Result<ProcessJournalCursor, Self::Error> {
         let snapshot = {
-            let _guard = self.mutation_lock.lock().await;
             self.mutate(|state| {
                 let now = Utc::now();
                 let cursor = state.next_cursor();
@@ -486,7 +471,6 @@ where
         request: RecoverExpiredProcessLeasesRequest,
     ) -> Result<RecoverExpiredProcessLeasesResponse, Self::Error> {
         let response = {
-            let _guard = self.mutation_lock.lock().await;
             self.mutate(|state| {
                 let expired = state.expired_process_ids(request.scope_filter.as_ref(), request.now);
                 let mut recovered = Vec::new();
@@ -743,7 +727,6 @@ where
     ) -> Result<ProcessControlResult, ProcessJournalStoreError> {
         let reason = mutation.reason.clone();
         let (result, committed_kind) = {
-            let _guard = self.mutation_lock.lock().await;
             self.mutate(|state| {
                 let replay_key = mutation.operation_id.as_ref().map(|id| {
                     format!(
@@ -841,7 +824,6 @@ where
     ) -> Result<JournaledProcessSnapshot, ProcessJournalStoreError> {
         let kind = mutation.kind;
         let snapshot = {
-            let _guard = self.mutation_lock.lock().await;
             self.mutate(|state| {
                 let cursor = state.next_cursor();
                 let snapshot = state.process_mut(request.process_id)?;
@@ -928,7 +910,6 @@ where
                 "reservation delta must be greater than zero".to_string(),
             ));
         }
-        let _guard = self.mutation_lock.lock().await;
         self.mutate(|state| {
             validate_tree_root(state, &request.scope, request.root_process_id)?;
             let current = state
@@ -966,7 +947,6 @@ where
         &self,
         request: ReleaseProcessTreeRequest,
     ) -> Result<(), Self::Error> {
-        let _guard = self.mutation_lock.lock().await;
         self.mutate(|state| {
             validate_tree_root(state, &request.scope, request.root_process_id)?;
             let Some(reservation) = state.tree_reservations.get_mut(&request.root_process_id)
@@ -1000,7 +980,6 @@ where
         &self,
         request: PruneReleasedProcessRequest,
     ) -> Result<(), Self::Error> {
-        let _guard = self.mutation_lock.lock().await;
         self.mutate(|state| {
             if !state.processes.contains_key(&request.root_process_id) {
                 return Ok(());
@@ -1026,7 +1005,6 @@ where
         &self,
         request: RecordProcessCheckpointRequest,
     ) -> Result<ProcessCheckpointRecord, Self::Error> {
-        let _guard = self.mutation_lock.lock().await;
         self.mutate(|state| {
             let snapshot = state.processes.get(&request.process_id).ok_or(
                 ProcessJournalStoreError::UnknownProcess {
@@ -1242,178 +1220,8 @@ where
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ProcessJournalMaterializedState {
-    next_cursor: u64,
-    processes: HashMap<ProcessId, JournaledProcessSnapshot>,
-    journal: Vec<ProcessJournalEntry>,
-    #[serde(default)]
-    control_idempotency: HashMap<String, ProcessControlResult>,
-    #[serde(default)]
-    control_idempotency_order: VecDeque<String>,
-    #[serde(default)]
-    submission_idempotency: HashMap<String, JournaledProcessSnapshot>,
-    #[serde(default)]
-    submission_idempotency_order: VecDeque<String>,
-    #[serde(default)]
-    tree_reservations: HashMap<ProcessId, ProcessTreeReservation>,
-    #[serde(default)]
-    checkpoints: HashMap<ProcessCheckpointId, ProcessCheckpointRecord>,
-}
-
-impl Default for ProcessJournalMaterializedState {
-    fn default() -> Self {
-        Self {
-            next_cursor: 1,
-            processes: HashMap::new(),
-            journal: Vec::new(),
-            control_idempotency: HashMap::new(),
-            control_idempotency_order: VecDeque::new(),
-            submission_idempotency: HashMap::new(),
-            submission_idempotency_order: VecDeque::new(),
-            tree_reservations: HashMap::new(),
-            checkpoints: HashMap::new(),
-        }
-    }
-}
-
 impl<F> ProcessRuntimePort for ProcessJournalStore<F> where F: RootFilesystem + Send + Sync + 'static
 {}
-
-impl ProcessJournalMaterializedState {
-    fn next_cursor(&mut self) -> ProcessJournalCursor {
-        let cursor = ProcessJournalCursor(self.next_cursor);
-        self.next_cursor = self.next_cursor.saturating_add(1);
-        cursor
-    }
-
-    fn push_entry(&mut self, entry: ProcessJournalEntry) {
-        self.journal.push(entry);
-    }
-
-    fn remember_control_result(&mut self, key: Option<String>, result: ProcessControlResult) {
-        let Some(key) = key else {
-            return;
-        };
-        if let Some(existing) = self.control_idempotency.get_mut(&key) {
-            *existing = result;
-            return;
-        }
-        while self.control_idempotency.len() >= MAX_CONTROL_IDEMPOTENCY_RECORDS {
-            let Some(oldest) = self.control_idempotency_order.pop_front() else {
-                self.control_idempotency.clear();
-                break;
-            };
-            self.control_idempotency.remove(&oldest);
-        }
-        self.control_idempotency_order.push_back(key.clone());
-        self.control_idempotency.insert(key, result);
-    }
-
-    fn remember_submission_result(
-        &mut self,
-        key: Option<String>,
-        snapshot: JournaledProcessSnapshot,
-    ) {
-        let Some(key) = key else {
-            return;
-        };
-        if let Some(existing) = self.submission_idempotency.get_mut(&key) {
-            *existing = snapshot;
-            return;
-        }
-        while self.submission_idempotency.len() >= MAX_CONTROL_IDEMPOTENCY_RECORDS {
-            let Some(oldest) = self.submission_idempotency_order.pop_front() else {
-                self.submission_idempotency.clear();
-                break;
-            };
-            self.submission_idempotency.remove(&oldest);
-        }
-        self.submission_idempotency_order.push_back(key.clone());
-        self.submission_idempotency.insert(key, snapshot);
-    }
-
-    fn process_mut(
-        &mut self,
-        process_id: ProcessId,
-    ) -> Result<&mut JournaledProcessSnapshot, ProcessJournalStoreError> {
-        self.processes
-            .get_mut(&process_id)
-            .ok_or(ProcessJournalStoreError::UnknownProcess { process_id })
-    }
-
-    fn claimable_process_ids(&self, scope_filter: Option<&ResourceScope>) -> Vec<ProcessId> {
-        let mut ids = self
-            .processes
-            .values()
-            .filter(|snapshot| snapshot.status == ProcessLifecycleStatus::Queued)
-            .filter(|snapshot| {
-                scope_filter.is_none_or(|scope| same_scope_owner(&snapshot.scope, scope))
-            })
-            .map(|snapshot| (snapshot.created_at, snapshot.process_id))
-            .collect::<Vec<_>>();
-        ids.sort_by_key(|(created_at, process_id)| (*created_at, process_id.as_uuid()));
-        ids.into_iter().map(|(_, process_id)| process_id).collect()
-    }
-
-    fn expired_process_ids(
-        &self,
-        scope_filter: Option<&ResourceScope>,
-        now: ironclaw_host_api::Timestamp,
-    ) -> Vec<ProcessId> {
-        self.processes
-            .values()
-            .filter(|snapshot| {
-                matches!(
-                    snapshot.status,
-                    ProcessLifecycleStatus::Running | ProcessLifecycleStatus::CancelRequested
-                )
-            })
-            .filter(|snapshot| {
-                scope_filter.is_none_or(|scope| same_scope_owner(&snapshot.scope, scope))
-            })
-            .filter(|snapshot| {
-                snapshot
-                    .lease
-                    .as_ref()
-                    .and_then(|lease| lease.lease_expires_at)
-                    .is_some_and(|expires_at| expires_at <= now)
-            })
-            .map(|snapshot| snapshot.process_id)
-            .collect()
-    }
-
-    fn page_after(
-        &self,
-        after: Option<ProcessJournalCursor>,
-        limit: usize,
-        include: impl Fn(&ProcessJournalEntry) -> bool,
-    ) -> ProcessJournalPage {
-        let after = after.map(|cursor| cursor.0).unwrap_or(0);
-        let mut entries = self
-            .journal
-            .iter()
-            .filter(|entry| entry.cursor.0 > after)
-            .filter(|entry| include(entry))
-            .take(limit.saturating_add(1))
-            .cloned()
-            .collect::<Vec<_>>();
-        let truncated = entries.len() > limit;
-        if truncated {
-            entries.truncate(limit);
-        }
-        let next_cursor = entries
-            .last()
-            .map(|entry| entry.cursor)
-            .unwrap_or(ProcessJournalCursor(after));
-        ProcessJournalPage {
-            entries,
-            next_cursor,
-            truncated,
-            rebase_required: None,
-        }
-    }
-}
 
 impl ProcessJournalEntry {
     fn from_snapshot(
@@ -1602,8 +1410,4 @@ fn validate_tree_root(
 fn journal_state_path() -> Result<ScopedPath, ProcessJournalStoreError> {
     ScopedPath::new(JOURNAL_STATE_PATH)
         .map_err(|error| ProcessJournalStoreError::InvalidPath(invalid_path(error).to_string()))
-}
-
-fn is_unsupported(error: &FilesystemError) -> bool {
-    matches!(error, FilesystemError::Unsupported { .. })
 }

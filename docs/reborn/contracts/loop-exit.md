@@ -23,7 +23,7 @@ AgentLoopDriver
   -> LoopExit claim
   -> TurnRunner validates evidence/policy
   -> TurnRunnerOutcome
-  -> TurnStateStore transition
+  -> ProcessTransitionPort
 ```
 
 `LoopExit` contains references only. It must not carry raw prompts, assistant text, tool inputs, approval payloads, secrets, host paths, provider errors, stack traces, or raw runtime output. Loop-owned refs use tight host-minted opaque prefixes (`exit:`, `msg:`, `result:`, `gate:`, `usage:`, `diag:`) to avoid accepting free-form payload text as evidence.
@@ -87,8 +87,12 @@ Later slices may add validation against transcript draft state, checkpoint fresh
 - `LoopExitEvidencePort` and evidence request DTOs for host-owned validation inputs;
 - crate-private `LoopExitValidationPolicy` construction plus public `LoopExitValidationDecision`;
 - one-way mapping to `TurnRunnerOutcome` (invalid exits always map to Failed; valid failed outcomes may carry verified explanation refs and a retry checkpoint id; `LoopExitMapping::RecoveryRequired` is a backward-compat shim);
-- `LoopExitApplier`, which derives validation policy from host-owned evidence and invokes the trusted `TurnRunTransitionPort` with an already-validated `LoopExitMapping`.
+- `LoopExitApplier`, which derives validation policy from host-owned evidence
+  and invokes `ProcessTransitionPort` with the neutral process outcome or
+  suspension produced from the validated exit.
 
-`ApplyValidatedLoopExitRequest` remains the transition-port DTO for already-validated mappings. Driver-facing code must not be able to supply `LoopExitValidationPolicy` directly.
+Driver-facing code must not be able to supply `LoopExitValidationPolicy`
+directly. Agent-loop validation remains outside the process kernel; only its
+validated lifecycle result crosses the process transition port.
 
 This slice deliberately does not wire durable exit-id idempotency storage, transcript draft validation, or product service-graph integration.

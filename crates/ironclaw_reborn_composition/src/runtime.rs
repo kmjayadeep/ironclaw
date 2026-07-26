@@ -92,11 +92,11 @@ use ironclaw_threads::{
     SessionThreadService, ThreadHistoryRequest, ThreadScope,
 };
 use ironclaw_turns::{
-    AcceptedMessageRef, AgentTurnProcessRuntime, CancelRunRequest, CancelRunResponse,
-    GetRunStateRequest, IdempotencyKey, LoopGateRef, ReplyTargetBindingRef,
+    AcceptedMessageRef, AgentTurnProcessRuntime, AgentTurnSpawnTreeRuntimePort, CancelRunRequest,
+    CancelRunResponse, GetRunStateRequest, IdempotencyKey, LoopGateRef, ReplyTargetBindingRef,
     RunProfileResolutionRequest, SanitizedCancelReason, SourceBindingRef, SubmitTurnRequest,
     SubmitTurnResponse, TurnActor, TurnCoordinator, TurnError, TurnEventProjectionSource, TurnId,
-    TurnRunId, TurnRunState, TurnRunWake, TurnScope, TurnSpawnTreeStateStore, TurnStatus,
+    TurnRunId, TurnRunState, TurnRunWake, TurnScope, TurnStatus,
     events::EventCursor,
     run_profile::{LoopHostMilestoneSink, LoopRunContext},
 };
@@ -321,9 +321,9 @@ use crate::RebornCompositionProfile;
 #[cfg(any(test, feature = "test-support"))]
 use crate::automation::trigger_poller::TenantScopedTrustedTriggerFireAuthorizer;
 use crate::automation::trigger_poller::{
-    AccessCheckerTriggerFireAuthorizer, ConversationContentRefMaterializer,
-    SnapshotActiveRunLookup, TRIGGER_POLLER_SHUTDOWN_TIMEOUT, TriggerPollerCompositionDeps,
-    TriggerPollerRuntimeHandle, spawn_trigger_poller,
+    AccessCheckerTriggerFireAuthorizer, ConversationContentRefMaterializer, ProcessActiveRunLookup,
+    TRIGGER_POLLER_SHUTDOWN_TIMEOUT, TriggerPollerCompositionDeps, TriggerPollerRuntimeHandle,
+    spawn_trigger_poller,
 };
 use crate::factory::{RebornRuntimeStores, build_runtime_substrate};
 use crate::runtime_input::{
@@ -425,7 +425,7 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
         let resolver = Arc::new(AwaitEdgeResolver::new_unbound_deferred_result_writer(
             Arc::clone(&store),
             Arc::clone(&subagent_goal_store) as Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
-            Arc::clone(&turn_projection) as Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore>,
+            Arc::clone(&turn_projection) as Arc<dyn ironclaw_turns::AgentTurnSpawnTreeRuntimePort>,
             Arc::clone(&thread_service),
         ));
         let driver = Arc::new(ScopeRecoveryDriver::new(
@@ -696,7 +696,7 @@ pub struct RebornRuntime {
         dead_code,
         reason = "held for test-support rebinding after runtime construction"
     )]
-    pub(crate) trigger_source_turn_state: Arc<
+    pub(crate) trigger_process_lifecycle_source: Arc<
         std::sync::RwLock<
             Arc<dyn ironclaw_processes::ProcessLifecycleLookupSource<Error = TurnError>>,
         >,
@@ -763,7 +763,7 @@ pub struct RebornRuntime {
         reason = "read by local-runtime approval/auth composition and test-support accessors"
     )]
     pub(crate) process_gate_query_source: Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
-    turn_tree_store: Arc<dyn TurnSpawnTreeStateStore>,
+    turn_tree_store: Arc<dyn AgentTurnSpawnTreeRuntimePort>,
     thread_service: Arc<dyn SessionThreadService>,
     thread_scope: ThreadScope,
     turn_scheduler: RuntimeTurnScheduler,
@@ -916,7 +916,7 @@ pub(crate) fn build_approval_interaction_service(
 /// Identical to [`build_approval_interaction_service`]
 /// except the approval turn-run locator reads `turn_run_source` instead of
 /// always deriving it from `local_runtime.turn_state`. Lets a caller whose
-/// real runs live in a DIFFERENT `TurnStateStore` composition (e.g.
+/// real runs live in a DIFFERENT `AgentTurnRuntimePort` composition (e.g.
 /// `RebornIntegrationGroup`'s own `build_default_planned_runtime`, whose runs
 /// are invisible to this crate's `local_runtime.turn_state`) substitute its
 /// own store. `build_approval_interaction_service` is the
@@ -1143,7 +1143,7 @@ where
 fn build_trigger_active_run_lookup(
     lifecycle_source: Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
 ) -> Arc<dyn ironclaw_triggers::TriggerActiveRunLookup> {
-    Arc::new(SnapshotActiveRunLookup::new(lifecycle_source))
+    Arc::new(ProcessActiveRunLookup::new(lifecycle_source))
 }
 
 /// Resolve the fire-time `TenantMembership` user directory from the runtime's
@@ -3723,7 +3723,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         Arc::clone(&subagent_await_edge_evidence);
     let mut loop_exit_evidence = ThreadCheckpointLoopExitEvidencePort::new_with_thread_scope(
         Arc::clone(&thread_service),
-        Arc::clone(&turn_projection) as Arc<dyn ironclaw_turns::TurnStateStore>,
+        Arc::clone(&turn_projection) as Arc<dyn ironclaw_turns::AgentTurnRuntimePort>,
         Arc::clone(&loop_checkpoint_store) as Arc<dyn ironclaw_turns::LoopCheckpointStore>,
         await_dependent_run_evidence,
         thread_scope.clone(),
@@ -4640,7 +4640,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         project_service,
         trigger_repository: trigger_repository.clone(),
         #[cfg(any(test, feature = "test-support"))]
-        trigger_source_turn_state: Arc::clone(&services.trigger_source_turn_state),
+        trigger_process_lifecycle_source: Arc::clone(&services.trigger_process_lifecycle_source),
         #[cfg(any(test, feature = "test-support"))]
         trigger_source_reply_target: Arc::clone(&services.trigger_source_reply_target),
         broadcast_budget_event_sink,
@@ -4732,7 +4732,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
 
 /// Thin wrapper over
 /// `build_webui_auth_interaction_service_with_turn_run_source` using
-/// `turn_state_store` as the turn-run state source.
+/// `agent_turn_runtime` as the turn-run state source.
 fn build_webui_auth_interaction_service(
     product_auth: &RebornProductAuthServices,
     process_gate_query_source: Arc<dyn ProcessGateQuerySource<Error = TurnError>>,

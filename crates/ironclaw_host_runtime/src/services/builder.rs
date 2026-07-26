@@ -5,22 +5,21 @@ use std::sync::Arc;
 use super::LibSqlRootFilesystem;
 use super::PostgresRootFilesystem;
 use super::{
-    ApprovalRequestStore, ApprovalRequestStorePort, AuditSink, CapabilityLeaseStorePort,
-    CoalescingEventSink, DurableAuditLog, DurableAuditSink, DurableEventLog, DurableEventSink,
-    EffectiveRuntimePolicy, EventBatchConfig, EventSink, FilesystemResourceGovernor,
-    FirstPartyCapabilityRegistry, HostRuntimeServices, McpExecutor, NetworkHttpEgress,
-    ProcessBackendKind, ProcessExecutor, ProcessObligationLifecycleStore, ProcessResultStorePort,
-    ProcessStorePort, ProductionComponentType, ProductionImplementationReadiness,
-    ProductionWiringComponent, ProductionWiringIssueKind, ProductionWiringReport,
-    RebornEventStoreConfig, RebornEventStoreError, RebornEventStores, RebornProfile,
-    ResourceGovernor, RootFilesystem, RunProfileResolver, RunStateApprovalStorePort, RunStateStore,
-    RunStateStorePort, RuntimeBackendHealth, RuntimeCredentialAccountResolver, RuntimeHttpEgress,
-    RuntimeKind, RuntimeProcessPort, ScopedFilesystem, ScriptExecutor, SecretMode, SecretStorePort,
-    SecurityAuditSink, SharedSecretStore, TenantSandboxProcessPort, TrustPolicy,
-    TurnRunWakeNotifier, TurnStateStore, WasmError, WasmRuntimeAdapter,
-    WasmRuntimeCredentialProvider, WasmStagedRuntimeCredentials, WitToolHost, WitToolRuntimeConfig,
-    build_reborn_event_stores, production_wiring_report, set_runtime_http_egress,
-    set_tool_call_http_egress,
+    AgentTurnRuntimePort, ApprovalRequestStore, ApprovalRequestStorePort, AuditSink,
+    CapabilityLeaseStorePort, CoalescingEventSink, DurableAuditLog, DurableAuditSink,
+    DurableEventLog, DurableEventSink, EffectiveRuntimePolicy, EventBatchConfig, EventSink,
+    FilesystemResourceGovernor, FirstPartyCapabilityRegistry, HostRuntimeServices, McpExecutor,
+    NetworkHttpEgress, ProcessBackendKind, ProcessExecutor, ProcessObligationLifecycleStore,
+    ProcessResultStorePort, ProcessStorePort, ProductionComponentType,
+    ProductionImplementationReadiness, ProductionWiringComponent, ProductionWiringIssueKind,
+    ProductionWiringReport, RebornEventStoreConfig, RebornEventStoreError, RebornEventStores,
+    RebornProfile, ResourceGovernor, RootFilesystem, RunProfileResolver, RunStateApprovalStorePort,
+    RunStateStore, RunStateStorePort, RuntimeBackendHealth, RuntimeCredentialAccountResolver,
+    RuntimeHttpEgress, RuntimeKind, RuntimeProcessPort, ScopedFilesystem, ScriptExecutor,
+    SecretMode, SecretStorePort, SecurityAuditSink, SharedSecretStore, TenantSandboxProcessPort,
+    TrustPolicy, TurnRunWakeNotifier, WasmError, WasmRuntimeAdapter, WasmRuntimeCredentialProvider,
+    WasmStagedRuntimeCredentials, WitToolHost, WitToolRuntimeConfig, build_reborn_event_stores,
+    production_wiring_report, set_runtime_http_egress, set_tool_call_http_egress,
 };
 use crate::HostProcessPort;
 use crate::RuntimeHttpBodyStore;
@@ -411,7 +410,7 @@ where
 
     pub fn with_turn_state<T>(mut self, turn_state: Arc<T>) -> Self
     where
-        T: TurnStateStore + 'static,
+        T: AgentTurnRuntimePort + 'static,
     {
         self.component_types.turn_state = Some(ProductionComponentType::of::<T>());
         self.turn_state = Some(turn_state);
@@ -428,18 +427,6 @@ where
     }
 
     /// Builds and attaches a filesystem-backed turn-state store over the
-    /// supplied [`ScopedFilesystem`].
-    ///
-    /// The turn-state store performs global snapshot operations internally, so
-    /// callers must pass a handle whose `/turns` alias is already fixed to the
-    /// owning user's subtree. Do not pass the shared dynamic invocation scoped
-    /// filesystem here: its global-operation scope would route turn state to
-    /// the system sentinel owner rather than the runtime owner. The backend
-    /// choice (`CompositeRootFilesystem` over `LibSqlRootFilesystem`,
-    /// `PostgresRootFilesystem`, `InMemoryBackend`, …) still happens at the
-    /// [`RootFilesystem`] layer, not here.
-    ///
-    /// Replaces the legacy `with_libsql_turn_state_store` /
     pub fn with_turn_run_wake_notifier<T>(mut self, notifier: Arc<T>) -> Self
     where
         T: TurnRunWakeNotifier + 'static,

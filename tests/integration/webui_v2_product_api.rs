@@ -1898,7 +1898,7 @@ async fn sse_activity_stream_replay_and_reconnect() {
 /// and resolve a pending approval gate. Mounts the real `webui_v2` router
 /// over a hand-built `RebornServices` facade wired with the harness's own
 /// turn-state-converged `ApprovalInteractionService`
-/// (`local_dev_approval_interaction_service_with_turn_state_for_test`, the
+/// (`local_dev_approval_interaction_service_with_process_gates_for_test`, the
 /// same seam `RebornIntegrationGroupBuilder::with_real_gate_dispatch_services`
 /// wires into `DefaultProductSurface`) and the production event-stream
 /// recipe `sse_activity_stream_replay_and_reconnect` above already pins.

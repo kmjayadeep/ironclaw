@@ -115,11 +115,6 @@ boundary. The current rule is codified in
    and do not treat a store's absence from this list as license to write a
    new local retry loop instead of calling `cas_update`.
 
-   - `ironclaw_turns` runner-lease sidecar (`turn_state_row_store/runner_lease.rs`,
-     landed independently in #5232) drives its per-run lease records through
-     a local `put_with_cas` + `cas_retry_backoff` retry loop; the main
-     turn-state snapshot RMW already goes through `cas_update`. Migration
-     tracked as follow-up #5274 (runner-lease CAS consolidation).
    - `ironclaw_threads::filesystem_service` drives `write_new_message`,
      `reserve_sequence_via_thread_record` (the legacy fallback for backends
      without native sequence reservation; `reserve_sequence` itself is now

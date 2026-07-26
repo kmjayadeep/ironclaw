@@ -58,11 +58,10 @@ use ironclaw_threads::{
     ThreadScope,
 };
 use ironclaw_trust::EffectiveTrustClass;
-use ironclaw_turns::test_support::in_memory_turn_state_store;
+use ironclaw_turns::ProcessLoopCheckpointStore;
 use ironclaw_turns::{
-    CancelRunRequest, GetRunStateRequest, IdempotencyKey, LoopResultRef, SanitizedCancelReason,
-    TurnActor, TurnCoordinator, TurnRunId, TurnRunState, TurnRunWake, TurnScope, TurnStateRowStore,
-    TurnStateStore, TurnStatus,
+    AgentTurnRuntimePort, CancelRunRequest, IdempotencyKey, LoopResultRef, SanitizedCancelReason,
+    TurnActor, TurnCoordinator, TurnRunId, TurnRunState, TurnRunWake, TurnScope, TurnStatus,
     run_profile::{
         AgentLoopHostError, CapabilityCallCandidate, CapabilityDescriptorView, CapabilityInputRef,
         CapabilitySurfaceVersion, ConcurrencyHint, InMemoryLoopHostMilestoneSink,
@@ -82,7 +81,7 @@ pub struct ProductLiveAgentLoopHarness {
     binding: ResolvedBinding,
     thread_scope: ThreadScope,
     thread_service: InMemorySessionThreadService,
-    turn_store: Arc<TurnStateRowStore<InMemoryBackend>>,
+    turn_store: Arc<ironclaw_turns::AgentTurnProcessRuntime>,
     cancellation_factory: Arc<ReadyRunCancellationFactory>,
     composition: RebornRuntimeLoopComposition<dyn SessionThreadService, RecordingModelGateway>,
     model_requests: Arc<Mutex<Vec<HostManagedModelRequest>>>,
@@ -247,8 +246,11 @@ impl ProductLiveAgentLoopHarness {
             mission_id: None,
         };
         let thread_service = InMemorySessionThreadService::default();
-        let turn_store = Arc::new(in_memory_turn_state_store());
-        let checkpoint_store = Arc::clone(&turn_store);
+        let process_system = ProcessRuntimeSystem::in_memory_ephemeral().expect("process system");
+        let turn_store = Arc::new(process_system.agent_turn_runtime());
+        let checkpoint_store: Arc<dyn ironclaw_turns::LoopCheckpointStore> = Arc::new(
+            ProcessLoopCheckpointStore::new(process_system.checkpoints()),
+        );
         let model_requests = Arc::new(Mutex::new(Vec::new()));
         let model_responses = VecDeque::from(config.model_responses);
         let model_release = config
@@ -374,7 +376,7 @@ impl ProductLiveAgentLoopHarness {
         let await_edge_resolver = Arc::new(AwaitEdgeResolver::new_unbound(
             Arc::clone(&await_edge_store),
             await_edge_goal_store.clone() as Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
-            turn_store.clone() as Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore>,
+            turn_store.clone() as Arc<dyn ironclaw_turns::AgentTurnSpawnTreeRuntimePort>,
             capability_result_writer.clone(),
             Arc::new(thread_service.clone()),
         ));
@@ -385,7 +387,7 @@ impl ProductLiveAgentLoopHarness {
         let composition = build_product_live_planned_runtime(DefaultPlannedRuntimeParts {
             attachment_read_port: None,
             gate_record_store: turn_executor_gate_store,
-            process_system: ProcessRuntimeSystem::in_memory_ephemeral().expect("process system"),
+            process_system,
             thread_service: Arc::new(thread_service.clone()),
             thread_scope: thread_scope.clone(),
             model_gateway,
@@ -412,7 +414,7 @@ impl ProductLiveAgentLoopHarness {
             loop_exit_evidence: Arc::new(
                 ThreadCheckpointLoopExitEvidencePort::new_with_thread_scope(
                     Arc::new(thread_service.clone()),
-                    Arc::clone(&turn_store) as Arc<dyn TurnStateStore>,
+                    Arc::clone(&turn_store) as Arc<dyn AgentTurnRuntimePort>,
                     checkpoint_store,
                     await_edge_store
                         as Arc<
@@ -531,10 +533,7 @@ impl ProductLiveAgentLoopHarness {
             loop {
                 let state = self
                     .turn_store
-                    .get_run_state(GetRunStateRequest {
-                        scope: scope.clone(),
-                        run_id,
-                    })
+                    .get_run_state(&scope, run_id)
                     .await
                     .expect("harness run state");
                 if state.status.is_terminal() {

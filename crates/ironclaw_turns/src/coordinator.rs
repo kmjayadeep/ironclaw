@@ -56,11 +56,11 @@ fn trace_coordinator_latency_error<E: ?Sized>(
 }
 
 use crate::{
-    AdmissionRejection, CancelRunRequest, CancelRunResponse, GetRunStateRequest,
-    InMemoryRunProfileResolver, ResumeTurnRequest, ResumeTurnResponse, RetryTurnRequest,
-    RetryTurnResponse, RunProfileResolver, SubmitChildRunRequest, SubmitTurnRequest,
-    SubmitTurnResponse, TurnCapacityResource, TurnError, TurnRunId, TurnRunState, TurnScope,
-    TurnSpawnTreeStateStore, TurnStateStore, TurnStatus, events::EventCursor,
+    AdmissionRejection, AgentTurnRuntimePort, AgentTurnSpawnTreeRuntimePort, CancelRunRequest,
+    CancelRunResponse, GetRunStateRequest, InMemoryRunProfileResolver, ResumeTurnRequest,
+    ResumeTurnResponse, RetryTurnRequest, RetryTurnResponse, RunProfileResolver,
+    SubmitChildRunRequest, SubmitTurnRequest, SubmitTurnResponse, TurnCapacityResource, TurnError,
+    TurnRunId, TurnRunState, TurnScope, TurnStatus, events::EventCursor,
     process_projection::AgentTurnProcessRuntime,
 };
 
@@ -169,7 +169,7 @@ pub struct DefaultTurnCoordinator<S: ?Sized> {
 
 impl<S> DefaultTurnCoordinator<S>
 where
-    S: TurnStateStore + ?Sized,
+    S: AgentTurnRuntimePort + ?Sized,
 {
     pub fn new(store: Arc<S>) -> Self {
         Self {
@@ -288,7 +288,7 @@ fn notify_queued_run_best_effort(notifier: &dyn TurnRunWakeNotifier, wake: TurnR
 #[async_trait]
 impl<S> TurnCoordinator for DefaultTurnCoordinator<S>
 where
-    S: TurnStateStore + ?Sized + 'static,
+    S: AgentTurnRuntimePort + ?Sized + 'static,
 {
     async fn prepare_turn(&self, scope: TurnScope) -> Result<TurnRunId, TurnError> {
         let run_id = TurnRunId::new();
@@ -503,7 +503,7 @@ where
 #[async_trait]
 impl<S> TurnSpawnTreePort for DefaultTurnCoordinator<S>
 where
-    S: TurnSpawnTreeStateStore + ?Sized + 'static,
+    S: AgentTurnSpawnTreeRuntimePort + ?Sized + 'static,
 {
     async fn submit_child_run(
         &self,
