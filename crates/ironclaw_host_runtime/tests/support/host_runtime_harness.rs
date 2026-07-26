@@ -1118,6 +1118,9 @@ where
         ]));
     let process_store =
         Arc::new(obligation_services.process_obligation_lifecycle_store(inner_process_store));
+    process_store
+        .register_journal_observer(process_store.process_runtime().as_ref())
+        .expect("process obligation observer should register");
     let cleanup_process_store = Arc::clone(&process_store);
     let process_manager = Arc::new(
         BackgroundProcessManager::new(Arc::clone(&process_store), Arc::new(executor))

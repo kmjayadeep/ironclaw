@@ -61,6 +61,15 @@ completion to pass through a `ProcessStorePort` wrapper; pre-submit handoff
 claiming remains the only lifecycle action that must happen before a journal
 commit.
 
+`ProcessHost` and the capability background executor now read and terminalize
+processes through `ProcessRuntimePort`. The compatibility store is no longer in
+their execution path; it remains only at capability submission boundaries that
+still need the pre-submit obligation handoff claim.
+
+Detached capability authorization re-minting also reads the authoritative
+journal snapshot directly. Authorization validation, host control, and
+supervisor completion therefore share one persisted process projection.
+
 `ironclaw_processes` still has a separate capability/background process stack:
 
 - `process_store.rs`: 920 lines

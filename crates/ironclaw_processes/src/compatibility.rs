@@ -18,8 +18,7 @@ use crate::{
     ProcessControlPort, ProcessInputPayload, ProcessInputRef, ProcessInputSubmission,
     ProcessJournalSource, ProcessJournalStore, ProcessJournalStoreError, ProcessKind,
     ProcessLeaseRequest, ProcessLifecycleStatus, ProcessRuntimePort, ProcessSnapshotSource,
-    ProcessStateTransitionRequest, ProcessSubmissionPort, ProcessTransitionPort, ProcessWorkerId,
-    SubmitProcessRequest,
+    ProcessStateTransitionRequest, ProcessSubmissionPort, ProcessWorkerId, SubmitProcessRequest,
 };
 
 const CAPABILITY_INPUT_REF: &str = "capability-invocation:v1";
@@ -58,50 +57,6 @@ where
         })
         .await
         .map_err(map_journal_error)
-    }
-
-    fn lease_request(
-        snapshot: &crate::JournaledProcessSnapshot,
-    ) -> Result<ProcessLeaseRequest, ProcessError> {
-        let lease = snapshot
-            .lease
-            .as_ref()
-            .ok_or_else(|| ProcessError::InvalidStoredRecord {
-                reason: format!(
-                    "running process {} has no journal lease",
-                    snapshot.process_id
-                ),
-            })?;
-        Ok(ProcessLeaseRequest {
-            process_id: snapshot.process_id,
-            worker_id: lease.worker_id.clone(),
-            lease_token: lease.lease_token.clone(),
-        })
-    }
-
-    async fn claim_if_queued(
-        &self,
-        snapshot: crate::JournaledProcessSnapshot,
-    ) -> Result<crate::JournaledProcessSnapshot, ProcessError> {
-        if snapshot.status != ProcessLifecycleStatus::Queued {
-            return Ok(snapshot);
-        }
-        let process_id = snapshot.process_id;
-        self.claim_next_processes(ClaimProcessesRequest {
-            worker_id: ProcessWorkerId::from_trusted(COMPATIBILITY_WORKER_ID),
-            scope_filter: Some(snapshot.scope),
-            process_id_filter: Some(process_id),
-            process_kind_filter: Some(ProcessKind::CapabilityInvocation),
-            max_processes: 1,
-        })
-        .await
-        .map_err(map_journal_error)?
-        .into_iter()
-        .next()
-        .map(|claimed| claimed.state)
-        .ok_or_else(|| ProcessError::InvalidStoredRecord {
-            reason: format!("submitted process {process_id} was not claimable"),
-        })
     }
 }
 
@@ -167,24 +122,7 @@ where
         scope: &ResourceScope,
         process_id: ProcessId,
     ) -> Result<ProcessRecord, ProcessError> {
-        let snapshot = self
-            .claim_if_queued(self.snapshot(scope, process_id).await?)
-            .await?;
-        if snapshot.status != ProcessLifecycleStatus::Running {
-            return Err(ProcessError::InvalidTransition {
-                process_id,
-                from: process_status(snapshot.status),
-                to: ProcessStatus::Completed,
-            });
-        }
-        let snapshot = self
-            .complete_process(ProcessStateTransitionRequest {
-                lease: Self::lease_request(&snapshot)?,
-                metadata: None,
-            })
-            .await
-            .map_err(map_journal_error)?;
-        process_record_from_snapshot(snapshot)
+        complete_capability_process(self, scope, process_id).await
     }
 
     async fn fail(
@@ -193,31 +131,7 @@ where
         process_id: ProcessId,
         error_kind: String,
     ) -> Result<ProcessRecord, ProcessError> {
-        let snapshot = self
-            .claim_if_queued(self.snapshot(scope, process_id).await?)
-            .await?;
-        if snapshot.status != ProcessLifecycleStatus::Running {
-            return Err(ProcessError::InvalidTransition {
-                process_id,
-                from: process_status(snapshot.status),
-                to: ProcessStatus::Failed,
-            });
-        }
-        let lease = Self::lease_request(&snapshot)?;
-        let sanitized = sanitize_error_kind(error_kind);
-        let failure = SanitizedFailure::new(sanitized)
-            .unwrap_or_else(|_| SanitizedFailure::from_trusted_static("unknown_failure"));
-        let snapshot = self
-            .fail_process(FailProcessRequest {
-                process_id,
-                worker_id: lease.worker_id,
-                lease_token: lease.lease_token,
-                failure,
-                metadata: None,
-            })
-            .await
-            .map_err(map_journal_error)?;
-        process_record_from_snapshot(snapshot)
+        fail_capability_process(self, scope, process_id, error_kind).await
     }
 
     async fn kill(
@@ -242,11 +156,7 @@ where
         scope: &ResourceScope,
         process_id: ProcessId,
     ) -> Result<Option<ProcessRecord>, ProcessError> {
-        match self.snapshot(scope, process_id).await {
-            Ok(snapshot) => process_record_from_snapshot(snapshot).map(Some),
-            Err(ProcessError::UnknownProcess { .. }) => Ok(None),
-            Err(error) => Err(error),
-        }
+        capability_process_record(self, scope, process_id).await
     }
 
     async fn records_for_scope(
@@ -287,7 +197,148 @@ pub fn process_record_from_snapshot(
     })
 }
 
-fn process_status(status: ProcessLifecycleStatus) -> ProcessStatus {
+pub(crate) async fn capability_process_record(
+    runtime: &dyn ProcessRuntimePort,
+    scope: &ResourceScope,
+    process_id: ProcessId,
+) -> Result<Option<ProcessRecord>, ProcessError> {
+    match runtime
+        .get_process_snapshot(GetProcessSnapshotRequest {
+            scope: scope.clone(),
+            process_id,
+        })
+        .await
+    {
+        Ok(snapshot) => process_record_from_snapshot(snapshot).map(Some),
+        Err(error) => match map_journal_error(error) {
+            ProcessError::UnknownProcess { .. } => Ok(None),
+            error => Err(error),
+        },
+    }
+}
+
+pub(crate) async fn complete_capability_process(
+    runtime: &dyn ProcessRuntimePort,
+    scope: &ResourceScope,
+    process_id: ProcessId,
+) -> Result<ProcessRecord, ProcessError> {
+    let snapshot = claim_capability_process(
+        runtime,
+        capability_process_snapshot(runtime, scope, process_id).await?,
+    )
+    .await?;
+    if snapshot.status != ProcessLifecycleStatus::Running {
+        return Err(ProcessError::InvalidTransition {
+            process_id,
+            from: process_status(snapshot.status),
+            to: ProcessStatus::Completed,
+        });
+    }
+    let snapshot = runtime
+        .complete_process(ProcessStateTransitionRequest {
+            lease: lease_request(&snapshot)?,
+            metadata: None,
+        })
+        .await
+        .map_err(map_journal_error)?;
+    process_record_from_snapshot(snapshot)
+}
+
+pub(crate) async fn fail_capability_process(
+    runtime: &dyn ProcessRuntimePort,
+    scope: &ResourceScope,
+    process_id: ProcessId,
+    error_kind: String,
+) -> Result<ProcessRecord, ProcessError> {
+    let snapshot = claim_capability_process(
+        runtime,
+        capability_process_snapshot(runtime, scope, process_id).await?,
+    )
+    .await?;
+    if snapshot.status != ProcessLifecycleStatus::Running {
+        return Err(ProcessError::InvalidTransition {
+            process_id,
+            from: process_status(snapshot.status),
+            to: ProcessStatus::Failed,
+        });
+    }
+    let lease = lease_request(&snapshot)?;
+    let sanitized = sanitize_error_kind(error_kind);
+    let failure = SanitizedFailure::new(sanitized)
+        .unwrap_or_else(|_| SanitizedFailure::from_trusted_static("unknown_failure"));
+    let snapshot = runtime
+        .fail_process(FailProcessRequest {
+            process_id,
+            worker_id: lease.worker_id,
+            lease_token: lease.lease_token,
+            failure,
+            metadata: None,
+        })
+        .await
+        .map_err(map_journal_error)?;
+    process_record_from_snapshot(snapshot)
+}
+
+async fn capability_process_snapshot(
+    runtime: &dyn ProcessRuntimePort,
+    scope: &ResourceScope,
+    process_id: ProcessId,
+) -> Result<crate::JournaledProcessSnapshot, ProcessError> {
+    runtime
+        .get_process_snapshot(GetProcessSnapshotRequest {
+            scope: scope.clone(),
+            process_id,
+        })
+        .await
+        .map_err(map_journal_error)
+}
+
+async fn claim_capability_process(
+    runtime: &dyn ProcessRuntimePort,
+    snapshot: crate::JournaledProcessSnapshot,
+) -> Result<crate::JournaledProcessSnapshot, ProcessError> {
+    if snapshot.status != ProcessLifecycleStatus::Queued {
+        return Ok(snapshot);
+    }
+    let process_id = snapshot.process_id;
+    runtime
+        .claim_next_processes(ClaimProcessesRequest {
+            worker_id: ProcessWorkerId::from_trusted(COMPATIBILITY_WORKER_ID),
+            scope_filter: Some(snapshot.scope),
+            process_id_filter: Some(process_id),
+            process_kind_filter: Some(ProcessKind::CapabilityInvocation),
+            max_processes: 1,
+        })
+        .await
+        .map_err(map_journal_error)?
+        .into_iter()
+        .next()
+        .map(|claimed| claimed.state)
+        .ok_or_else(|| ProcessError::InvalidStoredRecord {
+            reason: format!("submitted process {process_id} was not claimable"),
+        })
+}
+
+fn lease_request(
+    snapshot: &crate::JournaledProcessSnapshot,
+) -> Result<ProcessLeaseRequest, ProcessError> {
+    let lease = snapshot
+        .lease
+        .as_ref()
+        .ok_or_else(|| ProcessError::InvalidStoredRecord {
+            reason: format!(
+                "running process {} has no journal lease",
+                snapshot.process_id
+            ),
+        })?;
+    Ok(ProcessLeaseRequest {
+        process_id: snapshot.process_id,
+        worker_id: lease.worker_id.clone(),
+        lease_token: lease.lease_token.clone(),
+    })
+}
+
+pub(crate) fn process_status(status: ProcessLifecycleStatus) -> ProcessStatus {
     match status {
         ProcessLifecycleStatus::Queued
         | ProcessLifecycleStatus::Running

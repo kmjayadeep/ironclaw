@@ -631,7 +631,9 @@ mod tests {
         let process_store: Arc<dyn ProcessStorePort> = store;
         RuntimeDispatchProcessExecutor::new(
             dispatcher,
-            ironclaw_capabilities::process_authorization_remint_port(process_store),
+            ironclaw_capabilities::process_authorization_remint_port(
+                process_store.process_runtime(),
+            ),
         )
     }
 

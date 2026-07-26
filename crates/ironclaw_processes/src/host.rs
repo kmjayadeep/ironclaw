@@ -1,6 +1,6 @@
 //! Host-facing process query API.
 //!
-//! [`ProcessHost`] wraps a [`ProcessStorePort`](crate::types::ProcessStorePort) and an
+//! [`ProcessHost`] wraps the authoritative [`ProcessRuntimePort`](crate::ProcessRuntimePort) and an
 //! optional [`ProcessResultStorePort`](crate::types::ProcessResultStorePort) and
 //! [`ProcessCancellationRegistry`](crate::cancellation::ProcessCancellationRegistry).
 //! It is the read/poll/await/cancel surface used by host runtimes; spawning
@@ -13,23 +13,30 @@ use serde_json::Value;
 use tokio::time::{Duration, sleep};
 
 use crate::cancellation::ProcessCancellationRegistry;
+use crate::compatibility::{map_journal_error, process_record_from_snapshot};
 use crate::types::{
     ProcessError, ProcessExit, ProcessRecord, ProcessResultRecord, ProcessResultStorePort,
     ProcessStatus, ProcessStorePort,
 };
+use crate::{GetProcessSnapshotRequest, KillProcessRequest, ProcessRuntimePort};
 
 /// Host-facing lifecycle API over process current state.
-pub struct ProcessHost<'a> {
-    store: &'a dyn ProcessStorePort,
+pub struct ProcessHost {
+    runtime: Arc<dyn ProcessRuntimePort>,
     poll_interval: Duration,
     cancellation_registry: Option<Arc<ProcessCancellationRegistry>>,
     result_store: Option<Arc<dyn ProcessResultStorePort>>,
 }
 
-impl<'a> ProcessHost<'a> {
-    pub fn new(store: &'a dyn ProcessStorePort) -> Self {
+impl ProcessHost {
+    /// Compatibility constructor for callers not yet carrying the process runtime.
+    pub fn new(store: &dyn ProcessStorePort) -> Self {
+        Self::from_runtime(store.process_runtime())
+    }
+
+    pub fn from_runtime(runtime: Arc<dyn ProcessRuntimePort>) -> Self {
         Self {
-            store,
+            runtime,
             poll_interval: Duration::from_millis(10),
             cancellation_registry: None,
             result_store: None,
@@ -68,12 +75,33 @@ impl<'a> ProcessHost<'a> {
             .ok_or(ProcessError::ProcessResultStoreUnavailable)
     }
 
+    async fn process_record(
+        &self,
+        scope: &ResourceScope,
+        process_id: ProcessId,
+    ) -> Result<Option<ProcessRecord>, ProcessError> {
+        match self
+            .runtime
+            .get_process_snapshot(GetProcessSnapshotRequest {
+                scope: scope.clone(),
+                process_id,
+            })
+            .await
+        {
+            Ok(snapshot) => process_record_from_snapshot(snapshot).map(Some),
+            Err(error) => match map_journal_error(error) {
+                ProcessError::UnknownProcess { .. } => Ok(None),
+                error => Err(error),
+            },
+        }
+    }
+
     pub async fn status(
         &self,
         scope: &ResourceScope,
         process_id: ProcessId,
     ) -> Result<Option<ProcessRecord>, ProcessError> {
-        self.store.get(scope, process_id).await
+        self.process_record(scope, process_id).await
     }
 
     pub async fn kill(
@@ -81,13 +109,24 @@ impl<'a> ProcessHost<'a> {
         scope: &ResourceScope,
         process_id: ProcessId,
     ) -> Result<ProcessRecord, ProcessError> {
-        match self.store.kill(scope, process_id).await {
+        match self
+            .runtime
+            .kill_process(KillProcessRequest {
+                scope: scope.clone(),
+                process_id,
+                operation_id: None,
+                reason: None,
+            })
+            .await
+            .map_err(map_journal_error)
+            .and_then(|result| process_record_from_snapshot(result.state))
+        {
             Ok(record) => {
                 self.record_kill_side_effects(&record).await?;
                 Ok(record)
             }
             Err(error @ ProcessError::InvalidTransition { .. }) => {
-                if let Ok(Some(record)) = self.store.get(scope, process_id).await
+                if let Ok(Some(record)) = self.process_record(scope, process_id).await
                     && record.status == ProcessStatus::Killed
                 {
                     self.record_kill_side_effects(&record).await?;
@@ -96,7 +135,7 @@ impl<'a> ProcessHost<'a> {
                 Err(error)
             }
             Err(error) => {
-                if let Ok(Some(record)) = self.store.get(scope, process_id).await
+                if let Ok(Some(record)) = self.process_record(scope, process_id).await
                     && record.status == ProcessStatus::Killed
                 {
                     self.record_kill_side_effects(&record).await?;
@@ -143,8 +182,7 @@ impl<'a> ProcessHost<'a> {
                 return Ok(result);
             }
             let record = self
-                .store
-                .get(scope, process_id)
+                .process_record(scope, process_id)
                 .await?
                 .ok_or(ProcessError::UnknownProcess { process_id })?;
             if record.status.is_terminal() {
@@ -166,8 +204,7 @@ impl<'a> ProcessHost<'a> {
     ) -> Result<ProcessExit, ProcessError> {
         loop {
             let record = self
-                .store
-                .get(scope, process_id)
+                .process_record(scope, process_id)
                 .await?
                 .ok_or(ProcessError::UnknownProcess { process_id })?;
             if record.status.is_terminal() {
@@ -181,14 +218,13 @@ impl<'a> ProcessHost<'a> {
         &self,
         scope: &ResourceScope,
         process_id: ProcessId,
-    ) -> Result<ProcessSubscription<'a>, ProcessError> {
+    ) -> Result<ProcessSubscription, ProcessError> {
         let initial_record = self
-            .store
-            .get(scope, process_id)
+            .process_record(scope, process_id)
             .await?
             .ok_or(ProcessError::UnknownProcess { process_id })?;
         Ok(ProcessSubscription {
-            store: self.store,
+            runtime: Arc::clone(&self.runtime),
             scope: scope.clone(),
             process_id,
             poll_interval: self.poll_interval,
@@ -200,8 +236,8 @@ impl<'a> ProcessHost<'a> {
 }
 
 /// Scoped subscription over process lifecycle status changes.
-pub struct ProcessSubscription<'a> {
-    store: &'a dyn ProcessStorePort,
+pub struct ProcessSubscription {
+    runtime: Arc<dyn ProcessRuntimePort>,
     scope: ResourceScope,
     process_id: ProcessId,
     poll_interval: Duration,
@@ -210,7 +246,7 @@ pub struct ProcessSubscription<'a> {
     finished: bool,
 }
 
-impl fmt::Debug for ProcessSubscription<'_> {
+impl fmt::Debug for ProcessSubscription {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ProcessSubscription")
@@ -226,7 +262,7 @@ impl fmt::Debug for ProcessSubscription<'_> {
     }
 }
 
-impl ProcessSubscription<'_> {
+impl ProcessSubscription {
     pub async fn next(&mut self) -> Result<Option<ProcessRecord>, ProcessError> {
         if let Some(record) = self.pending_initial.take() {
             if record.status.is_terminal() {
@@ -240,11 +276,17 @@ impl ProcessSubscription<'_> {
         }
 
         loop {
-            let record = self.store.get(&self.scope, self.process_id).await?.ok_or(
-                ProcessError::UnknownProcess {
+            let record = match self
+                .runtime
+                .get_process_snapshot(GetProcessSnapshotRequest {
+                    scope: self.scope.clone(),
                     process_id: self.process_id,
-                },
-            )?;
+                })
+                .await
+            {
+                Ok(snapshot) => process_record_from_snapshot(snapshot)?,
+                Err(error) => return Err(map_journal_error(error)),
+            };
             if Some(record.status) != self.last_status {
                 self.last_status = Some(record.status);
                 if record.status.is_terminal() {

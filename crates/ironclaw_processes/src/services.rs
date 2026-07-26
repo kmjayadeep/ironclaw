@@ -23,6 +23,9 @@ use ironclaw_filesystem::{RootFilesystem, ScopedFilesystem};
 use ironclaw_host_api::{ProcessId, ResourceReservation, ResourceScope};
 
 use crate::cancellation::ProcessCancellationRegistry;
+use crate::compatibility::{
+    capability_process_record, complete_capability_process, fail_capability_process,
+};
 use crate::host::ProcessHost;
 use crate::result_store::ProcessResultStore;
 use crate::types::{
@@ -138,8 +141,8 @@ impl ProcessServices {
         Arc::clone(&self.cancellation_registry)
     }
 
-    pub fn host(&self) -> ProcessHost<'_> {
-        ProcessHost::new(self.process_store.as_ref())
+    pub fn host(&self) -> ProcessHost {
+        ProcessHost::from_runtime(self.process_store.process_runtime())
             .with_cancellation_registry(Arc::clone(&self.cancellation_registry))
             .with_result_store_dyn(Arc::clone(&self.result_store))
     }
@@ -257,7 +260,6 @@ impl BackgroundProcessManager {
             let runtime = self.store.process_runtime();
             let executor = Arc::new(BackgroundJournalExecutor {
                 runtime: Arc::clone(&runtime),
-                store: Arc::clone(&self.store),
                 executor: Arc::clone(&self.executor),
                 cancellation_registry: self.cancellation_registry.clone(),
                 result_store: self.result_store.clone(),
@@ -309,7 +311,6 @@ impl ProcessManager for BackgroundProcessManager {
 
 struct BackgroundJournalExecutor {
     runtime: Arc<dyn ProcessRuntimePort>,
-    store: Arc<dyn ProcessStorePort>,
     executor: Arc<dyn ProcessExecutor>,
     cancellation_registry: Option<Arc<ProcessCancellationRegistry>>,
     result_store: Option<Arc<dyn ProcessResultStorePort>>,
@@ -340,9 +341,7 @@ impl BackgroundJournalExecutor {
     ) -> Result<ProcessExecutionRequest, ProcessError> {
         let process_id = claimed.state.process_id;
         let scope = &claimed.state.scope;
-        let record = self
-            .store
-            .get(scope, process_id)
+        let record = capability_process_record(self.runtime.as_ref(), scope, process_id)
             .await?
             .ok_or(ProcessError::UnknownProcess { process_id })?;
         let input = self
@@ -398,19 +397,20 @@ impl BackgroundJournalExecutor {
             Box<dyn std::any::Any + Send>,
         >,
     ) {
-        let still_running = match self.store.get(scope, process_id).await {
-            Ok(Some(record)) => record.status == ProcessStatus::Running,
-            Ok(None) => false,
-            Err(error) => {
-                self.report(
-                    scope,
-                    process_id,
-                    BackgroundFailureStage::StoreLookup,
-                    error,
-                );
-                false
-            }
-        };
+        let still_running =
+            match capability_process_record(self.runtime.as_ref(), scope, process_id).await {
+                Ok(Some(record)) => record.status == ProcessStatus::Running,
+                Ok(None) => false,
+                Err(error) => {
+                    self.report(
+                        scope,
+                        process_id,
+                        BackgroundFailureStage::StoreLookup,
+                        error,
+                    );
+                    false
+                }
+            };
         if !still_running {
             return;
         }
@@ -435,7 +435,10 @@ impl BackgroundJournalExecutor {
                 } else {
                     true
                 };
-                if persisted && let Err(error) = self.store.complete(scope, process_id).await {
+                if persisted
+                    && let Err(error) =
+                        complete_capability_process(self.runtime.as_ref(), scope, process_id).await
+                {
                     self.report(
                         scope,
                         process_id,
@@ -480,7 +483,10 @@ impl BackgroundJournalExecutor {
         } else {
             true
         };
-        if persisted && let Err(error) = self.store.fail(scope, process_id, error_kind).await {
+        if persisted
+            && let Err(error) =
+                fail_capability_process(self.runtime.as_ref(), scope, process_id, error_kind).await
+        {
             self.report(scope, process_id, BackgroundFailureStage::StoreFail, error);
         }
     }

@@ -327,7 +327,7 @@ fn scope_with_project_mission_thread(
 }
 
 async fn assert_process_hidden(
-    process_host: &ProcessHost<'_>,
+    process_host: &ProcessHost,
     scope: &ResourceScope,
     process_id: ProcessId,
 ) {

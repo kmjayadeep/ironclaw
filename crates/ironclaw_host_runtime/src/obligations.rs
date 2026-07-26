@@ -718,10 +718,7 @@ impl ProcessObligationLifecycleStore {
         }
     }
 
-    pub(crate) fn set_resource_governor(
-        &self,
-        resource_governor: Arc<dyn ResourceGovernor>,
-    ) {
+    pub(crate) fn set_resource_governor(&self, resource_governor: Arc<dyn ResourceGovernor>) {
         match self.resource_governor.lock() {
             Ok(mut slot) => {
                 *slot = resource_governor;
@@ -732,7 +729,8 @@ impl ProcessObligationLifecycleStore {
         }
     }
 
-    pub(crate) fn register_journal_observer(
+    #[doc(hidden)]
+    pub fn register_journal_observer(
         self: &Arc<Self>,
         runtime: &dyn ProcessRuntimePort,
     ) -> Result<(), String> {
@@ -951,11 +949,12 @@ impl ProcessObligationLifecycleStore {
                 })?;
         }
         if let Some(reservation_id) = record.resource_reservation_id {
-            let governor = self.resource_governor.lock().map_err(|_| {
-                ProcessError::InvalidStoredRecord {
-                    reason: "process resource governor registry unavailable".to_string(),
-                }
-            })?;
+            let governor =
+                self.resource_governor
+                    .lock()
+                    .map_err(|_| ProcessError::InvalidStoredRecord {
+                        reason: "process resource governor registry unavailable".to_string(),
+                    })?;
             if reconcile {
                 close_reservation_once(
                     governor.reconcile(reservation_id, ResourceUsage::default()),
@@ -974,7 +973,8 @@ impl ProcessJournalCommitObserver for ProcessObligationLifecycleStore {
         if commit.state.process_kind != ProcessKind::CapabilityInvocation {
             return Ok(());
         }
-        let record = process_record_from_snapshot(commit.state).map_err(|error| error.to_string())?;
+        let record =
+            process_record_from_snapshot(commit.state).map_err(|error| error.to_string())?;
         match commit.kind {
             ProcessJournalKind::Completed => {
                 self.emit_process_event(RuntimeEvent::process_completed(
