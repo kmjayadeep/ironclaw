@@ -1815,11 +1815,14 @@ fn capability_failure_http_class(kind: FailureKind) -> CapabilityFailureHttpClas
         | FailureKind::AuthRequired => CapabilityFailureHttpClass::Forbidden,
         FailureKind::Backend
         | FailureKind::Network
-        | FailureKind::Resource
         | FailureKind::Transient
         | FailureKind::Unavailable
         | FailureKind::StaleSurface => CapabilityFailureHttpClass::Unavailable,
-        FailureKind::MethodMissing
+        // `Resource` is a quota/limit hit — `fate()` says ModelVisible, not
+        // retryable, so it must not ride the retryable-503 class: a caller
+        // retrying a quota failure can never succeed and only burns budget.
+        FailureKind::Resource
+        | FailureKind::MethodMissing
         | FailureKind::UndeclaredCapability
         | FailureKind::UnknownCapability
         | FailureKind::UnknownProvider
@@ -1840,6 +1843,7 @@ fn capability_failure_http_class(kind: FailureKind) -> CapabilityFailureHttpClas
         | FailureKind::Client
         | FailureKind::Executor
         | FailureKind::Internal
+        | FailureKind::Unclassified
         | FailureKind::Cancelled => CapabilityFailureHttpClass::Internal,
     }
 }
@@ -3009,29 +3013,26 @@ fn admin_configuration_unavailable(retryable: bool) -> ProductSurfaceError {
     }
 }
 
+fn admin_configuration_forbidden() -> ProductSurfaceError {
+    ProductSurfaceError {
+        code: ProductSurfaceErrorCode::Forbidden,
+        kind: ProductSurfaceErrorKind::ParticipantDenied,
+        status_code: 403,
+        retryable: false,
+        field: None,
+        validation_code: None,
+    }
+}
+
 fn admin_configuration_done_failure(error_kind: Option<&FailureKind>) -> ProductSurfaceError {
     match error_kind {
         // Admin configuration treats a user-declined gate as forbidden, unlike
         // the generic mutation helpers where a declined gate is an internal
         // wiring fault — preserve that special case ahead of the classifier.
-        Some(FailureKind::GateDeclined) => ProductSurfaceError {
-            code: ProductSurfaceErrorCode::Forbidden,
-            kind: ProductSurfaceErrorKind::ParticipantDenied,
-            status_code: 403,
-            retryable: false,
-            field: None,
-            validation_code: None,
-        },
+        Some(FailureKind::GateDeclined) => admin_configuration_forbidden(),
         Some(kind) => match capability_failure_http_class(*kind) {
             CapabilityFailureHttpClass::BadRequest => capability_failure_bad_request(),
-            CapabilityFailureHttpClass::Forbidden => ProductSurfaceError {
-                code: ProductSurfaceErrorCode::Forbidden,
-                kind: ProductSurfaceErrorKind::ParticipantDenied,
-                status_code: 403,
-                retryable: false,
-                field: None,
-                validation_code: None,
-            },
+            CapabilityFailureHttpClass::Forbidden => admin_configuration_forbidden(),
             CapabilityFailureHttpClass::Unavailable => admin_configuration_unavailable(true),
             CapabilityFailureHttpClass::Internal => ProductSurfaceError::internal(),
         },
@@ -4043,6 +4044,33 @@ async fn ws_send_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression (#6684 review): the HTTP classifier must agree with
+    /// `FailureKind::fate()` on retryability — a kind that `fate()` says is
+    /// not retryable must never ride the retryable-503 `Unavailable` class
+    /// (a caller retrying a quota/limit failure can never succeed).
+    #[test]
+    fn http_class_retryability_agrees_with_failure_kind_fate() {
+        for &kind in FailureKind::ALL {
+            if matches!(
+                capability_failure_http_class(kind),
+                CapabilityFailureHttpClass::Unavailable
+            ) {
+                // StaleSurface is the one deliberate exception: the loop
+                // handles it model-visibly, but at the HTTP seam a re-issued
+                // request races a refreshed surface and can succeed.
+                assert!(
+                    kind.is_retryable() || kind == FailureKind::StaleSurface,
+                    "{kind:?} is not retryable per fate() but classified as retryable 503"
+                );
+            }
+        }
+        // The quota kind specifically must not be the retryable 503 class.
+        assert!(matches!(
+            capability_failure_http_class(FailureKind::Resource),
+            CapabilityFailureHttpClass::Internal
+        ));
+    }
 
     #[test]
     fn sse_poll_interval_backs_off_only_after_repeated_idle_drains() {
