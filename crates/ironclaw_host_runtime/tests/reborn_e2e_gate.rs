@@ -31,7 +31,6 @@ use ironclaw_network::{
     NetworkHttpEgress, NetworkHttpError, NetworkHttpRequest, NetworkHttpResponse, NetworkUsage,
 };
 use ironclaw_processes::{ProcessInvocationStatePort, ProcessInvocationStatus};
-use ironclaw_processes::{ProcessResultStore, ProcessStore};
 use ironclaw_resources::{InMemoryResourceGovernor, ResourceAccount, ResourceTally};
 use ironclaw_scripts::{
     ScriptBackend, ScriptBackendOutput, ScriptBackendRequest, ScriptRuntime, ScriptRuntimeConfig,
@@ -643,12 +642,7 @@ async fn reborn_e2e_gate_host_http_consumes_staged_policy_and_secret_once() {
     );
 }
 
-type InMemoryServices = HostRuntimeServices<
-    DiskFilesystem,
-    InMemoryResourceGovernor,
-    ProcessStore<InMemoryBackend>,
-    ProcessResultStore<InMemoryBackend>,
->;
+type InMemoryServices = HostRuntimeServices<DiskFilesystem, InMemoryResourceGovernor>;
 
 struct ApprovalFixture {
     services: InMemoryServices,

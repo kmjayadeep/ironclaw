@@ -35,7 +35,7 @@ use ironclaw_host_api::{
 
 use crate::types::same_scope_owner;
 use crate::{
-    JournalProcessStore, ProcessInvocationError, ProcessInvocationRecord, ProcessInvocationStart,
+    ProcessInvocationError, ProcessInvocationRecord, ProcessInvocationStart,
     ProcessInvocationStatePort, ProcessInvocationStatus, ProcessResultStore, ProcessServices,
     ProcessStore,
 };
@@ -231,7 +231,6 @@ pub fn in_memory_backed_process_result_store() -> ProcessResultStore<InMemoryBac
 /// deleted `ProcessServices::in_memory()`. Use this (not the two standalone
 /// helpers) when a test starts a process and reads back its result, since both
 /// stores must resolve against the same backend.
-pub fn in_memory_backed_process_services()
--> ProcessServices<JournalProcessStore<InMemoryBackend>, ProcessResultStore<InMemoryBackend>> {
+pub fn in_memory_backed_process_services() -> ProcessServices {
     ProcessServices::filesystem(in_memory_backed_processes_filesystem())
 }

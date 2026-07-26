@@ -770,12 +770,7 @@ fn http_error_kind(reason: RuntimeHttpEgressReasonCode) -> RuntimeDispatchErrorK
 
 fn http_first_party_services(
     handle: &SecretHandle,
-) -> HostRuntimeServices<
-    DiskFilesystem,
-    InMemoryResourceGovernor,
-    ironclaw_processes::ProcessStore<ironclaw_filesystem::InMemoryBackend>,
-    ironclaw_processes::ProcessResultStore<ironclaw_filesystem::InMemoryBackend>,
-> {
+) -> HostRuntimeServices<DiskFilesystem, InMemoryResourceGovernor> {
     let handler = Arc::new(HttpFirstPartyHandler {
         handle: handle.clone(),
     });

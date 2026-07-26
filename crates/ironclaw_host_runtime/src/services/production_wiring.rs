@@ -288,6 +288,13 @@ impl ProductionComponentType {
             readiness,
         }
     }
+
+    pub(super) fn erased(implementation: &'static str, type_id: TypeId) -> Self {
+        Self {
+            implementation,
+            readiness: classify_component_type_id(type_id),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,7 +309,10 @@ pub(super) fn component_name(component: Option<ProductionComponentType>) -> Opti
 }
 
 fn classify_component_type<T: ?Sized + 'static>() -> ProductionImplementationReadiness {
-    let type_id = TypeId::of::<T>();
+    classify_component_type_id(TypeId::of::<T>())
+}
+
+fn classify_component_type_id(type_id: TypeId) -> ProductionImplementationReadiness {
     match () {
         () if type_id == TypeId::of::<DiskFilesystem>()
             || type_id == TypeId::of::<InMemoryResourceGovernor>()
@@ -313,7 +323,7 @@ fn classify_component_type<T: ?Sized + 'static>() -> ProductionImplementationRea
             // still local-only; libSQL/Postgres monomorphizations are distinct.
             || type_id == TypeId::of::<ProcessStore<InMemoryBackend>>()
             || type_id == TypeId::of::<ProcessResultStore<InMemoryBackend>>()
-            || is_local_only_test_component::<T>()
+            || is_local_only_test_component(type_id)
             // Approval requests use one filesystem-backed store. The process
             // invocation fake exists only behind test support. Both are
             // local-only when backed by `InMemoryBackend`.
@@ -354,12 +364,11 @@ fn classify_component_type<T: ?Sized + 'static>() -> ProductionImplementationRea
 }
 
 #[cfg(any(test, feature = "test-support"))]
-fn is_local_only_test_component<T: ?Sized + 'static>() -> bool {
-    TypeId::of::<T>()
-        == TypeId::of::<ironclaw_processes::ProcessInvocationStateStore<InMemoryBackend>>()
+fn is_local_only_test_component(type_id: TypeId) -> bool {
+    type_id == TypeId::of::<ironclaw_processes::ProcessInvocationStateStore<InMemoryBackend>>()
 }
 
 #[cfg(not(any(test, feature = "test-support")))]
-fn is_local_only_test_component<T: ?Sized + 'static>() -> bool {
+fn is_local_only_test_component(_type_id: TypeId) -> bool {
     false
 }

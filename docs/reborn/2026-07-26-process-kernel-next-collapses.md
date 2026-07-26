@@ -228,6 +228,12 @@ holds the authoritative `ProcessJournalStore` directly, and the legacy
 `ProcessStorePort` methods are a compatibility implementation on that same
 shared store.
 
+`ProcessServices` is also no longer generic over lifecycle/result-store
+implementations. It erases those behind its owned ports while retaining
+concrete type identity for production-readiness validation. As a result,
+`HostRuntimeServices` carries only its filesystem and resource-governor type
+parameters instead of propagating process store types through composition.
+
 ## Recommended order
 
 1. Partition journal persistence and rerun the four stress artifacts.

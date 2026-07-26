@@ -11,7 +11,10 @@
 //! [`with_error_handler`](BackgroundProcessManager::with_error_handler)
 //! callback. Without a handler, those errors are silently dropped.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    any::{TypeId, type_name},
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
 use futures::FutureExt;
@@ -64,36 +67,32 @@ pub struct BackgroundFailure {
 /// Callback invoked for each [`BackgroundFailure`] in the spawned task.
 pub type BackgroundErrorHandler = dyn Fn(BackgroundFailure) + Send + Sync;
 
-pub struct ProcessServices<S, R>
-where
-    S: ProcessStorePort + 'static,
-    R: ProcessResultStorePort + 'static,
-{
-    process_store: Arc<S>,
-    result_store: Arc<R>,
+pub struct ProcessServices {
+    process_store: Arc<dyn ProcessStorePort>,
+    result_store: Arc<dyn ProcessResultStorePort>,
+    process_store_type: (&'static str, TypeId),
+    result_store_type: (&'static str, TypeId),
     cancellation_registry: Arc<ProcessCancellationRegistry>,
 }
 
-impl<S, R> Clone for ProcessServices<S, R>
-where
-    S: ProcessStorePort + 'static,
-    R: ProcessResultStorePort + 'static,
-{
+impl Clone for ProcessServices {
     fn clone(&self) -> Self {
         Self {
             process_store: Arc::clone(&self.process_store),
             result_store: Arc::clone(&self.result_store),
+            process_store_type: self.process_store_type,
+            result_store_type: self.result_store_type,
             cancellation_registry: Arc::clone(&self.cancellation_registry),
         }
     }
 }
 
-impl<S, R> ProcessServices<S, R>
-where
-    S: ProcessStorePort + 'static,
-    R: ProcessResultStorePort + 'static,
-{
-    pub fn new(process_store: Arc<S>, result_store: Arc<R>) -> Self {
+impl ProcessServices {
+    pub fn new<S, R>(process_store: Arc<S>, result_store: Arc<R>) -> Self
+    where
+        S: ProcessStorePort + 'static,
+        R: ProcessResultStorePort + 'static,
+    {
         Self::from_parts(
             process_store,
             result_store,
@@ -101,24 +100,38 @@ where
         )
     }
 
-    pub fn from_parts(
+    pub fn from_parts<S, R>(
         process_store: Arc<S>,
         result_store: Arc<R>,
         cancellation_registry: Arc<ProcessCancellationRegistry>,
-    ) -> Self {
+    ) -> Self
+    where
+        S: ProcessStorePort + 'static,
+        R: ProcessResultStorePort + 'static,
+    {
         Self {
             process_store,
             result_store,
+            process_store_type: (type_name::<S>(), TypeId::of::<S>()),
+            result_store_type: (type_name::<R>(), TypeId::of::<R>()),
             cancellation_registry,
         }
     }
 
-    pub fn process_store(&self) -> Arc<S> {
+    pub fn process_store(&self) -> Arc<dyn ProcessStorePort> {
         Arc::clone(&self.process_store)
     }
 
-    pub fn result_store(&self) -> Arc<R> {
+    pub fn result_store(&self) -> Arc<dyn ProcessResultStorePort> {
         Arc::clone(&self.result_store)
+    }
+
+    pub fn process_store_type(&self) -> (&'static str, TypeId) {
+        self.process_store_type
+    }
+
+    pub fn result_store_type(&self) -> (&'static str, TypeId) {
+        self.result_store_type
     }
 
     pub fn cancellation_registry(&self) -> Arc<ProcessCancellationRegistry> {
@@ -128,25 +141,22 @@ where
     pub fn host(&self) -> ProcessHost<'_> {
         ProcessHost::new(self.process_store.as_ref())
             .with_cancellation_registry(Arc::clone(&self.cancellation_registry))
-            .with_result_store(Arc::clone(&self.result_store))
+            .with_result_store_dyn(Arc::clone(&self.result_store))
     }
 
     pub fn background_manager<E>(&self, executor: Arc<E>) -> BackgroundProcessManager
     where
         E: ProcessExecutor + 'static,
     {
-        BackgroundProcessManager::new(Arc::clone(&self.process_store), executor)
+        BackgroundProcessManager::new_dyn(Arc::clone(&self.process_store), executor)
             .with_cancellation_registry(Arc::clone(&self.cancellation_registry))
-            .with_result_store(Arc::clone(&self.result_store))
+            .with_result_store_dyn(Arc::clone(&self.result_store))
             .start_supervisor()
     }
-}
-
-impl<F> ProcessServices<JournalProcessStore<F>, ProcessResultStore<F>>
-where
-    F: RootFilesystem + Send + Sync + 'static,
-{
-    pub fn filesystem(filesystem: Arc<ScopedFilesystem<F>>) -> Self {
+    pub fn filesystem<F>(filesystem: Arc<ScopedFilesystem<F>>) -> Self
+    where
+        F: RootFilesystem + Send + Sync + 'static,
+    {
         Self::new(
             Arc::new(JournalProcessStore::new(Arc::clone(&filesystem))),
             Arc::new(ProcessResultStore::from_arc(filesystem)),
@@ -155,12 +165,7 @@ where
 }
 
 #[cfg(any(test, feature = "test-support"))]
-impl
-    ProcessServices<
-        JournalProcessStore<ironclaw_filesystem::InMemoryBackend>,
-        ProcessResultStore<ironclaw_filesystem::InMemoryBackend>,
-    >
-{
+impl ProcessServices {
     /// In-memory-backed process services for tests — the production
     /// [`filesystem`](Self::filesystem) store pair over one fresh
     /// `InMemoryBackend` `/processes` mount (arch-simplification §4.3).
@@ -186,6 +191,13 @@ impl BackgroundProcessManager {
         S: ProcessStorePort + 'static,
         E: ProcessExecutor + 'static,
     {
+        Self::new_dyn(store, executor)
+    }
+
+    pub fn new_dyn<E>(store: Arc<dyn ProcessStorePort>, executor: Arc<E>) -> Self
+    where
+        E: ProcessExecutor + 'static,
+    {
         Self {
             store,
             executor,
@@ -208,6 +220,11 @@ impl BackgroundProcessManager {
     where
         S: ProcessResultStorePort + 'static,
     {
+        self.result_store = Some(store);
+        self
+    }
+
+    pub fn with_result_store_dyn(mut self, store: Arc<dyn ProcessResultStorePort>) -> Self {
         self.result_store = Some(store);
         self
     }

@@ -357,7 +357,6 @@ use ironclaw_host_api::{
     MountAlias, MountGrant, MountPermissions, MountView, ResourceScope, VirtualPath,
 };
 use ironclaw_host_runtime::{CapabilitySurfaceVersion, HostRuntimeServices};
-use ironclaw_processes::{JournalProcessStore, ProcessResultStore};
 use ironclaw_reborn_event_store::RebornEventStoreConfig;
 use ironclaw_reborn_event_store::RebornEventStoreError;
 use ironclaw_resources::FilesystemResourceGovernor;
@@ -369,19 +368,11 @@ use ironclaw_turns::TurnError;
 use ironclaw_turns::TurnRunWakeNotifier;
 use thiserror::Error;
 
-pub type LibSqlProductionHostRuntimeServices = HostRuntimeServices<
-    LibSqlRootFilesystem,
-    FilesystemResourceGovernor<LibSqlRootFilesystem>,
-    JournalProcessStore<LibSqlRootFilesystem>,
-    ProcessResultStore<LibSqlRootFilesystem>,
->;
+pub type LibSqlProductionHostRuntimeServices =
+    HostRuntimeServices<LibSqlRootFilesystem, FilesystemResourceGovernor<LibSqlRootFilesystem>>;
 
-pub type PostgresProductionHostRuntimeServices = HostRuntimeServices<
-    PostgresRootFilesystem,
-    FilesystemResourceGovernor<PostgresRootFilesystem>,
-    JournalProcessStore<PostgresRootFilesystem>,
-    ProcessResultStore<PostgresRootFilesystem>,
->;
+pub type PostgresProductionHostRuntimeServices =
+    HostRuntimeServices<PostgresRootFilesystem, FilesystemResourceGovernor<PostgresRootFilesystem>>;
 
 /// Consumer-store mount aliases that are tenant-rewritten by
 /// [`invocation_mount_view`]. Each alias resolves to

@@ -24,8 +24,8 @@ use ironclaw_host_runtime::{
 };
 use ironclaw_processes::{
     ProcessExecutionRequest, ProcessExecutionResult, ProcessExecutor, ProcessInvocationStatePort,
-    ProcessInvocationStateStore, ProcessInvocationStatus, ProcessManager, ProcessResultStore,
-    ProcessServices, ProcessStart, ProcessStatus, ProcessStore, ProcessStorePort,
+    ProcessInvocationStateStore, ProcessInvocationStatus, ProcessManager, ProcessServices,
+    ProcessStart, ProcessStatus, ProcessStorePort,
 };
 use ironclaw_reborn_event_store::{
     RebornEventStoreConfig, RebornEventStores, RebornProfile, build_reborn_event_stores,
@@ -467,15 +467,9 @@ async fn jsonl_event_and_audit_replay_survive_reopen_without_raw_sentinels() {
     }
 }
 
-type DurableProcessServices =
-    ProcessServices<ProcessStore<DiskFilesystem>, ProcessResultStore<DiskFilesystem>>;
+type DurableProcessServices = ProcessServices;
 
-type DurableHostRuntimeServices = HostRuntimeServices<
-    DiskFilesystem,
-    InMemoryResourceGovernor,
-    ProcessStore<DiskFilesystem>,
-    ProcessResultStore<DiskFilesystem>,
->;
+type DurableHostRuntimeServices = HostRuntimeServices<DiskFilesystem, InMemoryResourceGovernor>;
 
 struct DurableServices<F = InMemoryBackend>
 where

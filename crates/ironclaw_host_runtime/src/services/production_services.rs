@@ -2,20 +2,18 @@ use std::sync::Arc;
 
 use super::{
     AgentTurnRuntimePort, DefaultHostRuntime, DefaultTurnCoordinator, HostRuntimeServices,
-    ProcessBackendKind, ProcessResultStorePort, ProcessStorePort, ProductionComponentType,
-    ProductionEventStoreWiringError, ProductionImplementationReadiness, ProductionWiringComponent,
-    ProductionWiringConfig, ProductionWiringIssue, ProductionWiringIssueKind,
-    ProductionWiringReport, RebornEventStoreConfig, RebornProfile, ResourceGovernor,
-    RootFilesystem, RuntimeKind, component_name, local_only_runtime_policy_reason,
-    production_wiring_report, runtime_http_egress_is_configured,
+    ProcessBackendKind, ProductionComponentType, ProductionEventStoreWiringError,
+    ProductionImplementationReadiness, ProductionWiringComponent, ProductionWiringConfig,
+    ProductionWiringIssue, ProductionWiringIssueKind, ProductionWiringReport,
+    RebornEventStoreConfig, RebornProfile, ResourceGovernor, RootFilesystem, RuntimeKind,
+    component_name, local_only_runtime_policy_reason, production_wiring_report,
+    runtime_http_egress_is_configured,
 };
 
-impl<F, G, S, R> HostRuntimeServices<F, G, S, R>
+impl<F, G> HostRuntimeServices<F, G>
 where
     F: RootFilesystem + 'static,
     G: ResourceGovernor + 'static,
-    S: ProcessStorePort + 'static,
-    R: ProcessResultStorePort + 'static,
 {
     /// Validates that this service graph is explicitly wired for production
     /// instead of relying on local/test defaults. This is a guardrail for

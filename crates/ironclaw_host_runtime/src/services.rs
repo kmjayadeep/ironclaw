@@ -118,12 +118,10 @@ use ironclaw_capabilities::ChainToolResolver;
 /// handles are available for setup/tests inside the host-runtime layer, but
 /// product/upper Reborn code should prefer [`Self::host_runtime`] and depend on
 /// `Arc<dyn crate::HostRuntime>` instead of reaching around the service.
-pub struct HostRuntimeServices<F, G, S, R>
+pub struct HostRuntimeServices<F, G>
 where
     F: RootFilesystem + 'static,
     G: ResourceGovernor + 'static,
-    S: ProcessStorePort + 'static,
-    R: ProcessResultStorePort + 'static,
 {
     registry: Arc<SharedExtensionRegistry>,
     trust_policy: Arc<dyn TrustPolicy>,
@@ -131,7 +129,7 @@ where
     filesystem: Arc<F>,
     governor: Arc<G>,
     authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer>,
-    process_services: ProcessServices<S, R>,
+    process_services: ProcessServices,
     surface_version: CapabilitySurfaceVersion,
     invocation_state: Option<Arc<dyn ProcessInvocationStatePort>>,
     approval_requests: Option<Arc<dyn ApprovalRequestStorePort>>,
@@ -401,24 +399,24 @@ pub(crate) fn stage_secret_error(error: SecretStoreError) -> ProductAuthCredenti
     }
 }
 
-impl<F, G, S, R> HostRuntimeServices<F, G, S, R>
+impl<F, G> HostRuntimeServices<F, G>
 where
     F: RootFilesystem + 'static,
     G: ResourceGovernor + 'static,
-    S: ProcessStorePort + 'static,
-    R: ProcessResultStorePort + 'static,
 {
     pub fn new(
         registry: Arc<ExtensionRegistry>,
         filesystem: Arc<F>,
         governor: Arc<G>,
         authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer>,
-        process_services: ProcessServices<S, R>,
+        process_services: ProcessServices,
         surface_version: CapabilitySurfaceVersion,
     ) -> Self {
+        let (process_store_name, process_store_type_id) = process_services.process_store_type();
+        let (result_store_name, result_store_type_id) = process_services.result_store_type();
         let network_policy_store = Arc::new(NetworkObligationPolicyStore::new());
         let secret_injection_store = Arc::new(RuntimeSecretInjectionStore::new());
-        let process_lifecycle_store = Arc::new(ProcessObligationLifecycleStore::new(
+        let process_lifecycle_store = Arc::new(ProcessObligationLifecycleStore::from_dyn(
             process_services.process_store(),
             Arc::clone(&network_policy_store),
             Arc::clone(&secret_injection_store),
@@ -473,8 +471,14 @@ where
                 trust_policy_verified: false,
                 filesystem: ProductionComponentType::of::<F>(),
                 resource_governor: ProductionComponentType::of::<G>(),
-                process_store: ProductionComponentType::of::<S>(),
-                process_result_store: ProductionComponentType::of::<R>(),
+                process_store: ProductionComponentType::erased(
+                    process_store_name,
+                    process_store_type_id,
+                ),
+                process_result_store: ProductionComponentType::erased(
+                    result_store_name,
+                    result_store_type_id,
+                ),
                 invocation_state: None,
                 approval_requests: None,
                 capability_leases: None,
@@ -705,7 +709,7 @@ where
                 process_executor,
             )
             .with_cancellation_registry(self.process_services.cancellation_registry())
-            .with_result_store(self.process_services.result_store())
+            .with_result_store_dyn(self.process_services.result_store())
             .with_error_handler(move |failure| {
                 let reconcile = match failure.stage {
                     BackgroundFailureStage::StoreComplete => true,

@@ -873,14 +873,12 @@ pub(crate) type ComposedToolPermissionOverrideStore =
 
 pub(crate) type ComposedAutoApproveSettingStore = AutoApproveSettingStore<CompositeRootFilesystem>;
 
-fn apply_post_edit_check_from_env<F, G, S, R>(
-    services: HostRuntimeServices<F, G, S, R>,
-) -> Result<HostRuntimeServices<F, G, S, R>, RebornBuildError>
+fn apply_post_edit_check_from_env<F, G>(
+    services: HostRuntimeServices<F, G>,
+) -> Result<HostRuntimeServices<F, G>, RebornBuildError>
 where
     F: ironclaw_filesystem::RootFilesystem + 'static,
     G: ironclaw_resources::ResourceGovernor + 'static,
-    S: ironclaw_processes::ProcessStorePort + 'static,
-    R: ironclaw_processes::ProcessResultStorePort + 'static,
 {
     match PostEditCheckConfig::from_env() {
         Ok(Some(post_edit_check)) => Ok(services.with_post_edit_check(post_edit_check)),
@@ -923,14 +921,12 @@ fn local_dev_process_port_for_policy(
     Some(process_port)
 }
 
-fn require_product_auth_runtime_ports<F, G, S, R>(
-    services: &HostRuntimeServices<F, G, S, R>,
+fn require_product_auth_runtime_ports<F, G>(
+    services: &HostRuntimeServices<F, G>,
 ) -> Result<ProductAuthProviderRuntimePorts, RebornBuildError>
 where
     F: ironclaw_filesystem::RootFilesystem + 'static,
     G: ironclaw_resources::ResourceGovernor + 'static,
-    S: ironclaw_processes::ProcessStorePort + 'static,
-    R: ironclaw_processes::ProcessResultStorePort + 'static,
 {
     services
         .product_auth_provider_runtime_ports()
@@ -939,14 +935,12 @@ where
         })
 }
 
-fn attach_hosted_mcp_runtime<F, G, S, R>(
-    services: HostRuntimeServices<F, G, S, R>,
-) -> Result<HostRuntimeServices<F, G, S, R>, RebornBuildError>
+fn attach_hosted_mcp_runtime<F, G>(
+    services: HostRuntimeServices<F, G>,
+) -> Result<HostRuntimeServices<F, G>, RebornBuildError>
 where
     F: ironclaw_filesystem::RootFilesystem + 'static,
     G: ironclaw_resources::ResourceGovernor + 'static,
-    S: ironclaw_processes::ProcessStorePort + 'static,
-    R: ironclaw_processes::ProcessResultStorePort + 'static,
 {
     // Soft-disable when host runtime HTTP egress is absent. Builds without
     // egress — in-memory test services, minimal compositions — must still
@@ -967,14 +961,12 @@ where
     ))))
 }
 
-fn attach_wasm_runtime<F, G, S, R>(
-    services: HostRuntimeServices<F, G, S, R>,
-) -> Result<HostRuntimeServices<F, G, S, R>, RebornBuildError>
+fn attach_wasm_runtime<F, G>(
+    services: HostRuntimeServices<F, G>,
+) -> Result<HostRuntimeServices<F, G>, RebornBuildError>
 where
     F: ironclaw_filesystem::RootFilesystem + 'static,
     G: ironclaw_resources::ResourceGovernor + 'static,
-    S: ironclaw_processes::ProcessStorePort + 'static,
-    R: ironclaw_processes::ProcessResultStorePort + 'static,
 {
     services
         .try_with_default_wasm_runtime()
@@ -983,15 +975,13 @@ where
         })
 }
 
-pub(crate) fn apply_production_runtime_process_binding<F, G, S, R>(
-    services: HostRuntimeServices<F, G, S, R>,
+pub(crate) fn apply_production_runtime_process_binding<F, G>(
+    services: HostRuntimeServices<F, G>,
     binding: RebornRuntimeProcessBinding,
-) -> HostRuntimeServices<F, G, S, R>
+) -> HostRuntimeServices<F, G>
 where
     F: ironclaw_filesystem::RootFilesystem + 'static,
     G: ironclaw_resources::ResourceGovernor + 'static,
-    S: ironclaw_processes::ProcessStorePort + 'static,
-    R: ironclaw_processes::ProcessResultStorePort + 'static,
 {
     match binding {
         RebornRuntimeProcessBinding::None => services,
@@ -3902,12 +3892,8 @@ fn planned_run_profile_resolver() -> Result<Arc<InMemoryRunProfileResolver>, Reb
     ))
 }
 
-type FilesystemProductionHostRuntimeServices<F> = HostRuntimeServices<
-    F,
-    FilesystemResourceGovernor<F>,
-    ironclaw_processes::JournalProcessStore<F>,
-    ironclaw_processes::ProcessResultStore<F>,
->;
+type FilesystemProductionHostRuntimeServices<F> =
+    HostRuntimeServices<F, FilesystemResourceGovernor<F>>;
 
 pub(crate) async fn build_libsql_production_host_runtime_services<TPolicy, TWake>(
     config: crate::LibSqlProductionSubstrateConfig<TPolicy, TWake>,

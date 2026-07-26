@@ -146,10 +146,8 @@ impl TurnRunWakeNotifier for RecordingTurnRunWakeNotifier {
 pub(crate) async fn assert_services_persist_approval_and_block_invocation<
     F: RootFilesystem + 'static,
     G: ResourceGovernor + 'static,
-    S: ProcessStorePort + 'static,
-    R: ProcessResultStorePort + 'static,
 >(
-    services: HostRuntimeServices<F, G, S, R>,
+    services: HostRuntimeServices<F, G>,
     message: &str,
 ) {
     let stores = Arc::new(RecordingInvocationApprovalStores::new());
@@ -231,12 +229,8 @@ pub(crate) fn assert_completed_outcome(
     }
 }
 
-pub(crate) type InMemoryHostRuntimeServices = HostRuntimeServices<
-    DiskFilesystem,
-    InMemoryResourceGovernor,
-    ProcessStore<InMemoryBackend>,
-    ProcessResultStore<InMemoryBackend>,
->;
+pub(crate) type InMemoryHostRuntimeServices =
+    HostRuntimeServices<DiskFilesystem, InMemoryResourceGovernor>;
 
 pub(crate) struct RecordingInvocationApprovalStores {
     pub(crate) runs:

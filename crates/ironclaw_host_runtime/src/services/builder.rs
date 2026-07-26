@@ -8,16 +8,16 @@ use super::{
     DurableEventLog, DurableEventSink, EffectiveRuntimePolicy, EventBatchConfig, EventSink,
     FilesystemResourceGovernor, FirstPartyCapabilityRegistry, HostRuntimeServices, McpExecutor,
     NetworkHttpEgress, ProcessBackendKind, ProcessExecutor, ProcessInvocationStatePort,
-    ProcessObligationLifecycleStore, ProcessResultStorePort, ProcessStorePort,
-    ProductionComponentType, ProductionImplementationReadiness, ProductionWiringComponent,
-    ProductionWiringIssueKind, ProductionWiringReport, RebornEventStoreConfig,
-    RebornEventStoreError, RebornEventStores, RebornProfile, ResourceGovernor, RootFilesystem,
-    RunProfileResolver, RuntimeBackendHealth, RuntimeCredentialAccountResolver, RuntimeHttpEgress,
-    RuntimeKind, RuntimeProcessPort, ScopedFilesystem, ScriptExecutor, SecretMode, SecretStorePort,
-    SecurityAuditSink, SharedSecretStore, TenantSandboxProcessPort, TrustPolicy,
-    TurnRunWakeNotifier, WasmError, WasmRuntimeAdapter, WasmRuntimeCredentialProvider,
-    WasmStagedRuntimeCredentials, WitToolHost, WitToolRuntimeConfig, build_reborn_event_stores,
-    production_wiring_report, set_runtime_http_egress, set_tool_call_http_egress,
+    ProcessObligationLifecycleStore, ProductionComponentType, ProductionImplementationReadiness,
+    ProductionWiringComponent, ProductionWiringIssueKind, ProductionWiringReport,
+    RebornEventStoreConfig, RebornEventStoreError, RebornEventStores, RebornProfile,
+    ResourceGovernor, RootFilesystem, RunProfileResolver, RuntimeBackendHealth,
+    RuntimeCredentialAccountResolver, RuntimeHttpEgress, RuntimeKind, RuntimeProcessPort,
+    ScopedFilesystem, ScriptExecutor, SecretMode, SecretStorePort, SecurityAuditSink,
+    SharedSecretStore, TenantSandboxProcessPort, TrustPolicy, TurnRunWakeNotifier, WasmError,
+    WasmRuntimeAdapter, WasmRuntimeCredentialProvider, WasmStagedRuntimeCredentials, WitToolHost,
+    WitToolRuntimeConfig, build_reborn_event_stores, production_wiring_report,
+    set_runtime_http_egress, set_tool_call_http_egress,
 };
 use crate::HostProcessPort;
 use crate::RuntimeHttpBodyStore;
@@ -25,14 +25,12 @@ use crate::http_body::UnsupportedRuntimeHttpBodyStore;
 use crate::wasm_credentials::SharedHostWasmRuntimeCredentials;
 use ironclaw_secrets::{CredentialAccountStore, CredentialSessionStore};
 
-impl<F, G, S, R> HostRuntimeServices<F, G, S, R>
+impl<F, G> HostRuntimeServices<F, G>
 where
     F: RootFilesystem + 'static,
     G: ResourceGovernor + 'static,
-    S: ProcessStorePort + 'static,
-    R: ProcessResultStorePort + 'static,
 {
-    fn with_root_filesystem<T>(self, filesystem: Arc<T>) -> HostRuntimeServices<T, G, S, R>
+    fn with_root_filesystem<T>(self, filesystem: Arc<T>) -> HostRuntimeServices<T, G>
     where
         T: RootFilesystem + 'static,
     {
@@ -128,18 +126,18 @@ where
     pub fn with_postgres_root_filesystem(
         self,
         filesystem: Arc<PostgresRootFilesystem>,
-    ) -> HostRuntimeServices<PostgresRootFilesystem, G, S, R> {
+    ) -> HostRuntimeServices<PostgresRootFilesystem, G> {
         self.with_root_filesystem(filesystem)
     }
 
     pub fn with_libsql_root_filesystem(
         self,
         filesystem: Arc<LibSqlRootFilesystem>,
-    ) -> HostRuntimeServices<LibSqlRootFilesystem, G, S, R> {
+    ) -> HostRuntimeServices<LibSqlRootFilesystem, G> {
         self.with_root_filesystem(filesystem)
     }
 
-    pub fn with_resource_governor<T>(self, governor: Arc<T>) -> HostRuntimeServices<F, T, S, R>
+    pub fn with_resource_governor<T>(self, governor: Arc<T>) -> HostRuntimeServices<F, T>
     where
         T: ResourceGovernor + 'static,
     {
@@ -187,7 +185,7 @@ where
             mut component_types,
         } = self;
         let lifecycle_governor: Arc<dyn ResourceGovernor> = governor.clone();
-        let process_lifecycle_store = Arc::new(ProcessObligationLifecycleStore::new(
+        let process_lifecycle_store = Arc::new(ProcessObligationLifecycleStore::from_dyn(
             process_services.process_store(),
             Arc::clone(&network_policy_store),
             Arc::clone(&secret_injection_store),
@@ -250,7 +248,7 @@ where
     pub fn with_filesystem_resource_governor<FsBackend>(
         self,
         scoped_filesystem: Arc<ScopedFilesystem<FsBackend>>,
-    ) -> HostRuntimeServices<F, FilesystemResourceGovernor<FsBackend>, S, R>
+    ) -> HostRuntimeServices<F, FilesystemResourceGovernor<FsBackend>>
     where
         FsBackend: RootFilesystem + 'static,
     {
