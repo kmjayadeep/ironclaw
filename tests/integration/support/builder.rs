@@ -1088,7 +1088,7 @@ impl RebornIntegrationHarness {
                 .await
                 .map_err(|error| format!("Postgres reopen migrations failed: {error}"))?;
             let mut fresh_composite = CompositeRootFilesystem::new();
-            ironclaw_reborn_composition::test_support::mount_local_dev_database_roots_for_test(
+            ironclaw_reborn_composition::test_support::mount_database_roots_for_test(
                 &mut fresh_composite,
                 filesystem,
             )?;
@@ -1609,7 +1609,7 @@ impl RebornIntegrationHarness {
     /// gate class happens to be blocked.
     pub async fn approve_gate(&self, run_id: TurnRunId, gate_ref: &GateRef) -> HarnessResult<()> {
         self.capability_recorder
-            .approve_local_dev_gate(gate_ref)
+            .approve_standalone_gate(gate_ref)
             .await?;
         self.resume_run(
             run_id,
@@ -1633,7 +1633,7 @@ impl RebornIntegrationHarness {
         stale_gate_ref: &GateRef,
     ) -> HarnessResult<()> {
         self.capability_recorder
-            .approve_local_dev_gate(real_gate_ref)
+            .approve_standalone_gate(real_gate_ref)
             .await?;
         self.resume_run(
             run_id,
@@ -1670,7 +1670,7 @@ impl RebornIntegrationHarness {
     /// `ResumeTurnPrecondition::BlockedApprovalGate`.
     pub async fn deny_gate(&self, run_id: TurnRunId, gate_ref: &GateRef) -> HarnessResult<()> {
         self.capability_recorder
-            .deny_local_dev_gate(gate_ref)
+            .deny_standalone_gate(gate_ref)
             .await?;
         self.resume_run(
             run_id,
@@ -1755,9 +1755,9 @@ impl RebornIntegrationHarness {
     /// dispatch-time execution-context resolution actually stamps on the run.
     ///
     /// That user is NOT the capability harness's fixed constructor user: the
-    /// production capability surface (`local_dev_visible_capability_request` /
-    /// `local_dev_resource_scope_for_run` in
-    /// `crates/ironclaw_reborn_composition/src/runtime/local_dev.rs`) resolves
+    /// production capability surface (`standalone_visible_capability_request` /
+    /// `standalone_resource_scope_for_run` in
+    /// `crates/ironclaw_reborn_composition/src/runtime/standalone.rs`) resolves
     /// the execution user per run as `thread owner → run actor → fixed
     /// fallback`, and every harness thread run carries an actor — so the fixed
     /// fallback never applies here. Seeding under the harness's fixed
@@ -1989,7 +1989,7 @@ async fn reopen_fresh_libsql_composite(
         .await
         .map_err(|e| format!("migrations on fresh libsql reopen: {e}"))?;
     let mut fresh_composite = CompositeRootFilesystem::new();
-    ironclaw_reborn_composition::test_support::mount_local_dev_database_roots_for_test(
+    ironclaw_reborn_composition::test_support::mount_database_roots_for_test(
         &mut fresh_composite,
         fresh_fs,
     )?;
@@ -2010,21 +2010,22 @@ pub(crate) async fn build_storage_composite(
     let mut composite = CompositeRootFilesystem::new();
     let reopen = match mode {
         StorageMode::InMemory => {
-            ironclaw_reborn_composition::test_support::mount_local_dev_database_roots_for_test(
+            ironclaw_reborn_composition::test_support::mount_database_roots_for_test(
                 &mut composite,
                 Arc::new(InMemoryBackend::new()),
             )?;
             StorageReopen::None
         }
         StorageMode::LibSql => {
-            ironclaw_reborn_composition::test_support::build_default_local_dev_database_roots_for_test(
+            ironclaw_reborn_composition::test_support::build_default_database_roots_for_test(
                 dir,
                 &mut composite,
             )
             .await?;
             // The canonical filename is the production constant — one source of truth.
             StorageReopen::LibSql {
-                db_path: dir.join(ironclaw_reborn_composition::test_support::LOCAL_DEV_DB_FILENAME),
+                db_path: dir
+                    .join(ironclaw_reborn_composition::test_support::STANDALONE_DB_FILENAME),
             }
         }
         StorageMode::Postgres => {
@@ -2036,7 +2037,7 @@ pub(crate) async fn build_storage_composite(
                 .run_migrations()
                 .await
                 .map_err(|error| format!("Postgres migrations failed: {error}"))?;
-            ironclaw_reborn_composition::test_support::mount_local_dev_database_roots_for_test(
+            ironclaw_reborn_composition::test_support::mount_database_roots_for_test(
                 &mut composite,
                 filesystem,
             )?;

@@ -5,7 +5,7 @@
 //! invisible to every integration test before this seam PR.
 //!
 //! Ground truth (verified against
-//! `crates/ironclaw_reborn_composition/src/runtime/local_dev/surface_disclosure.rs`,
+//! `crates/ironclaw_reborn_composition/src/runtime/standalone/surface_disclosure.rs`,
 //! NOT the plan doc's "must deny rather than execute" framing, which does not
 //! match the code): `wrap_surface_disclosure` never hides or denies
 //! a capability. It is a description/schema ANNOTATION layer, disabled unless
@@ -43,10 +43,10 @@ const FLAT_READ_FILE_TOOL_NAME: &str = "builtin__read_file";
 const FLAT_SHELL_TOOL_NAME: &str = "builtin__shell";
 
 /// Substring of `HostSurfaceDisclosure`'s `confirmed_host_roots_note`
-/// output stable across `local_dev_mounts.rs` mount-alias wording changes.
+/// output stable across `standalone_mounts.rs` mount-alias wording changes.
 const SCOPED_ROOTS_NOTE_NEEDLE: &str = "Available scoped roots";
 
-/// Substring of `LOCAL_DEV_LOCAL_HOST_SHELL_NOTE`, the fixed local-host-shell
+/// Substring of `STANDALONE_LOCAL_HOST_SHELL_NOTE`, the fixed local-host-shell
 /// annotation `apply_to_surface_fields` appends unconditionally to
 /// `builtin.shell`'s description once the layer is enabled at all (unlike the
 /// scoped-path capabilities, `builtin.shell` gets no `scoped_roots_note`
@@ -99,7 +99,7 @@ async fn workspace_only_mount_excludes_scoped_roots_note() {
 
 /// `builtin.shell` takes a DIFFERENT branch in `apply_to_surface_fields`
 /// (`capability_id.as_str() == SHELL_CAPABILITY_ID`, checked before the
-/// scoped-path capability match): it appends `LOCAL_DEV_LOCAL_HOST_SHELL_NOTE`
+/// scoped-path capability match): it appends `STANDALONE_LOCAL_HOST_SHELL_NOTE`
 /// unconditionally rather than gating on `scoped_roots_note`. But the whole
 /// port is still gated on `HostSurfaceDisclosure::enabled()`
 /// (`scoped_roots_note.is_some()`, i.e. a confirmed `/host` mount) in

@@ -27,7 +27,7 @@ use ironclaw_host_api::{ProductSurface, ProductSurfaceCaller};
 use ironclaw_reborn_composition::test_support::BudgetTestGateway;
 use ironclaw_reborn_composition::{
     RebornRuntime, RebornRuntimeIdentity, RebornRuntimeInput, build_reborn_runtime,
-    local_dev_build_input, local_dev_runtime_policy,
+    local_filesystem_build_input, standalone_runtime_policy,
 };
 use ironclaw_webui::webui_v2::{
     DEFAULT_SSE_MAX_CONCURRENT_PER_CALLER, WebUiV2Capabilities, WebUiV2State, webui_v2_router,
@@ -160,7 +160,7 @@ async fn legacy_tenant_owned_installation_migrates_to_operator_private_state() {
     drop(webui);
     runtime.shutdown().await.expect("runtime shuts down");
 
-    let store = ironclaw_reborn_composition::test_support::open_local_dev_extension_installation_store_for_test(
+    let store = ironclaw_reborn_composition::test_support::open_standalone_extension_installation_store_for_test(
         &storage_root,
     )
     .await
@@ -265,14 +265,14 @@ impl LifecycleIsolationFixture {
         agent_id: AgentId,
         operator_id: UserId,
     ) -> Self {
-        let input = local_dev_build_input(operator_id.as_str(), storage_root.clone())
+        let input = local_filesystem_build_input(operator_id.as_str(), storage_root.clone())
             // Root-test packages compile composition with `test-support`, where
-            // `local_dev_build_input`'s cfg(test)-only first-party injection is
+            // `local_runtime_build_input`'s cfg(test)-only first-party injection is
             // off — supply the bundled surface like the binary does (the
             // `extension.slack` admin group and the fixture installs need it).
             .with_bundled_first_party_for_test()
             .with_local_runtime_identity(tenant_id.clone(), agent_id.clone())
-            .with_runtime_policy(local_dev_runtime_policy().expect("local-dev policy"))
+            .with_runtime_policy(standalone_runtime_policy().expect("local-dev policy"))
             .with_network_http_egress_for_test(Arc::new(
                 reborn_support::harness::RecordingNetworkHttpEgress::with_body(Vec::new()),
             ));

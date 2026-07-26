@@ -119,21 +119,21 @@ impl HarnessCapabilityRecorder {
         }
     }
 
-    pub(crate) async fn approve_local_dev_gate(&self, gate_ref: &GateRef) -> HarnessResult<()> {
+    pub(crate) async fn approve_standalone_gate(&self, gate_ref: &GateRef) -> HarnessResult<()> {
         match self {
             Self::Recording(_) => {
                 Err("recording capability port has no local-dev approvals".into())
             }
-            Self::HostRuntime(harness) => harness.approve_local_dev_gate(gate_ref).await,
+            Self::HostRuntime(harness) => harness.approve_standalone_gate(gate_ref).await,
         }
     }
 
-    pub(crate) async fn deny_local_dev_gate(&self, gate_ref: &GateRef) -> HarnessResult<()> {
+    pub(crate) async fn deny_standalone_gate(&self, gate_ref: &GateRef) -> HarnessResult<()> {
         match self {
             Self::Recording(_) => {
                 Err("recording capability port has no local-dev approvals".into())
             }
-            Self::HostRuntime(harness) => harness.deny_local_dev_gate(gate_ref).await,
+            Self::HostRuntime(harness) => harness.deny_standalone_gate(gate_ref).await,
         }
     }
 
