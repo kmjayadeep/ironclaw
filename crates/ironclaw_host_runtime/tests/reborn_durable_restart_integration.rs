@@ -24,8 +24,8 @@ use ironclaw_host_runtime::{
 };
 use ironclaw_processes::{
     ProcessExecutionRequest, ProcessExecutionResult, ProcessExecutor, ProcessInvocationStatePort,
-    ProcessInvocationStateStore, ProcessInvocationStatus, ProcessManager, ProcessRuntimePort,
-    ProcessServices, ProcessStart, ProcessStatus, capability_process_record,
+    ProcessInvocationStatus, ProcessInvocationStore, ProcessJournalStore, ProcessManager,
+    ProcessRuntimePort, ProcessServices, ProcessStart, ProcessStatus, capability_process_record,
 };
 use ironclaw_reborn_event_store::{
     RebornEventStoreConfig, RebornEventStores, RebornProfile, build_reborn_event_stores,
@@ -330,8 +330,8 @@ async fn approval_resume_survives_durable_libsql_reopen_and_consumes_lease_once(
 #[tokio::test]
 async fn process_result_and_output_survive_filesystem_service_restart_with_scope_filtering() {
     let temp = tempfile::tempdir().unwrap();
-    let engine_root = temp.path().join("engine");
-    let first_services = filesystem_process_services(&engine_root);
+    let db_path = temp.path().join("processes.db");
+    let first_services = libsql_process_services(&db_path).await;
     let manager = first_services.background_manager(Arc::new(SuccessProcessExecutor));
     let invocation_id = InvocationId::new();
     let scope = sample_scope(invocation_id);
@@ -349,7 +349,7 @@ async fn process_result_and_output_survive_filesystem_service_restart_with_scope
     )
     .await;
 
-    let restarted_services = filesystem_process_services(&engine_root);
+    let restarted_services = libsql_process_services(&db_path).await;
     let host = restarted_services.host();
     let status = host
         .status(&scope, process_id)
@@ -476,7 +476,7 @@ where
     F: RootFilesystem,
 {
     services: DurableHostRuntimeServices,
-    run_state: Arc<ProcessInvocationStateStore<F>>,
+    run_state: Arc<ProcessInvocationStore>,
     approval_requests: Arc<ApprovalRequestStore<F>>,
     capability_leases: Arc<CapabilityLeaseStore<DiskFilesystem>>,
     events: RebornEventStores,
@@ -496,6 +496,11 @@ where
     Arc::new(ScopedFilesystem::with_fixed_view(
         backend,
         MountView::new(vec![
+            MountGrant::new(
+                MountAlias::new("/processes").unwrap(),
+                VirtualPath::new("/processes").unwrap(),
+                MountPermissions::read_write_list_delete(),
+            ),
             MountGrant::new(
                 MountAlias::new("/run-state").unwrap(),
                 VirtualPath::new("/run-state").unwrap(),
@@ -519,7 +524,9 @@ async fn durable_services(
     let event_stores = jsonl_event_stores(event_root).await;
     let scoped_fs = scoped_engine_filesystem(engine_root);
     let run_state_fs = scoped_run_state_filesystem(shared_run_state_backend);
-    let run_state = Arc::new(ProcessInvocationStateStore::new(Arc::clone(&run_state_fs)));
+    let run_state = Arc::new(ProcessInvocationStore::new(Arc::new(
+        ProcessJournalStore::new(Arc::clone(&run_state_fs)),
+    )));
     let approval_requests = Arc::new(ApprovalRequestStore::new(Arc::clone(&run_state_fs)));
     let capability_leases = Arc::new(CapabilityLeaseStore::new(Arc::clone(&scoped_fs)));
     let services = base_services(
@@ -555,7 +562,9 @@ async fn durable_services_with_libsql_run_state(
     let event_stores = jsonl_event_stores(event_root).await;
     let scoped_fs = scoped_engine_filesystem(engine_root);
     let run_state_fs = scoped_libsql_run_state_filesystem(db_path).await;
-    let run_state = Arc::new(ProcessInvocationStateStore::new(Arc::clone(&run_state_fs)));
+    let run_state = Arc::new(ProcessInvocationStore::new(Arc::new(
+        ProcessJournalStore::new(Arc::clone(&run_state_fs)),
+    )));
     let approval_requests = Arc::new(ApprovalRequestStore::new(Arc::clone(&run_state_fs)));
     let capability_leases = Arc::new(CapabilityLeaseStore::new(Arc::clone(&scoped_fs)));
     let services = base_services(
@@ -631,6 +640,17 @@ async fn jsonl_event_stores(event_root: &Path) -> RebornEventStores {
 fn filesystem_process_services(engine_root: &Path) -> DurableProcessServices {
     let scoped = Arc::new(ScopedFilesystem::with_fixed_view(
         Arc::new(mounted_engine_filesystem(engine_root)),
+        durable_mount_view(),
+    ));
+    ProcessServices::filesystem(scoped)
+}
+
+async fn libsql_process_services(db_path: &Path) -> DurableProcessServices {
+    let db = Arc::new(libsql::Builder::new_local(db_path).build().await.unwrap());
+    let filesystem = LibSqlRootFilesystem::new(db);
+    filesystem.run_migrations().await.unwrap();
+    let scoped = Arc::new(ScopedFilesystem::with_fixed_view(
+        Arc::new(filesystem),
         durable_mount_view(),
     ));
     ProcessServices::filesystem(scoped)
