@@ -1229,7 +1229,6 @@ const ALLOWLIST: &[(&str, &str)] = &[
         "nearai_mcp",
     ),
     // lane-4: migration — one-time forward-migration call sites naming the v1 vocabulary they fold forward — correct-by-design (same pattern the retired-taxonomy gate sanctions); would become a SANCTIONED_PATHS carve if the sites move into a dedicated migration module
-    ("crates/ironclaw_reborn_composition/src/factory.rs", "slack"),
     (
         "crates/ironclaw_reborn_composition/src/factory.rs",
         "nearaimcp",
