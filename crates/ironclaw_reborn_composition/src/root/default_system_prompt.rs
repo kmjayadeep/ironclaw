@@ -173,7 +173,7 @@ fn validate_default_system_prompt(
     if !path.starts_with(storage_root) {
         return Err(DefaultSystemPromptError::InvalidFile {
             path: path.to_path_buf(),
-            reason: "path is outside the local-dev storage root".to_string(),
+            reason: "path is outside the standalone storage root".to_string(),
         });
     }
     let metadata = path
@@ -204,7 +204,7 @@ fn validate_default_system_prompt(
     if !canonical_path.starts_with(&canonical_root) {
         return Err(DefaultSystemPromptError::InvalidFile {
             path: path.to_path_buf(),
-            reason: "canonical path escapes the local-dev storage root".to_string(),
+            reason: "canonical path escapes the standalone storage root".to_string(),
         });
     }
     if metadata.len() > MAX_DEFAULT_SYSTEM_PROMPT_BYTES {
@@ -224,7 +224,7 @@ fn ensure_prompt_parent(
     if !parent.starts_with(storage_root) {
         return Err(DefaultSystemPromptError::InvalidFile {
             path: parent.to_path_buf(),
-            reason: "parent is outside the local-dev storage root".to_string(),
+            reason: "parent is outside the standalone storage root".to_string(),
         });
     }
     let relative_parent =
@@ -232,7 +232,7 @@ fn ensure_prompt_parent(
             .strip_prefix(storage_root)
             .map_err(|_| DefaultSystemPromptError::InvalidFile {
                 path: parent.to_path_buf(),
-                reason: "parent is outside the local-dev storage root".to_string(),
+                reason: "parent is outside the standalone storage root".to_string(),
             })?;
     let mut current = storage_root.to_path_buf();
     for component in relative_parent.components() {
@@ -348,7 +348,7 @@ mod tests {
         assert_eq!(candidates[0].name.as_str(), DEFAULT_SYSTEM_PROMPT_NAME);
         assert!(
             prompt_path.exists(),
-            "source should seed the editable local-dev prompt file"
+            "source should seed the editable standalone prompt file"
         );
 
         let content = source
@@ -445,7 +445,7 @@ mod tests {
             .await
             .expect("first candidates load");
 
-        std::fs::write(&prompt_path, "edited local-dev prompt").expect("prompt edits");
+        std::fs::write(&prompt_path, "edited standalone prompt").expect("prompt edits");
         let edited_candidates = source
             .load_identity_candidates(&context, PromptMode::TextOnly)
             .await
@@ -467,7 +467,7 @@ mod tests {
             .expect("resolve edited content")
             .expect("edited content exists");
 
-        assert_eq!(content.content, "edited local-dev prompt");
+        assert_eq!(content.content, "edited standalone prompt");
     }
 
     #[cfg(unix)]

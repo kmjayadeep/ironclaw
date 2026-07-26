@@ -53,6 +53,7 @@ mod runtime;
 mod runtime_input;
 mod runtime_mounts;
 mod runtime_profile_approval_policy;
+mod standalone_bootstrap_assembly;
 mod storage_catalog;
 mod support;
 #[cfg(feature = "test-support")]

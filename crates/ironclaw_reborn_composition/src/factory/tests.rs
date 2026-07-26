@@ -2335,7 +2335,7 @@ fn local_dev_legacy_skill_backfill_marker_preserves_deletions() {
     std::fs::write(legacy_skill_dir.join("SKILL.md"), "legacy skill").expect("legacy skill");
     let owner_user_id = UserId::new("owner").expect("owner");
 
-    backfill_local_dev_legacy_user_skills(&storage_root, &owner_user_id).expect("initial backfill");
+    backfill_legacy_user_skills(&storage_root, &owner_user_id).expect("initial backfill");
     let scoped_skill_dir = storage_root.join("tenants/default/users/owner/skills/legacy-skill");
     let reborn_cli_skill_dir =
         storage_root.join("tenants/reborn-cli/users/owner/skills/legacy-skill");
@@ -2343,7 +2343,7 @@ fn local_dev_legacy_skill_backfill_marker_preserves_deletions() {
     assert!(reborn_cli_skill_dir.join("SKILL.md").exists());
 
     std::fs::remove_dir_all(&scoped_skill_dir).expect("delete migrated skill");
-    backfill_local_dev_legacy_user_skills(&storage_root, &owner_user_id).expect("second backfill");
+    backfill_legacy_user_skills(&storage_root, &owner_user_id).expect("second backfill");
     assert!(
         !scoped_skill_dir.exists(),
         "one-time legacy backfill must not resurrect user-deleted migrated skills"
@@ -2363,7 +2363,7 @@ fn local_dev_legacy_skill_backfill_skips_symlinks() {
         .expect("legacy symlink");
     let owner_user_id = UserId::new("owner").expect("owner");
 
-    backfill_local_dev_legacy_user_skills(&storage_root, &owner_user_id)
+    backfill_legacy_user_skills(&storage_root, &owner_user_id)
         .expect("symlink should be skipped, not fail startup");
     assert!(
         !storage_root
@@ -2373,7 +2373,7 @@ fn local_dev_legacy_skill_backfill_skips_symlinks() {
     assert!(
         storage_root
             .join(format!(
-                "tenants/default/users/owner/skills/{LOCAL_DEV_LEGACY_SKILLS_BACKFILL_MARKER}"
+                "tenants/default/users/owner/skills/{LEGACY_SKILLS_BACKFILL_MARKER}"
             ))
             .exists(),
         "migration should still be marked complete after skipping symlinks"
