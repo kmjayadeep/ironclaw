@@ -38,10 +38,8 @@ pub use agent_turn_runtime::{
     active_run_ref_state,
 };
 pub use checkpoint_state::{
-    CheckpointStateMatchMetadata, CheckpointStateRecord, CheckpointStateStorePort,
-    GetCheckpointStateRequest, GetLoopCheckpointRequest, LoopCheckpointRecord, LoopCheckpointStore,
-    MAX_CHECKPOINT_STATE_PAYLOAD_BYTES, PutCheckpointStateRequest, PutLoopCheckpointRequest,
-    RedactedCheckpointPayload, checkpoint_state_metadata_matches_request, new_checkpoint_state_ref,
+    GetLoopCheckpointRequest, LoopCheckpointRecord, LoopCheckpointStore,
+    MAX_CHECKPOINT_STATE_PAYLOAD_BYTES, PutLoopCheckpointRequest, RedactedCheckpointPayload,
 };
 pub use coordinator::{
     AllowAllTurnAdmissionPolicy, DefaultTurnCoordinator, NoopTurnRunWakeNotifier,

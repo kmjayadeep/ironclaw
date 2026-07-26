@@ -3926,7 +3926,6 @@ dependencies = [
  "chrono",
  "dashmap",
  "futures",
- "hex",
  "ironclaw_approvals",
  "ironclaw_capabilities",
  "ironclaw_filesystem",

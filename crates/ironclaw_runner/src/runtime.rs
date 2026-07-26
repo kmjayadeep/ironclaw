@@ -20,9 +20,8 @@ use ironclaw_processes::ProcessTransitionPort;
 use ironclaw_threads::{SessionThreadService, ThreadScope};
 use ironclaw_turns::{
     AgentLoopDriverError, AgentTurnProcessCommitObserver, AgentTurnRuntimePort,
-    AgentTurnSpawnTreeRuntimePort, CheckpointStateStorePort, DefaultTurnCoordinator,
-    LoopCheckpointStore, RunProfileResolver, TurnCommittedEventObserver, TurnEventSink,
-    TurnRunWakeNotifier, TurnSpawnTreePort,
+    AgentTurnSpawnTreeRuntimePort, DefaultTurnCoordinator, LoopCheckpointStore, RunProfileResolver,
+    TurnCommittedEventObserver, TurnEventSink, TurnRunWakeNotifier, TurnSpawnTreePort,
     loop_exit::LoopExitEvidencePort,
     run_profile::{
         AgentLoopHostError, CommunicationContextProvider, InstructionSafetyContext,
@@ -272,7 +271,6 @@ where
     pub thread_service: Arc<dyn SessionThreadService>,
     pub thread_scope: ThreadScope,
     pub model_gateway: Arc<G>,
-    pub checkpoint_state_store: Arc<dyn CheckpointStateStorePort>,
     pub loop_checkpoint_store: Arc<dyn LoopCheckpointStore>,
     pub milestone_sink: Arc<dyn LoopHostMilestoneSink>,
     pub capability_factory: Arc<dyn LoopCapabilityPortFactory>,
@@ -559,7 +557,6 @@ where
             await_dependent_run_evidence,
             parts.thread_scope.clone(),
         )
-        .with_checkpoint_state_store(Arc::clone(&parts.checkpoint_state_store))
         .with_cancellation_factory(cancellation_factory),
     );
     build_default_planned_runtime(parts).map_err(ProductLiveRuntimeBuildError::Runtime)
@@ -768,7 +765,6 @@ where
         Arc::clone(&parts.thread_service),
         parts.thread_scope,
         Arc::clone(&parts.model_gateway),
-        parts.checkpoint_state_store,
         agent_turn_runtime_port,
         Arc::clone(&parts.loop_checkpoint_store),
         parts.milestone_sink,

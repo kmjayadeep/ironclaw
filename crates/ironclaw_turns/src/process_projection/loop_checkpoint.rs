@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use ironclaw_host_api::{InvocationId, ResourceScope};
 use ironclaw_processes::{
-    GetProcessCheckpointRequest, ProcessCheckpointId, ProcessCheckpointPort,
-    ProcessCheckpointRecord, ProcessCheckpointRef, RecordProcessCheckpointRequest,
+    GetProcessCheckpointRequest, ProcessCheckpointId, ProcessCheckpointPayload,
+    ProcessCheckpointPort, ProcessCheckpointRecord, ProcessCheckpointRef,
+    RecordProcessCheckpointRequest,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -36,12 +38,16 @@ impl LoopCheckpointStore for ProcessLoopCheckpointStore {
             .record_process_checkpoint(RecordProcessCheckpointRequest {
                 checkpoint_id: process_checkpoint_id(checkpoint_id),
                 process_id: ironclaw_host_api::ProcessId::from_uuid(request.run_id.as_uuid()),
-                scope: request.scope.to_resource_scope(),
+                scope: process_checkpoint_scope(&request.scope, request.run_id),
                 state_ref: ProcessCheckpointRef::new(request.state_ref.as_str()).map_err(
                     |error| TurnError::InvalidRequest {
                         reason: error.to_string(),
                     },
                 )?,
+                payload: ProcessCheckpointPayload::new(request.payload.into_payload_bytes())
+                    .map_err(|error| TurnError::InvalidRequest {
+                        reason: error.to_string(),
+                    })?,
                 created_at: chrono::Utc::now(),
                 metadata: json!({
                     "turn_id": request.turn_id,
@@ -69,7 +75,7 @@ impl LoopCheckpointStore for ProcessLoopCheckpointStore {
             .get_process_checkpoint(GetProcessCheckpointRequest {
                 checkpoint_id: process_checkpoint_id(request.checkpoint_id),
                 process_id: ironclaw_host_api::ProcessId::from_uuid(request.run_id.as_uuid()),
-                scope: request.scope.to_resource_scope(),
+                scope: process_checkpoint_scope(&request.scope, request.run_id),
             })
             .await?
         else {
@@ -87,6 +93,12 @@ impl LoopCheckpointStore for ProcessLoopCheckpointStore {
 
 fn process_checkpoint_id(checkpoint_id: TurnCheckpointId) -> ProcessCheckpointId {
     ProcessCheckpointId::from_trusted(checkpoint_id.as_uuid().to_string())
+}
+
+fn process_checkpoint_scope(scope: &TurnScope, run_id: TurnRunId) -> ResourceScope {
+    let mut process_scope = scope.to_resource_scope();
+    process_scope.invocation_id = InvocationId::from_uuid(run_id.as_uuid());
+    process_scope
 }
 
 fn loop_checkpoint_record_from_process(
@@ -113,12 +125,19 @@ fn loop_checkpoint_record_from_process(
             reason: format!("process checkpoint state ref is invalid: {reason}"),
         }
     })?;
+    let payload =
+        crate::RedactedCheckpointPayload::new(record.payload.into_bytes()).map_err(|reason| {
+            TurnError::Unavailable {
+                reason: format!("process checkpoint payload is invalid: {reason}"),
+            }
+        })?;
     Ok(LoopCheckpointRecord {
         checkpoint_id,
         scope,
         turn_id: metadata.turn_id,
         run_id,
         state_ref,
+        payload: Some(payload),
         schema_id: metadata.schema_id,
         schema_version: metadata.schema_version,
         kind: metadata.kind,

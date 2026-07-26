@@ -150,7 +150,21 @@ indexed edge queries and atomic edge/tree mutations.
 
 ## Slice 4: unify checkpoint metadata and payload
 
-Checkpoint state is currently split between generic process checkpoint
+Status on `process-journal-kernel-transition`: implemented. A process
+checkpoint command now carries a bounded, debug-redacted opaque payload beside
+its ref and schema metadata, and the command is one physical journal row.
+Agent-loop checkpoint records are projections over that row.
+
+The host stages bytes only in memory until `checkpoint`, which commits payload
+and metadata atomically. Resume and loop-exit evidence read the payload from
+the process projection. The separate `/checkpoint-state` mount,
+`CheckpointStateStorePort`, filesystem implementation, contract suite, and
+composition wiring are deleted. Stable checkpoint scope binds the process
+invocation axis to `TurnRunId`, so put/get cannot mint mismatched scopes.
+
+Historical inventory:
+
+Checkpoint state was split between generic process checkpoint
 metadata and a separate loop-host payload store:
 
 - `loop_host/checkpoint_state_store.rs`: 447 lines

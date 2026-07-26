@@ -401,7 +401,6 @@ const PER_USER_ALIASES: &[&str] = &[
     "/threads",
     "/conversations",
     "/turns",
-    "/checkpoint-state",
     "/resources",
     "/engine",
     "/skills",

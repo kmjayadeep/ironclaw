@@ -59,7 +59,6 @@ where
         thread_service: _,
         thread_scope: _,
         model_gateway: _,
-        checkpoint_state_store: _,
         loop_checkpoint_store: _,
         milestone_sink: _,
         capability_factory: _,

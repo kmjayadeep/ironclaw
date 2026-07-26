@@ -14,8 +14,7 @@ publish = false
 layer = "loops"
 
 [features]
-# Test-only constructors (in-memory-backed store seams). Disabled by default;
-# enable only from a downstream crate's [dev-dependencies].
+# Compatibility feature for downstream test configurations.
 test-support = []
 
 [dependencies]
@@ -23,7 +22,6 @@ async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6"
 futures = "0.3"
-hex = "0.4.3"
 jsonschema = { version = "0.46", default-features = false }
 parking_lot = "0.12"
 tracing = "0.1"

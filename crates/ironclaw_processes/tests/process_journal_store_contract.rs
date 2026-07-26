@@ -12,19 +12,20 @@ use ironclaw_host_api::{
 use ironclaw_processes::{
     CancelProcessRequest, ClaimProcessesRequest, CloseProcessDependencyRequest,
     GetProcessCheckpointRequest, GetProcessSnapshotRequest, JournaledProcessSnapshot,
-    KillProcessRequest, ProcessCheckpointId, ProcessCheckpointPort, ProcessCheckpointRef,
-    ProcessConcurrencyClass, ProcessConcurrencyLimits, ProcessControlPort, ProcessDependencyPort,
-    ProcessDependencyQuery, ProcessDependencyState, ProcessDependencySubmission,
-    ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource, ProcessJournalCommit,
-    ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind,
-    ProcessJournalObserverRegistry, ProcessJournalSource, ProcessJournalStore, ProcessKind,
-    ProcessLeaseRequest, ProcessLeaseToken, ProcessLifecycleLookupBatchRequest,
-    ProcessLifecycleLookupRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,
-    ProcessLifecycleStatus, ProcessOperationId, ProcessStateTransitionRequest,
-    ProcessSubmissionPort, ProcessSuspension, ProcessSuspensionKind, ProcessTerminalEvidence,
-    ProcessTransitionPort, ProcessTreePort, ProcessWorkerId, RecordProcessCheckpointRequest,
-    ReleaseProcessTreeRequest, ResumeProcessRequest, SettleProcessDependencyRequest,
-    StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
+    KillProcessRequest, MAX_PROCESS_CHECKPOINT_PAYLOAD_BYTES, ProcessCheckpointId,
+    ProcessCheckpointPayload, ProcessCheckpointPort, ProcessCheckpointRef, ProcessConcurrencyClass,
+    ProcessConcurrencyLimits, ProcessControlPort, ProcessDependencyPort, ProcessDependencyQuery,
+    ProcessDependencyState, ProcessDependencySubmission, ProcessGateOwnerMatch, ProcessGateQuery,
+    ProcessGateQuerySource, ProcessJournalCommit, ProcessJournalCommitObserver,
+    ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind, ProcessJournalObserverRegistry,
+    ProcessJournalSource, ProcessJournalStore, ProcessKind, ProcessLeaseRequest, ProcessLeaseToken,
+    ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupRequest,
+    ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
+    ProcessOperationId, ProcessStateTransitionRequest, ProcessSubmissionPort, ProcessSuspension,
+    ProcessSuspensionKind, ProcessTerminalEvidence, ProcessTransitionPort, ProcessTreePort,
+    ProcessWorkerId, RecordProcessCheckpointRequest, ReleaseProcessTreeRequest,
+    ResumeProcessRequest, SettleProcessDependencyRequest, StopProcessRequest, SubmitProcessRequest,
+    SuspendProcessRequest,
 };
 use serde_json::json;
 use std::{
@@ -193,12 +194,29 @@ async fn each_process_journal_command_is_an_individual_libsql_row() {
     });
     let snapshots = futures::future::join_all(submissions).await;
     assert_eq!(snapshots.len(), 32);
+    store
+        .record_process_checkpoint(RecordProcessCheckpointRequest {
+            checkpoint_id: ProcessCheckpointId::from_trusted("row-checkpoint"),
+            process_id: snapshots[0].process_id,
+            scope: scope.clone(),
+            state_ref: ProcessCheckpointRef::from_trusted("row-state"),
+            payload: ProcessCheckpointPayload::new(b"atomic-payload".to_vec())
+                .expect("bounded payload"),
+            created_at: Utc::now(),
+            metadata: json!({"schema": "agent-loop-v1"}),
+        })
+        .await
+        .expect("record checkpoint row");
 
     let page = store
         .read_process_journal_log_after(None, 64)
         .await
         .expect("read process journal");
-    assert_eq!(page.entries.len(), 32);
+    assert_eq!(
+        page.entries.len(),
+        32,
+        "checkpoint payloads stay out of the lifecycle event projection"
+    );
 
     let records = filesystem
         .tail(
@@ -208,7 +226,7 @@ async fn each_process_journal_command_is_an_individual_libsql_row() {
         )
         .await
         .expect("tail journal records");
-    assert_eq!(records.len(), 32);
+    assert_eq!(records.len(), 33);
 
     for record in records {
         let parsed: serde_json::Value =
@@ -230,7 +248,7 @@ async fn each_process_journal_command_is_an_individual_libsql_row() {
         .expect("read count row")
         .expect("count row exists");
     let count: i64 = row.get(0).expect("read count");
-    assert_eq!(count, 32);
+    assert_eq!(count, 33);
 }
 
 #[tokio::test]
@@ -322,6 +340,8 @@ async fn process_checkpoint_records_are_durable_scoped_and_idempotent() {
         process_id,
         scope: scope.clone(),
         state_ref: ProcessCheckpointRef::from_trusted("state-1"),
+        payload: ProcessCheckpointPayload::new(b"checkpoint-body".to_vec())
+            .expect("bounded payload"),
         created_at: Utc::now(),
         metadata: json!({"schema": "agent-loop-v1"}),
     };
@@ -348,6 +368,11 @@ async fn process_checkpoint_records_are_durable_scoped_and_idempotent() {
         .await
         .expect("load checkpoint");
     assert_eq!(loaded, Some(recorded));
+    let loaded = loaded.expect("checkpoint exists");
+    assert_eq!(loaded.payload.as_bytes(), b"checkpoint-body");
+    let debug = format!("{:?}", loaded.payload);
+    assert!(debug.contains("<redacted>"));
+    assert!(!debug.contains("checkpoint-body"));
 
     let mut wrong_scope = scope;
     wrong_scope.user_id = UserId::new("other-user").expect("other user");
@@ -362,6 +387,17 @@ async fn process_checkpoint_records_are_durable_scoped_and_idempotent() {
             .expect("wrong-scope lookup")
             .is_none()
     );
+}
+
+#[test]
+fn process_checkpoint_payload_rejects_oversized_bytes() {
+    let error = ProcessCheckpointPayload::new(vec![0; MAX_PROCESS_CHECKPOINT_PAYLOAD_BYTES + 1])
+        .expect_err("oversized checkpoint payload");
+    assert!(matches!(
+        error,
+        ironclaw_processes::ProcessJournalError::CheckpointPayloadTooLong { actual }
+            if actual == MAX_PROCESS_CHECKPOINT_PAYLOAD_BYTES + 1
+    ));
 }
 
 #[tokio::test]

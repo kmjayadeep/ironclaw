@@ -773,6 +773,7 @@ impl ProcessJournalMaterializedState {
             process_id: request.process_id,
             scope: request.scope,
             state_ref: request.state_ref,
+            payload: request.payload,
             created_at: request.created_at,
             metadata: request.metadata,
         };

@@ -136,7 +136,6 @@ use ironclaw_host_runtime::{
     builtin_first_party_handlers_with_trigger_create_hook_for_process_backend_and_memory_resolver,
     builtin_first_party_package_for_process_backend,
 };
-use ironclaw_loop_host::CheckpointStateStore;
 use ironclaw_outbound::CommunicationPreferenceRepository;
 use ironclaw_outbound::{
     DeliveredGateRouteStore, OutboundStateStore, OutboundStateStorePort, TriggeredRunDeliveryStore,
@@ -168,7 +167,7 @@ use ironclaw_trust::{AdminConfig, AdminEntry, HostTrustAssignment, HostTrustPoli
 use ironclaw_turns::{
     AgentTurnRuntimePort, GetRunStateRequest, InMemoryRunProfileResolver, TurnScope,
 };
-use ironclaw_turns::{CheckpointStateStorePort, ExternalToolCatalog, InMemoryExternalToolCatalog};
+use ironclaw_turns::{ExternalToolCatalog, InMemoryExternalToolCatalog};
 use secrecy::SecretString;
 
 /// Display name sent with RFC 7591 dynamic client registration.
@@ -1088,7 +1087,6 @@ pub(crate) struct RebornRuntimeStores {
     pub(crate) shared_extension_registry: Arc<SharedExtensionRegistry>,
     pub(crate) scoped_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
     pub(crate) processes: ProcessRuntimeSystem,
-    pub(crate) checkpoint_state_store: Arc<dyn CheckpointStateStorePort>,
     pub(crate) thread_service: Arc<dyn SessionThreadService>,
     pub(crate) trigger_repository: Arc<dyn TriggerRepository>,
     pub(crate) resource_governor: Arc<dyn ResourceGovernor>,
@@ -4569,9 +4567,6 @@ async fn build_backend_production(
         scoped_filesystem: Arc::clone(&stores.scoped_filesystem),
         conversations: tokio::sync::OnceCell::new(),
     });
-    let checkpoint_state_store: Arc<dyn CheckpointStateStorePort> = Arc::new(
-        CheckpointStateStore::new(Arc::clone(&stores.scoped_filesystem)),
-    );
     let thread_service: Arc<dyn SessionThreadService> = Arc::new(
         FilesystemSessionThreadService::new(Arc::clone(&stores.scoped_filesystem)),
     );
@@ -5529,7 +5524,6 @@ async fn build_backend_production(
         shared_extension_registry,
         scoped_filesystem: Arc::clone(&stores.scoped_filesystem),
         processes,
-        checkpoint_state_store,
         thread_service,
         trigger_repository: Arc::clone(&trigger_repository),
         resource_governor: production_resource_governor,

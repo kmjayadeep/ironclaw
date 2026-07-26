@@ -152,8 +152,6 @@ mod group_options;
 /// Convenience alias matching `builder.rs` and `harness.rs`.
 pub type HarnessResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-use ironclaw_loop_host::in_memory_backed_checkpoint_state_store as in_memory_checkpoint_state_store;
-
 // ---------------------------------------------------------------------------
 // GroupSharedStorage
 // ---------------------------------------------------------------------------
@@ -793,8 +791,7 @@ impl RebornIntegrationGroupBuilder {
     /// Builds the capability parts exactly once (`capability.mode().into_parts`)
     /// so the stored `capability_recorder` is the SAME `Arc`-backed instance the
     /// real capability factory writes through — not a second, divergent
-    /// recorder. Wires `.with_checkpoint_state_store` on the group-level
-    /// `ThreadCheckpointLoopExitEvidencePort` (the de-mask fix, design §4) and
+    /// recorder. Wires checkpoint evidence through the process journal and
     /// `.with_approval_gate_evidence` when the capability backend exposes a
     /// local-dev approval store.
     ///
@@ -823,8 +820,6 @@ impl RebornIntegrationGroupBuilder {
         let loop_checkpoint_store: Arc<dyn LoopCheckpointStore> = Arc::new(
             ProcessLoopCheckpointStore::new(process_system.checkpoints()),
         );
-        let checkpoint_state_store = in_memory_checkpoint_state_store();
-
         let group_thread_scope = thread_scope_from_binding(&base.canonical_binding)?;
         let group_thread_harness = RebornThreadHarness::filesystem_shared_composite(
             group_thread_scope.clone(),
@@ -866,9 +861,6 @@ impl RebornIntegrationGroupBuilder {
             };
 
         // --- loop-exit evidence (group-level, built once) -----------------
-        // `.with_checkpoint_state_store` is the de-mask fix: without it a
-        // genuinely-`Failed` run is reported as the masking
-        // `driver_protocol_violation` instead of its true failure category.
         let await_edge_store = Arc::new(AwaitEdgeStore::new(process_system.dependencies()));
         let await_edge_goal_store = Arc::new(in_memory_backed_subagent_goal_store());
         let await_edge_resolver = Arc::new(AwaitEdgeResolver::new_unbound(
@@ -890,8 +882,7 @@ impl RebornIntegrationGroupBuilder {
             Arc::clone(&await_edge_store)
                 as Arc<dyn ironclaw_runner::loop_exit_applier::AwaitDependentRunEvidenceStore>,
             group_thread_scope.clone(),
-        )
-        .with_checkpoint_state_store(checkpoint_state_store.clone());
+        );
         if let Some(approval_requests) = capability_recorder.approval_requests_store() {
             evidence = evidence.with_approval_gate_evidence(
                 ironclaw_reborn_composition::test_support::build_approval_gate_evidence_for_test(
@@ -989,7 +980,6 @@ impl RebornIntegrationGroupBuilder {
             thread_service: group_thread_harness.service.clone() as Arc<dyn SessionThreadService>,
             thread_scope: group_thread_scope,
             model_gateway,
-            checkpoint_state_store: checkpoint_state_store.clone(),
             loop_checkpoint_store,
             milestone_sink,
             capability_factory,

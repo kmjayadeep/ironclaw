@@ -26,8 +26,8 @@
   ports (`process_projection`); `AgentTurnRuntimePort` is a coordination/query
   projection implemented by `AgentTurnProcessRuntime`, not a persistence
   authority.
-- Loop checkpoint payload storage (`checkpoint_state` and
-  `ProcessLoopCheckpointStore`); generic lifecycle checkpoints are owned by
+- Agent-loop checkpoint vocabulary and the `ProcessLoopCheckpointStore`
+  projection; metadata and bounded opaque payload persistence are owned by
   `ironclaw_processes`.
 - Crate-local public API, tests, and fixtures needed to prove that ownership.
 

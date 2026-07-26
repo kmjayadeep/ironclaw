@@ -73,8 +73,6 @@ use ironclaw_turns::{
 use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 
-use ironclaw_loop_host::in_memory_backed_checkpoint_state_store as in_memory_checkpoint_state_store;
-
 pub struct ProductLiveAgentLoopHarness {
     binding_service: FakeConversationBindingService,
     binding: ResolvedBinding,
@@ -382,7 +380,6 @@ impl ProductLiveAgentLoopHarness {
             thread_service: Arc::new(thread_service.clone()),
             thread_scope: thread_scope.clone(),
             model_gateway,
-            checkpoint_state_store: in_memory_checkpoint_state_store(),
             loop_checkpoint_store: checkpoint_store.clone(),
             milestone_sink: Arc::new(InMemoryLoopHostMilestoneSink::default()),
             capability_factory,

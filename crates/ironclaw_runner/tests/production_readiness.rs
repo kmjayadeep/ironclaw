@@ -84,7 +84,7 @@ fn production_readiness_rejects_in_memory_checkpoint_store() {
     let mut registry = DriverRegistry::new();
     let key = register_driver(&mut registry, "text_loop", DriverKind::Production);
     let mut graph = RebornLoopComponentGraphReadiness::production_verified();
-    graph.checkpoint_state_store =
+    graph.process_checkpoint_port =
         RebornComponentReadiness::non_durable(RebornComponentRequirement::Required);
 
     let report = validate_reborn_loop_production_readiness(RebornLoopProductionInputs {
@@ -97,7 +97,7 @@ fn production_readiness_rejects_in_memory_checkpoint_store() {
 
     assert_eq!(report.status, RebornLoopProductionStatus::NotReady);
     assert!(report.contains(
-        RebornLoopProductionComponent::CheckpointStateStorePort,
+        RebornLoopProductionComponent::ProcessCheckpointPort,
         RebornLoopProductionIssueKind::NonDurableImplementation
     ));
 }

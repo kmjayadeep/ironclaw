@@ -17,10 +17,10 @@ use ironclaw_turns::{
     GateRef, GetLoopCheckpointRequest, GetRunStateRequest, LoopBlocked, LoopBlockedKind,
     LoopCheckpointKind, LoopCheckpointRecord, LoopCheckpointStateRef, LoopCheckpointStore,
     LoopCompleted, LoopCompletionKind, LoopExit, LoopExitId, LoopGateRef, LoopMessageRef,
-    LoopResultRef, PutLoopCheckpointRequest, ReplyTargetBindingRef, ResumeTurnRequest,
-    ResumeTurnResponse, RunProfileVersion, SanitizedFailure, SourceBindingRef, SubmitTurnRequest,
-    SubmitTurnResponse, TurnActor, TurnCheckpointId, TurnError, TurnId, TurnLeaseToken, TurnRunId,
-    TurnRunState, TurnRunnerId, TurnScope, TurnStatus,
+    LoopResultRef, PutLoopCheckpointRequest, RedactedCheckpointPayload, ReplyTargetBindingRef,
+    ResumeTurnRequest, ResumeTurnResponse, RunProfileVersion, SanitizedFailure, SourceBindingRef,
+    SubmitTurnRequest, SubmitTurnResponse, TurnActor, TurnCheckpointId, TurnError, TurnId,
+    TurnLeaseToken, TurnRunId, TurnRunState, TurnRunnerId, TurnScope, TurnStatus,
     run_profile::{CheckpointSchemaId, LoopDriverId},
     runner::ClaimedTurnRun,
 };
@@ -103,6 +103,33 @@ pub(super) fn text_checkpoint_evidence(
         loop_checkpoint_store,
         empty_await_dependent_run_evidence(),
     )
+}
+
+pub(super) async fn put_final_checkpoint(
+    store: &dyn LoopCheckpointStore,
+    claimed: &ClaimedTurnRun,
+    payload: Vec<u8>,
+) -> LoopCheckpointRecord {
+    let state_ref = LoopCheckpointStateRef::new(format!(
+        "checkpoint:{}:{}",
+        claimed.state.run_id,
+        TurnRunId::new()
+    ))
+    .expect("valid run-scoped checkpoint ref");
+    store
+        .put_loop_checkpoint(PutLoopCheckpointRequest {
+            scope: claimed.state.scope.clone(),
+            turn_id: claimed.state.turn_id,
+            run_id: claimed.state.run_id,
+            state_ref,
+            payload: RedactedCheckpointPayload::new(payload).expect("bounded checkpoint payload"),
+            schema_id: claimed.resolved_run_profile.checkpoint_schema_id.clone(),
+            schema_version: claimed.resolved_run_profile.checkpoint_schema_version,
+            kind: LoopCheckpointKind::Final,
+            gate_ref: None,
+        })
+        .await
+        .expect("loop checkpoint")
 }
 
 pub(super) async fn append_tool_result_reference<S>(
@@ -336,6 +363,7 @@ pub(super) fn loop_checkpoint_record_with_gate(
         turn_id: claimed.state.turn_id,
         run_id: claimed.state.run_id,
         state_ref,
+        payload: None,
         schema_id: claimed.resolved_run_profile.checkpoint_schema_id.clone(),
         schema_version: claimed.resolved_run_profile.checkpoint_schema_version,
         kind,

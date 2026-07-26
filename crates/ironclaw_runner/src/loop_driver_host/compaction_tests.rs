@@ -12,8 +12,6 @@ use ironclaw_turns::{
     run_profile::{InMemoryLoopHostMilestoneSink, RunProfileResolutionRequest},
 };
 
-use ironclaw_loop_host::in_memory_backed_checkpoint_state_store as in_memory_checkpoint_state_store;
-
 /// Coverage gap closed: `build_compaction_ports` (see above) resolves a
 /// scope-specific gateway via `self.model_gateway.resolve_for_scope(&run_context.scope)`,
 /// falling back to the host's own gateway only when the resolver returns
@@ -154,7 +152,6 @@ async fn build_compaction_ports_dispatches_through_scope_resolved_gateway() {
         thread_service,
         thread_scope,
         model_gateway,
-        in_memory_checkpoint_state_store() as Arc<dyn CheckpointStateStorePort>,
         Arc::new(in_memory_agent_turn_runtime()) as Arc<dyn AgentTurnRuntimePort>,
         Arc::new(in_memory_loop_checkpoint_store()) as Arc<dyn LoopCheckpointStore>,
         Arc::new(InMemoryLoopHostMilestoneSink::default()) as Arc<dyn LoopHostMilestoneSink>,

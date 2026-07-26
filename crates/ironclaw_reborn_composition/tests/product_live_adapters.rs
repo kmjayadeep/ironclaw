@@ -53,8 +53,8 @@ use ironclaw_runner::{
 use ironclaw_threads::{InMemorySessionThreadService, SessionThreadService, ThreadScope};
 use ironclaw_trust::{AuthorityCeiling, EffectiveTrustClass, TrustDecision, TrustProvenance};
 use ironclaw_turns::{
-    AgentTurnRuntimePort, CheckpointStateStorePort, LoopCheckpointStore, LoopResultRef,
-    RunProfileResolutionRequest, RunProfileResolver, TurnId, TurnRunId, TurnScope,
+    AgentTurnRuntimePort, LoopCheckpointStore, LoopResultRef, RunProfileResolutionRequest,
+    RunProfileResolver, TurnId, TurnRunId, TurnScope,
     run_profile::{
         AgentLoopHostError, CapabilityInputRef, InMemoryLoopHostMilestoneSink,
         InstructionSafetyContext, LoopCancelReasonKind, LoopModelBudgetAccountant,
@@ -63,7 +63,6 @@ use ironclaw_turns::{
     },
 };
 
-use ironclaw_loop_host::in_memory_backed_checkpoint_state_store as in_memory_checkpoint_state_store;
 use ironclaw_turns::test_support::{in_memory_agent_turn_runtime, in_memory_loop_checkpoint_store};
 
 async fn build_runtime_for_test(input: RebornHostBindings) -> RebornRuntime {
@@ -1366,7 +1365,6 @@ async fn adapter_bundle_satisfies_product_live_runtime_readiness_gate() {
     .await;
     let thread_service = Arc::new(InMemorySessionThreadService::default());
     let turn_state = Arc::new(in_memory_agent_turn_runtime());
-    let checkpoint_state_store = in_memory_checkpoint_state_store();
     let loop_checkpoint_store = Arc::new(in_memory_loop_checkpoint_store());
     let milestone_sink = Arc::new(InMemoryLoopHostMilestoneSink::default());
     let thread_scope = thread_scope("runtime-gate");
@@ -1405,7 +1403,6 @@ async fn adapter_bundle_satisfies_product_live_runtime_readiness_gate() {
         thread_service: Arc::clone(&thread_service) as Arc<dyn SessionThreadService>,
         thread_scope: thread_scope.clone(),
         model_gateway: Arc::new(StubModelGateway),
-        checkpoint_state_store: checkpoint_state_store as Arc<dyn CheckpointStateStorePort>,
         loop_checkpoint_store,
         milestone_sink,
         capability_factory: adapters.capability_factory,

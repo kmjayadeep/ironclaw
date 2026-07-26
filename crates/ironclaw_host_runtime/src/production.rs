@@ -1,3 +1,4 @@
+// arch-exempt: large_file, process-journal invocation projection migration, plan #6168
 //! Production composition of the [`HostRuntime`] contract.
 //!
 //! [`DefaultHostRuntime`] is the contract-level service that upper turn/loop

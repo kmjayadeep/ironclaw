@@ -14,8 +14,11 @@ use ironclaw_host_api::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
+use std::fmt;
 use std::sync::Arc;
 use thiserror::Error;
+
+pub const MAX_PROCESS_CHECKPOINT_PAYLOAD_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -58,6 +61,40 @@ impl ProcessCheckpointId {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProcessCheckpointPayload(Vec<u8>);
+
+impl ProcessCheckpointPayload {
+    pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, ProcessJournalError> {
+        let bytes = bytes.into();
+        if bytes.len() > MAX_PROCESS_CHECKPOINT_PAYLOAD_BYTES {
+            return Err(ProcessJournalError::CheckpointPayloadTooLong {
+                actual: bytes.len(),
+            });
+        }
+        Ok(Self(bytes))
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+impl fmt::Debug for ProcessCheckpointPayload {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProcessCheckpointPayload")
+            .field("len", &self.0.len())
+            .field("payload", &"<redacted>")
+            .finish()
     }
 }
 
@@ -534,6 +571,7 @@ pub struct ProcessCheckpointRecord {
     pub process_id: ProcessId,
     pub scope: ResourceScope,
     pub state_ref: ProcessCheckpointRef,
+    pub payload: ProcessCheckpointPayload,
     pub created_at: Timestamp,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub metadata: Value,
@@ -545,6 +583,7 @@ pub struct RecordProcessCheckpointRequest {
     pub process_id: ProcessId,
     pub scope: ResourceScope,
     pub state_ref: ProcessCheckpointRef,
+    pub payload: ProcessCheckpointPayload,
     pub created_at: Timestamp,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub metadata: Value,
@@ -977,6 +1016,10 @@ pub enum ProcessJournalError {
     RefTooLong { kind: &'static str },
     #[error("invalid {kind} ref: control characters are not allowed")]
     ControlCharacter { kind: &'static str },
+    #[error(
+        "process checkpoint payload is {actual} bytes; maximum is {MAX_PROCESS_CHECKPOINT_PAYLOAD_BYTES}"
+    )]
+    CheckpointPayloadTooLong { actual: usize },
 }
 
 fn validate_opaque_ref(kind: &'static str, value: &str) -> Result<(), ProcessJournalError> {

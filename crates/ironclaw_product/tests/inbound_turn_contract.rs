@@ -65,8 +65,6 @@ use ironclaw_turns::{
 use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 
-use ironclaw_loop_host::in_memory_backed_checkpoint_state_store as in_memory_checkpoint_state_store;
-
 fn sample_user_message_envelope(event_suffix: &str) -> ProductInboundEnvelope {
     sample_user_message_envelope_with_install_and_text(event_suffix, "install_alpha", "hello world")
 }
@@ -742,7 +740,6 @@ async fn user_message_no_profile_uses_product_live_runtime_and_persists_reply() 
         thread_service: Arc::new(thread_service.clone()),
         thread_scope: thread_scope.clone(),
         model_gateway,
-        checkpoint_state_store: in_memory_checkpoint_state_store(),
         loop_checkpoint_store: checkpoint_store.clone(),
         milestone_sink: Arc::new(InMemoryLoopHostMilestoneSink::default()),
         capability_factory: Arc::new(EmptyCapabilityFactory),
@@ -918,7 +915,6 @@ async fn user_message_no_profile_can_cancel_product_live_run_from_product_path()
         thread_service: Arc::new(thread_service.clone()),
         thread_scope: thread_scope.clone(),
         model_gateway,
-        checkpoint_state_store: in_memory_checkpoint_state_store(),
         loop_checkpoint_store: checkpoint_store.clone(),
         milestone_sink: Arc::new(InMemoryLoopHostMilestoneSink::default()),
         capability_factory: Arc::new(EmptyCapabilityFactory),
@@ -1110,7 +1106,6 @@ async fn product_live_runtime_rejects_unretained_cancellation_factory() {
         thread_service: Arc::new(thread_service.clone()),
         thread_scope: thread_scope.clone(),
         model_gateway,
-        checkpoint_state_store: in_memory_checkpoint_state_store(),
         loop_checkpoint_store: checkpoint_store.clone(),
         milestone_sink: Arc::new(InMemoryLoopHostMilestoneSink::default()),
         capability_factory: Arc::new(EmptyCapabilityFactory),

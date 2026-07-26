@@ -16,10 +16,6 @@ use std::{
 };
 
 mod await_edge_port;
-#[cfg(any(test, feature = "test-support"))]
-mod test_support;
-#[cfg(any(test, feature = "test-support"))]
-pub use test_support::in_memory_backed_checkpoint_state_store;
 mod budget_accountant;
 mod budget_cost_table;
 mod budget_seeding;
@@ -28,7 +24,6 @@ mod capability_allow_set;
 mod capability_info;
 mod capability_port;
 mod capability_surface_filter;
-mod checkpoint_state_store;
 mod compaction_task;
 mod context_window_cache;
 mod filesystem_skill_bundle_source;
@@ -75,7 +70,6 @@ pub use capability_surface_filter::{
     CapabilitySurfaceDenyFilter, CapabilitySurfaceProfileFilter, CapabilitySurfaceVisibleFilter,
     PerSurfaceCapabilityDenyDecorator,
 };
-pub use checkpoint_state_store::CheckpointStateStore;
 pub use compaction_task::{
     ACTIVE_TASK_COMPACTION_PROMPT_ID, DEFAULT_COMPACTION_PROMPT_ID, HostManagedLoopCompactionPort,
     active_task_compaction_prompt_id, default_compaction_prompt_id,

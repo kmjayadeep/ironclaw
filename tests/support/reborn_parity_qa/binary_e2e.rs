@@ -58,12 +58,11 @@ use ironclaw_threads::{
     ThreadMessageRecord, ThreadScope,
 };
 use ironclaw_turns::{
-    AgentTurnRuntimePort, AgentTurnSpawnTreeRuntimePort, CancelRunRequest,
-    CheckpointStateStorePort, GateRef, GetLoopCheckpointRequest, IdempotencyKey, LoopBlockedKind,
-    LoopCheckpointKind, LoopCheckpointStore, ProcessLoopCheckpointStore, ReplyTargetBindingRef,
-    ResumeTurnRequest, RetryTurnRequest, RetryTurnResponse, SanitizedCancelReason,
-    SourceBindingRef, TurnActor, TurnCoordinator, TurnError, TurnRunId, TurnRunRecord,
-    TurnRunState, TurnScope, TurnStatus,
+    AgentTurnRuntimePort, AgentTurnSpawnTreeRuntimePort, CancelRunRequest, GateRef,
+    GetLoopCheckpointRequest, IdempotencyKey, LoopBlockedKind, LoopCheckpointKind,
+    LoopCheckpointStore, ProcessLoopCheckpointStore, ReplyTargetBindingRef, ResumeTurnRequest,
+    RetryTurnRequest, RetryTurnResponse, SanitizedCancelReason, SourceBindingRef, TurnActor,
+    TurnCoordinator, TurnError, TurnRunId, TurnRunRecord, TurnRunState, TurnScope, TurnStatus,
     run_profile::{
         CapabilityCallCandidate, CapabilityInputRef, CapabilitySurfaceVersion, LoopHostMilestone,
         LoopHostMilestoneKind, LoopRequest, ParentLoopOutput, ProviderToolCallReplay,
@@ -88,8 +87,6 @@ use crate::reborn_support::session_thread::RebornThreadHarness;
 use crate::reborn_support::test_adapter::RebornTestIngress;
 
 pub type HarnessWaitConfig = WaitConfig;
-
-use ironclaw_loop_host::in_memory_backed_checkpoint_state_store as in_memory_checkpoint_state_store;
 
 pub struct RebornBinaryE2EHarness {
     ingress: RebornTestIngress,
@@ -780,8 +777,6 @@ impl RebornBinaryE2EHarness {
         let process_system =
             ProcessRuntimeSystem::from_process_journal_store(Arc::clone(&process_store));
         let turn_runtime = Arc::new(process_system.agent_turn_runtime());
-        let checkpoint_state_store: Arc<dyn CheckpointStateStorePort> =
-            in_memory_checkpoint_state_store();
         let loop_checkpoint_store: Arc<dyn LoopCheckpointStore> = Arc::new(
             ProcessLoopCheckpointStore::new(process_system.checkpoints()),
         );
@@ -843,8 +838,7 @@ impl RebornBinaryE2EHarness {
                 Arc::clone(&await_edge_store)
                     as Arc<dyn ironclaw_runner::loop_exit_applier::AwaitDependentRunEvidenceStore>,
                 thread_scope.clone(),
-            )
-            .with_checkpoint_state_store(Arc::clone(&checkpoint_state_store)),
+            ),
             loop_checkpoint_store: Arc::clone(&loop_checkpoint_store),
             accept_harness_blocked_evidence,
         });
@@ -854,7 +848,6 @@ impl RebornBinaryE2EHarness {
                 as Arc<dyn ironclaw_threads::SessionThreadService>,
             thread_scope: thread_scope.clone(),
             model_gateway: Arc::new(model_gateway.clone()),
-            checkpoint_state_store,
             loop_checkpoint_store,
             milestone_sink: milestone_sink.clone(),
             capability_factory,

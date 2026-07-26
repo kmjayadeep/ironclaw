@@ -411,7 +411,7 @@ refs that cross crate boundaries:
 | `JournaledProcessSnapshot` | Authoritative lifecycle status, lease, suspension, checkpoint, tree, and journal cursor. | `ironclaw_processes` |
 | `TurnRunState` | Agent-turn view of a process snapshot plus typed profile and binding metadata. | `ironclaw_turns::AgentTurnRuntimePort` |
 | `LoopExecutionState` | Loop-owned resumable strategy state, serialized only as bounded checkpoint payload bytes. | `ironclaw_agent_loop` |
-| `LoopCheckpointStateRef` / `TurnCheckpointId` | Opaque checkpoint payload ref and public checkpoint metadata id. | checkpoint stores + turns |
+| `LoopCheckpointStateRef` / `TurnCheckpointId` | Opaque checkpoint payload ref and agent-turn checkpoint projection id. | processes + turns |
 | `LoopExit` | Driver claim containing durable refs only; never trusted by itself. | loop driver / turns |
 | `LoopMessageRef` / `LoopResultRef` / `LoopGateRef` | Host-minted evidence refs used to validate exits and blocked gates. | host ports / turns |
 | `LoopRequest` / `CapabilityOutcome` | Scoped tool/capability request and sanitized result refs/summaries. | loop host ports + host runtime |
@@ -421,13 +421,11 @@ Persistence placement follows this split:
 
 ```text
 ProcessJournalStore
-  process lifecycle, concurrency, leases, idempotency, suspension, checkpoint refs
+  process lifecycle, concurrency, leases, idempotency, suspension,
+  checkpoint refs/metadata/bounded payloads
 
 AgentTurnRuntimePort
   product-facing submit/resume/cancel and agent-turn projections
-
-CheckpointStateStore
-  bounded loop checkpoint payload bytes keyed by opaque refs and scope/run
 
 SessionThreadService
   accepted inbound messages, assistant drafts/finals, transcript state

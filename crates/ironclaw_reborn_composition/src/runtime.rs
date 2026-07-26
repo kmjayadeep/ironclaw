@@ -372,7 +372,6 @@ struct RuntimeStoreParts {
     scoped_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
     turn_projection: Arc<AgentTurnProcessRuntime>,
     processes: ProcessRuntimeSystem,
-    checkpoint_state_store: Arc<dyn ironclaw_turns::CheckpointStateStorePort>,
     loop_checkpoint_store: Arc<dyn ironclaw_turns::LoopCheckpointStore>,
     thread_service: Arc<dyn SessionThreadService>,
     event_log: Arc<dyn DurableEventLog>,
@@ -402,7 +401,6 @@ struct RuntimeStoreParts {
 
 fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
     let scoped_filesystem = Arc::clone(&services.scoped_filesystem);
-    let checkpoint_state_store = Arc::clone(&services.checkpoint_state_store);
     let thread_service = Arc::clone(&services.thread_service);
     let resource_governor = Arc::clone(&services.resource_governor);
     let budget_gate_store = Arc::clone(&services.budget_gate_store);
@@ -443,7 +441,6 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
         scoped_filesystem,
         turn_projection,
         processes,
-        checkpoint_state_store,
         loop_checkpoint_store,
         thread_service,
         event_log,
@@ -3532,7 +3529,6 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         scoped_filesystem,
         turn_projection,
         processes,
-        checkpoint_state_store,
         loop_checkpoint_store,
         thread_service,
         event_log,
@@ -3727,9 +3723,6 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         Arc::clone(&loop_checkpoint_store) as Arc<dyn ironclaw_turns::LoopCheckpointStore>,
         await_dependent_run_evidence,
         thread_scope.clone(),
-    )
-    .with_checkpoint_state_store(
-        Arc::clone(&checkpoint_state_store) as Arc<dyn ironclaw_turns::CheckpointStateStorePort>
     );
     if let Some(local_runtime) = local_runtime {
         let approval_requests = &local_runtime.approval_requests;
@@ -4077,8 +4070,6 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         ))
             as Arc<dyn ironclaw_approvals::GateRecordStorePort>),
         model_gateway: Arc::clone(&model_gateway),
-        checkpoint_state_store: Arc::clone(&checkpoint_state_store)
-            as Arc<dyn ironclaw_turns::CheckpointStateStorePort>,
         loop_checkpoint_store: Arc::clone(&loop_checkpoint_store)
             as Arc<dyn ironclaw_turns::LoopCheckpointStore>,
         milestone_sink,
