@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use ironclaw_host_api::{DispatchInputIssueCode, InvocationId, Resolution, UserId};
+use ironclaw_host_api::{DispatchInputIssueCode, FailureKind, InvocationId, Resolution, UserId};
 use ironclaw_loop_host::{CapabilityResultWrite, DurablePersistence};
 use ironclaw_threads::{
     MessageKind, MessageStatus, ReadToolResultRecordRequest, SessionThreadError,
@@ -9,11 +9,10 @@ use ironclaw_threads::{
     ToolResultReferenceEnvelope,
 };
 use ironclaw_turns::run_profile::{
-    AgentLoopHostError, AgentLoopHostErrorKind, CapabilityFailureDetail, CapabilityFailureKind,
-    CapabilityInputIssue, CapabilityProgress, ConcurrencyHint,
-    MODEL_VISIBLE_TOOL_OBSERVATION_SCHEMA_VERSION, ModelVisibleArtifact,
-    ModelVisibleToolObservation, ObservationTrust, ToolObservationDetail, ToolObservationStatus,
-    resolution, sanitize_model_visible_text,
+    AgentLoopHostError, AgentLoopHostErrorKind, CapabilityFailureDetail, CapabilityInputIssue,
+    CapabilityProgress, ConcurrencyHint, MODEL_VISIBLE_TOOL_OBSERVATION_SCHEMA_VERSION,
+    ModelVisibleArtifact, ModelVisibleToolObservation, ObservationTrust, ToolObservationDetail,
+    ToolObservationStatus, resolution, sanitize_model_visible_text,
 };
 
 use super::{
@@ -249,7 +248,7 @@ fn result_read_observation(
 
 fn unavailable_result_reference() -> Resolution {
     resolution::failed(
-        CapabilityFailureKind::InvalidInput,
+        FailureKind::InputEncode,
         "result reference is unavailable in this thread".to_string(),
         None,
     )
@@ -257,7 +256,7 @@ fn unavailable_result_reference() -> Resolution {
 
 fn non_text_result_content() -> Resolution {
     resolution::failed(
-        CapabilityFailureKind::InvalidInput,
+        FailureKind::InputEncode,
         "stored tool result cannot be returned as text".to_string(),
         None,
     )
@@ -286,7 +285,7 @@ struct ResultReadInput {
 /// parse result is large (`clippy::result_large_err`).
 fn invalid_input_failure(safe_summary: &str, issue: CapabilityInputIssue) -> Box<Resolution> {
     Box::new(resolution::failed(
-        CapabilityFailureKind::InvalidInput,
+        FailureKind::InputEncode,
         safe_summary.to_string(),
         Some(CapabilityFailureDetail::InvalidInput {
             issues: vec![issue],

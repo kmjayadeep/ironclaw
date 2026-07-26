@@ -2,10 +2,10 @@ use std::{collections::HashSet, sync::Arc};
 
 use async_trait::async_trait;
 use ironclaw_first_party_extension_ports::DEFAULT_MAX_ACTIVE_SKILLS;
-use ironclaw_host_api::{InvocationId, Resolution};
+use ironclaw_host_api::{FailureKind, InvocationId, Resolution};
 use ironclaw_loop_host::{CapabilityResultWrite, DurablePersistence};
 use ironclaw_turns::run_profile::{
-    AgentLoopHostError, AgentLoopHostErrorKind, CapabilityFailureKind, ConcurrencyHint, resolution,
+    AgentLoopHostError, AgentLoopHostErrorKind, ConcurrencyHint, resolution,
 };
 
 use crate::runtime::{
@@ -230,12 +230,12 @@ fn skill_activation_selection_outcome(
     use ironclaw_first_party_extension_ports::SkillActivationSelectionError as SelectionError;
     match error {
         SelectionError::ContextBudgetExceeded => Ok(resolution::failed(
-            CapabilityFailureKind::InvalidInput,
+            FailureKind::InputEncode,
             "skill activation exceeds the per-run skill context budget; activate fewer or smaller skills".to_string(),
             None,
         )),
         SelectionError::AmbiguousSkill { .. } => Ok(resolution::failed(
-            CapabilityFailureKind::InvalidInput,
+            FailureKind::InputEncode,
             "ambiguous skill name; specify a single unique skill to activate".to_string(),
             None,
         )),

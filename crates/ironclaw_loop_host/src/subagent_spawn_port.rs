@@ -11,8 +11,8 @@ use std::{
 use async_trait::async_trait;
 use chrono::Utc;
 use ironclaw_host_api::{
-    CapabilityId, InvocationId, LoopRef, ProviderToolName, Resolution, ResolutionBatch,
-    RuntimeKind, Suspension, ThreadId,
+    CapabilityId, FailureKind, InvocationId, LoopRef, ProviderToolName, Resolution,
+    ResolutionBatch, RuntimeKind, Suspension, ThreadId,
 };
 use ironclaw_threads::{
     AcceptInboundMessageRequest, EnsureThreadRequest, MessageContent, SessionThreadService,
@@ -25,12 +25,11 @@ use ironclaw_turns::{
     TurnError, TurnErrorCategory, TurnRunId, TurnScope, TurnSpawnTreePort, TurnSpawnTreeStateStore,
     run_profile::{
         AgentLoopHostError, AgentLoopHostErrorKind, CapabilityCallCandidate,
-        CapabilityDeniedReasonKind, CapabilityDescriptorView, CapabilityFailureKind,
-        CapabilityInputRef, ConcurrencyHint, LoopCapabilityPort, LoopRequest, LoopRequestBatch,
-        LoopRunContext, LoopSafeSummary, ProviderToolCall, ProviderToolCallCapabilityIds,
-        ProviderToolCallReplay, ProviderToolDefinition, RegisterProviderToolCallRequest,
-        VisibleCapabilityRequest, VisibleCapabilitySurface, resolution,
-        sanitize_model_visible_text,
+        CapabilityDeniedReasonKind, CapabilityDescriptorView, CapabilityInputRef, ConcurrencyHint,
+        LoopCapabilityPort, LoopRequest, LoopRequestBatch, LoopRunContext, LoopSafeSummary,
+        ProviderToolCall, ProviderToolCallCapabilityIds, ProviderToolCallReplay,
+        ProviderToolDefinition, RegisterProviderToolCallRequest, VisibleCapabilityRequest,
+        VisibleCapabilitySurface, resolution, sanitize_model_visible_text,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -964,7 +963,7 @@ impl SubagentSpawnCapabilityPort {
             .await
         {
             return Ok(resolution::failed(
-                CapabilityFailureKind::Transient,
+                FailureKind::Transient,
                 format!("subagent spawn scope recovery in progress: {error}"),
                 None,
             ));
