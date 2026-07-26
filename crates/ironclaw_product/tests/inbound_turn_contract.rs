@@ -7,11 +7,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use ironclaw_filesystem::{InMemoryBackend, ScopedFilesystem};
-use ironclaw_host_api::{
-    AgentId, MountAlias, MountGrant, MountPermissions, MountView, TenantId, ThreadId, UserId,
-    VirtualPath,
-};
+use ironclaw_host_api::{AgentId, TenantId, ThreadId, UserId};
 use ironclaw_loop_host::{
     CapabilityAllowSet, CapabilityResolveError, CapabilityResultWrite,
     CapabilitySurfaceProfileResolver, CapabilityWriteResult, EmptyLoopCapabilityPort,
@@ -449,6 +445,7 @@ fn process_runtime_fixture() -> (
 /// purposes.
 #[allow(clippy::type_complexity)]
 fn test_await_edge_trio(
+    process_system: &ProcessRuntimeSystem,
     turn_store: &Arc<AgentTurnProcessRuntime>,
     capability_result_writer: Arc<dyn LoopCapabilityResultWriter>,
     thread_service: Arc<InMemorySessionThreadService>,
@@ -458,15 +455,7 @@ fn test_await_edge_trio(
     Arc<dyn ironclaw_runner::loop_exit_applier::AwaitDependentRunEvidenceStore>,
     Arc<dyn RuntimeSubagentGoalStore>,
 ) {
-    let mounts = MountView::new(vec![MountGrant::new(
-        MountAlias::new("/turns").unwrap(),
-        VirtualPath::new("/turns").unwrap(),
-        MountPermissions::read_write_list_delete(),
-    )])
-    .unwrap();
-    let store = Arc::new(AwaitEdgeStore::new(Arc::new(
-        ScopedFilesystem::with_fixed_view(Arc::new(InMemoryBackend::new()), mounts),
-    )));
+    let store = Arc::new(AwaitEdgeStore::new(process_system.dependencies()));
     let goal_store = Arc::new(in_memory_backed_subagent_goal_store());
     let resolver = Arc::new(AwaitEdgeResolver::new_unbound(
         Arc::clone(&store),
@@ -741,6 +730,7 @@ async fn user_message_no_profile_uses_product_live_runtime_and_persists_reply() 
         subagent_await_edge_evidence,
         subagent_goal_store,
     ) = test_await_edge_trio(
+        &process_system,
         &turn_store,
         Arc::clone(&unused_capability_result_writer),
         Arc::new(thread_service.clone()),
@@ -916,6 +906,7 @@ async fn user_message_no_profile_can_cancel_product_live_run_from_product_path()
         subagent_await_edge_evidence,
         subagent_goal_store,
     ) = test_await_edge_trio(
+        &process_system,
         &turn_store,
         Arc::clone(&unused_capability_result_writer),
         Arc::new(thread_service.clone()),
@@ -1107,6 +1098,7 @@ async fn product_live_runtime_rejects_unretained_cancellation_factory() {
         subagent_await_edge_evidence,
         subagent_goal_store,
     ) = test_await_edge_trio(
+        &process_system,
         &turn_store,
         Arc::clone(&unused_capability_result_writer),
         Arc::new(thread_service.clone()),

@@ -334,6 +334,7 @@ impl ProcessInvocationStatePort for ProcessInvocationStore {
                 parent_process_id: None,
                 root_process_id: None,
                 spawn_tree_descendant_cap: None,
+                dependency: None,
                 checkpoint_ref: None,
                 created_at: chrono::Utc::now(),
                 metadata,

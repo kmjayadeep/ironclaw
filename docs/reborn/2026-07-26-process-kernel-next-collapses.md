@@ -110,6 +110,24 @@ temporary lifecycle.
 
 ## Slice 3: make child dependencies process edges
 
+Status on `process-journal-kernel-transition`: implemented. Generic dependency
+records, transitions, scoped queries, and host-wide unresolved queries are
+owned by `ironclaw_processes`. Child submission atomically creates the child
+process, reserves tree capacity, and opens its dependency in one journal row;
+consume/abandon atomically closes the dependency and releases that reservation.
+
+The runner await-edge store is now a projection adapter over
+`ProcessDependencyPort`. The 1,457-line filesystem store, 561-line roster, and
+most of the 720-line boot-recovery driver were deleted. Spawn no longer writes
+an await edge before child submission, and terminal handling no longer
+reconstructs missing process truth from turn/thread metadata. Agent-specific
+result framing, group readiness, and parent resume remain in the runner.
+
+The slice currently contributes roughly 3k net deleted lines across production
+and tests while adding the generic process contract and atomicity/stress tests.
+
+Historical inventory:
+
 The subagent await-edge implementation duplicates generic process dependency
 state:
 

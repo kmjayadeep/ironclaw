@@ -159,6 +159,7 @@ where
                 parent_process_id: start.parent_process_id,
                 root_process_id: None,
                 spawn_tree_descendant_cap: None,
+                dependency: None,
                 checkpoint_ref: None,
                 created_at: chrono::Utc::now(),
                 metadata,

@@ -253,7 +253,7 @@ pub struct SubagentGoalRecord {
     pub handoff: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AwaitedChildSetRecord {
     pub gate_ref: GateRef,
     pub parent_run_context: LoopRunContext,
@@ -982,27 +982,29 @@ impl SubagentSpawnCapabilityPort {
             .await?;
         compensation.goal_written = Some((child_turn_scope.clone(), child_run_id));
 
-        self.deps
-            .await_edge_writer
-            .record_awaited_child(AwaitedChildSetRecord {
-                gate_ref: gate_ref.clone(),
-                parent_run_context: self.run_context.clone(),
-                tree_root_run_id: tree_root,
-                child_scope: child_turn_scope.clone(),
+        let dependency_record = AwaitedChildSetRecord {
+            gate_ref: gate_ref.clone(),
+            parent_run_context: self.run_context.clone(),
+            tree_root_run_id: tree_root,
+            child_scope: child_turn_scope.clone(),
+            child_run_id,
+            child_thread_id: child_thread.thread_id.clone(),
+            source_binding_ref: source_binding_ref(self.run_context.run_id, child_run_id)?,
+            reply_target_binding_ref: reply_target_binding_ref(
+                self.run_context.run_id,
                 child_run_id,
-                child_thread_id: child_thread.thread_id.clone(),
-                source_binding_ref: source_binding_ref(self.run_context.run_id, child_run_id)?,
-                reply_target_binding_ref: reply_target_binding_ref(
-                    self.run_context.run_id,
-                    child_run_id,
-                )?,
-                subagent_kind: definition.subagent_kind.clone(),
-                spawn_capability_id: self.spawn_id.clone(),
-                result_ref: result_ref.clone(),
-                mode,
-            })
-            .await?;
-        compensation.edge_written = Some((child_turn_scope.clone(), child_run_id));
+            )?,
+            subagent_kind: definition.subagent_kind.clone(),
+            spawn_capability_id: self.spawn_id.clone(),
+            result_ref: result_ref.clone(),
+            mode,
+        };
+        let dependency_metadata = serde_json::to_value(&dependency_record).map_err(|error| {
+            AgentLoopHostError::new(
+                AgentLoopHostErrorKind::Internal,
+                format!("subagent dependency metadata serialization failed: {error}"),
+            )
+        })?;
 
         let accepted = self
             .deps
@@ -1044,11 +1046,20 @@ impl SubagentSpawnCapabilityPort {
                 received_at: Utc::now(),
                 requested_run_id: Some(child_run_id),
                 spawn_tree_descendant_cap: self.limits.max_tree_descendants,
+                process_dependency: Some(ironclaw_processes::ProcessDependencySubmission {
+                    dependent_process_id: ironclaw_host_api::ProcessId::from_uuid(
+                        self.run_context.run_id.as_uuid(),
+                    ),
+                    root_process_id: ironclaw_host_api::ProcessId::from_uuid(tree_root.as_uuid()),
+                    group_ref: Some(gate_ref.as_str().to_string()),
+                    metadata: dependency_metadata,
+                }),
             })
             .await
             .map_err(map_turn_error)?;
         compensation.submitted_child_tree = Some((self.run_context.scope.clone(), tree_root));
         compensation.submitted_child_run = Some((child_turn_scope.clone(), actor.clone(), run_id));
+        compensation.edge_written = Some((child_turn_scope.clone(), child_run_id));
         if let Err(error) = self
             .deps
             .thread_service
@@ -1373,37 +1384,18 @@ impl SpawnSubagentInputCodec for JsonSpawnSubagentInputCodec {
 /// Lightweight in-memory [`crate::AwaitEdgeWriter`] test fixture — no
 /// filesystem/CAS/roster semantics. For `loop_host`'s own unit tests that
 /// just need a legal writer, not a durability test; production and any test
-/// that exercises real await-edge behavior use `ironclaw_runner`'s
-/// `AwaitEdgeStore`.
+/// that exercises real dependency behavior use the process journal.
 #[derive(Default)]
-pub struct InMemoryAwaitEdgeWriter {
-    inner: parking_lot::Mutex<HashMap<(TurnRunId, TurnRunId), AwaitedChildSetRecord>>,
-}
-
-impl InMemoryAwaitEdgeWriter {
-    pub fn records(&self) -> Vec<AwaitedChildSetRecord> {
-        self.inner.lock().values().cloned().collect()
-    }
-}
+pub struct InMemoryAwaitEdgeWriter;
 
 #[async_trait]
 impl crate::AwaitEdgeWriter for InMemoryAwaitEdgeWriter {
-    async fn record_awaited_child(
-        &self,
-        record: AwaitedChildSetRecord,
-    ) -> Result<(), AgentLoopHostError> {
-        let key = (record.parent_run_context.run_id, record.child_run_id);
-        self.inner.lock().insert(key, record);
-        Ok(())
-    }
-
     async fn abandon_awaited_child(
         &self,
         _child_scope: &TurnScope,
-        parent_run_id: TurnRunId,
-        child_run_id: TurnRunId,
+        _parent_run_id: TurnRunId,
+        _child_run_id: TurnRunId,
     ) -> Result<(), AgentLoopHostError> {
-        self.inner.lock().remove(&(parent_run_id, child_run_id));
         Ok(())
     }
 }

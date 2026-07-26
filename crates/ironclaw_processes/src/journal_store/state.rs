@@ -36,6 +36,8 @@ pub(super) struct ProcessJournalMaterializedState {
     #[serde(default)]
     pub(super) tree_reservations: HashMap<ProcessId, ProcessTreeReservation>,
     #[serde(default)]
+    pub(super) dependencies: HashMap<(ProcessId, ProcessId), crate::ProcessDependencyRecord>,
+    #[serde(default)]
     pub(super) checkpoints: HashMap<ProcessCheckpointId, ProcessCheckpointRecord>,
     #[serde(default)]
     legacy_imported: bool,
@@ -52,6 +54,7 @@ impl Default for ProcessJournalMaterializedState {
             submission_idempotency: HashMap::new(),
             submission_idempotency_order: VecDeque::new(),
             tree_reservations: HashMap::new(),
+            dependencies: HashMap::new(),
             checkpoints: HashMap::new(),
             legacy_imported: false,
         }
@@ -114,6 +117,16 @@ impl ProcessJournalMaterializedState {
             StoredProcessCommand::ReserveTree(request) => self.apply_reserve_tree(request),
             StoredProcessCommand::ReleaseTree(request) => self.apply_release_tree(request),
             StoredProcessCommand::PruneTree(request) => self.apply_prune_tree(request),
+            StoredProcessCommand::OpenDependency(request) => self.apply_open_dependency(request),
+            StoredProcessCommand::SettleDependency(request) => {
+                self.apply_settle_dependency(request)
+            }
+            StoredProcessCommand::ConsumeDependency(request) => {
+                self.apply_close_dependency(request, false)
+            }
+            StoredProcessCommand::AbandonDependency(request) => {
+                self.apply_close_dependency(request, true)
+            }
             StoredProcessCommand::RecordCheckpoint(request) => self.apply_checkpoint(request),
         }
     }
@@ -162,6 +175,18 @@ impl ProcessJournalMaterializedState {
                 cursor: active.journal_cursor,
             });
         }
+        if let Some(dependency) = &request.dependency {
+            if request.parent_process_id != Some(dependency.dependent_process_id) {
+                return Err(ProcessJournalStoreError::InvalidRequest(
+                    "submitted dependency does not match parent process".to_string(),
+                ));
+            }
+            if request.root_process_id != Some(dependency.root_process_id) {
+                return Err(ProcessJournalStoreError::InvalidRequest(
+                    "submitted dependency does not match root process".to_string(),
+                ));
+            }
+        }
         let tree_reservation = if let Some(parent_process_id) = request.parent_process_id {
             let parent = self.processes.get(&parent_process_id).ok_or(
                 ProcessJournalStoreError::UnknownProcess {
@@ -202,6 +227,7 @@ impl ProcessJournalMaterializedState {
             }
             None
         };
+        let dependency = request.dependency.clone();
         let cursor = self.next_cursor();
         let snapshot = JournaledProcessSnapshot {
             process_id: request.process_id,
@@ -238,6 +264,24 @@ impl ProcessJournalMaterializedState {
                     root_process_id,
                     descendant_count,
                     released_processes,
+                },
+            );
+        }
+        if let Some(dependency) = dependency {
+            self.dependencies.insert(
+                (dependency.dependent_process_id, snapshot.process_id),
+                crate::ProcessDependencyRecord {
+                    dependent_process_id: dependency.dependent_process_id,
+                    dependency_process_id: snapshot.process_id,
+                    root_process_id: dependency.root_process_id,
+                    scope: snapshot.scope.clone(),
+                    group_ref: dependency.group_ref,
+                    state: crate::ProcessDependencyState::Open,
+                    terminal: None,
+                    created_at: snapshot.created_at,
+                    settled_at: None,
+                    consumed_at: None,
+                    metadata: dependency.metadata,
                 },
             );
         }
@@ -577,6 +621,137 @@ impl ProcessJournalMaterializedState {
             reservation.released_processes.remove(&request.process_id);
         }
         Ok(StoredCommandOutcome::TreePruned)
+    }
+
+    fn apply_open_dependency(
+        &mut self,
+        request: crate::OpenProcessDependencyRequest,
+    ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
+        let key = (request.dependent_process_id, request.dependency_process_id);
+        if let Some(existing) = self.dependencies.get(&key) {
+            return Ok(StoredCommandOutcome::Dependency(Some(existing.clone())));
+        }
+        let dependent = self.processes.get(&request.dependent_process_id).ok_or(
+            ProcessJournalStoreError::UnknownProcess {
+                process_id: request.dependent_process_id,
+            },
+        )?;
+        if !same_lineage_scope(&dependent.scope, &request.scope) {
+            return Err(ProcessJournalStoreError::UnauthorizedScope);
+        }
+        let expected_root = dependent.root_process_id.unwrap_or(dependent.process_id);
+        if request.root_process_id != expected_root {
+            return Err(ProcessJournalStoreError::InvalidRequest(
+                "dependency root process does not match dependent lineage".to_string(),
+            ));
+        }
+        let record = crate::ProcessDependencyRecord {
+            dependent_process_id: request.dependent_process_id,
+            dependency_process_id: request.dependency_process_id,
+            root_process_id: request.root_process_id,
+            scope: request.scope,
+            group_ref: request.group_ref,
+            state: crate::ProcessDependencyState::Open,
+            terminal: None,
+            created_at: request.created_at,
+            settled_at: None,
+            consumed_at: None,
+            metadata: request.metadata,
+        };
+        self.dependencies.insert(key, record.clone());
+        Ok(StoredCommandOutcome::Dependency(Some(record)))
+    }
+
+    fn apply_settle_dependency(
+        &mut self,
+        request: crate::SettleProcessDependencyRequest,
+    ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
+        if !request.terminal.status.is_terminal() {
+            return Err(ProcessJournalStoreError::InvalidRequest(
+                "dependency terminal evidence must carry a terminal process status".to_string(),
+            ));
+        }
+        let key = (request.dependent_process_id, request.dependency_process_id);
+        let Some(record) = self.dependencies.get_mut(&key) else {
+            return Ok(StoredCommandOutcome::Dependency(None));
+        };
+        if !same_lineage_scope(&record.scope, &request.scope) {
+            return Err(ProcessJournalStoreError::UnauthorizedScope);
+        }
+        if record.state != crate::ProcessDependencyState::Open {
+            return Ok(StoredCommandOutcome::Dependency(Some(record.clone())));
+        }
+        record.state = crate::ProcessDependencyState::Settled;
+        record.terminal = Some(request.terminal);
+        record.settled_at = Some(request.settled_at);
+        Ok(StoredCommandOutcome::Dependency(Some(record.clone())))
+    }
+
+    fn apply_close_dependency(
+        &mut self,
+        request: crate::CloseProcessDependencyRequest,
+        abandon: bool,
+    ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
+        let key = (request.dependent_process_id, request.dependency_process_id);
+        let Some(existing) = self.dependencies.get(&key) else {
+            return Ok(StoredCommandOutcome::Dependency(None));
+        };
+        if !same_lineage_scope(&existing.scope, &request.scope) {
+            return Err(ProcessJournalStoreError::UnauthorizedScope);
+        }
+        let target = if abandon {
+            crate::ProcessDependencyState::Abandoned
+        } else {
+            crate::ProcessDependencyState::Consumed
+        };
+        if matches!(
+            existing.state,
+            crate::ProcessDependencyState::Consumed | crate::ProcessDependencyState::Abandoned
+        ) {
+            return Ok(StoredCommandOutcome::Dependency(Some(existing.clone())));
+        }
+        if !abandon && existing.state != crate::ProcessDependencyState::Settled {
+            return Err(ProcessJournalStoreError::InvalidRequest(
+                "only a settled process dependency can be consumed".to_string(),
+            ));
+        }
+        let root_process_id = existing.root_process_id;
+        self.release_dependency_reservation(root_process_id, request.dependency_process_id)?;
+        let record = self.dependencies.get_mut(&key).ok_or_else(|| {
+            ProcessJournalStoreError::InvalidRequest(
+                "process dependency disappeared while closing".to_string(),
+            )
+        })?;
+        record.state = target;
+        record.consumed_at = Some(request.closed_at);
+        Ok(StoredCommandOutcome::Dependency(Some(record.clone())))
+    }
+
+    fn release_dependency_reservation(
+        &mut self,
+        root_process_id: ProcessId,
+        dependency_process_id: ProcessId,
+    ) -> Result<(), ProcessJournalStoreError> {
+        let Some(reservation) = self.tree_reservations.get_mut(&root_process_id) else {
+            return Ok(());
+        };
+        if reservation
+            .released_processes
+            .contains(&dependency_process_id)
+        {
+            return Ok(());
+        }
+        if reservation.descendant_count == 0 {
+            return Err(ProcessJournalStoreError::InvalidRequest(
+                "dependency release exceeds current reservation count".to_string(),
+            ));
+        }
+        reservation.released_processes.insert(dependency_process_id);
+        reservation.descendant_count -= 1;
+        if reservation.descendant_count == 0 {
+            self.tree_reservations.remove(&root_process_id);
+        }
+        Ok(())
     }
 
     fn apply_checkpoint(

@@ -135,6 +135,24 @@ state and ordered lifecycle facts. Domain lifecycle streams, including agent
 turn events, are projections over this source and are not separate journal
 authorities.
 
+The journal also owns process dependency truth through
+`ProcessDependencyPort`. A dependency relates a dependent process to another
+process and progresses through `Open`, `Settled`, and `Consumed`, with
+`Abandoned` as rollback termination. Terminal evidence is bounded lifecycle
+metadata; domain-specific result bodies remain externalized.
+
+For a child process, `SubmitProcessRequest.dependency` is part of the same
+journal command as process creation and spawn-tree reservation. Capacity
+rejection therefore persists neither the child nor an orphan dependency.
+Consuming or abandoning a dependency closes it and releases the corresponding
+tree reservation in the same command. Replays are idempotent.
+
+Scoped dependency queries support a dependent process and optional group
+reference. `unresolved_process_dependencies` is the authoritative recovery
+enumeration; domain rosters and secondary recovery indexes are forbidden.
+Runner await edges are a projection over these records. Missing dependencies
+are not reconstructed from agent-turn records or thread metadata.
+
 `ProcessJournalStore` implements the process mutation and read ports directly.
 `ironclaw_turns::AgentTurnProcessRuntime` projects turn coordination and query
 contracts over those ports. Its `ProcessJournalStoreTurnAdapter` translates

@@ -3935,6 +3935,7 @@ dependencies = [
  "ironclaw_memory",
  "ironclaw_observability",
  "ironclaw_process_sandbox",
+ "ironclaw_processes",
  "ironclaw_resources",
  "ironclaw_safety",
  "ironclaw_skills",

@@ -421,7 +421,7 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
     )) as Arc<dyn ironclaw_turns::LoopCheckpointStore>;
 
     let (subagent_await_edge_writer, subagent_await_edge_settler, subagent_await_edge_evidence) = {
-        let store = Arc::new(AwaitEdgeStore::new(Arc::clone(&scoped_filesystem)));
+        let store = Arc::new(AwaitEdgeStore::new(processes.dependencies()));
         let resolver = Arc::new(AwaitEdgeResolver::new_unbound_deferred_result_writer(
             Arc::clone(&store),
             Arc::clone(&subagent_goal_store) as Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,

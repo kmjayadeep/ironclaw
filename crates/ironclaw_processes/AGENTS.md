@@ -11,13 +11,16 @@
 
 ## What This Crate Owns
 
-- Process lifecycle, journal, invocation projections, cancellation, and the background process manager.
+- Process lifecycle, journal, dependencies, invocation projections,
+  cancellation, and the background process manager.
 - Journal-native capability invocation state: `ProcessInvocationRecord`,
   `ProcessInvocationStatus`, `ProcessInvocationStatePort`, and
   `ProcessInvocationStore`.
 - Lifecycle types (`types`): `ProcessRecord`/`ProcessStatus`/`ProcessStart`/`ProcessExit`, `ProcessManager`, the `ProcessExecutor` trait and `ProcessExecutionRequest`/`ProcessExecutionResult`, `ProcessResultRecord`, and `ProcessError`/`ProcessExecutionError`.
-- Stores: the row-native `ProcessJournalStore`, its lifecycle projections, and
-  externalized `ProcessResultStore`.
+- Stores: the row-native `ProcessJournalStore`, its lifecycle/dependency
+  projections, and externalized `ProcessResultStore`.
+- Process dependencies: atomic child submission/open, settle, consume/abandon,
+  scoped group queries, and unresolved recovery enumeration.
 - Cancellation (`cancellation`): `ProcessCancellationRegistry`, `ProcessCancellationToken`.
 - Host + background management: `ProcessHost`/`ProcessSubscription` (`host`); `BackgroundProcessManager`, `ProcessServices`, and `BackgroundErrorHandler`/`BackgroundFailure`/`BackgroundFailureStage` (`services`).
 - Crate-local public API, tests, and fixtures needed to prove that ownership.
@@ -36,5 +39,7 @@
 ## Agent Notes
 
 - Keep edits inside this crate unless a contract explicitly requires a neighboring crate change.
+- Do not create domain-owned dependency stores or recovery rosters. Domain
+  wait/gate types are projections over `ProcessDependencyPort`.
 - Prefer caller-level tests when a helper gates dispatch, persistence, network, secrets, approvals, resources, events, or process side effects.
 - If the contract and code disagree, stop and treat the task as a contract-change request instead of silently changing ownership.

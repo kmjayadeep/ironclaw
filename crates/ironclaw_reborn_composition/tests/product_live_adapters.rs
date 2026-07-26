@@ -1375,13 +1375,16 @@ async fn adapter_bundle_satisfies_product_live_runtime_readiness_gate() {
     let turn_state_for_evidence: Arc<dyn AgentTurnRuntimePort> = turn_state.clone();
     let loop_checkpoint_for_evidence: Arc<dyn LoopCheckpointStore> = loop_checkpoint_store.clone();
     let await_edge_mounts = MountView::new(vec![MountGrant::new(
-        MountAlias::new("/turns").unwrap(),
-        VirtualPath::new("/turns").unwrap(),
+        MountAlias::new("/processes").unwrap(),
+        VirtualPath::new("/processes").unwrap(),
         MountPermissions::read_write_list_delete(),
     )])
     .unwrap();
     let await_edge_store = Arc::new(AwaitEdgeStore::new(Arc::new(
-        ScopedFilesystem::with_fixed_view(Arc::new(InMemoryBackend::new()), await_edge_mounts),
+        ironclaw_processes::ProcessJournalStore::new(Arc::new(ScopedFilesystem::with_fixed_view(
+            Arc::new(InMemoryBackend::new()),
+            await_edge_mounts,
+        ))),
     )));
     let subagent_goal_store = in_memory_subagent_goal_store();
     let await_edge_resolver = Arc::new(AwaitEdgeResolver::new_unbound(

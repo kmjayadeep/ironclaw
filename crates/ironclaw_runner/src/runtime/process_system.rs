@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use ironclaw_processes::{
-    ProcessCheckpointPort, ProcessJournalCommitObserver, ProcessJournalObserverRegistry,
-    ProcessJournalSource, ProcessJournalStoreError, ProcessRuntimePort, ProcessSubmissionPort,
-    ProcessTransitionPort,
+    ProcessCheckpointPort, ProcessDependencyPort, ProcessJournalCommitObserver,
+    ProcessJournalObserverRegistry, ProcessJournalSource, ProcessJournalStoreError,
+    ProcessRuntimePort, ProcessSubmissionPort, ProcessTransitionPort,
 };
 use ironclaw_turns::ProcessJournalStoreTurnAdapter;
 
@@ -11,6 +11,7 @@ use ironclaw_turns::ProcessJournalStoreTurnAdapter;
 pub struct ProcessRuntimeSystem {
     runtime: Arc<dyn ProcessRuntimePort>,
     submission: Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
+    dependencies: Arc<dyn ProcessDependencyPort<Error = ProcessJournalStoreError>>,
     adapter: Arc<ProcessJournalStoreTurnAdapter>,
     observers: Arc<dyn ProcessJournalObserverRegistry>,
 }
@@ -29,6 +30,8 @@ impl ProcessRuntimeSystem {
             runtime: Arc::clone(&store) as Arc<dyn ProcessRuntimePort>,
             submission: Arc::clone(&store)
                 as Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
+            dependencies: Arc::clone(&store)
+                as Arc<dyn ProcessDependencyPort<Error = ProcessJournalStoreError>>,
             adapter,
             observers: store as Arc<dyn ProcessJournalObserverRegistry>,
         }
@@ -58,6 +61,10 @@ impl ProcessRuntimeSystem {
 
     pub fn submission(&self) -> Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>> {
         Arc::clone(&self.submission)
+    }
+
+    pub fn dependencies(&self) -> Arc<dyn ProcessDependencyPort<Error = ProcessJournalStoreError>> {
+        Arc::clone(&self.dependencies)
     }
 
     pub fn transitions(&self) -> Arc<dyn ProcessTransitionPort<Error = ironclaw_turns::TurnError>> {

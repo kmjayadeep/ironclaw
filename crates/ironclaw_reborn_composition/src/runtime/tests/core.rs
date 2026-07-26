@@ -3702,6 +3702,7 @@ async fn cancel_run_propagates_to_subagent_children() {
                 received_at: Utc::now(),
                 requested_run_id: None,
                 spawn_tree_descendant_cap: 4,
+                process_dependency: None,
             },
             &AllowAllTurnAdmissionPolicy,
             &InMemoryRunProfileResolver::default(),

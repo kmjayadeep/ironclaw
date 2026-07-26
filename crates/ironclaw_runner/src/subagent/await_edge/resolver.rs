@@ -10,23 +10,28 @@
 
 use std::sync::{Arc, OnceLock, RwLock};
 
-use ironclaw_host_api::{CapabilityId, UserId};
-use ironclaw_loop_host::{AwaitEdgeSettler, DEFAULT_SPAWN_SUBAGENT_CAPABILITY_ID, ResolveOutcome};
+#[cfg(test)]
+use ironclaw_host_api::CapabilityId;
+use ironclaw_host_api::UserId;
+#[cfg(test)]
+use ironclaw_loop_host::DEFAULT_SPAWN_SUBAGENT_CAPABILITY_ID;
+use ironclaw_loop_host::{AwaitEdgeSettler, ResolveOutcome};
+#[cfg(test)]
+use ironclaw_threads::ThreadHistoryRequest;
 use ironclaw_threads::{
-    LatestThreadMessageRequest, MessageKind, MessageStatus, SessionThreadService,
-    ThreadHistoryRequest, ThreadScope, ToolResultSafeSummary, UpdateToolResultReferenceRequest,
+    LatestThreadMessageRequest, MessageKind, MessageStatus, SessionThreadService, ThreadScope,
+    ToolResultSafeSummary, UpdateToolResultReferenceRequest,
 };
 use ironclaw_turns::{
-    AgentTurnSpawnTreeRuntimePort, GateRef, GetRunStateRequest, IdempotencyKey,
-    ResumeTurnPrecondition, ResumeTurnRequest, TurnActor, TurnCoordinator, TurnError,
-    TurnLifecycleEvent, TurnRunId, TurnRunRecord, TurnScope, TurnStatus,
+    AgentTurnSpawnTreeRuntimePort, GetRunStateRequest, IdempotencyKey, ResumeTurnPrecondition,
+    ResumeTurnRequest, TurnCoordinator, TurnError, TurnLifecycleEvent, TurnRunId, TurnRunRecord,
+    TurnScope, TurnStatus,
     run_profile::{AgentLoopHostError, LoopRunContext},
 };
+#[cfg(test)]
+use ironclaw_turns::{GateRef, TurnActor};
 
-use super::{
-    AwaitEdge, AwaitEdgeState, EdgeTerminalKind,
-    store::{AwaitEdgeStore, CloseCrashHooks},
-};
+use super::{AwaitEdge, AwaitEdgeState, EdgeTerminalKind, store::AwaitEdgeStore};
 use crate::subagent::spawn_result::{
     SpawnedChildRunPayload, SubagentSpawnMode as PayloadSpawnMode,
     SubagentSpawnStatus as PayloadSpawnStatus, SubagentTerminalEventKind,
@@ -36,11 +41,8 @@ use crate::subagent::untrusted_text::{
     sanitize_tool_result_summary, sanitize_untrusted_terminal_reason, wrap_untrusted_subagent_text,
 };
 
-pub struct AwaitEdgeResolver<
-    S: SessionThreadService + ?Sized,
-    F: ironclaw_filesystem::RootFilesystem + ?Sized,
-> {
-    store: Arc<AwaitEdgeStore<F>>,
+pub struct AwaitEdgeResolver<S: SessionThreadService + ?Sized> {
+    store: Arc<AwaitEdgeStore>,
     goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
     agent_turn_runtime: RwLock<Arc<dyn AgentTurnSpawnTreeRuntimePort>>,
     // Deferred-bind, mirroring `coordinator` below: most callers have a
@@ -59,13 +61,12 @@ pub struct AwaitEdgeResolver<
     thread_service: Arc<S>,
 }
 
-impl<S, F> AwaitEdgeResolver<S, F>
+impl<S> AwaitEdgeResolver<S>
 where
     S: SessionThreadService + ?Sized,
-    F: ironclaw_filesystem::RootFilesystem + ?Sized,
 {
     pub fn new_unbound(
-        store: Arc<AwaitEdgeStore<F>>,
+        store: Arc<AwaitEdgeStore>,
         goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
         agent_turn_runtime: Arc<dyn AgentTurnSpawnTreeRuntimePort>,
         result_writer: Arc<dyn ironclaw_loop_host::LoopCapabilityResultWriter>,
@@ -90,7 +91,7 @@ where
     /// writer is only available after this resolver is already erased into
     /// `Arc<dyn AwaitEdgeSettler>`.
     pub fn new_unbound_deferred_result_writer(
-        store: Arc<AwaitEdgeStore<F>>,
+        store: Arc<AwaitEdgeStore>,
         goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
         agent_turn_runtime: Arc<dyn AgentTurnSpawnTreeRuntimePort>,
         thread_service: Arc<S>,
@@ -157,10 +158,6 @@ where
             .ok_or_else(|| TurnError::Unavailable {
                 reason: "await-edge resolver result writer is not bound".to_string(),
             })
-    }
-
-    pub(super) fn store(&self) -> &Arc<AwaitEdgeStore<F>> {
-        &self.store
     }
 
     // ─── Owner-recovery (ported near-verbatim) ────────────────────────────
@@ -284,6 +281,7 @@ where
     /// placeholder, and `resume_parent`'s `resume_turn` keys on `(scope,
     /// run_id)` against a live run record; both fail closed rather than
     /// silently acting on the wrong thread.
+    #[cfg(test)]
     async fn reconstruct_edge(
         &self,
         child_record: &TurnRunRecord,
@@ -548,7 +546,7 @@ where
     }
 
     /// Drives one child terminal event through settle -> (group-ready?) ->
-    /// write-result -> resume -> release -> prune -> delete.
+    /// write-result -> resume -> consume.
     pub async fn handle_child_terminal(
         &self,
         event: &TurnLifecycleEvent,
@@ -594,16 +592,7 @@ where
             .map_err(store_error)?
             .is_none()
         {
-            let Some(edge) = self
-                .reconstruct_edge(&child_record, parent_run_id, &event)
-                .await?
-            else {
-                return Ok(ResolveOutcome::NotApplicable);
-            };
-            self.store
-                .open(&child_scope, parent_run_id, event.run_id, edge)
-                .await
-                .map_err(store_error)?;
+            return Ok(ResolveOutcome::NotApplicable);
         }
 
         self.settle_and_maybe_drain(
@@ -753,75 +742,30 @@ where
         self.resume_parent(&edge, parent_run_id, driving_child_run_id)
             .await?;
 
-        for (member_child_run_id, member_edge) in &group {
+        for (member_child_run_id, _) in &group {
             self.goal_store
                 .delete_goal(child_scope, *member_child_run_id)
                 .await
                 .map_err(|error| TurnError::Unavailable {
                     reason: error.safe_summary,
                 })?;
-            self.close_edge(
-                child_scope,
-                parent_run_id,
-                member_edge.tree_root_run_id,
-                *member_child_run_id,
-            )
-            .await?;
+            self.close_edge(child_scope, parent_run_id, *member_child_run_id)
+                .await?;
         }
 
         Ok(ResolveOutcome::Resumed)
     }
 
-    /// §2/§5.5's full close sequence for one edge: release tri-state ->
-    /// `Released`, prune the reservation's dedup entry, `delete_if_version`.
-    /// `tree_root_run_id` (the edge's own, not necessarily `parent_run_id` —
-    /// they diverge for a depth>1 nested spawn) is what
-    /// `release_tree_descendants` requires to identify the spawn-tree root;
-    /// passing the immediate parent for a nested spawn makes that call
-    /// return `InvalidRequest` (external review finding on this PR — latent
-    /// today since `max_depth` is 1, but the close path is depth-agnostic).
+    /// Atomically consume one settled dependency and release its child tree
+    /// reservation in the process journal.
     pub(super) async fn close_edge(
         &self,
         scope: &TurnScope,
         parent_run_id: TurnRunId,
-        tree_root_run_id: TurnRunId,
         child_run_id: TurnRunId,
     ) -> Result<(), TurnError> {
-        let agent_turn_runtime = self.agent_turn_runtime()?;
-        let scope_for_release = scope.clone();
-        let agent_turn_runtime_for_prune = Arc::clone(&agent_turn_runtime);
-        let scope_for_prune = scope.clone();
         self.store
-            .close_with_release(
-                scope,
-                parent_run_id,
-                child_run_id,
-                move || {
-                    let agent_turn_runtime = Arc::clone(&agent_turn_runtime);
-                    let scope = scope_for_release;
-                    async move {
-                        agent_turn_runtime
-                            .release_tree_descendants(&scope, tree_root_run_id, 1, child_run_id)
-                            .await
-                            .map_err(|error| super::AwaitEdgeStoreError::Backend {
-                                reason: error.to_string(),
-                            })
-                    }
-                },
-                move || {
-                    let agent_turn_runtime = Arc::clone(&agent_turn_runtime_for_prune);
-                    let scope = scope_for_prune;
-                    async move {
-                        agent_turn_runtime
-                            .prune_released_child(&scope, tree_root_run_id, child_run_id)
-                            .await
-                            .map_err(|error| super::AwaitEdgeStoreError::Backend {
-                                reason: error.to_string(),
-                            })
-                    }
-                },
-                CloseCrashHooks::default(),
-            )
+            .consume(scope, parent_run_id, child_run_id)
             .await
             .map_err(|error| TurnError::Unavailable {
                 reason: error.to_string(),
@@ -948,8 +892,8 @@ mod tests {
         use ironclaw_filesystem::{InMemoryBackend, ScopedFilesystem};
         use ironclaw_host_api::{MountAlias, MountGrant, MountPermissions, MountView, VirtualPath};
         let mounts = MountView::new(vec![MountGrant::new(
-            MountAlias::new("/turns").unwrap(),
-            VirtualPath::new("/turns").unwrap(),
+            MountAlias::new("/processes").unwrap(),
+            VirtualPath::new("/processes").unwrap(),
             MountPermissions::read_write_list_delete(),
         )])
         .unwrap();
@@ -961,11 +905,10 @@ mod tests {
 
     fn recon_resolver(
         thread_service: Arc<ironclaw_threads::InMemorySessionThreadService>,
-    ) -> AwaitEdgeResolver<
-        ironclaw_threads::InMemorySessionThreadService,
-        ironclaw_filesystem::InMemoryBackend,
-    > {
-        let store = Arc::new(AwaitEdgeStore::new(recon_scoped_fs()));
+    ) -> AwaitEdgeResolver<ironclaw_threads::InMemorySessionThreadService> {
+        let store = Arc::new(AwaitEdgeStore::new(Arc::new(
+            ironclaw_processes::ProcessJournalStore::new(recon_scoped_fs()),
+        )));
         let goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore> =
             Arc::new(crate::subagent::goal_store::in_memory_backed_subagent_goal_store());
         let agent_turn_runtime: Arc<dyn AgentTurnSpawnTreeRuntimePort> =
@@ -1367,215 +1310,12 @@ mod tests {
             Some(TurnActor::new(owner_user_id))
         );
     }
-
-    // `close_edge` must release capacity via the edge's own `tree_root_run_id`,
-    // not `parent_run_id` -- they diverge for depth>1 nesting (external
-    // review, PR #5819; latent today since max_depth == 1). Mutation: use
-    // `parent_run_id` instead -> RED (`mid_run_id` isn't the tree root).
-    #[tokio::test]
-    async fn close_edge_releases_capacity_using_tree_root_not_immediate_parent() {
-        use ironclaw_turns::{
-            DefaultTurnCoordinator, SubmitChildRunRequest, SubmitTurnRequest, TurnSpawnTreePort,
-        };
-
-        let state_store = Arc::new(ironclaw_turns::test_support::in_memory_agent_turn_runtime());
-        let coordinator = DefaultTurnCoordinator::new(Arc::clone(&state_store));
-        let tenant_id = ironclaw_host_api::TenantId::new("close-edge-tree-root-tenant").unwrap();
-        let agent_id = ironclaw_host_api::AgentId::new("close-edge-tree-root-agent").unwrap();
-        let owner = UserId::new("close-edge-tree-root-owner").unwrap();
-        let actor = TurnActor::new(owner.clone());
-
-        let root_scope = TurnScope::new_with_owner(
-            tenant_id.clone(),
-            Some(agent_id.clone()),
-            None,
-            ironclaw_host_api::ThreadId::new("close-edge-root-thread").unwrap(),
-            Some(owner.clone()),
-        );
-        let root_run_id = match coordinator
-            .submit_turn(SubmitTurnRequest {
-                requested_model: None,
-                scope: root_scope.clone(),
-                actor: actor.clone(),
-                accepted_message_ref: ironclaw_turns::AcceptedMessageRef::new("msg:tr-root")
-                    .unwrap(),
-                source_binding_ref: ironclaw_turns::SourceBindingRef::new("source:tr-root")
-                    .unwrap(),
-                reply_target_binding_ref: ironclaw_turns::ReplyTargetBindingRef::new(
-                    "reply:tr-root",
-                )
-                .unwrap(),
-                requested_run_profile: None,
-                idempotency_key: IdempotencyKey::new("idem:tr-root").unwrap(),
-                received_at: chrono::Utc::now(),
-                requested_run_id: None,
-                parent_run_id: None,
-                subagent_depth: 0,
-                spawn_tree_root_run_id: None,
-                product_context: None,
-            })
-            .await
-            .unwrap()
-        {
-            ironclaw_turns::SubmitTurnResponse::Accepted { run_id, .. } => run_id,
-        };
-
-        let mid_scope = TurnScope::new_with_owner(
-            tenant_id.clone(),
-            Some(agent_id.clone()),
-            None,
-            ironclaw_host_api::ThreadId::new("close-edge-mid-thread").unwrap(),
-            Some(owner.clone()),
-        );
-        let mid_run_id = match coordinator
-            .submit_child_run(SubmitChildRunRequest {
-                parent_scope: root_scope.clone(),
-                parent_run_id: root_run_id,
-                child_scope: mid_scope.clone(),
-                actor: actor.clone(),
-                accepted_message_ref: ironclaw_turns::AcceptedMessageRef::new("msg:tr-mid")
-                    .unwrap(),
-                source_binding_ref: ironclaw_turns::SourceBindingRef::new("source:tr-mid").unwrap(),
-                reply_target_binding_ref: ironclaw_turns::ReplyTargetBindingRef::new(
-                    "reply:tr-mid",
-                )
-                .unwrap(),
-                requested_run_profile: None,
-                idempotency_key: IdempotencyKey::new("idem:tr-mid").unwrap(),
-                received_at: chrono::Utc::now(),
-                requested_run_id: None,
-                spawn_tree_descendant_cap: 16,
-            })
-            .await
-            .unwrap()
-        {
-            ironclaw_turns::SubmitTurnResponse::Accepted { run_id, .. } => run_id,
-        };
-
-        let leaf_scope = TurnScope::new_with_owner(
-            tenant_id.clone(),
-            Some(agent_id.clone()),
-            None,
-            ironclaw_host_api::ThreadId::new("close-edge-leaf-thread").unwrap(),
-            Some(owner.clone()),
-        );
-        let leaf_run_id = match coordinator
-            .submit_child_run(SubmitChildRunRequest {
-                parent_scope: mid_scope.clone(),
-                parent_run_id: mid_run_id,
-                child_scope: leaf_scope.clone(),
-                actor: actor.clone(),
-                accepted_message_ref: ironclaw_turns::AcceptedMessageRef::new("msg:tr-leaf")
-                    .unwrap(),
-                source_binding_ref: ironclaw_turns::SourceBindingRef::new("source:tr-leaf")
-                    .unwrap(),
-                reply_target_binding_ref: ironclaw_turns::ReplyTargetBindingRef::new(
-                    "reply:tr-leaf",
-                )
-                .unwrap(),
-                requested_run_profile: None,
-                idempotency_key: IdempotencyKey::new("idem:tr-leaf").unwrap(),
-                received_at: chrono::Utc::now(),
-                requested_run_id: None,
-                spawn_tree_descendant_cap: 16,
-            })
-            .await
-            .unwrap()
-        {
-            ironclaw_turns::SubmitTurnResponse::Accepted { run_id, .. } => run_id,
-        };
-
-        // Precondition sanity, documenting the exact contract `close_edge`
-        // must respect: `mid_run_id` is NOT the canonical tree root for this
-        // lineage, so calling `release_tree_descendants` with it directly
-        // must fail.
-        let direct_call_with_wrong_id = state_store
-            .release_tree_descendants(&leaf_scope, mid_run_id, 1, TurnRunId::new())
-            .await;
-        assert!(
-            matches!(
-                direct_call_with_wrong_id,
-                Err(TurnError::InvalidRequest { .. })
-            ),
-            "expected release_tree_descendants to reject a non-root id, got {direct_call_with_wrong_id:?}"
-        );
-
-        // Open + settle a Settled edge for (parent_run_id=mid_run_id,
-        // child_run_id=leaf_run_id) with `tree_root_run_id: root_run_id` --
-        // exactly what a real depth>1 spawn's `record_awaited_child` would
-        // cache.
-        let store = Arc::new(AwaitEdgeStore::new(recon_scoped_fs()));
-        let parent_context = ironclaw_agent_loop::test_support::test_run_context("tr-parent");
-        let edge = AwaitEdge {
-            child_scope: leaf_scope.clone(),
-            child_thread_id: ironclaw_host_api::ThreadId::new("close-edge-leaf-thread").unwrap(),
-            parent_thread_id: mid_scope.thread_id.clone(),
-            parent_run_context: parent_context,
-            tree_root_run_id: root_run_id,
-            gate_ref: GateRef::new("gate:tr-leaf").unwrap(),
-            source_binding_ref: ironclaw_turns::SourceBindingRef::new("subagent-source:tr-leaf")
-                .unwrap(),
-            reply_target_binding_ref: ironclaw_turns::ReplyTargetBindingRef::new(
-                "subagent-reply:tr-leaf",
-            )
-            .unwrap(),
-            subagent_kind: ironclaw_loop_host::SubagentKindId::new("general").unwrap(),
-            spawn_capability_id: CapabilityId::new(DEFAULT_SPAWN_SUBAGENT_CAPABILITY_ID).unwrap(),
-            result_ref: ironclaw_turns::LoopResultRef::new("result:subagent.tr-leaf").unwrap(),
-            mode: ironclaw_loop_host::SpawnSubagentMode::Blocking,
-            state: AwaitEdgeState::Open,
-            terminal_kind: None,
-            terminal_byte_len: None,
-            terminal_reason: None,
-            reservation_release: crate::subagent::await_edge::ReservationReleaseState::Unclaimed,
-            created_at: chrono::Utc::now(),
-            settled_at: None,
-        };
-        store
-            .open(&leaf_scope, mid_run_id, leaf_run_id, edge)
-            .await
-            .unwrap();
-        store
-            .settle(
-                &leaf_scope,
-                mid_run_id,
-                leaf_run_id,
-                EdgeTerminalKind::Completed,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-
-        let goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore> =
-            Arc::new(crate::subagent::goal_store::in_memory_backed_subagent_goal_store());
-        let agent_turn_runtime: Arc<dyn AgentTurnSpawnTreeRuntimePort> = state_store;
-        let result_writer: Arc<dyn ironclaw_loop_host::LoopCapabilityResultWriter> =
-            Arc::new(ReconResultWriter);
-        let thread_service = Arc::new(ironclaw_threads::InMemorySessionThreadService::default());
-        let resolver = AwaitEdgeResolver::new_unbound(
-            store,
-            goal_store,
-            agent_turn_runtime,
-            result_writer,
-            thread_service,
-        );
-
-        resolver
-            .close_edge(&leaf_scope, mid_run_id, root_run_id, leaf_run_id)
-            .await
-            .expect(
-                "close_edge must release descendant capacity using the edge's own \
-                 tree_root_run_id, not parent_run_id",
-            );
-    }
 }
 
 #[async_trait::async_trait]
-impl<S, F> AwaitEdgeSettler for AwaitEdgeResolver<S, F>
+impl<S> AwaitEdgeSettler for AwaitEdgeResolver<S>
 where
     S: SessionThreadService + ?Sized + 'static,
-    F: ironclaw_filesystem::RootFilesystem + ?Sized + 'static,
 {
     async fn on_child_terminal(
         &self,
@@ -1613,10 +1353,9 @@ where
 }
 
 #[async_trait::async_trait]
-impl<S, F> ironclaw_turns::TurnCommittedEventObserver for AwaitEdgeResolver<S, F>
+impl<S> ironclaw_turns::TurnCommittedEventObserver for AwaitEdgeResolver<S>
 where
     S: SessionThreadService + ?Sized,
-    F: ironclaw_filesystem::RootFilesystem + ?Sized,
 {
     fn observes_state(&self, state: &ironclaw_turns::TurnRunState) -> bool {
         state.status.is_terminal()
@@ -1755,6 +1494,7 @@ fn event_kind_from_terminal_status(
 /// Background mode has no live status to consult from a reconstruction path
 /// (the old live-status heuristic is gone), so it falls back to the same
 /// derived-token format the spawn path itself uses for that mode.
+#[cfg(test)]
 fn recovered_gate_ref(
     metadata: &ironclaw_loop_host::SubagentThreadMetadata,
     child_record: &TurnRunRecord,
@@ -1769,6 +1509,7 @@ fn recovered_gate_ref(
     }
 }
 
+#[cfg(test)]
 fn parse_optional_subagent_thread_metadata(
     raw: Option<&str>,
     child_run_id: TurnRunId,
@@ -1807,6 +1548,7 @@ fn parse_optional_subagent_thread_metadata(
     }
 }
 
+#[cfg(test)]
 fn thread_scope_from_turn_scope(
     scope: &TurnScope,
     event: &TurnLifecycleEvent,

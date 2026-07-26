@@ -10,18 +10,21 @@ use ironclaw_host_api::{
     VirtualPath,
 };
 use ironclaw_processes::{
-    CancelProcessRequest, ClaimProcessesRequest, GetProcessCheckpointRequest,
-    GetProcessSnapshotRequest, JournaledProcessSnapshot, KillProcessRequest, ProcessCheckpointId,
-    ProcessCheckpointPort, ProcessCheckpointRef, ProcessConcurrencyClass, ProcessConcurrencyLimits,
-    ProcessControlPort, ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource,
-    ProcessJournalCommit, ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalEntry,
-    ProcessJournalKind, ProcessJournalObserverRegistry, ProcessJournalSource, ProcessJournalStore,
-    ProcessKind, ProcessLeaseRequest, ProcessLeaseToken, ProcessLifecycleLookupBatchRequest,
+    CancelProcessRequest, ClaimProcessesRequest, CloseProcessDependencyRequest,
+    GetProcessCheckpointRequest, GetProcessSnapshotRequest, JournaledProcessSnapshot,
+    KillProcessRequest, ProcessCheckpointId, ProcessCheckpointPort, ProcessCheckpointRef,
+    ProcessConcurrencyClass, ProcessConcurrencyLimits, ProcessControlPort, ProcessDependencyPort,
+    ProcessDependencyQuery, ProcessDependencyState, ProcessDependencySubmission,
+    ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource, ProcessJournalCommit,
+    ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind,
+    ProcessJournalObserverRegistry, ProcessJournalSource, ProcessJournalStore, ProcessKind,
+    ProcessLeaseRequest, ProcessLeaseToken, ProcessLifecycleLookupBatchRequest,
     ProcessLifecycleLookupRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,
     ProcessLifecycleStatus, ProcessOperationId, ProcessStateTransitionRequest,
-    ProcessSubmissionPort, ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort,
-    ProcessTreePort, ProcessWorkerId, RecordProcessCheckpointRequest, ReleaseProcessTreeRequest,
-    ResumeProcessRequest, StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
+    ProcessSubmissionPort, ProcessSuspension, ProcessSuspensionKind, ProcessTerminalEvidence,
+    ProcessTransitionPort, ProcessTreePort, ProcessWorkerId, RecordProcessCheckpointRequest,
+    ReleaseProcessTreeRequest, ResumeProcessRequest, SettleProcessDependencyRequest,
+    StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
 };
 use serde_json::json;
 use std::{
@@ -79,6 +82,7 @@ async fn process_journal_fails_closed_when_backend_lacks_event_rows() {
             parent_process_id: None,
             root_process_id: None,
             spawn_tree_descendant_cap: None,
+            dependency: None,
             checkpoint_ref: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
@@ -110,6 +114,7 @@ async fn process_journal_rows_serialize_concurrent_store_handles() {
         parent_process_id: None,
         root_process_id: None,
         spawn_tree_descendant_cap: None,
+        dependency: None,
         checkpoint_ref: None,
         created_at: Utc::now(),
         metadata: serde_json::Value::Null,
@@ -142,6 +147,7 @@ async fn process_journal_rows_serialize_concurrent_store_handles() {
         parent_process_id: None,
         root_process_id: None,
         spawn_tree_descendant_cap: None,
+        dependency: None,
         checkpoint_ref: None,
         created_at: Utc::now(),
         metadata: serde_json::Value::Null,
@@ -377,6 +383,7 @@ async fn process_observer_receives_commits_once_not_idempotency_replays() {
         parent_process_id: None,
         root_process_id: None,
         spawn_tree_descendant_cap: None,
+        dependency: None,
         checkpoint_ref: None,
         created_at: Utc::now(),
         metadata: serde_json::Value::Null,
@@ -445,6 +452,7 @@ async fn process_claim_enforces_owner_and_class_concurrency_limits_atomically() 
                 parent_process_id: None,
                 root_process_id: None,
                 spawn_tree_descendant_cap: None,
+                dependency: None,
                 checkpoint_ref: None,
                 created_at: Utc::now(),
                 metadata: serde_json::Value::Null,
@@ -484,6 +492,7 @@ async fn process_tree_submission_reserves_and_releases_capacity_atomically() {
         parent_process_id: Some(root_id),
         root_process_id: Some(root_id),
         spawn_tree_descendant_cap: Some(1),
+        dependency: None,
         checkpoint_ref: None,
         created_at: Utc::now(),
         metadata: serde_json::Value::Null,
@@ -527,6 +536,161 @@ async fn process_tree_submission_reserves_and_releases_capacity_atomically() {
 }
 
 #[tokio::test]
+async fn consuming_dependency_atomically_releases_tree_capacity() {
+    let store = ProcessJournalStore::new(in_memory_backed_processes_filesystem());
+    let root_scope = scope();
+    let root_id = ProcessId::new();
+    submit_internal_process(&store, &root_scope, root_id).await;
+    let child_id = ProcessId::new();
+    let mut child_scope = root_scope.clone();
+    child_scope.thread_id = Some(ThreadId::new("dependency-child").expect("child thread"));
+
+    store
+        .submit_process(SubmitProcessRequest {
+            process_id: child_id,
+            process_kind: ProcessKind::Internal,
+            scope: child_scope.clone(),
+            exclusive_within_scope: false,
+            operation_id: Some(ProcessOperationId::from_trusted("dependency-child")),
+            owner_user_id: Some(child_scope.user_id.clone()),
+            concurrency_class: None,
+            parent_process_id: Some(root_id),
+            root_process_id: Some(root_id),
+            spawn_tree_descendant_cap: Some(1),
+            dependency: Some(ProcessDependencySubmission {
+                dependent_process_id: root_id,
+                root_process_id: root_id,
+                group_ref: Some("gate:batch".to_string()),
+                metadata: json!({"projection": "runner-owned"}),
+            }),
+            checkpoint_ref: None,
+            created_at: Utc::now(),
+            metadata: serde_json::Value::Null,
+        })
+        .await
+        .expect("submit dependency process");
+
+    let rejected_child_id = ProcessId::new();
+    let mut rejected_scope = root_scope.clone();
+    rejected_scope.thread_id =
+        Some(ThreadId::new("rejected-dependency-child").expect("rejected child thread"));
+    let error = store
+        .submit_process(SubmitProcessRequest {
+            process_id: rejected_child_id,
+            process_kind: ProcessKind::Internal,
+            scope: rejected_scope.clone(),
+            exclusive_within_scope: false,
+            operation_id: Some(ProcessOperationId::from_trusted(
+                "rejected-dependency-child",
+            )),
+            owner_user_id: Some(rejected_scope.user_id.clone()),
+            concurrency_class: None,
+            parent_process_id: Some(root_id),
+            root_process_id: Some(root_id),
+            spawn_tree_descendant_cap: Some(1),
+            dependency: Some(ProcessDependencySubmission {
+                dependent_process_id: root_id,
+                root_process_id: root_id,
+                group_ref: Some("gate:rejected".to_string()),
+                metadata: json!({"must_not_persist": true}),
+            }),
+            checkpoint_ref: None,
+            created_at: Utc::now(),
+            metadata: serde_json::Value::Null,
+        })
+        .await
+        .expect_err("capacity rejection must reject the whole child submission");
+    assert!(error.to_string().contains("capacity 1 exceeded"));
+    assert!(
+        store
+            .query_process_dependencies(ProcessDependencyQuery {
+                scope: rejected_scope,
+                dependent_process_id: Some(root_id),
+                group_ref: Some("gate:rejected".to_string()),
+                include_closed: true,
+            })
+            .await
+            .expect("query rejected dependency")
+            .is_empty(),
+        "a rejected child submission must not leave an orphan dependency"
+    );
+
+    let settled = store
+        .settle_process_dependency(SettleProcessDependencyRequest {
+            dependent_process_id: root_id,
+            dependency_process_id: child_id,
+            scope: child_scope.clone(),
+            terminal: ProcessTerminalEvidence {
+                status: ProcessLifecycleStatus::Completed,
+                output_bytes: Some(42),
+                sanitized_reason: None,
+            },
+            settled_at: Utc::now(),
+        })
+        .await
+        .expect("settle dependency")
+        .expect("dependency exists");
+    assert_eq!(settled.state, ProcessDependencyState::Settled);
+
+    let consumed = store
+        .consume_process_dependency(CloseProcessDependencyRequest {
+            dependent_process_id: root_id,
+            dependency_process_id: child_id,
+            scope: child_scope.clone(),
+            closed_at: Utc::now(),
+        })
+        .await
+        .expect("consume dependency")
+        .expect("dependency exists");
+    assert_eq!(consumed.state, ProcessDependencyState::Consumed);
+
+    let unresolved = store
+        .unresolved_process_dependencies()
+        .await
+        .expect("list unresolved dependencies");
+    assert!(unresolved.is_empty());
+    let closed = store
+        .query_process_dependencies(ProcessDependencyQuery {
+            scope: child_scope.clone(),
+            dependent_process_id: Some(root_id),
+            group_ref: Some("gate:batch".to_string()),
+            include_closed: true,
+        })
+        .await
+        .expect("query closed dependency");
+    assert_eq!(closed, vec![consumed]);
+
+    store
+        .consume_process_dependency(CloseProcessDependencyRequest {
+            dependent_process_id: root_id,
+            dependency_process_id: child_id,
+            scope: child_scope.clone(),
+            closed_at: Utc::now(),
+        })
+        .await
+        .expect("consume replay");
+    store
+        .submit_process(SubmitProcessRequest {
+            process_id: ProcessId::new(),
+            process_kind: ProcessKind::Internal,
+            scope: child_scope,
+            exclusive_within_scope: false,
+            operation_id: Some(ProcessOperationId::from_trusted("dependency-replacement")),
+            owner_user_id: Some(root_scope.user_id.clone()),
+            concurrency_class: None,
+            parent_process_id: Some(root_id),
+            root_process_id: Some(root_id),
+            spawn_tree_descendant_cap: Some(1),
+            dependency: None,
+            checkpoint_ref: None,
+            created_at: Utc::now(),
+            metadata: serde_json::Value::Null,
+        })
+        .await
+        .expect("consumed dependency releases capacity");
+}
+
+#[tokio::test]
 async fn process_journal_store_owns_lifecycle_and_gate_projection() {
     let store = ProcessJournalStore::new(in_memory_backed_processes_filesystem());
     let scope = scope();
@@ -546,6 +710,7 @@ async fn process_journal_store_owns_lifecycle_and_gate_projection() {
             parent_process_id: None,
             root_process_id: None,
             spawn_tree_descendant_cap: None,
+            dependency: None,
             checkpoint_ref: None,
             created_at: Utc::now(),
             metadata: json!({
@@ -683,6 +848,7 @@ async fn process_journal_store_completes_claimed_process() {
             parent_process_id: None,
             root_process_id: None,
             spawn_tree_descendant_cap: None,
+            dependency: None,
             checkpoint_ref: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
@@ -736,6 +902,7 @@ async fn process_journal_store_relinquishes_claim_with_fresh_reclaim_lease() {
             parent_process_id: None,
             root_process_id: None,
             spawn_tree_descendant_cap: None,
+            dependency: None,
             checkpoint_ref: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
@@ -797,6 +964,7 @@ async fn process_journal_store_rejects_wrong_lease() {
             parent_process_id: None,
             root_process_id: None,
             spawn_tree_descendant_cap: None,
+            dependency: None,
             checkpoint_ref: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
@@ -1007,6 +1175,7 @@ async fn exclusive_process_submission_uses_authoritative_live_projection() {
         parent_process_id: None,
         root_process_id: None,
         spawn_tree_descendant_cap: None,
+        dependency: None,
         checkpoint_ref: None,
         created_at: Utc::now(),
         metadata: serde_json::Value::Null,
@@ -1057,6 +1226,7 @@ where
             parent_process_id: None,
             root_process_id: None,
             spawn_tree_descendant_cap: None,
+            dependency: None,
             checkpoint_ref: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,

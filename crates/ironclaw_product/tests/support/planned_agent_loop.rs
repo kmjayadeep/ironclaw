@@ -6,12 +6,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use ironclaw_approvals::AutoApproveSettingInput;
-use ironclaw_filesystem::{InMemoryBackend, ScopedFilesystem};
+use ironclaw_filesystem::InMemoryBackend;
 use ironclaw_host_api::{
     AgentId, CapabilityGrant, CapabilityGrantId, CapabilityId, CapabilitySet, EffectKind,
-    ExtensionId, GrantConstraints, InvocationId, MountAlias, MountGrant, MountPermissions,
-    MountView, NetworkPolicy, Principal, Resolution, ResolutionBatch, ResourceScope, RuntimeKind,
-    TenantId, ThreadId, TrustClass, UserId, VirtualPath,
+    ExtensionId, GrantConstraints, InvocationId, NetworkPolicy, Principal, Resolution,
+    ResolutionBatch, ResourceScope, RuntimeKind, TenantId, ThreadId, TrustClass, UserId,
 };
 use ironclaw_host_runtime::{CapabilitySurfacePolicy, SurfaceKind};
 use ironclaw_loop_host::{
@@ -363,15 +362,7 @@ impl ProductLiveAgentLoopHarness {
         );
         let capability_result_writer: Arc<dyn LoopCapabilityResultWriter> =
             Arc::new(ProductLiveCapabilityIo::default());
-        let await_edge_mounts = MountView::new(vec![MountGrant::new(
-            MountAlias::new("/turns").unwrap(),
-            VirtualPath::new("/turns").unwrap(),
-            MountPermissions::read_write_list_delete(),
-        )])
-        .unwrap();
-        let await_edge_store = Arc::new(AwaitEdgeStore::new(Arc::new(
-            ScopedFilesystem::with_fixed_view(Arc::new(InMemoryBackend::new()), await_edge_mounts),
-        )));
+        let await_edge_store = Arc::new(AwaitEdgeStore::new(process_system.dependencies()));
         let await_edge_goal_store = Arc::new(in_memory_backed_subagent_goal_store());
         let await_edge_resolver = Arc::new(AwaitEdgeResolver::new_unbound(
             Arc::clone(&await_edge_store),

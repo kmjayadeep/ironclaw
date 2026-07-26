@@ -423,8 +423,20 @@ pub struct SubmitProcessRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_tree_descendant_cap: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependency: Option<ProcessDependencySubmission>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_ref: Option<ProcessCheckpointRef>,
     pub created_at: Timestamp,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessDependencySubmission {
+    pub dependent_process_id: ProcessId,
+    pub root_process_id: ProcessId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub metadata: Value,
 }
@@ -435,6 +447,85 @@ pub struct ProcessTreeReservation {
     pub descendant_count: u64,
     #[serde(default)]
     pub released_processes: HashSet<ProcessId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessDependencyState {
+    Open,
+    Settled,
+    Consumed,
+    Abandoned,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessTerminalEvidence {
+    pub status: ProcessLifecycleStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sanitized_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProcessDependencyRecord {
+    pub dependent_process_id: ProcessId,
+    pub dependency_process_id: ProcessId,
+    pub root_process_id: ProcessId,
+    pub scope: ResourceScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_ref: Option<String>,
+    pub state: ProcessDependencyState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<ProcessTerminalEvidence>,
+    pub created_at: Timestamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settled_at: Option<Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_at: Option<Timestamp>,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OpenProcessDependencyRequest {
+    pub dependent_process_id: ProcessId,
+    pub dependency_process_id: ProcessId,
+    pub root_process_id: ProcessId,
+    pub scope: ResourceScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_ref: Option<String>,
+    pub created_at: Timestamp,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettleProcessDependencyRequest {
+    pub dependent_process_id: ProcessId,
+    pub dependency_process_id: ProcessId,
+    pub scope: ResourceScope,
+    pub terminal: ProcessTerminalEvidence,
+    pub settled_at: Timestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloseProcessDependencyRequest {
+    pub dependent_process_id: ProcessId,
+    pub dependency_process_id: ProcessId,
+    pub scope: ResourceScope,
+    pub closed_at: Timestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessDependencyQuery {
+    pub scope: ResourceScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependent_process_id: Option<ProcessId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_ref: Option<String>,
+    #[serde(default)]
+    pub include_closed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -633,6 +724,46 @@ pub trait ProcessTreePort: Send + Sync {
         &self,
         request: PruneReleasedProcessRequest,
     ) -> Result<(), Self::Error>;
+}
+
+#[async_trait]
+pub trait ProcessDependencyPort: Send + Sync {
+    type Error: Send + Sync + 'static;
+
+    async fn open_process_dependency(
+        &self,
+        request: OpenProcessDependencyRequest,
+    ) -> Result<ProcessDependencyRecord, Self::Error>;
+
+    async fn settle_process_dependency(
+        &self,
+        request: SettleProcessDependencyRequest,
+    ) -> Result<Option<ProcessDependencyRecord>, Self::Error>;
+
+    /// Atomically marks a settled dependency consumed and releases its one
+    /// descendant reservation. Replays are idempotent.
+    async fn consume_process_dependency(
+        &self,
+        request: CloseProcessDependencyRequest,
+    ) -> Result<Option<ProcessDependencyRecord>, Self::Error>;
+
+    /// Atomically abandons an open dependency and releases any reservation
+    /// already created for its child process. Replays are idempotent.
+    async fn abandon_process_dependency(
+        &self,
+        request: CloseProcessDependencyRequest,
+    ) -> Result<Option<ProcessDependencyRecord>, Self::Error>;
+
+    async fn query_process_dependencies(
+        &self,
+        request: ProcessDependencyQuery,
+    ) -> Result<Vec<ProcessDependencyRecord>, Self::Error>;
+
+    /// Host-owned recovery scan. Product-facing callers must use the
+    /// scope-bound query above.
+    async fn unresolved_process_dependencies(
+        &self,
+    ) -> Result<Vec<ProcessDependencyRecord>, Self::Error>;
 }
 
 #[async_trait]

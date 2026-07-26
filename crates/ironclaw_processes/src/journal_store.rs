@@ -20,20 +20,22 @@ use tokio::sync::Mutex;
 
 use crate::ProcessRuntimePort;
 use crate::journal::{
-    CancelProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
-    GetProcessCheckpointRequest, GetProcessSnapshotRequest, JournaledProcessSnapshot,
-    KillProcessRequest, ProcessCheckpointPort, ProcessCheckpointRecord, ProcessConcurrencyLimits,
-    ProcessControlPort, ProcessControlResult, ProcessGateOwnerMatch, ProcessGateQuery,
-    ProcessGateQuerySource, ProcessGateRecord, ProcessJournalCommit, ProcessJournalCommitObserver,
-    ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind, ProcessJournalObserverRegistry,
-    ProcessJournalPage, ProcessJournalSource, ProcessLeaseRequest, ProcessLeaseToken,
-    ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,
-    ProcessLifecycleStatus, ProcessOperationId, ProcessSubmissionPort, ProcessSuspension,
-    ProcessTransitionPort, ProcessTreePort, ProcessTreeReservation, ProcessWorkerId,
-    PruneReleasedProcessRequest, RecordProcessCheckpointRequest,
-    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse,
-    ReleaseProcessTreeRequest, ReserveProcessTreeRequest, ResumeProcessRequest, StopProcessRequest,
-    SubmitProcessRequest, SuspendProcessRequest,
+    CancelProcessRequest, ClaimProcessesRequest, ClaimedProcess, CloseProcessDependencyRequest,
+    FailProcessRequest, GetProcessCheckpointRequest, GetProcessSnapshotRequest,
+    JournaledProcessSnapshot, KillProcessRequest, OpenProcessDependencyRequest,
+    ProcessCheckpointPort, ProcessCheckpointRecord, ProcessConcurrencyLimits, ProcessControlPort,
+    ProcessControlResult, ProcessDependencyPort, ProcessDependencyQuery, ProcessDependencyRecord,
+    ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource, ProcessGateRecord,
+    ProcessJournalCommit, ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalEntry,
+    ProcessJournalKind, ProcessJournalObserverRegistry, ProcessJournalPage, ProcessJournalSource,
+    ProcessLeaseRequest, ProcessLeaseToken, ProcessLifecycleLookupBatchRequest,
+    ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
+    ProcessOperationId, ProcessSubmissionPort, ProcessSuspension, ProcessTransitionPort,
+    ProcessTreePort, ProcessTreeReservation, ProcessWorkerId, PruneReleasedProcessRequest,
+    RecordProcessCheckpointRequest, RecoverExpiredProcessLeasesRequest,
+    RecoverExpiredProcessLeasesResponse, ReleaseProcessTreeRequest, ReserveProcessTreeRequest,
+    ResumeProcessRequest, SettleProcessDependencyRequest, StopProcessRequest, SubmitProcessRequest,
+    SuspendProcessRequest,
 };
 use crate::types::{invalid_path, same_scope_owner};
 
@@ -127,6 +129,10 @@ enum StoredProcessCommand {
     ReserveTree(ReserveProcessTreeRequest),
     ReleaseTree(ReleaseProcessTreeRequest),
     PruneTree(PruneReleasedProcessRequest),
+    OpenDependency(OpenProcessDependencyRequest),
+    SettleDependency(SettleProcessDependencyRequest),
+    ConsumeDependency(CloseProcessDependencyRequest),
+    AbandonDependency(CloseProcessDependencyRequest),
     RecordCheckpoint(RecordProcessCheckpointRequest),
 }
 
@@ -142,6 +148,7 @@ enum StoredCommandOutcome {
     TreeReserved(ProcessTreeReservation),
     TreeReleased,
     TreePruned,
+    Dependency(Option<ProcessDependencyRecord>),
     Checkpointed(ProcessCheckpointRecord),
 }
 
@@ -818,6 +825,136 @@ where
             StoredCommandOutcome::TreePruned => Ok(()),
             outcome => Err(unexpected_outcome("prune_tree", outcome)),
         }
+    }
+}
+
+#[async_trait]
+impl<F> ProcessDependencyPort for ProcessJournalStore<F>
+where
+    F: RootFilesystem + Send + Sync + 'static,
+{
+    type Error = ProcessJournalStoreError;
+
+    async fn open_process_dependency(
+        &self,
+        request: OpenProcessDependencyRequest,
+    ) -> Result<ProcessDependencyRecord, Self::Error> {
+        match self
+            .execute(StoredProcessCommand::OpenDependency(request))
+            .await?
+        {
+            StoredCommandOutcome::Dependency(Some(record)) => Ok(record),
+            StoredCommandOutcome::Dependency(None) => {
+                Err(ProcessJournalStoreError::InvalidRequest(
+                    "open dependency produced no record".to_string(),
+                ))
+            }
+            outcome => Err(unexpected_outcome("open_dependency", outcome)),
+        }
+    }
+
+    async fn settle_process_dependency(
+        &self,
+        request: SettleProcessDependencyRequest,
+    ) -> Result<Option<ProcessDependencyRecord>, Self::Error> {
+        match self
+            .execute(StoredProcessCommand::SettleDependency(request))
+            .await?
+        {
+            StoredCommandOutcome::Dependency(record) => Ok(record),
+            outcome => Err(unexpected_outcome("settle_dependency", outcome)),
+        }
+    }
+
+    async fn consume_process_dependency(
+        &self,
+        request: CloseProcessDependencyRequest,
+    ) -> Result<Option<ProcessDependencyRecord>, Self::Error> {
+        match self
+            .execute(StoredProcessCommand::ConsumeDependency(request))
+            .await?
+        {
+            StoredCommandOutcome::Dependency(record) => Ok(record),
+            outcome => Err(unexpected_outcome("consume_dependency", outcome)),
+        }
+    }
+
+    async fn abandon_process_dependency(
+        &self,
+        request: CloseProcessDependencyRequest,
+    ) -> Result<Option<ProcessDependencyRecord>, Self::Error> {
+        match self
+            .execute(StoredProcessCommand::AbandonDependency(request))
+            .await?
+        {
+            StoredCommandOutcome::Dependency(record) => Ok(record),
+            outcome => Err(unexpected_outcome("abandon_dependency", outcome)),
+        }
+    }
+
+    async fn query_process_dependencies(
+        &self,
+        request: ProcessDependencyQuery,
+    ) -> Result<Vec<ProcessDependencyRecord>, Self::Error> {
+        let state = self.load_state().await?;
+        let mut records = state
+            .dependencies
+            .values()
+            .filter(|record| same_lineage_scope(&record.scope, &request.scope))
+            .filter(|record| {
+                request
+                    .dependent_process_id
+                    .is_none_or(|process_id| record.dependent_process_id == process_id)
+            })
+            .filter(|record| {
+                request
+                    .group_ref
+                    .as_ref()
+                    .is_none_or(|group_ref| record.group_ref.as_ref() == Some(group_ref))
+            })
+            .filter(|record| {
+                request.include_closed
+                    || !matches!(
+                        record.state,
+                        crate::ProcessDependencyState::Consumed
+                            | crate::ProcessDependencyState::Abandoned
+                    )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        records.sort_by_key(|record| {
+            (
+                record.dependent_process_id.as_uuid(),
+                record.dependency_process_id.as_uuid(),
+            )
+        });
+        Ok(records)
+    }
+
+    async fn unresolved_process_dependencies(
+        &self,
+    ) -> Result<Vec<ProcessDependencyRecord>, Self::Error> {
+        let state = self.load_state().await?;
+        let mut records = state
+            .dependencies
+            .values()
+            .filter(|record| {
+                !matches!(
+                    record.state,
+                    crate::ProcessDependencyState::Consumed
+                        | crate::ProcessDependencyState::Abandoned
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        records.sort_by_key(|record| {
+            (
+                record.created_at,
+                record.dependent_process_id.as_uuid(),
+                record.dependency_process_id.as_uuid(),
+            )
+        });
+        Ok(records)
     }
 }
 

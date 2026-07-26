@@ -869,11 +869,7 @@ impl RebornIntegrationGroupBuilder {
         // `.with_checkpoint_state_store` is the de-mask fix: without it a
         // genuinely-`Failed` run is reported as the masking
         // `driver_protocol_violation` instead of its true failure category.
-        // Same shared `ScopedFilesystem` handle the process journal uses
-        // mount) — the await-edge tree lives at
-        // `/turns/subagent-await-edges/...`, a sibling prefix, per §4.5a's
-        // "one shared handle, never a per-store fixed view" rule.
-        let await_edge_store = Arc::new(AwaitEdgeStore::new(Arc::clone(&processes_scoped_fs)));
+        let await_edge_store = Arc::new(AwaitEdgeStore::new(process_system.dependencies()));
         let await_edge_goal_store = Arc::new(in_memory_backed_subagent_goal_store());
         let await_edge_resolver = Arc::new(AwaitEdgeResolver::new_unbound(
             Arc::clone(&await_edge_store),

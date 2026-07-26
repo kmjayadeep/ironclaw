@@ -800,11 +800,7 @@ impl RebornBinaryE2EHarness {
             process_system.clone(),
             None,
         )?;
-        // Same shared `ScopedFilesystem` handle the turn store uses (`/turns`
-        // mount) — the await-edge tree lives at
-        // `/turns/subagent-await-edges/...`, a sibling prefix, per §4.5a's
-        // "one shared handle, never a per-store fixed view" rule.
-        let await_edge_store = Arc::new(AwaitEdgeStore::new(Arc::clone(&turns_scoped_fs)));
+        let await_edge_store = Arc::new(AwaitEdgeStore::new(process_system.dependencies()));
         let await_edge_goal_store = Arc::new(in_memory_backed_subagent_goal_store());
         let await_edge_resolver = Arc::new(AwaitEdgeResolver::new_unbound(
             Arc::clone(&await_edge_store),
