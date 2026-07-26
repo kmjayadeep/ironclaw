@@ -23,6 +23,7 @@ mod admin_user_directory;
 #[cfg(test)]
 mod approval_test_support;
 mod automation;
+mod backend_store_assembly;
 mod blocked_auth_resume;
 mod builtin_capability_policy;
 mod capability_authorization;

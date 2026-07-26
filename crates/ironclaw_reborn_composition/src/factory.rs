@@ -7,6 +7,10 @@ use std::{
     sync::atomic::AtomicBool,
 };
 
+use crate::backend_store_assembly::{
+    ProductionStoreBundle, SecretCredentialStores, build_filesystem_secret_credential_stores,
+    resolve_explicit_or_keychain_master_key,
+};
 #[cfg(any(test, feature = "test-support"))]
 use crate::builtin_capability_policy::BuiltinCapabilityPolicy;
 use crate::builtin_capability_policy::builtin_capability_policy;
@@ -50,7 +54,6 @@ use crate::standalone_bootstrap_assembly::HostBootstrapAssemblyBuilder;
 use crate::standalone_bootstrap_assembly::{
     LEGACY_SKILLS_BACKFILL_MARKER, backfill_legacy_user_skills,
 };
-use crate::storage_catalog::validate_reborn_runtime_storage;
 use crate::support::fs::RebornProjectService;
 use crate::{
     RebornBuildError, RebornCompositionProfile, RebornHostBindings, RebornReadiness,
@@ -167,7 +170,6 @@ use ironclaw_resources::{
     ResourceGovernor,
 };
 use ironclaw_run_state::ApprovalRequestStore;
-use ironclaw_secrets::CredentialBroker;
 use ironclaw_secrets::{SecretStore, SecretStorePort};
 use ironclaw_skills::ScopedSkillManagementPort;
 use ironclaw_threads::FilesystemSessionThreadService;
@@ -841,7 +843,7 @@ impl ironclaw_network::NetworkHttpEgress for TestNetworkHttpEgress {
     }
 }
 
-type ComposedResourceGovernor = FilesystemResourceGovernor<CompositeRootFilesystem>;
+pub(crate) type ComposedResourceGovernor = FilesystemResourceGovernor<CompositeRootFilesystem>;
 
 pub(crate) type ComposedApprovalRequestStore = ApprovalRequestStore<CompositeRootFilesystem>;
 
@@ -3434,164 +3436,6 @@ where
         .map_err(crate::RebornCompositionError::from)?;
 
     Ok(services)
-}
-
-/// Central production secret/credential stores over the shared
-/// [`ScopedFilesystem`].
-///
-/// Backend selection is now a property of the underlying
-/// [`RootFilesystem`] (libSQL/Postgres/in-memory), not of each store itself.
-/// The secret store and credential broker are deliberately built together from
-/// one scoped filesystem and one crypto handle so production composition does
-/// not grow parallel ad hoc secret/credential stores.
-struct SecretCredentialStores<F>
-where
-    F: RootFilesystem + 'static,
-{
-    secret_store: Arc<SecretStore<F>>,
-    credential_broker: Arc<CredentialBroker<F>>,
-    /// Retained so `build_backend_production` can build the admin secret
-    /// provisioner over the SAME crypto the runtime's own secret store uses —
-    /// material written by the provisioner must decrypt under the user's own
-    /// store and vice versa (mirrors the local `standalone_secret_bundle.1`).
-    crypto: Arc<ironclaw_secrets::SecretsCrypto>,
-}
-
-impl<F> SecretCredentialStores<F>
-where
-    F: RootFilesystem + 'static,
-{
-    fn new(
-        scoped_filesystem: Arc<ScopedFilesystem<F>>,
-        crypto: Arc<ironclaw_secrets::SecretsCrypto>,
-    ) -> Self {
-        Self {
-            secret_store: Arc::new(SecretStore::new(
-                Arc::clone(&scoped_filesystem),
-                Arc::clone(&crypto),
-            )),
-            credential_broker: Arc::new(CredentialBroker::new(
-                scoped_filesystem,
-                Arc::clone(&crypto),
-            )),
-            crypto,
-        }
-    }
-
-    fn from_master_key(
-        scoped_filesystem: Arc<ScopedFilesystem<F>>,
-        master_key: ironclaw_secrets::SecretMaterial,
-    ) -> Result<Self, crate::RebornCompositionError> {
-        Ok(Self::new(
-            scoped_filesystem,
-            Arc::new(ironclaw_secrets::SecretsCrypto::new(master_key)?),
-        ))
-    }
-}
-
-async fn build_filesystem_secret_credential_stores<F>(
-    scoped_filesystem: Arc<ScopedFilesystem<F>>,
-    master_key: Option<ironclaw_secrets::SecretMaterial>,
-) -> Result<SecretCredentialStores<F>, crate::RebornCompositionError>
-where
-    F: RootFilesystem + 'static,
-{
-    let master_key = resolve_explicit_or_keychain_master_key(master_key)
-        .await?
-        .ok_or(crate::RebornCompositionError::MissingSecretMasterKey)?;
-    SecretCredentialStores::from_master_key(scoped_filesystem, master_key)
-}
-
-async fn resolve_explicit_or_keychain_master_key(
-    explicit: Option<ironclaw_secrets::SecretMaterial>,
-) -> Result<Option<ironclaw_secrets::SecretMaterial>, ironclaw_secrets::SecretError> {
-    if let Some(master_key) = explicit {
-        Ok(Some(master_key))
-    } else if let Some(master_key) =
-        ironclaw_secrets::keychain::resolve_master_key_material().await?
-    {
-        Ok(Some(master_key))
-    } else {
-        Ok(None)
-    }
-}
-
-struct ProductionStoreBundle {
-    filesystem: Arc<CompositeRootFilesystem>,
-    scoped_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
-    resource_governor: ComposedResourceGovernor,
-    leases: Arc<ComposedCapabilityLeaseStore>,
-    persistent_approval_policies: Arc<ComposedPersistentApprovalPolicyStore>,
-    secret_credentials: SecretCredentialStores<CompositeRootFilesystem>,
-    event_store: ironclaw_reborn_event_store::RebornEventStoreConfig,
-}
-
-impl ProductionStoreBundle {
-    async fn new(
-        filesystem: Arc<CompositeRootFilesystem>,
-        resource_governor: ComposedResourceGovernor,
-        secret_master_key: ironclaw_secrets::SecretMaterial,
-        event_store: ironclaw_reborn_event_store::RebornEventStoreConfig,
-    ) -> Result<Self, RebornBuildError> {
-        validate_reborn_runtime_storage(&filesystem).await?;
-        let scoped_filesystem = crate::wrap_scoped(Arc::clone(&filesystem));
-        let leases = Arc::new(CapabilityLeaseStore::new(Arc::clone(&scoped_filesystem)));
-        let persistent_approval_policies = Arc::new(PersistentApprovalPolicyStore::new(
-            Arc::clone(&scoped_filesystem),
-        ));
-        let secret_credentials = SecretCredentialStores::from_master_key(
-            Arc::clone(&scoped_filesystem),
-            secret_master_key,
-        )?;
-        let resource_governor = warm_resource_governor_for_build(resource_governor).await?;
-
-        Ok(Self {
-            filesystem,
-            scoped_filesystem,
-            resource_governor,
-            leases,
-            persistent_approval_policies,
-            secret_credentials,
-            event_store,
-        })
-    }
-
-    async fn with_secret_credentials(
-        filesystem: Arc<CompositeRootFilesystem>,
-        resource_governor: ComposedResourceGovernor,
-        secret_credentials: SecretCredentialStores<CompositeRootFilesystem>,
-        event_store: ironclaw_reborn_event_store::RebornEventStoreConfig,
-    ) -> Result<Self, RebornBuildError> {
-        validate_reborn_runtime_storage(&filesystem).await?;
-        let scoped_filesystem = crate::wrap_scoped(Arc::clone(&filesystem));
-        let leases = Arc::new(CapabilityLeaseStore::new(Arc::clone(&scoped_filesystem)));
-        let persistent_approval_policies = Arc::new(PersistentApprovalPolicyStore::new(
-            Arc::clone(&scoped_filesystem),
-        ));
-        let resource_governor = warm_resource_governor_for_build(resource_governor).await?;
-
-        Ok(Self {
-            filesystem,
-            scoped_filesystem,
-            resource_governor,
-            leases,
-            persistent_approval_policies,
-            secret_credentials,
-            event_store,
-        })
-    }
-}
-
-async fn warm_resource_governor_for_build<F>(
-    resource_governor: FilesystemResourceGovernor<F>,
-) -> Result<FilesystemResourceGovernor<F>, RebornBuildError>
-where
-    F: RootFilesystem + 'static,
-{
-    warm_resource_governor_with_error(resource_governor, |error| RebornBuildError::InvalidConfig {
-        reason: format!("resource governor warm-up task failed: {error}"),
-    })
-    .await
 }
 
 pub(crate) fn production_skill_management_mount_view(
