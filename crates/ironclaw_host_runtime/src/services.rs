@@ -691,6 +691,11 @@ where
     /// stores, cancellation registry, result store, and runtime health graph.
     fn build_host_runtime(&self) -> DefaultHostRuntime {
         let lifecycle_process_store = Arc::clone(&self.process_lifecycle_store);
+        if let Err(error) = lifecycle_process_store.register_journal_observer(
+            self.process_services.process_store().process_runtime().as_ref(),
+        ) {
+            tracing::error!(%error, "process obligation journal observer failed to register");
+        }
         let process_store: Arc<dyn ProcessStorePort> = lifecycle_process_store.clone();
         let dispatcher: Arc<dyn CapabilityDispatcher> = Arc::new(self.runtime_dispatcher());
         let process_executor = Arc::new(HostProcessExecutor::new(

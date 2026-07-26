@@ -30,6 +30,7 @@ mod test_support;
 mod types;
 
 pub use cancellation::{ProcessCancellationRegistry, ProcessCancellationToken};
+pub use compatibility::process_record_from_snapshot;
 pub use host::{ProcessHost, ProcessSubscription};
 pub use invocation_state::{
     ProcessInvocationError, ProcessInvocationRecord, ProcessInvocationStart,
@@ -98,6 +99,7 @@ pub trait ProcessRuntimePort:
     + ProcessDependencyPort<Error = ProcessJournalStoreError>
     + ProcessCheckpointPort<Error = ProcessJournalStoreError>
     + ProcessInputPort<Error = ProcessJournalStoreError>
+    + ProcessJournalObserverRegistry
     + Send
     + Sync
 {

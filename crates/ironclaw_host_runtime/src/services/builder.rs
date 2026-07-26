@@ -8,7 +8,7 @@ use super::{
     DurableEventLog, DurableEventSink, EffectiveRuntimePolicy, EventBatchConfig, EventSink,
     FilesystemResourceGovernor, FirstPartyCapabilityRegistry, HostRuntimeServices, McpExecutor,
     NetworkHttpEgress, ProcessBackendKind, ProcessExecutor, ProcessInvocationStatePort,
-    ProcessObligationLifecycleStore, ProductionComponentType, ProductionImplementationReadiness,
+    ProductionComponentType, ProductionImplementationReadiness,
     ProductionWiringComponent, ProductionWiringIssueKind, ProductionWiringReport,
     RebornEventStoreConfig, RebornEventStoreError, RebornEventStores, RebornProfile,
     ResourceGovernor, RootFilesystem, RunProfileResolver, RuntimeBackendHealth,
@@ -163,7 +163,7 @@ where
             runtime_credential_account_resolver,
             network_policy_store,
             secret_injection_store,
-            process_lifecycle_store: _,
+            process_lifecycle_store,
             runtime_http_egress,
             tool_call_http_egress,
             process_port,
@@ -185,15 +185,7 @@ where
             mut component_types,
         } = self;
         let lifecycle_governor: Arc<dyn ResourceGovernor> = governor.clone();
-        let process_lifecycle_store = Arc::new(ProcessObligationLifecycleStore::from_dyn(
-            process_services.process_store(),
-            Arc::clone(&network_policy_store),
-            Arc::clone(&secret_injection_store),
-            lifecycle_governor,
-        ));
-        if let Some(event_sink) = &event_sink {
-            process_lifecycle_store.set_event_sink(Arc::clone(event_sink));
-        }
+        process_lifecycle_store.set_resource_governor(lifecycle_governor);
         component_types.resource_governor = ProductionComponentType::of::<T>();
         HostRuntimeServices {
             registry,

@@ -53,6 +53,14 @@ The compatibility `ProcessStorePort`/`ProcessRecord` surface still exists for
 the background manager and host API. It is no longer a durable authority and
 should disappear with Slice 6's generic supervisor.
 
+Terminal capability-obligation cleanup is now also a process-journal commit
+observer. The observer is registered once against the final runtime and follows
+governor replacement without replacing the lifecycle component. This removes
+the semantic blocker that previously required host kill and supervisor
+completion to pass through a `ProcessStorePort` wrapper; pre-submit handoff
+claiming remains the only lifecycle action that must happen before a journal
+commit.
+
 `ironclaw_processes` still has a separate capability/background process stack:
 
 - `process_store.rs`: 920 lines

@@ -60,30 +60,6 @@ where
         .map_err(map_journal_error)
     }
 
-    fn record_from_snapshot(
-        snapshot: crate::JournaledProcessSnapshot,
-    ) -> Result<ProcessRecord, ProcessError> {
-        let metadata: CapabilityProcessMetadata = serde_json::from_value(snapshot.metadata)
-            .map_err(|error| ProcessError::Deserialization(error.to_string()))?;
-        Ok(ProcessRecord {
-            process_id: snapshot.process_id,
-            parent_process_id: snapshot.parent_process_id,
-            invocation_id: metadata.invocation_id,
-            scope: snapshot.scope,
-            authenticated_actor_user_id: metadata.authenticated_actor_user_id,
-            extension_id: metadata.extension_id,
-            capability_id: metadata.capability_id,
-            runtime: metadata.runtime,
-            status: process_status(snapshot.status),
-            grants: metadata.grants,
-            mounts: metadata.mounts,
-            estimated_resources: metadata.estimated_resources,
-            resource_reservation_id: metadata.resource_reservation_id,
-            authorized_continuation: metadata.authorized_continuation,
-            error_kind: snapshot.failure.map(SanitizedFailure::into_category),
-        })
-    }
-
     fn lease_request(
         snapshot: &crate::JournaledProcessSnapshot,
     ) -> Result<ProcessLeaseRequest, ProcessError> {
@@ -183,7 +159,7 @@ where
         .await
         .map_err(map_journal_error)?;
         let snapshot = self.snapshot(&scope, process_id).await?;
-        Self::record_from_snapshot(snapshot)
+        process_record_from_snapshot(snapshot)
     }
 
     async fn complete(
@@ -208,7 +184,7 @@ where
             })
             .await
             .map_err(map_journal_error)?;
-        Self::record_from_snapshot(snapshot)
+        process_record_from_snapshot(snapshot)
     }
 
     async fn fail(
@@ -241,7 +217,7 @@ where
             })
             .await
             .map_err(map_journal_error)?;
-        Self::record_from_snapshot(snapshot)
+        process_record_from_snapshot(snapshot)
     }
 
     async fn kill(
@@ -258,7 +234,7 @@ where
             })
             .await
             .map_err(map_journal_error)?;
-        Self::record_from_snapshot(result.state)
+        process_record_from_snapshot(result.state)
     }
 
     async fn get(
@@ -267,7 +243,7 @@ where
         process_id: ProcessId,
     ) -> Result<Option<ProcessRecord>, ProcessError> {
         match self.snapshot(scope, process_id).await {
-            Ok(snapshot) => Self::record_from_snapshot(snapshot).map(Some),
+            Ok(snapshot) => process_record_from_snapshot(snapshot).map(Some),
             Err(ProcessError::UnknownProcess { .. }) => Ok(None),
             Err(error) => Err(error),
         }
@@ -282,9 +258,33 @@ where
             .map_err(map_journal_error)?
             .into_iter()
             .filter(|snapshot| snapshot.process_kind == ProcessKind::CapabilityInvocation)
-            .map(Self::record_from_snapshot)
+            .map(process_record_from_snapshot)
             .collect()
     }
+}
+
+pub fn process_record_from_snapshot(
+    snapshot: crate::JournaledProcessSnapshot,
+) -> Result<ProcessRecord, ProcessError> {
+    let metadata: CapabilityProcessMetadata = serde_json::from_value(snapshot.metadata)
+        .map_err(|error| ProcessError::Deserialization(error.to_string()))?;
+    Ok(ProcessRecord {
+        process_id: snapshot.process_id,
+        parent_process_id: snapshot.parent_process_id,
+        invocation_id: metadata.invocation_id,
+        scope: snapshot.scope,
+        authenticated_actor_user_id: metadata.authenticated_actor_user_id,
+        extension_id: metadata.extension_id,
+        capability_id: metadata.capability_id,
+        runtime: metadata.runtime,
+        status: process_status(snapshot.status),
+        grants: metadata.grants,
+        mounts: metadata.mounts,
+        estimated_resources: metadata.estimated_resources,
+        resource_reservation_id: metadata.resource_reservation_id,
+        authorized_continuation: metadata.authorized_continuation,
+        error_kind: snapshot.failure.map(SanitizedFailure::into_category),
+    })
 }
 
 fn process_status(status: ProcessLifecycleStatus) -> ProcessStatus {
