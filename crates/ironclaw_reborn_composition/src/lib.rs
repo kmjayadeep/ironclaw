@@ -41,6 +41,7 @@ mod input;
 mod llm_admin;
 mod memory_binding;
 mod memory_provider_factory;
+mod model_gateway_assembly;
 mod observability;
 mod operator_tool_catalog;
 mod outbound;
