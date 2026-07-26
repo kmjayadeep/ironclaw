@@ -1,3 +1,4 @@
+#[cfg(any(test, feature = "test-support"))]
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -5,9 +6,10 @@ use crate::{
     BlockedReason, CapabilityActivityId, LoopExitMapping, ResolvedRunProfile, SanitizedFailure,
     TurnCheckpointId, TurnError, TurnId, TurnLeaseToken, TurnRunId, TurnRunState, TurnRunnerId,
     TurnScope, TurnTimestamp,
-    events::EventCursor,
     run_profile::{LoopCheckpointStateRef, LoopModelRouteSnapshot},
 };
+#[cfg(any(test, feature = "test-support"))]
+use crate::events::EventCursor;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaimRunRequest {
@@ -133,6 +135,7 @@ pub enum TurnRunnerOutcome {
     },
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[async_trait]
 pub trait TurnRunTransitionPort: Send + Sync {
     async fn claim_next_run(
