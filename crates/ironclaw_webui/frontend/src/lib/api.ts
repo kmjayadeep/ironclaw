@@ -824,3 +824,18 @@ export async function logout() {
 export function fetchIntentDetail({ intentId } = {}) {
   return apiFetch(`${V2_BASE}/intents/${encodeURIComponent(intentId)}`);
 }
+
+/**
+ * Load the ERC-7730 clear-signing descriptor for an intent.
+ *
+ * Served same-origin by the backend proxy because this app has a
+ * zero-remote-origins CSP. `clear_signing: "unavailable"` is a normal 200
+ * answer, not an error — a genuine absence, an upstream outage, and an
+ * unconfigured deployment all look identical on purpose, so that a degraded
+ * context service can never be mistaken for permission to sign blind.
+ */
+export function fetchSigningContext({ intentId } = {}) {
+  return apiFetch(
+    `${V2_BASE}/intents/${encodeURIComponent(intentId)}/signing-context`,
+  );
+}

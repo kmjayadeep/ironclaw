@@ -2,7 +2,7 @@
 import React from "react";
 import { useParams } from "react-router";
 import { useT } from "../../lib/i18n";
-import { fetchIntentDetail } from "../../lib/api";
+import { fetchIntentDetail, fetchSigningContext } from "../../lib/api";
 
 /**
  * The transaction-review page (attested-signing Phase C).
@@ -21,6 +21,17 @@ import { fetchIntentDetail } from "../../lib/api";
  * who can choose the transaction can usually grind the visible ends. So the
  * hash renders complete, in a monospace face, broken for readability but never
  * truncated — and the tests pin that.
+ *
+ * ## No descriptor, no signing
+ *
+ * The device can only render a transaction's fields if an ERC-7730 descriptor
+ * covers it. Without one it would fall back to showing a bare hash, which the
+ * human cannot meaningfully check — that is blind signing wearing a hardware
+ * wallet. So when the backend says `clear_signing: "unavailable"` this page
+ * renders a blocked state and offers NO path to the device. There is no
+ * override, no "sign anyway", and no flag: the affordance simply does not
+ * exist, which is the only version of fail-closed that survives a user in a
+ * hurry.
  */
 
 /** Lifecycle states the server may project onto an intent. */
@@ -103,10 +114,61 @@ export function decodedRows(decodedTx) {
     }));
 }
 
+/**
+ * The device half of the page.
+ *
+ * Renders exactly one of three things and never two: still checking, blocked,
+ * or ready to connect. `data-testid="review-sign-action"` exists ONLY on the
+ * ready branch, so a test can assert the affordance is absent — not merely
+ * disabled — whenever clear signing is unavailable.
+ */
+export function SigningCeremony({ state, terminal }) {
+  const t = useT();
+
+  // A decided intent has nothing left to sign.
+  if (terminal) return null;
+
+  if (state.status === "loading") {
+    return (
+      <section className="mt-6" data-testid="review-ceremony-loading">
+        <p className="text-sm text-[var(--v2-text-muted)]">
+          {t("review.ceremony.checking")}
+        </p>
+      </section>
+    );
+  }
+
+  if (state.status !== "available") {
+    return (
+      <section className="mt-6" data-testid="review-ceremony-blocked">
+        <h2 className="text-sm font-medium text-[var(--v2-text-strong)]">
+          {t("review.ceremony.blocked.title")}
+        </h2>
+        <p className="mt-1 text-sm text-[var(--v2-text-muted)]">
+          {t("review.ceremony.blocked.body")}
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="mt-6" data-testid="review-ceremony-ready">
+      <button
+        type="button"
+        data-testid="review-sign-action"
+        className="rounded-lg bg-[var(--v2-accent)] px-4 py-2 text-sm font-medium"
+      >
+        {t("review.ceremony.connect")}
+      </button>
+    </section>
+  );
+}
+
 export function ReviewPage() {
   const t = useT();
   const { intentId } = useParams();
   const [state, setState] = React.useState({ status: "loading" });
+  const [signingContext, setSigningContext] = React.useState({ status: "loading" });
 
   React.useEffect(() => {
     let cancelled = false;
@@ -125,6 +187,28 @@ export function ReviewPage() {
             ? { status: "unavailable" }
             : { status: "error", message: error?.message },
         );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [intentId]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setSigningContext({ status: "loading" });
+    fetchSigningContext({ intentId })
+      .then((context) => {
+        if (cancelled) return;
+        setSigningContext(
+          context?.clear_signing === "available"
+            ? { status: "available", descriptor: context.descriptor }
+            : { status: "unavailable" },
+        );
+      })
+      .catch(() => {
+        // A failed fetch is not a reason to proceed. Any outcome that is not
+        // an explicit "available" blocks.
+        if (!cancelled) setSigningContext({ status: "unavailable" });
       });
     return () => {
       cancelled = true;
@@ -187,6 +271,8 @@ export function ReviewPage() {
       )}
 
       <TransactionHash hash={intent.approved_tx_hash} />
+
+      <SigningCeremony state={signingContext} terminal={terminal} />
 
       <section className="mt-6">
         <h2 className="text-sm font-medium text-[var(--v2-text-muted)]">

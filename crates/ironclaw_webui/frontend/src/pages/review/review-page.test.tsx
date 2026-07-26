@@ -52,21 +52,31 @@ function textOf(node) {
 function load({
   fetchResult,
   fetchError,
+  signingContext = { clear_signing: "unavailable" },
   params = { intentId: "intent-1" },
 }: {
   fetchResult?: unknown;
   fetchError?: unknown;
+  signingContext?: unknown;
   params?: { intentId: string };
 }) {
   const effects = [];
-  let stateValue;
+  // One slot per useState call site, keyed by call order within a render —
+  // the page has more than one piece of state, and a single shared slot would
+  // silently alias them.
+  const slots = [];
+  let slotIndex = 0;
   const context = {
     React: {
       useState: (initial) => {
-        if (stateValue === undefined) stateValue = initial;
-        return [stateValue, (next) => {
-          stateValue = next;
-        }];
+        const index = slotIndex++;
+        if (slots.length <= index) slots.push(initial);
+        return [
+          slots[index],
+          (next) => {
+            slots[index] = next;
+          },
+        ];
       },
       useEffect: (effect) => effects.push(effect),
     },
@@ -75,6 +85,10 @@ function load({
       vars ? `${key}:${JSON.stringify(vars)}` : key,
     fetchIntentDetail: () =>
       fetchError ? Promise.reject(fetchError) : Promise.resolve(fetchResult),
+    fetchSigningContext: () =>
+      signingContext instanceof Error
+        ? Promise.reject(signingContext)
+        : Promise.resolve(signingContext),
     Date,
     Math,
     Number,
@@ -90,6 +104,7 @@ function load({
       "TransactionHash",
       "DetailRow",
       "decodedRows",
+      "SigningCeremony",
       "groupHex",
       "millisRemaining",
       "minutesRemaining",
@@ -102,11 +117,13 @@ function load({
     exports,
     /** Render once, flush the fetch effect, then render again. */
     async render() {
+      slotIndex = 0;
       exports.ReviewPage();
       for (const effect of effects.splice(0)) effect();
       // Drain the microtask queue: the rejection path runs one `.then` deeper
       // than the resolve path, so a fixed number of ticks would be flaky.
       await new Promise((resolve) => setImmediate(resolve));
+      slotIndex = 0;
       return exports.ReviewPage();
     },
   };
@@ -249,4 +266,74 @@ test("a terminal intent renders its state without a countdown", async () => {
     if (node.props?.["data-testid"] === "review-countdown") countdown = node;
   });
   assert.equal(countdown, null, "a decided intent has nothing to count down to");
+});
+
+
+// --- Clear signing: no descriptor, no device path (§D3 / §D5) ---
+
+/**
+ * THE fail-closed property, at the surface where it matters. Without a
+ * descriptor the device can only show a bare hash, which the human cannot
+ * meaningfully check — blind signing wearing a hardware wallet. The sign
+ * affordance must be ABSENT, not disabled: a disabled control is one patch away
+ * from being enabled, and an absent one cannot be clicked by a user in a hurry.
+ */
+test("no descriptor renders the blocked state and no path to the device", () => {
+  const { exports } = load({ fetchResult: INTENT });
+  const blocked = exports.SigningCeremony({
+    state: { status: "unavailable" },
+    terminal: false,
+  });
+
+  assert.ok(findByTestId(blocked, "review-ceremony-blocked"), "blocked UX renders");
+  let signAction = null;
+  visit(blocked, (node) => {
+    if (node.props?.["data-testid"] === "review-sign-action") signAction = node;
+  });
+  assert.equal(signAction, null, "there must be no sign affordance at all");
+});
+
+/** Anything that is not an explicit "available" blocks — including a failure. */
+test("a failed or malformed signing-context response blocks", async () => {
+  for (const context of [
+    new Error("upstream down"),
+    {},
+    { clear_signing: "unknown-future-value" },
+    null,
+  ]) {
+    const page = load({ fetchResult: INTENT, signingContext: context });
+    const tree = await page.render();
+    const ceremony = nodeBy(
+      tree,
+      (node) => node.props?.state?.status !== undefined,
+      "the ceremony section",
+    );
+    assert.notEqual(
+      ceremony.props.state.status,
+      "available",
+      `${JSON.stringify(context)} must not resolve to available`,
+    );
+  }
+});
+
+/** The ready branch exists, so the blocked branch is a real decision. */
+test("an available descriptor offers the device path", () => {
+  const { exports } = load({ fetchResult: INTENT });
+  const ready = exports.SigningCeremony({
+    state: { status: "available", descriptor: { context: {} } },
+    terminal: false,
+  });
+  assert.ok(findByTestId(ready, "review-sign-action"), "the sign affordance appears");
+});
+
+/** A decided intent offers no ceremony regardless of descriptor state. */
+test("a terminal intent never offers the device path", () => {
+  const { exports } = load({ fetchResult: INTENT });
+  assert.equal(
+    exports.SigningCeremony({
+      state: { status: "available", descriptor: {} },
+      terminal: true,
+    }),
+    null,
+  );
 });
