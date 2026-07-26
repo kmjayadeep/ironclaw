@@ -75,7 +75,7 @@ fn local_dev_filesystem_read_plans_against_host_workspace() {
     // the canonical "agent edits files in the user's repo" path.
     let policy = resolve(ResolveRequest::new(
         DeploymentMode::LocalSingleUser,
-        RuntimeProfile::LocalDev,
+        RuntimeProfile::LocalHost,
     ))
     .unwrap();
 
@@ -96,7 +96,7 @@ fn local_dev_coding_alias_capabilities_plan_against_local_host_shell() {
     // user can run native development tooling.
     let policy = resolve(ResolveRequest::new(
         DeploymentMode::LocalSingleUser,
-        RuntimeProfile::LocalDev,
+        RuntimeProfile::LocalHost,
     ))
     .unwrap();
 
@@ -131,7 +131,7 @@ fn local_dev_builtin_shell_manifest_plans_against_local_host_direct_network() {
     // the local host/direct logged backend family.
     let policy = resolve(ResolveRequest::new(
         DeploymentMode::LocalSingleUser,
-        RuntimeProfile::LocalDev,
+        RuntimeProfile::LocalHost,
     ))
     .unwrap();
 
@@ -277,7 +277,7 @@ fn hosted_multi_tenant_rejects_local_dev_at_resolver_before_planner_runs() {
     // at plan time.
     let result = resolve(ResolveRequest::new(
         DeploymentMode::HostedMultiTenant,
-        RuntimeProfile::LocalDev,
+        RuntimeProfile::LocalHost,
     ));
     assert!(
         result.is_err(),

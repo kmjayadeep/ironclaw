@@ -230,7 +230,7 @@ mod tests {
         for profile in [
             RuntimeProfile::SecureDefault,
             RuntimeProfile::LocalSafe,
-            RuntimeProfile::LocalDev,
+            RuntimeProfile::LocalHost,
             RuntimeProfile::HostedSafe,
             RuntimeProfile::HostedDev,
             RuntimeProfile::EnterpriseSafe,
@@ -258,7 +258,7 @@ mod tests {
         // reach this axis instead of stopping at the requested profile.
         let narrowed = ironclaw_runtime_policy::resolve(ResolveRequest {
             yolo_disclosure_acknowledged: true,
-            org_policy: OrgPolicyConstraints::default().set_max_profile(RuntimeProfile::LocalDev),
+            org_policy: OrgPolicyConstraints::default().set_max_profile(RuntimeProfile::LocalHost),
             ..ResolveRequest::new(DeploymentMode::LocalSingleUser, RuntimeProfile::LocalYolo)
         })
         .expect("narrowed local yolo resolves");

@@ -877,7 +877,7 @@ where
 fn local_testing_runtime_policy() -> EffectiveRuntimePolicy {
     ironclaw_runtime_policy::resolve(ironclaw_runtime_policy::ResolveRequest::new(
         DeploymentMode::LocalSingleUser,
-        RuntimeProfile::LocalDev,
+        RuntimeProfile::LocalHost,
     ))
     .unwrap_or_else(|error| {
         panic!("LocalSingleUser + LocalDev runtime policy must resolve for local testing: {error}")

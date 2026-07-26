@@ -6,7 +6,7 @@
 //! host runtime carries through dispatch. Examples:
 //!
 //! ```text
-//! LocalDev + filesystem.read   -> HostWorkspace read under selected root
+//! LocalHost + filesystem.read   -> HostWorkspace read under selected root
 //! HostedDev + shell.run        -> tenant-sandbox process, never provider-host
 //! EnterpriseDev + process.run  -> org-dedicated runner if org policy permits
 //! Experiment + package install -> disposable SmolVm/Docker workspace
@@ -210,8 +210,8 @@ mod tests {
     ) -> EffectiveRuntimePolicy {
         EffectiveRuntimePolicy {
             deployment: DeploymentMode::LocalSingleUser,
-            requested_profile: RuntimeProfile::LocalDev,
-            resolved_profile: RuntimeProfile::LocalDev,
+            requested_profile: RuntimeProfile::LocalHost,
+            resolved_profile: RuntimeProfile::LocalHost,
             filesystem_backend: filesystem,
             process_backend: process,
             network_mode: network,
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn plans_local_dev_filesystem_read_against_host_workspace() {
-        // Issue example: `LocalDev + filesystem.read -> HostWorkspace
+        // Issue example: `LocalHost + filesystem.read -> HostWorkspace
         // read under selected root`. The planner forwards the
         // resolved filesystem backend; downstream composition picks
         // the actual root.

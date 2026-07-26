@@ -561,7 +561,7 @@ pub(crate) fn local_runtime_allows_unsafe_raw_http_diagnostics(
     matches!(deployment, DeploymentMode::LocalSingleUser)
         && matches!(
             profile,
-            RuntimeProfile::LocalDev | RuntimeProfile::LocalYolo
+            RuntimeProfile::LocalHost | RuntimeProfile::LocalYolo
         )
 }
 
@@ -577,7 +577,7 @@ mod raw_http_diagnostic_policy_tests {
     fn raw_http_diagnostics_are_limited_to_local_dev_and_yolo_profiles() {
         assert!(local_runtime_allows_unsafe_raw_http_diagnostics(
             DeploymentMode::LocalSingleUser,
-            RuntimeProfile::LocalDev,
+            RuntimeProfile::LocalHost,
         ));
         assert!(local_runtime_allows_unsafe_raw_http_diagnostics(
             DeploymentMode::LocalSingleUser,

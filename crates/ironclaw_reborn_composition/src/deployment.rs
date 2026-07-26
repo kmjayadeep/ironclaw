@@ -302,7 +302,7 @@ impl DeploymentConfig {
             profile: RebornCompositionProfile::Standalone,
             policy_request: Some(RuntimePolicyRequest {
                 deployment: DeploymentMode::LocalSingleUser,
-                requested_profile: RuntimeProfile::LocalDev,
+                requested_profile: RuntimeProfile::LocalHost,
                 yolo_disclosure_acknowledged: false,
                 org_policy: OrgPolicyConstraints::default(),
             }),
@@ -360,7 +360,7 @@ impl DeploymentConfig {
             profile: RebornCompositionProfile::HostedSingleTenant,
             policy_request: Some(RuntimePolicyRequest {
                 deployment: DeploymentMode::LocalSingleUser,
-                requested_profile: RuntimeProfile::LocalDev,
+                requested_profile: RuntimeProfile::LocalHost,
                 yolo_disclosure_acknowledged: false,
                 org_policy: OrgPolicyConstraints::default(),
             }),
@@ -973,7 +973,7 @@ mod tests {
     fn local_dev_resolves_to_local_host_policy() {
         let policy = resolved(DeploymentConfig::standalone());
         assert_eq!(policy.deployment, DeploymentMode::LocalSingleUser);
-        assert_eq!(policy.resolved_profile, RuntimeProfile::LocalDev);
+        assert_eq!(policy.resolved_profile, RuntimeProfile::LocalHost);
         assert_eq!(policy.process_backend, ProcessBackendKind::LocalHost);
         assert_eq!(policy.approval_policy, ApprovalPolicy::AskDestructive);
     }

@@ -1846,8 +1846,8 @@ pub(crate) fn network_denied_runtime_policy() -> EffectiveRuntimePolicy {
 pub(crate) fn standalone_runtime_policy() -> EffectiveRuntimePolicy {
     EffectiveRuntimePolicy {
         deployment: DeploymentMode::LocalSingleUser,
-        requested_profile: RuntimeProfile::LocalDev,
-        resolved_profile: RuntimeProfile::LocalDev,
+        requested_profile: RuntimeProfile::LocalHost,
+        resolved_profile: RuntimeProfile::LocalHost,
         filesystem_backend: FilesystemBackendKind::HostWorkspace,
         process_backend: ProcessBackendKind::LocalHost,
         network_mode: NetworkMode::DirectLogged,

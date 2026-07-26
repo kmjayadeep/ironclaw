@@ -1026,7 +1026,7 @@ async fn global_auto_approve_does_not_bypass_manifest_ineligible_tool_through_st
 fn absent_runtime_policy_fails_closed_to_ask_always_without_minimal_bypass() {
     // Regression for the §4.4 mode-as-type leak: `resolved_approval_policy`
     // used to answer an absent runtime policy with
-    // `unwrap_or(RuntimeProfile::LocalDev)` — inventing a *deployment profile*
+    // `unwrap_or(RuntimeProfile::LocalHost)` — inventing a *deployment profile*
     // to derive authority from, and defaulting the approval width to the
     // narrower-than-safest `AskDestructive`. It now fails closed on both axes.
     let policy = builtin_capability_policy().expect("capability policy");
@@ -1071,7 +1071,7 @@ fn resolved_yolo_policy_allows_minimal_bypass_but_org_ceiling_removes_it() {
     let narrowed = ironclaw_runtime_policy::resolve(ironclaw_runtime_policy::ResolveRequest {
         yolo_disclosure_acknowledged: true,
         org_policy: ironclaw_runtime_policy::OrgPolicyConstraints::default()
-            .set_max_profile(ironclaw_host_api::runtime_policy::RuntimeProfile::LocalDev),
+            .set_max_profile(ironclaw_host_api::runtime_policy::RuntimeProfile::LocalHost),
         ..ironclaw_runtime_policy::ResolveRequest::new(
             ironclaw_host_api::runtime_policy::DeploymentMode::LocalSingleUser,
             ironclaw_host_api::runtime_policy::RuntimeProfile::LocalYolo,
