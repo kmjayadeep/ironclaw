@@ -13023,7 +13023,7 @@ async fn list_threads_unimplemented_backend_returns_service_unavailable() {
     // intentionally does NOT override the trait's default
     // `list_threads_for_scope` impl, so the service sees the
     // unimplemented-enumeration error path. The in-memory backend
-    // grew a real enumeration impl (local-dev needed working
+    // grew a real enumeration impl (standalone needed working
     // sidebar listing), so it can no longer stand in for a backend
     // without enumeration support.
     let services = RebornServices::new(

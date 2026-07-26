@@ -107,7 +107,7 @@ impl Default for DriverRequirements {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriverKind {
     Production,
-    /// Fake/reference drivers are allowed only in explicit local-dev/test readiness.
+    /// Fake/reference drivers are allowed only in explicit standalone/test readiness.
     Reference,
 }
 
@@ -507,7 +507,7 @@ fn validate_entry_readiness(
                 DriverReadinessDiagnosticCode::ReferenceDriverAllowedForNonProduction,
                 subject.to_string(),
                 Some(driver_identity.clone()),
-                "fake/reference loop driver allowed only for explicit local-dev/test readiness",
+                "fake/reference loop driver allowed only for explicit standalone/test readiness",
             ));
         }
         (_, DriverKind::Production) => {}

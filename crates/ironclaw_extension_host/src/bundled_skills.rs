@@ -503,19 +503,19 @@ mod tests {
     #[tokio::test]
     async fn bundled_reborn_skills_include_current_repo_bundles_and_assets() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let local_dev_root = dir.path().join("local-dev");
+        let standalone_root = dir.path().join("standalone");
 
-        ensure_bundled_reborn_skills_installed(&local_dev_root)
+        ensure_bundled_reborn_skills_installed(&standalone_root)
             .await
             .expect("install bundled skills");
 
         assert!(
-            local_dev_root
+            standalone_root
                 .join("system/skills/code-review/SKILL.md")
                 .is_file()
         );
         assert!(
-            local_dev_root
+            standalone_root
                 .join("system/skills/portfolio/scripts/backtest_strategy.py")
                 .is_file()
         );
@@ -524,12 +524,12 @@ mod tests {
     #[tokio::test]
     async fn bundled_reborn_skills_do_not_overwrite_unmanaged_system_skills() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let local_dev_root = dir.path().join("local-dev");
-        let skill_dir = local_dev_root.join("system/skills/code-review");
+        let standalone_root = dir.path().join("standalone");
+        let skill_dir = standalone_root.join("system/skills/code-review");
         fs::create_dir_all(&skill_dir).expect("mkdir");
         fs::write(skill_dir.join("SKILL.md"), "operator-owned").expect("write");
 
-        ensure_bundled_reborn_skills_installed(&local_dev_root)
+        ensure_bundled_reborn_skills_installed(&standalone_root)
             .await
             .expect("install bundled skills");
 
@@ -542,10 +542,10 @@ mod tests {
     #[tokio::test]
     async fn bundled_reborn_skills_skip_unchanged_managed_dirs() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let local_dev_root = dir.path().join("local-dev");
-        let skill_md = local_dev_root.join("system/skills/code-review/SKILL.md");
+        let standalone_root = dir.path().join("standalone");
+        let skill_md = standalone_root.join("system/skills/code-review/SKILL.md");
 
-        ensure_bundled_reborn_skills_installed(&local_dev_root)
+        ensure_bundled_reborn_skills_installed(&standalone_root)
             .await
             .expect("install bundled skills");
         let first_modified = fs::metadata(&skill_md)
@@ -553,7 +553,7 @@ mod tests {
             .modified()
             .expect("modified");
 
-        ensure_bundled_reborn_skills_installed(&local_dev_root)
+        ensure_bundled_reborn_skills_installed(&standalone_root)
             .await
             .expect("install bundled skills");
 
@@ -569,11 +569,11 @@ mod tests {
     #[tokio::test]
     async fn bundled_reborn_skills_replace_changed_managed_dirs() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let local_dev_root = dir.path().join("local-dev");
-        let skill_dir = local_dev_root.join("system/skills/code-review");
+        let standalone_root = dir.path().join("standalone");
+        let skill_dir = standalone_root.join("system/skills/code-review");
         let skill_md = skill_dir.join("SKILL.md");
 
-        ensure_bundled_reborn_skills_installed(&local_dev_root)
+        ensure_bundled_reborn_skills_installed(&standalone_root)
             .await
             .expect("install bundled skills");
         let bundled_skill_md = fs::read_to_string(&skill_md).expect("read bundled skill");
@@ -581,7 +581,7 @@ mod tests {
         fs::write(skill_dir.join("OLD_SENTINEL"), "old").expect("write old sentinel");
         write_marker_file(&skill_dir, "stale-content-hash");
 
-        ensure_bundled_reborn_skills_installed(&local_dev_root)
+        ensure_bundled_reborn_skills_installed(&standalone_root)
             .await
             .expect("replace bundled skills");
 
@@ -590,14 +590,14 @@ mod tests {
             bundled_skill_md
         );
         assert!(!skill_dir.join("OLD_SENTINEL").exists());
-        assert_no_bundle_scratch_dirs(&local_dev_root.join("system/skills"));
+        assert_no_bundle_scratch_dirs(&standalone_root.join("system/skills"));
     }
 
     #[tokio::test]
     async fn bundled_reborn_skills_remove_stale_managed_dirs() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let local_dev_root = dir.path().join("local-dev");
-        let system_skills_root = local_dev_root.join("system/skills");
+        let standalone_root = dir.path().join("standalone");
+        let system_skills_root = standalone_root.join("system/skills");
         let obsolete_dir = system_skills_root.join("obsolete-managed");
         let operator_dir = system_skills_root.join("operator-owned");
         fs::create_dir_all(&obsolete_dir).expect("obsolete dir");
@@ -611,7 +611,7 @@ mod tests {
         )
         .expect("operator marker");
 
-        ensure_bundled_reborn_skills_installed(&local_dev_root)
+        ensure_bundled_reborn_skills_installed(&standalone_root)
             .await
             .expect("install bundled skills");
 

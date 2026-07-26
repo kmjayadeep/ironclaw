@@ -2,7 +2,7 @@
 //! Lane 7 end-to-end coverage for the WebChat v2 HTTP surface.
 //!
 //! Unlike [`webui_v2_serve`], which drives the composed router against a
-//! stub `ProductSurface`, this test stands up a real local-dev
+//! stub `ProductSurface`, this test stands up a real standalone
 //! `RebornRuntime`, overrides its LLM gateway with a scripted
 //! tool-calling fake, composes the v2 router through
 //! [`runtime.product_surface`] + [`webui_v2_app`], and exercises it from
@@ -253,7 +253,7 @@ impl HostManagedModelGateway for ToolCallingGateway {
             })?
             .into_iter()
             .find(|def| def.capability_id == echo_id)
-            .expect("builtin.echo must be visible in local-dev capability surface");
+            .expect("builtin.echo must be visible in standalone capability surface");
 
         let candidate = capabilities
             .register_provider_tool_call(RegisterProviderToolCallRequest::new(ProviderToolCall {
@@ -443,7 +443,7 @@ impl HostManagedModelGateway for WriteFileGateway {
             })?
             .into_iter()
             .find(|def| def.capability_id == write_id)
-            .expect("builtin.write_file must be visible in local-dev capability surface");
+            .expect("builtin.write_file must be visible in standalone capability surface");
 
         // One tool round writes both files (mirrors the single-round shape the
         // echo gateway proves), then the follow-up call emits the final reply.
@@ -528,7 +528,7 @@ impl HostManagedModelGateway for MemoryWriteGateway {
             })?
             .into_iter()
             .find(|def| def.capability_id == memory_write_id)
-            .expect("ironclaw.memory.write must be visible in local-dev capability surface");
+            .expect("ironclaw.memory.write must be visible in standalone capability surface");
         let write = capabilities
             .register_provider_tool_call(RegisterProviderToolCallRequest::new(ProviderToolCall {
                 provider_id: "e2e-provider".to_string(),
@@ -577,7 +577,7 @@ async fn build_harness_with_gateway_and_policy(
     policy: EffectiveRuntimePolicy,
 ) -> Harness {
     let root = tempfile::tempdir().expect("tempdir");
-    let storage_root = root.path().join("local-dev");
+    let storage_root = root.path().join("standalone");
     build_harness_at(storage_root, Some(root), gateway, policy).await
 }
 
@@ -619,7 +619,7 @@ async fn build_harness_at(
 /// `webui_v2_extension_activate_returns_400_when_provider_instance_not_configured`.
 async fn build_harness_without_google_oauth_backend() -> Harness {
     let root = tempfile::tempdir().expect("tempdir");
-    let storage_root = root.path().join("local-dev");
+    let storage_root = root.path().join("standalone");
     build_harness_at_with_runtime_owner_auth_user_and_google_oauth_backend(
         storage_root,
         Some(root),
@@ -717,7 +717,7 @@ async fn build_harness_at_with_runtime_owner_auth_user_and_google_oauth_backend(
     // gate (which would otherwise leave the turn without an assistant reply).
     runtime
         .standalone_auto_approve_settings_for_test()
-        .expect("local-dev exposes auto-approve settings for test")
+        .expect("standalone exposes auto-approve settings for test")
         .set(ironclaw_approvals::AutoApproveSettingInput {
             updated_by: ironclaw_host_api::Principal::User(UserId::new(USER).expect("user")),
             scope: ResourceScope {
@@ -759,7 +759,7 @@ async fn build_two_user_harness(
     policy: EffectiveRuntimePolicy,
 ) -> Harness {
     let root = tempfile::tempdir().expect("tempdir");
-    let storage_root = root.path().join("local-dev");
+    let storage_root = root.path().join("standalone");
     let input = RebornRuntimeInput::from_build_input(
         ironclaw_reborn_composition::local_filesystem_build_input(USER, storage_root)
             .with_runtime_policy(policy)
@@ -780,7 +780,7 @@ async fn build_two_user_harness(
     let runtime = build_reborn_runtime(input).await.expect("runtime builds");
     runtime
         .standalone_auto_approve_settings_for_test()
-        .expect("local-dev exposes auto-approve settings for test")
+        .expect("standalone exposes auto-approve settings for test")
         .set(ironclaw_approvals::AutoApproveSettingInput {
             updated_by: ironclaw_host_api::Principal::User(UserId::new(USER).expect("user")),
             scope: ResourceScope {
@@ -1271,7 +1271,7 @@ async fn webui_v2_http_list_automations_uses_composed_runtime_facade() {
 #[tokio::test]
 async fn webui_v2_timeline_persists_display_preview_under_authenticated_owner() {
     let root = tempfile::tempdir().expect("tempdir");
-    let storage_root = root.path().join("local-dev");
+    let storage_root = root.path().join("standalone");
     let harness = build_harness_at_with_runtime_owner_and_auth_user(
         storage_root,
         Some(root),
@@ -1299,12 +1299,12 @@ async fn webui_v2_timeline_persists_display_preview_under_authenticated_owner() 
 /// v2 API from the browser side, stream live Reborn projections over
 /// SSE, replay with `Last-Event-ID`, verify final durable timeline
 /// state, reject a cross-thread cursor as a redacted SSE error, and
-/// reopen the same local-dev stores to prove the transcript survives
+/// reopen the same standalone stores to prove the transcript survives
 /// runtime restart.
 #[tokio::test]
 async fn webui_v2_beta_acceptance_stream_replay_restart_and_redaction() {
     let root = tempfile::tempdir().expect("tempdir");
-    let storage_root = root.path().join("local-dev");
+    let storage_root = root.path().join("standalone");
     let harness = build_harness_on_storage(&storage_root).await;
 
     let thread_id = create_thread(&harness.router, "e2e-create-1").await;
@@ -1929,7 +1929,7 @@ async fn untrusted_request_body_cannot_inject_system_scope() {
 
 // ─── operator LLM-config smoke (issue #4673) ──────────────────────────
 //
-// Stands up the same real local-dev runtime as the chat e2e, but with a boot
+// Stands up the same real standalone runtime as the chat e2e, but with a boot
 // config (so the product surface composes the operator LLM-config service) and an
 // operator-scoped authenticator (so the `/api/webchat/v2/llm/providers` routes
 // mount). Saving the built-in NEAR AI provider stores its API key under the
@@ -1962,7 +1962,7 @@ mod operator_llm_config {
 
     async fn build_operator_harness() -> Harness {
         let root = tempfile::tempdir().expect("tempdir");
-        let storage_root = root.path().join("local-dev");
+        let storage_root = root.path().join("standalone");
         let home = RebornHome::resolve_from_env_parts(
             Some(root.path().join("reborn-home").into_os_string()),
             None,

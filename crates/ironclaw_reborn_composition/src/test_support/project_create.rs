@@ -1,6 +1,6 @@
 //! `project_create` synthetic-capability test support (E-PROJ seam).
 
-/// Capability id of the local-dev synthetic `project_create` capability
+/// Capability id of the standalone synthetic `project_create` capability
 /// (E-PROJ seam). Single owner is the production constant in
 /// `runtime::capability_host::project_create`; the harness references this so its
 /// `project_tools()` constructor and assertions never hardcode the string.

@@ -18,25 +18,25 @@ const BUILTIN_CAPABILITY_POLICY_TOML: &str = include_str!("builtin_capability_po
 
 #[derive(Debug, Error)]
 pub(crate) enum BuiltinCapabilityPolicyError {
-    #[error("local-dev capability policy TOML is invalid: {0}")]
+    #[error("standalone capability policy TOML is invalid: {0}")]
     InvalidToml(#[from] toml::de::Error),
-    #[error("local-dev capability policy has no grants")]
+    #[error("standalone capability policy has no grants")]
     EmptyGrants,
-    #[error("local-dev capability policy has duplicate grant for {capability}")]
+    #[error("standalone capability policy has duplicate grant for {capability}")]
     DuplicateGrant { capability: CapabilityId },
-    #[error("local-dev capability policy is missing grant for {capability}")]
+    #[error("standalone capability policy is missing grant for {capability}")]
     MissingGrant { capability: CapabilityId },
-    #[error("local-dev capability policy has empty effect set for {target}")]
+    #[error("standalone capability policy has empty effect set for {target}")]
     EmptyEffects { target: String },
-    #[error("local-dev capability policy has duplicate effect {effect:?} for {target}")]
+    #[error("standalone capability policy has duplicate effect {effect:?} for {target}")]
     DuplicateEffect { target: String, effect: EffectKind },
-    #[error("local-dev capability policy provider id is invalid as an extension id: {0}")]
+    #[error("standalone capability policy provider id is invalid as an extension id: {0}")]
     InvalidProviderExtensionId(#[source] ironclaw_host_api::HostApiError),
-    #[error("local-dev capability policy provider manifest path is empty")]
+    #[error("standalone capability policy provider manifest path is empty")]
     EmptyProviderManifestPath,
-    #[error("local-dev capability policy provider manifest path must be absolute")]
+    #[error("standalone capability policy provider manifest path must be absolute")]
     NonAbsoluteProviderManifestPath,
-    #[error("local-dev capability policy is invalid: {reason}")]
+    #[error("standalone capability policy is invalid: {reason}")]
     CachedInvalid { reason: String },
 }
 
@@ -167,7 +167,7 @@ impl BuiltinCapabilityPolicy {
                     Err(BuiltinCapabilityPolicyError::MissingGrant { .. }) => {
                         tracing::debug!(
                             %capability,
-                            "local-dev spawn capability approval is using default lease terms"
+                            "standalone spawn capability approval is using default lease terms"
                         );
                         constraint_terms(
                             &self.approval_defaults.spawn_capability,
@@ -619,7 +619,7 @@ mod tests {
         );
 
         // Trace Commons capabilities must be granted here or they vanish from
-        // the model-visible tool surface in local-dev (REPL/serve) runs.
+        // the model-visible tool surface in standalone (REPL/serve) runs.
         let onboard = policy
             .grant(&CapabilityId::new("builtin.trace_commons.onboard").expect("capability id"))
             .expect("trace_commons.onboard grant");

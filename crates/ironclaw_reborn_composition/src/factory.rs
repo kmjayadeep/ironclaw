@@ -40,7 +40,7 @@ use crate::runtime_mounts::{
     ambient_workspace_mount_view, memory_mount_view, scoped_skill_context_mount_view,
     skill_management_mount_view, workspace_mount_view,
 };
-use crate::standalone_bootstrap_assembly::StandaloneBootstrapAssemblyBuilder;
+use crate::standalone_bootstrap_assembly::HostBootstrapAssemblyBuilder;
 #[cfg(test)]
 use crate::standalone_bootstrap_assembly::{
     LEGACY_SKILLS_BACKFILL_MARKER, backfill_legacy_user_skills,
@@ -796,7 +796,7 @@ impl RebornAuthContinuationDispatcher for AuthContinuationFromProduct {
 }
 
 /// Filename of the cached standalone secrets master-key dotfile under a
-/// Reborn home / local-dev root directory. `pub` (re-exported from `lib.rs`)
+/// Reborn home / standalone root directory. `pub` (re-exported from `lib.rs`)
 /// so onboarding (`ironclaw_reborn_cli::commands::onboard`) can check for its
 /// presence without duplicating the literal.
 pub const STANDALONE_SECRETS_MASTER_KEY_PATH: &str = ".reborn-local-dev-secrets-master-key";
@@ -1016,7 +1016,7 @@ pub(crate) struct RebornRuntimeStores {
     pub(crate) workspace_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
     pub(crate) extension_filesystem: Arc<CompositeRootFilesystem>,
     /// Single memory provider resolver (issue #3537). Both the memory tools and
-    /// the local-dev profile source build their `MemoryService` through this, so
+    /// the standalone profile source build their `MemoryService` through this, so
     /// profile reads and tools agree on the bound provider (native, or
     /// degrade-to-empty for disabled/third-party).
     pub(crate) memory_service_resolver: MemoryServiceResolver,
@@ -1126,7 +1126,7 @@ pub(crate) enum CredentialRefreshWorkerReady {
         leader_lock: ironclaw_auth::CredentialRefreshLeaderLock,
         refresh_port: Arc<RebornProductAuthServices>,
     },
-    /// Deps intentionally absent: local-dev (single-user, no cross-owner
+    /// Deps intentionally absent: standalone (single-user, no cross-owner
     /// enumeration), or a caller-supplied `product_auth_ports` override/test
     /// path. The sweep never starts.
     Absent,
@@ -1249,13 +1249,13 @@ struct ProductAuthServicesCompositionInput {
     credential_account_visibility_policy:
         Option<Arc<dyn ironclaw_auth::RuntimeCredentialAccountVisibilityPolicy>>,
     /// Durable auth-flow record projection wired for the builder's OWN durable
-    /// product-auth service (filesystem-backed local-dev / production-shaped
+    /// product-auth service (filesystem-backed standalone / production-shaped
     /// path). `None` when a caller supplied its own product-auth bundle — that
     /// path intentionally leaves the WebUI auth interaction surface unavailable
     /// (see `runtime/tests/auth_interaction.rs`
     /// `..._are_unavailable_without_flow_record_source`). Restores wiring dropped
     /// in commit 975bcd2ce ("Unify reborn runtime assembly"), which collapsed the
-    /// old two-branch builder and lost the local-dev `.with_flow_record_source`.
+    /// old two-branch builder and lost the standalone `.with_flow_record_source`.
     flow_record_source: Option<Arc<dyn ironclaw_auth::AuthFlowRecordSource>>,
 }
 
@@ -1343,9 +1343,9 @@ fn production_config(
     config.require_credential_broker()
 }
 
-/// Build the safe single-tenant runtime surface used by local-dev and
+/// Build the safe single-tenant runtime surface used by standalone and
 /// hosted-single-tenant. Hosted single-tenant supplies a durable Postgres
-/// backend through `RebornStorageInput::HostedSingleTenantPostgres`; local-dev
+/// backend through `RebornStorageInput::HostedSingleTenantPostgres`; standalone
 /// keeps its historical local filesystem/libSQL default.
 fn extension_lifecycle_surface_context(
     owner_user_id: UserId,
@@ -1451,7 +1451,7 @@ async fn trigger_repository_for_durable_backend(
                 .run_migrations()
                 .await
                 .map_err(|error| RebornBuildError::InvalidConfig {
-                    reason: format!("local-dev trigger repository migrations failed: {error}"),
+                    reason: format!("standalone trigger repository migrations failed: {error}"),
                 })?;
             Ok(Arc::new(repository))
         }
@@ -1811,7 +1811,7 @@ where
     FilesystemResourceGovernor::new(crate::wrap_scoped(Arc::clone(filesystem)))
 }
 
-/// The `HostRuntimeServices` wiring shared by the local-dev and production
+/// The `HostRuntimeServices` wiring shared by the standalone and production
 /// build paths (F4): the ten `.with_*` setters both paths always apply, plus
 /// the fixed `TracingSecurityAuditSink`. Single-sourced as a macro because the
 /// builder is generic over four backend type params and the setters are
@@ -1936,14 +1936,14 @@ where
 }
 
 /// Open the `/secrets` store alone, without building the rest of the
-/// local-dev [`CompositeRootFilesystem`] (project mounts, extension mounts,
+/// standalone [`CompositeRootFilesystem`] (project mounts, extension mounts,
 /// trigger/project repositories, …).
 ///
 /// - Pre-composition entry point `ironclaw-reborn onboard` needs: it must
 ///   write a provider API key before a full build-input-driven build exists,
 ///   and reconstructing the whole composite just to reach one mount is
 ///   heavy and risks silently diverging from `serve`'s copy.
-/// - `/secrets`'s physical backing is the same local-dev libSQL file
+/// - `/secrets`'s physical backing is the same standalone libSQL file
 ///   `build_standalone_root_filesystem` opens for `/tenants` in production —
 ///   a key written here is immediately visible to `serve`, no extra
 ///   coordination needed.
@@ -1962,7 +1962,7 @@ pub async fn open_standalone_secret_store(
     Ok(store as Arc<dyn SecretStorePort>)
 }
 
-/// Where a resolved local-dev master key came from, used to name the source in
+/// Where a resolved standalone master key came from, used to name the source in
 /// fail-loud error messages.
 enum MasterKeySource {
     File(PathBuf),
@@ -2212,7 +2212,7 @@ fn write_standalone_secret_master_key(path: &Path, key: &str) -> Result<(), Rebo
         let _ = key;
         Err(RebornBuildError::InvalidConfig {
             reason:
-                "local-dev filesystem secret persistence requires Unix permissions or Windows ACLs"
+                "standalone filesystem secret persistence requires Unix permissions or Windows ACLs"
                     .to_string(),
         })
     }
@@ -2249,7 +2249,7 @@ pub async fn provision_standalone_keychain_master_key() -> KeychainMasterKeyOutc
     // whatever key the keychain actually holds. Same accepted-risk class as
     // the TOCTOU documented on this function's only caller
     // (`ironclaw_reborn_cli::commands::onboard::master_key::provision_master_key`):
-    // LocalDev, single-operator, run-once-by-hand; worst case is a
+    // Standalone, single-operator, run-once-by-hand; worst case is a
     // wrongly-regenerated key recoverable by re-entering one API key.
     if ironclaw_secrets::keychain::has_master_key().await {
         return KeychainMasterKeyOutcome::AlreadyPresent;
@@ -2351,7 +2351,7 @@ fn build_outbound_stores(filesystem: Arc<CompositeRootFilesystem>) -> OutboundSt
 }
 
 pub(crate) fn builtin_extension_registry() -> Result<ExtensionRegistry, RebornBuildError> {
-    // Shared by local-dev and production composition so host-owned first-party
+    // Shared by standalone and production composition so host-owned first-party
     // capabilities expose the same built-in package contract in both profiles.
     let mut registry = ExtensionRegistry::new();
     registry
@@ -2504,7 +2504,7 @@ pub fn production_first_party_trust_policy(
     bundles: &[ironclaw_extension_host::FirstPartyPackageBundle],
 ) -> Result<HostTrustPolicy, RebornBuildError> {
     let policy = builtin_capability_policy().map_err(|error| RebornBuildError::InvalidConfig {
-        reason: format!("local-dev capability policy is invalid: {error}"),
+        reason: format!("standalone capability policy is invalid: {error}"),
     })?;
     let mut entries = vec![
         AdminEntry::for_local_manifest(
@@ -2632,9 +2632,9 @@ async fn build_production_shaped(
     let first_party_bundles = deployment.first_party_bundles.clone();
     let traffic_policy = deployment.traffic();
     // Build the single memory provider resolver for this runtime (issue #3537):
-    // the memory tools and the local-dev profile source build their
-    // `MemoryService` through it. For a local-dev workspace, bound mem0 memory to
-    // this workspace (issue #5264) so memories from one local-dev root never leak
+    // the memory tools and the standalone profile source build their
+    // `MemoryService` through it. For a standalone workspace, bound mem0 memory to
+    // this workspace (issue #5264) so memories from one standalone root never leak
     // into another sharing the same mem0 server; production keeps `app_id` from
     // config. An explicitly-configured `app_id` always wins.
     let memory_service_resolver = {
@@ -2973,7 +2973,7 @@ async fn build_local_storage_production_shaped(
         UserId::new(context.owner_id.clone()).map_err(|error| RebornBuildError::InvalidConfig {
             reason: error.to_string(),
         })?;
-    let bootstrap = StandaloneBootstrapAssemblyBuilder::new(root, &owner_user_id)
+    let bootstrap = HostBootstrapAssemblyBuilder::new(root, &owner_user_id)
         .build()
         .await?;
 
@@ -3052,7 +3052,7 @@ struct RebornProductionBuildContext {
     owner_id: String,
     local_runtime_identity: Option<RebornLocalRuntimeIdentity>,
     turn_state_store_limits: ironclaw_turns::TurnStateStoreLimits,
-    /// Memory provider resolver (issue #3537), carried so the local-dev profile
+    /// Memory provider resolver (issue #3537), carried so the standalone profile
     /// source and the memory tools build providers through one resolver.
     memory_resolver: MemoryServiceResolver,
     /// The pre-minted scheduler wake wiring to carry to `RebornRuntimeStores` so
@@ -3491,7 +3491,7 @@ where
     /// Retained so `build_backend_production` can build the admin secret
     /// provisioner over the SAME crypto the runtime's own secret store uses —
     /// material written by the provisioner must decrypt under the user's own
-    /// store and vice versa (mirrors the local `local_dev_secret_bundle.1`).
+    /// store and vice versa (mirrors the local `standalone_secret_bundle.1`).
     crypto: Arc<ironclaw_secrets::SecretsCrypto>,
 }
 
@@ -3699,13 +3699,13 @@ async fn build_backend_production(
         #[cfg(any(test, feature = "test-support"))]
         trust_fixture_extensions_for_test,
     } = context;
-    // Select the non-validating local-testing host runtime for a local-dev
-    // deployment. The pre-`975bcd2ce` dedicated local-dev builder always used
+    // Select the non-validating local-testing host runtime for a standalone
+    // deployment. The pre-`975bcd2ce` dedicated standalone builder always used
     // `host_runtime_for_local_testing()`; the unified path keyed only on a wired
     // local host process port (`local_process_port.is_some()`), which is `None`
-    // whenever the local-dev deployment uses a non-`LocalHost` process backend
+    // whenever the standalone deployment uses a non-`LocalHost` process backend
     // (e.g. an injected `TenantSandbox` port — the multi-user-safe default). That
-    // wrongly routed such local-dev builds through `host_runtime_for_production`,
+    // wrongly routed such standalone builds through `host_runtime_for_production`,
     // whose `validate_production_wiring` rejects the `LocalSingleUser` deployment
     // mode. Key the choice on the deployment mode too: a `LocalSingleUser` policy
     // is exactly the shape production validation would reject, so it must use the
@@ -3983,7 +3983,7 @@ async fn build_backend_production(
     .with_turn_run_wake_notifier_dyn(production_wiring.turn_run_wake_notifier);
     // Honor an injected test egress (hosted-MCP discovery / DM provisioning over
     // a fake transport) when present; otherwise the real policy egress. Restores
-    // the consumer dropped in commit 975bcd2ce — without it every local-dev test
+    // the consumer dropped in commit 975bcd2ce — without it every standalone test
     // reaches the real network. `TestNetworkHttpEgress` adapts the injected
     // `Arc<dyn NetworkHttpEgress>` to the generic method bound.
     #[cfg(any(test, feature = "test-support"))]
@@ -4080,7 +4080,7 @@ async fn build_backend_production(
             turn_coordinator: turn_coordinator.clone(),
             // Blocked-auth fan-out over this builder's own durable turn-state
             // store: a completed connect resumes every run the same owner has
-            // parked on the same provider, matching the local-dev builder. The
+            // parked on the same provider, matching the standalone builder. The
             // blanket `TurnRunSnapshotSource` impl covers the generic
             // filesystem store directly.
             blocked_auth_snapshot_source: Some(Arc::clone(&turn_state)

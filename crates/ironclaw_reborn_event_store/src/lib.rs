@@ -1870,7 +1870,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_allows_cleartext_http_libsql_url() {
+    async fn standalone_allows_cleartext_http_libsql_url() {
         // Non-production profiles can still use http:// for local sqld.
         // The build call will fail on the actual connection attempt below
         // for an unreachable address, but it must NOT fail with the
@@ -1986,8 +1986,8 @@ mod tests {
         ));
     }
     #[tokio::test]
-    async fn local_dev_still_allows_bare_relative_libsql_path() {
-        // The bare-path rejection is a production-only policy. LocalDev /
+    async fn standalone_still_allows_bare_relative_libsql_path() {
+        // The bare-path rejection is a production-only policy. Standalone /
         // Test must still allow `events.db` for ergonomic test/demo configs.
         let temp = tempfile::tempdir().expect("tempdir");
         let cwd = std::env::current_dir().expect("cwd");
@@ -2006,7 +2006,7 @@ mod tests {
                 result,
                 Err(RebornEventStoreError::ProductionLibsqlAmbiguousTarget)
             ),
-            "LocalDev must accept bare relative paths"
+            "Standalone must accept bare relative paths"
         );
         // The build itself should succeed for a bare filename in cwd.
         result.expect("local libsql with bare relative path should build");

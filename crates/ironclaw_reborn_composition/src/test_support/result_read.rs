@@ -1,7 +1,7 @@
 //! `result_read` synthetic-capability test support (durable tool-result
 //! projection seam, issue #5838).
 
-/// Capability id of the local-dev synthetic `result_read` capability. Single
+/// Capability id of the standalone synthetic `result_read` capability. Single
 /// owner is the production constant in `runtime::capability_host::result_read`; the
 /// harness references this so its durable-io scenarios and assertions never
 /// hardcode the string.

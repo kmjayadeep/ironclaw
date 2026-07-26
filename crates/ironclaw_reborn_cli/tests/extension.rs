@@ -5,7 +5,7 @@ fn reborn_bin() -> &'static str {
 }
 
 #[test]
-fn extension_search_json_reads_reborn_home_local_dev_packages() {
+fn extension_search_json_reads_reborn_home_standalone_packages() {
     let temp = tempfile::tempdir().expect("tempdir");
     let reborn_home = temp.path().join("reborn-home");
     write_extension_fixture(&reborn_home, "zztest-mcp");
@@ -24,7 +24,7 @@ fn extension_search_json_reads_reborn_home_local_dev_packages() {
 }
 
 #[test]
-fn extension_search_json_without_query_lists_local_dev_packages() {
+fn extension_search_json_without_query_lists_standalone_packages() {
     let temp = tempfile::tempdir().expect("tempdir");
     let reborn_home = temp.path().join("reborn-home");
     write_extension_fixture(&reborn_home, "zztest-alpha");
@@ -107,7 +107,7 @@ fn extension_install_json_uses_reborn_home_without_v1_state() {
     assert_eq!(json["payload"]["installed"], true);
     assert!(
         reborn_home
-            .join("local-dev/system/extensions/zztest-mcp/manifest.toml")
+            .join("standalone/system/extensions/zztest-mcp/manifest.toml")
             .exists(),
         "extension install should operate inside Reborn home"
     );
@@ -170,7 +170,7 @@ fn extension_install_auto_advances_and_remove_uses_persisted_installation_state(
     assert_eq!(remove["payload"]["removed"], true);
     assert!(
         !reborn_home
-            .join("local-dev/system/extensions/zztest-mcp")
+            .join("standalone/system/extensions/zztest-mcp")
             .exists(),
         "extension remove should delete the installed package files"
     );
@@ -211,7 +211,7 @@ fn write_extension_fixture_with_metadata(
     description: &str,
 ) {
     let extension_root = reborn_home
-        .join("local-dev/system/extensions")
+        .join("standalone/system/extensions")
         .join(extension_id);
     fs::create_dir_all(&extension_root).expect("fixture extension dir");
     let name = toml_basic_string_value(name);

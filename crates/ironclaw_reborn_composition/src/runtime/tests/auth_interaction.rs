@@ -39,13 +39,13 @@ impl HostManagedModelGateway for UnusedModelGateway {
 }
 
 #[tokio::test]
-async fn local_dev_runtime_auth_interactions_are_unavailable_without_flow_record_source() {
+async fn standalone_runtime_auth_interactions_are_unavailable_without_flow_record_source() {
     let auth = Arc::new(InMemoryAuthProductServices::new());
     let ports = RebornProductAuthServicePorts::from_shared(auth);
     let root = tempfile::tempdir().expect("tempdir");
     let runtime = build_runtime(
         "auth-read-model-absent",
-        root.path().join("local-dev"),
+        root.path().join("standalone"),
         Some(ports),
     )
     .await

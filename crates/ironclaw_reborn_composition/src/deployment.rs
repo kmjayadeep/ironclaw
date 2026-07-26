@@ -3,7 +3,7 @@
 //!
 //! Deployment modes are configuration data resolved at the composition edge;
 //! each deployment target is one [`DeploymentConfig`] value built by a
-//! named constructor; the difference between local-dev, local-dev-yolo, and
+//! named constructor; the difference between standalone, standalone-unrestricted, and
 //! the hosted volume preview is readable on this one page as data.
 //!
 //! Two deliberate boundaries:
@@ -296,7 +296,7 @@ impl DeploymentConfig {
         }
     }
 
-    /// Standalone local development on a single-user machine.
+    /// Standalone standaloneelopment on a single-user machine.
     pub fn standalone() -> Self {
         Self {
             profile: RebornCompositionProfile::Standalone,
@@ -333,7 +333,7 @@ impl DeploymentConfig {
         }
     }
 
-    /// Trusted-laptop local development with minimal approvals. Requires the
+    /// Trusted-laptop standaloneelopment with minimal approvals. Requires the
     /// operator's explicit host-access confirmation; without it the resolver
     /// fails closed with [`ResolveError::YoloRequiresDisclosure`].
     pub fn standalone_unrestricted(confirm_host_access: bool) -> Self {
@@ -713,7 +713,7 @@ pub fn hosted_single_tenant_volume_runtime_policy() -> Result<EffectiveRuntimePo
         })
 }
 
-/// Resolved policy for trusted single-user local development with inherited
+/// Resolved policy for trusted single-user standaloneelopment with inherited
 /// host environment access.
 pub fn standalone_unrestricted_runtime_policy(
     confirm_host_access: bool,
@@ -727,10 +727,10 @@ pub fn standalone_unrestricted_runtime_policy(
     .map_err(|error| match error {
         RebornRuntimeProfileError::Policy(error) => error,
         RebornRuntimeProfileError::UnsupportedProfile { .. } => {
-            unreachable!("local-dev-yolo is a local runtime profile")
+            unreachable!("standalone-unrestricted is a local runtime profile")
         }
         RebornRuntimeProfileError::MissingPolicyRequest { .. } => {
-            unreachable!("local-dev-yolo carries a runtime-policy request")
+            unreachable!("standalone-unrestricted carries a runtime-policy request")
         }
     })
 }
@@ -970,7 +970,7 @@ mod tests {
     }
 
     #[test]
-    fn local_dev_resolves_to_local_host_policy() {
+    fn standalone_resolves_to_local_host_policy() {
         let policy = resolved(DeploymentConfig::standalone());
         assert_eq!(policy.deployment, DeploymentMode::LocalSingleUser);
         assert_eq!(policy.resolved_profile, RuntimeProfile::LocalHost);
@@ -979,7 +979,7 @@ mod tests {
     }
 
     #[test]
-    fn local_dev_yolo_without_disclosure_fails_closed() {
+    fn standalone_yolo_without_disclosure_fails_closed() {
         let error = DeploymentConfig::standalone_unrestricted(false)
             .resolve()
             .expect_err("yolo without disclosure must fail");
@@ -987,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    fn local_dev_yolo_with_disclosure_resolves_minimal_approvals() {
+    fn standalone_yolo_with_disclosure_resolves_minimal_approvals() {
         let policy = resolved(DeploymentConfig::standalone_unrestricted(true));
         assert_eq!(policy.resolved_profile, RuntimeProfile::LocalYolo);
         assert_eq!(policy.approval_policy, ApprovalPolicy::Minimal);
@@ -1041,7 +1041,7 @@ mod local_runtime_profile_tests {
                 confirm_host_access: true,
             },
         )
-        .expect("confirmed local-dev-yolo builds");
+        .expect("confirmed standalone-unrestricted builds");
 
         assert_eq!(
             input.profile(),
@@ -1052,7 +1052,7 @@ mod local_runtime_profile_tests {
             .deployment()
             .resolve()
             .expect("carried deployment resolves")
-            .expect("local-dev-yolo makes a policy request");
+            .expect("standalone-unrestricted makes a policy request");
         assert_eq!(
             carried.resolved_profile,
             RuntimeProfile::LocalYolo,
@@ -1082,8 +1082,8 @@ mod local_runtime_profile_tests {
     }
 
     #[test]
-    fn deployments_without_the_local_dev_storage_shape_are_rejected() {
-        // The helper builds the local-dev storage input shape; the rejection is
+    fn deployments_without_the_standalone_storage_shape_are_rejected() {
+        // The helper builds the standalone storage input shape; the rejection is
         // expressed as the storage-shape axis, not a list of profile names.
         for profile in [
             RebornCompositionProfile::Disabled,
@@ -1097,7 +1097,7 @@ mod local_runtime_profile_tests {
                     confirm_host_access: true,
                 },
             )
-            .expect_err("non-local-dev-storage deployments are not this helper's business");
+            .expect_err("non-standalone-storage deployments are not this helper's business");
             assert!(matches!(
                 error,
                 RebornRuntimeProfileError::UnsupportedProfile { .. }

@@ -129,7 +129,7 @@ async fn build_timeline_runtime(root: &tempfile::TempDir) -> RebornRuntime {
     let input = local_runtime_build_input_with_options(
         RebornCompositionProfile::StandaloneUnrestricted,
         USER,
-        root.path().join("local-dev"),
+        root.path().join("standalone"),
         RebornRuntimeProfileOptions {
             confirm_host_access: true,
         },

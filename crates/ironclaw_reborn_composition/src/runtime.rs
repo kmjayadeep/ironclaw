@@ -895,7 +895,7 @@ impl RegistryPersistentApprovalGranteeResolver {
     }
 }
 
-/// Shared local-dev `DefaultApprovalInteractionService` wiring recipe. Used by both
+/// Shared standalone `DefaultApprovalInteractionService` wiring recipe. Used by both
 /// `build_reborn_runtime` and `test_support::standalone_approval_interaction_service_for_test`
 /// so the two never drift (W5-WEBUI-API-2 follow-up). `audit_sink` is `None` from the
 /// test accessor: production wires one for audit-log observability only, not
@@ -2380,7 +2380,7 @@ impl RebornRuntime {
     ///
     /// This deliberately does NOT reuse `rt.workspace_filesystem`: that handle
     /// is intentionally read-only (it backs setup-marker reads — see
-    /// `local_dev_setup_marker_workspace_filesystem_is_read_only`), so writing
+    /// `standalone_setup_marker_workspace_filesystem_is_read_only`), so writing
     /// an attachment through it fails closed with `PermissionDenied`. Delegates
     /// to `RebornRuntimeStores::read_write_workspace_filesystem` — the single owner
     /// of this recipe, shared with the `standalone_attachment_test_support_for_test`
@@ -3581,7 +3581,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
 
     // Extract the pre-minted scheduler wake wiring from the production composition path
     // (minted in `build_production_shaped`) so it can be handed to
-    // `DefaultPlannedRuntimeParts.scheduler_wake_wiring` below. The local-dev path
+    // `DefaultPlannedRuntimeParts.scheduler_wake_wiring` below. The standalone path
     // leaves this `None` and `build_default_planned_runtime` mints its own wiring.
     let production_scheduler_wake = {
         let wiring = services.production_scheduler_wake.take();
@@ -3660,7 +3660,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         tenant_id,
         agent_id,
         project_id: default_project_id,
-        // Keep local-dev runtime threads aligned with WebUI's owner-scoped
+        // Keep standalone runtime threads aligned with WebUI's owner-scoped
         // facade so both entrypoints drive the same runner/evidence path.
         owner_user_id: Some(actor_user_id.clone()),
         mission_id: None,
@@ -3711,7 +3711,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     let resolved_cost_table = llm_cost_table_arc;
 
     // Build the model budget accountant from the resolved cost table plus
-    // the local-dev governor. `BudgetEnforcement::Unenforced` — the resolved
+    // the standalone governor. `BudgetEnforcement::Unenforced` — the resolved
     // trusted-laptop boundary — is the explicit exception: it inherits host
     // trust and must not pause on budget gates. Reading the resolved value
     // rather than the deployment profile means a tenant/org ceiling that
@@ -3724,7 +3724,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     // caller-supplied `BudgetDefaults` (or `compiled_defaults().with_env()`
     // as the composition-root fallback when no caller pre-resolves them)
     // so a fresh user / project account picks up the default daily cap on
-    // the first model call. Without this seeding step the local-dev
+    // the first model call. Without this seeding step the standalone
     // governor starts empty and `reserve_with_outcome_in_state` skips
     // accounts that have no configured limit — model calls would record
     // usage but never enforce a cap (review feedback High #2 + Thermo-
@@ -4128,7 +4128,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
             )) as Arc<dyn ironclaw_loop_host::LoopAttachmentReadPort>,
         ),
         // §5.2.9 render-from-record: a `GateRecordStore` over the SAME
-        // shared `extension_filesystem` + per-user mount view the local-dev
+        // shared `extension_filesystem` + per-user mount view the standalone
         // capability port persists `GateRecord::Auth` into (see
         // `runtime/capability_host.rs`'s capability wiring, which builds
         // its store the same way and passes it via `with_gate_record_store`).
@@ -4218,7 +4218,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
             }
         },
         // Resolve the per-user agent-context profile (timezone/locale/location) from
-        // `context/profile.json` via the workspace filesystem. When a local-dev workspace
+        // `context/profile.json` via the workspace filesystem. When a standalone workspace
         // filesystem is available, the `MemoryBackedUserProfileSource` adapter reads it;
         // otherwise `EmptyUserProfileSource` degrades gracefully to `None` (profile unknown).
         // `extension_filesystem` is the raw `Arc<CompositeRootFilesystem>` (=
@@ -4275,7 +4275,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         // For the production composition path, use the pre-minted wiring from
         // `build_production_shaped` so the `HostRuntimeServices` notifier (used by
         // `turn_coordinator_for_production`) and the scheduler's wake loop share the
-        // exact same channel. For local-dev, `None` causes `build_default_planned_runtime`
+        // exact same channel. For standalone, `None` causes `build_default_planned_runtime`
         // to mint its own wiring internally (existing behavior).
         scheduler_wake_wiring: production_scheduler_wake,
     };
@@ -4773,7 +4773,7 @@ fn build_webui_auth_interaction_service_with_turn_run_source(
 }
 
 const LOOP_RUN_CAPABILITY_ID: &str = "loop.run";
-const TRUSTED_LAPTOP_ACCESS_AUDIT_KIND: &str = "local_dev_trusted_laptop_access";
+const TRUSTED_LAPTOP_ACCESS_AUDIT_KIND: &str = "standalone_trusted_laptop_access";
 const TRUSTED_LAPTOP_ACCESS_AUDIT_TARGET: &str = "filesystem=host_workspace_and_home;process=local_host;network=direct;secrets=inherited_env;host_home_mount=/host";
 const TRUSTED_LAPTOP_ACCESS_AUDIT_STATUS: &str = "host_home_mounted_read_write";
 
@@ -4866,11 +4866,11 @@ fn optional_nonzero_u32_env(
     }
 }
 
-/// Build the [`SkillActivationSelectorConfig`] used by the local-dev
+/// Build the [`SkillActivationSelectorConfig`] used by the standalone
 /// filesystem skill context source. Extracted from
 /// [`filesystem_skill_context_source`] so the wiring of the
 /// `regex_skill_activation_enabled` flag from [`RebornRuntimeInput`] is
-/// covered by a unit test (see `tests::local_dev_selector_config_*`).
+/// covered by a unit test (see `tests::standalone_selector_config_*`).
 /// Without this seam the propagation was tested only indirectly through
 /// the full [`build_reborn_runtime`] path, where an accidental
 /// `..SkillActivationSelectorConfig::default()` regression would slip

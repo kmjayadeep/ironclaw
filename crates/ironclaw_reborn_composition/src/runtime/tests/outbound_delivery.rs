@@ -182,7 +182,7 @@ fn model_capability_error(error: impl std::fmt::Display) -> HostManagedModelErro
 }
 
 #[tokio::test]
-async fn local_dev_runtime_selects_outbound_delivery_target_before_trigger_create() {
+async fn standalone_runtime_selects_outbound_delivery_target_before_trigger_create() {
     let root = tempfile::tempdir().expect("tempdir");
     let host_home = root.path().join("host-home");
     std::fs::create_dir_all(&host_home).expect("host home");
@@ -192,7 +192,7 @@ async fn local_dev_runtime_selects_outbound_delivery_target_before_trigger_creat
         crate::deployment::local_filesystem_build_input_with_profile(
             RebornCompositionProfile::StandaloneUnrestricted,
             "runtime-outbound-trigger-owner",
-            root.path().join("local-dev"),
+            root.path().join("standalone"),
         )
         .with_runtime_policy(
             crate::standalone_unrestricted_runtime_policy(true)

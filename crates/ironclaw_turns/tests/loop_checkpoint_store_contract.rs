@@ -122,7 +122,7 @@ async fn inmemory_turn_state_loop_checkpoint_roundtrip_and_snapshot() {
     assert_loop_checkpoint_store_cross_scope_and_run_miss(&reopened).await;
 }
 
-/// Build the CAS-capable backend shape used by `/turns` in local-dev and
+/// Build the CAS-capable backend shape used by `/turns` in standalone and
 /// production composition.
 fn engine_filesystem() -> InMemoryBackend {
     InMemoryBackend::new()

@@ -53,7 +53,7 @@ pub struct RefreshingCapabilityPortTestParts {
     pub project_service: std::sync::Arc<dyn ironclaw_product::ProjectService>,
     /// Backs the `result_read` synthetic capability's durable tool-result
     /// reads; production wires the runtime's session thread service
-    /// (`local_dev.rs` `create_capability_port`).
+    /// (`standalone.rs` `create_capability_port`).
     pub thread_service: std::sync::Arc<dyn ironclaw_threads::SessionThreadService>,
     /// Opaque handle built by
     /// [`build_extension_management_for_test`]. Wraps the extension-host
@@ -74,7 +74,7 @@ pub struct RefreshingCapabilityPortTestParts {
         Option<std::sync::Arc<dyn ironclaw_product::OutboundPreferencesProductService>>,
     pub outbound_delivery_target_set_requires_approval: bool,
     /// Per-tool approval-setting overrides; wrapped into the same
-    /// `StoreApprovalSettingsProvider` production wires (`local_dev.rs:1002`).
+    /// `StoreApprovalSettingsProvider` production wires (`standalone.rs:1002`).
     pub tool_permission_overrides:
         std::sync::Arc<dyn ironclaw_approvals::ToolPermissionOverrideStorePort>,
     pub auto_approve_settings: std::sync::Arc<dyn ironclaw_approvals::AutoApproveSettingStorePort>,
@@ -113,7 +113,7 @@ pub struct RefreshingCapabilityPortTestParts {
 /// `capability_wiring` reads (`runtime/capability_host.rs:132-133`) off a built
 /// `RebornRuntimeStores`, for wiring
 /// [`RefreshingCapabilityPortTestParts::extension_management`].
-/// `None` when the services were built without a local-dev runtime (mirrors
+/// `None` when the services were built without a standalone runtime (mirrors
 /// `standalone_active_extension_authority_for_test`'s `None`-propagation
 /// shape), OR when no extension is currently active (matches production:
 /// `ExtensionCapabilitySurfaceSource::new` accepts the port either way and

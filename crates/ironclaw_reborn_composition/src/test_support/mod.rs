@@ -13,12 +13,12 @@
 //!    [`OAuthProductAuthTestBundle`], `build_oauth_product_auth_for_test`,
 //!    `build_google_oauth_product_auth_for_test` — real store / real client /
 //!    scripted HTTP egress for OAuth connect, refresh, and error-path tests.
-//! 3. [`local_dev_boot`] — `build_approval_gate_evidence_for_test`,
+//! 3. [`standalone_boot`] — `build_approval_gate_evidence_for_test`,
 //!    `build_default_database_roots_for_test`,
 //!    `mount_database_roots_for_test`,
 //!    `build_secret_store_for_test` — mirror the production
-//!    local-dev boot sequence so the integration-test harness
-//!    (`tests/support/reborn/`) drives the real local-dev composition paths
+//!    standalone boot sequence so the integration-test harness
+//!    (`tests/support/reborn/`) drives the real standalone composition paths
 //!    without duplicating the wiring logic.
 //! 4. [`project_create`] — `project_create` synthetic-capability test support
 //!    (E-PROJ seam).
@@ -48,7 +48,7 @@
 //!     the production `create_refreshing_capability_port` factory
 //!     (all wrap layers) driven with harness-injectable parts (harness-port-seam
 //!     P1 seam).
-//! 13. [`local_dev_capability_io`] — `staged_capability_io_for_test`, the
+//! 13. [`standalone_capability_io`] — `staged_capability_io_for_test`, the
 //!     production `StagedCapabilityIo` constructor (`capability_wiring`'s
 //!     `new_with_durable_previews` call), for durable tool-result projection
 //!     coverage (issue #5838).

@@ -761,7 +761,7 @@ fn build_standalone_local_runtime_services_input(
     .with_local_runtime_workspace_root(workspace_root);
     if services_input.requires_local_runtime_confirmed_host_home_root() {
         let host_home_root =
-            confirmed_host_home_root(options).context("local-dev-yolo host access")?;
+            confirmed_host_home_root(options).context("standalone-unrestricted host access")?;
         services_input = services_input.with_local_runtime_confirmed_host_home_root(host_home_root);
     }
     services_input = services_input.with_optional_nearai_mcp_bootstrap_config(
@@ -852,7 +852,7 @@ pub(crate) fn resolve_google_oauth_config_state_from_env(
     ))
 }
 
-/// Read the Google OAuth client secret from the encrypted local-dev secret
+/// Read the Google OAuth client secret from the encrypted standalone secret
 /// store (the same store `config set google.client_secret` writes to via
 /// `StandaloneSecretStoreOpener` — see `commands::config::set`). Opening the
 /// store is an idempotent, safe-to-repeat operation. Boot invokes this lazily
@@ -2196,7 +2196,7 @@ regex_activation_enabled = false
     }
 
     #[test]
-    fn build_runtime_input_rejects_local_dev_yolo_without_host_access_confirmation() {
+    fn build_runtime_input_rejects_standalone_yolo_without_host_access_confirmation() {
         let _lock = lock_runtime_env();
         let (_enabled, _interval) = clear_trigger_poller_env();
 
@@ -2212,7 +2212,7 @@ regex_activation_enabled = false
         .expect("boot config");
 
         let error = match build_runtime_input(&config, RuntimeInputCaller::Run) {
-            Ok(_) => panic!("local-dev-yolo requires confirmation"),
+            Ok(_) => panic!("standalone-unrestricted requires confirmation"),
             Err(error) => error,
         };
 
@@ -2220,7 +2220,7 @@ regex_activation_enabled = false
     }
 
     #[test]
-    fn build_runtime_input_accepts_confirmed_local_dev_yolo_profile() {
+    fn build_runtime_input_accepts_confirmed_standalone_yolo_profile() {
         let _lock = lock_runtime_env();
         let (_enabled, _interval) = clear_trigger_poller_env();
 
@@ -2315,7 +2315,7 @@ regex_activation_enabled = false
     }
 
     #[test]
-    fn build_runtime_input_for_local_dev_rejects_policy_section() {
+    fn build_runtime_input_for_standalone_rejects_policy_section() {
         let _lock = lock_runtime_env();
         let (_enabled, _interval) = clear_trigger_poller_env();
         let (_temp, config) = boot_config_with_config_toml(
@@ -2329,7 +2329,7 @@ default_profile = "secure_default"
 
         let err = build_runtime_input(&config, RuntimeInputCaller::Run)
             .err()
-            .expect("local-dev must reject policy section");
+            .expect("standalone must reject policy section");
 
         assert!(
             err.to_string().contains("[policy]"),
@@ -2639,7 +2639,7 @@ secret_master_key_env = "IRONCLAW_REBORN_SECRET_MASTER_KEY"
             services.profile(),
             RebornCompositionProfile::HostedSingleTenant
         );
-        assert_eq!(policy.requested_profile.as_str(), "local_dev");
+        assert_eq!(policy.requested_profile.as_str(), "local-dev");
         assert!(!services.grants_trusted_laptop_access());
         drop(pool_max_size);
         drop(secret_master_key);

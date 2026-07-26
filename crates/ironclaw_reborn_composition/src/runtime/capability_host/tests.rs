@@ -164,7 +164,7 @@ mod tests {
 
     fn local_host_minimal_approval_policy()
     -> ironclaw_host_api::runtime_policy::EffectiveRuntimePolicy {
-        let mut policy = crate::standalone_runtime_policy().expect("local-dev policy resolves");
+        let mut policy = crate::standalone_runtime_policy().expect("standalone policy resolves");
         policy.requested_profile = ironclaw_host_api::runtime_policy::RuntimeProfile::LocalYolo;
         policy.resolved_profile = ironclaw_host_api::runtime_policy::RuntimeProfile::LocalYolo;
         policy.approval_policy = ironclaw_host_api::runtime_policy::ApprovalPolicy::Minimal;
@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_durable_thread_scope_preserves_owner_resolution_precedence() {
+    async fn standalone_durable_thread_scope_preserves_owner_resolution_precedence() {
         let explicit_owner = UserId::new("durable-explicit-owner").expect("explicit owner");
         let explicit_context = run_context_with_scope(TurnScope::new_with_owner(
             TenantId::new("tenant-durable-scope").expect("tenant id"),
@@ -499,12 +499,12 @@ mod tests {
             crate::deployment::local_filesystem_build_input_with_profile(
                 crate::RebornCompositionProfile::StandaloneUnrestricted,
                 "extension-remove-generic-unpair-tool-copy",
-                dir.path().join("local-dev"),
+                dir.path().join("standalone"),
             )
             .with_runtime_policy(local_host_minimal_approval_policy()),
         )
         .await
-        .expect("local-dev services build");
+        .expect("standalone services build");
         let run_context = run_context("extension-remove-generic-unpair-tool-copy").await;
         let user_id = UserId::new("extension-remove-unpair-user").expect("user id");
         let wiring = capability_wiring(
@@ -521,7 +521,7 @@ mod tests {
             None,
             None,
         )
-        .expect("local-dev capability wiring");
+        .expect("standalone capability wiring");
 
         let port = wiring
             .capability_factory
@@ -623,13 +623,13 @@ mod tests {
             crate::deployment::local_filesystem_build_input_with_profile(
                 crate::RebornCompositionProfile::StandaloneUnrestricted,
                 owner,
-                dir.path().join("local-dev"),
+                dir.path().join("standalone"),
             )
             .with_runtime_policy(local_host_minimal_approval_policy())
             .with_vendor_oauth_client(ironclaw_auth::GOOGLE_PROVIDER_ID, google_oauth_backend),
         )
         .await
-        .expect("local-dev services build");
+        .expect("standalone services build");
         let run_context = run_context(label).await;
         install_gsuite_extensions(
             &services,
@@ -652,7 +652,7 @@ mod tests {
             None,
             None,
         )
-        .expect("local-dev capability wiring");
+        .expect("standalone capability wiring");
 
         enable_global_auto_approve_for_run(
             &services,
@@ -821,7 +821,7 @@ mod tests {
 
     #[allow(
         dead_code,
-        reason = "kept as a local-dev runtime credential-account test double"
+        reason = "kept as a standalone runtime credential-account test double"
     )]
     struct ConfiguredRuntimeCredentialAccounts;
 
@@ -1423,16 +1423,16 @@ mod tests {
     /// from that offset through the production `result_read` capability
     /// reproduces the full serialized result with no gap or overlap.
     #[tokio::test]
-    async fn local_dev_result_read_continues_exactly_where_first_look_preview_truncated() {
+    async fn standalone_result_read_continues_exactly_where_first_look_preview_truncated() {
         let dir = tempfile::tempdir().expect("tempdir");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input(
-                "local-dev-result-read-continuation",
-                dir.path().join("local-dev"),
+                "standalone-result-read-continuation",
+                dir.path().join("standalone"),
             ),
         )
         .await
-        .expect("local-dev services build");
+        .expect("standalone services build");
         let runtime = services.host_runtime.clone();
         let runtime_surfaces = services
             .local_runtime_for_test()
@@ -1767,16 +1767,16 @@ mod tests {
     /// durable record, which stays intact (asserted below) -- the fix skips
     /// only the *new* record `result_read` would otherwise create.
     #[tokio::test]
-    async fn local_dev_result_read_chunk_does_not_persist_a_new_durable_record() {
+    async fn standalone_result_read_chunk_does_not_persist_a_new_durable_record() {
         let dir = tempfile::tempdir().expect("tempdir");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input(
-                "local-dev-result-read-no-amplification",
-                dir.path().join("local-dev"),
+                "standalone-result-read-no-amplification",
+                dir.path().join("standalone"),
             ),
         )
         .await
-        .expect("local-dev services build");
+        .expect("standalone services build");
         let runtime = services.host_runtime.clone();
         let runtime_surfaces = services
             .local_runtime_for_test()
@@ -2036,7 +2036,7 @@ mod tests {
     }
 
     #[test]
-    fn local_dev_builtin_surface_grants_capability_classes() {
+    fn standalone_builtin_surface_grants_capability_classes() {
         let policy =
             crate::builtin_capability_policy::builtin_capability_policy().expect("policy parses");
         let capability_ids = policy
@@ -2335,17 +2335,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_skill_activate_tool_loads_selected_skill_context() {
+    async fn standalone_skill_activate_tool_loads_selected_skill_context() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let storage_root = dir.path().join("local-dev");
+        let storage_root = dir.path().join("standalone");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input(
-                "local-dev-skill-activate-owner",
+                "standalone-skill-activate-owner",
                 storage_root.clone(),
             ),
         )
         .await
-        .expect("local-dev services build");
+        .expect("standalone services build");
         let skill_path = storage_root.join(
             "tenants/tenant-skill-activate-tool/users/skill-activate-user/skills/unit-activate-helper/SKILL.md",
         );
@@ -2540,15 +2540,15 @@ mod tests {
     #[tokio::test]
     async fn capability_wiring_with_skill_activation_source_exposes_skill_activate_capability() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let storage_root = dir.path().join("local-dev");
+        let storage_root = dir.path().join("standalone");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input(
-                "local-dev-skill-activate-wiring-owner",
+                "standalone-skill-activate-wiring-owner",
                 storage_root.clone(),
             ),
         )
         .await
-        .expect("local-dev services build");
+        .expect("standalone services build");
         let runtime_surfaces = services
             .local_runtime_for_test()
             .expect("local runtime substrate");
@@ -2590,17 +2590,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_external_tools_are_advertised_as_provider_tool_names() {
+    async fn standalone_external_tools_are_advertised_as_provider_tool_names() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let storage_root = dir.path().join("local-dev");
+        let storage_root = dir.path().join("standalone");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input(
-                "local-dev-external-tool-owner",
+                "standalone-external-tool-owner",
                 storage_root,
             ),
         )
         .await
-        .expect("local-dev services build");
+        .expect("standalone services build");
         let runtime_surfaces = services
             .local_runtime_for_test()
             .expect("local runtime substrate");
@@ -2700,16 +2700,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_project_create_tool_persists_project_visible_to_owner() {
+    async fn standalone_project_create_tool_persists_project_visible_to_owner() {
         let dir = tempfile::tempdir().expect("tempdir");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input(
-                "local-dev-project-create-owner",
-                dir.path().join("local-dev"),
+                "standalone-project-create-owner",
+                dir.path().join("standalone"),
             ),
         )
         .await
-        .expect("local-dev services build");
+        .expect("standalone services build");
         let runtime = services.host_runtime.clone();
         let runtime_surfaces = services
             .local_runtime_for_test()
@@ -2850,16 +2850,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_result_read_tool_returns_only_requested_thread_scoped_chunk() {
+    async fn standalone_result_read_tool_returns_only_requested_thread_scoped_chunk() {
         let dir = tempfile::tempdir().expect("tempdir");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input(
-                "local-dev-result-read-owner",
-                dir.path().join("local-dev"),
+                "standalone-result-read-owner",
+                dir.path().join("standalone"),
             ),
         )
         .await
-        .expect("local-dev services build");
+        .expect("standalone services build");
         let runtime = services.host_runtime.clone();
         let runtime_surfaces = services
             .local_runtime_for_test()
@@ -2965,12 +2965,12 @@ mod tests {
                 .descriptors
                 .iter()
                 .any(|descriptor| descriptor.capability_id.as_str() == "builtin.result_read"),
-            "result_read must be visible through the production LocalDev port"
+            "result_read must be visible through the production Standalone port"
         );
 
         // The below-min-bytes InvalidInput case is covered exactly (kind +
         // exact safe_summary) by
-        // `local_dev_result_read_rejects_malformed_arguments_matrix`; only
+        // `standalone_result_read_rejects_malformed_arguments_matrix`; only
         // the malformed-ref-format case below is unique to this test.
         let invalid_reference_candidate = port
             .register_provider_tool_call(RegisterProviderToolCallRequest::new(
@@ -3239,16 +3239,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_result_read_rejects_malformed_arguments_matrix() {
+    async fn standalone_result_read_rejects_malformed_arguments_matrix() {
         let dir = tempfile::tempdir().expect("tempdir");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input(
-                "local-dev-result-read-validation-owner",
-                dir.path().join("local-dev"),
+                "standalone-result-read-validation-owner",
+                dir.path().join("standalone"),
             ),
         )
         .await
-        .expect("local-dev services build");
+        .expect("standalone services build");
         let runtime = services.host_runtime.clone();
         let runtime_surfaces = services
             .local_runtime_for_test()
@@ -3586,16 +3586,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_result_read_denies_cross_thread_reference_access() {
+    async fn standalone_result_read_denies_cross_thread_reference_access() {
         let dir = tempfile::tempdir().expect("tempdir");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input(
-                "local-dev-result-read-cross-thread-owner",
-                dir.path().join("local-dev"),
+                "standalone-result-read-cross-thread-owner",
+                dir.path().join("standalone"),
             ),
         )
         .await
-        .expect("local-dev services build");
+        .expect("standalone services build");
         let runtime = services.host_runtime.clone();
         let runtime_surfaces = services
             .local_runtime_for_test()
@@ -3760,16 +3760,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_outbound_delivery_targets_list_and_target_set_use_provider() {
+    async fn standalone_outbound_delivery_targets_list_and_target_set_use_provider() {
         let dir = tempfile::tempdir().expect("tempdir");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input(
-                "local-dev-outbound-delivery-owner",
-                dir.path().join("local-dev"),
+                "standalone-outbound-delivery-owner",
+                dir.path().join("standalone"),
             ),
         )
         .await
-        .expect("local-dev services build");
+        .expect("standalone services build");
         let runtime = services.host_runtime.clone();
         let runtime_surfaces = services
             .local_runtime_for_test()
@@ -3839,7 +3839,7 @@ mod tests {
             ),
         );
         // A durable gate-record store shared with the assertion below: the
-        // local-dev approval producer persists a `GateRecord` at the gate raise
+        // standalone approval producer persists a `GateRecord` at the gate raise
         // (§5.3 Stage 0), keyed by the canonical `GateRef::for_approval_request`
         // that the product read model re-derives, so a host-persisted gate is
         // findable.
@@ -4292,7 +4292,7 @@ mod tests {
                 .load(&record_scope, record_key)
                 .await
                 .expect("gate record load succeeds")
-                .expect("local-dev approval gate persisted a durable gate record");
+                .expect("standalone approval gate persisted a durable gate record");
             assert!(
                 matches!(persisted, ironclaw_host_api::GateRecord::Approval { .. }),
                 "persisted gate record is an approval record, got {persisted:?}"
@@ -4492,17 +4492,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_yolo_outbound_delivery_target_set_bypasses_approval_gate() {
+    async fn standalone_yolo_outbound_delivery_target_set_bypasses_approval_gate() {
         let dir = tempfile::tempdir().expect("tempdir");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input(
                 "local-yolo-outbound-delivery-owner",
-                dir.path().join("local-dev"),
+                dir.path().join("standalone"),
             )
             .with_runtime_policy(local_host_minimal_approval_policy()),
         )
         .await
-        .expect("local-dev-yolo services build");
+        .expect("standalone-unrestricted services build");
         let runtime_surfaces = services
             .local_runtime_for_test()
             .expect("local runtime substrate");
@@ -4646,7 +4646,7 @@ mod tests {
             .expect("set call invokes");
         assert!(
             matches!(set_outcome, Resolution::Done(_)),
-            "local-dev-yolo should bypass approval gate, got {set_outcome:?}"
+            "standalone-unrestricted should bypass approval gate, got {set_outcome:?}"
         );
         let observed_provider_callers = slack_provider.observed_callers();
         assert!(
@@ -4684,16 +4684,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_outbound_delivery_capabilities_hidden_without_provider_facade() {
+    async fn standalone_outbound_delivery_capabilities_hidden_without_provider_facade() {
         let dir = tempfile::tempdir().expect("tempdir");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input(
-                "local-dev-no-outbound-provider-owner",
-                dir.path().join("local-dev"),
+                "standalone-no-outbound-provider-owner",
+                dir.path().join("standalone"),
             ),
         )
         .await
-        .expect("local-dev services build");
+        .expect("standalone services build");
         let runtime = services.host_runtime.clone();
         let runtime_surfaces = services
             .local_runtime_for_test()
@@ -4776,7 +4776,7 @@ mod tests {
     #[tokio::test]
     async fn local_yolo_capability_port_reads_confirmed_host_mount() {
         let dir = tempfile::tempdir().expect("tempdir"); // safety: test-only setup in #[cfg(test)] module.
-        let storage_root = dir.path().join("local-dev");
+        let storage_root = dir.path().join("standalone");
         let workspace_root = dir.path().join("workspace");
         std::fs::create_dir_all(&workspace_root).expect("workspace root"); // safety: test-only setup in #[cfg(test)] module.
         std::fs::write(workspace_root.join("note.txt"), "safe workspace file\n")
@@ -4798,7 +4798,7 @@ mod tests {
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input_with_profile(
                 crate::RebornCompositionProfile::StandaloneUnrestricted,
-                "local-dev-yolo-host-owner",
+                "standalone-unrestricted-host-owner",
                 storage_root,
             )
             .with_runtime_policy(
@@ -4809,7 +4809,7 @@ mod tests {
             .with_local_runtime_confirmed_host_home_root(host_home.clone()),
         )
         .await
-        .expect("local-dev-yolo services build"); // safety: test-only assertion in #[cfg(test)] module.
+        .expect("standalone-unrestricted services build"); // safety: test-only assertion in #[cfg(test)] module.
         let runtime = services.host_runtime.clone(); // safety: test-only assertion in #[cfg(test)] module.
         let runtime_surfaces = services
             .local_runtime_for_test()
@@ -5049,17 +5049,17 @@ mod tests {
     #[tokio::test]
     async fn capability_port_skill_install_writes_user_skill_root() {
         let dir = tempfile::tempdir().expect("tempdir"); // safety: test-only setup in #[cfg(test)] module.
-        let storage_root = dir.path().join("local-dev");
+        let storage_root = dir.path().join("standalone");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input_with_profile(
                 crate::RebornCompositionProfile::StandaloneUnrestricted,
-                "local-dev-skill-port-owner",
+                "standalone-skill-port-owner",
                 storage_root.clone(),
             )
             .with_runtime_policy(local_host_minimal_approval_policy()),
         )
         .await
-        .expect("local-dev services build"); // safety: test-only assertion in #[cfg(test)] module.
+        .expect("standalone services build"); // safety: test-only assertion in #[cfg(test)] module.
         let runtime = services.host_runtime.clone(); // safety: test-only assertion in #[cfg(test)] module.
         let runtime_surfaces = services
             .local_runtime_for_test()
@@ -5073,7 +5073,7 @@ mod tests {
         let result_writer: Arc<dyn LoopCapabilityResultWriter> = capability_io.clone();
         let factory = RefreshingLoopCapabilityPortFactory {
             runtime,
-            fallback_user_id: UserId::new("local-dev-skill-port-user").expect("user id"), // safety: literal test id is valid.
+            fallback_user_id: UserId::new("standalone-skill-port-user").expect("user id"), // safety: literal test id is valid.
             policy,
             workspace_mounts,
             memory_mounts: runtime_surfaces.memory_mounts_for_test().clone(),
@@ -5109,7 +5109,7 @@ mod tests {
         enable_global_auto_approve_for_run(
             &services,
             &run_context,
-            &UserId::new("local-dev-skill-port-user").expect("user id"),
+            &UserId::new("standalone-skill-port-user").expect("user id"),
         )
         .await;
         let port = factory
@@ -5154,7 +5154,7 @@ mod tests {
         assert!(
             storage_root
                 .join(
-                    "tenants/tenant-skill-install-write/users/local-dev-skill-port-user/skills/qa-smoke-skill/SKILL.md"
+                    "tenants/tenant-skill-install-write/users/standalone-skill-port-user/skills/qa-smoke-skill/SKILL.md"
                 )
                 .exists()
         );
@@ -5163,7 +5163,7 @@ mod tests {
     #[tokio::test]
     async fn capability_port_omits_host_disclosure_without_confirmed_host_mount() {
         let dir = tempfile::tempdir().expect("tempdir"); // safety: test-only setup in #[cfg(test)] module.
-        let storage_root = dir.path().join("local-dev");
+        let storage_root = dir.path().join("standalone");
         let workspace_root = dir.path().join("workspace");
         std::fs::create_dir_all(&workspace_root).expect("workspace root"); // safety: test-only setup in #[cfg(test)] module.
         std::fs::write(workspace_root.join("note.txt"), "hidden workspace file\n")
@@ -5175,13 +5175,13 @@ mod tests {
             .into_owned();
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input(
-                "local-dev-no-host-owner",
+                "standalone-no-host-owner",
                 storage_root,
             )
             .with_local_runtime_workspace_root(workspace_root.clone()),
         )
         .await
-        .expect("local-dev services build"); // safety: test-only assertion in #[cfg(test)] module.
+        .expect("standalone services build"); // safety: test-only assertion in #[cfg(test)] module.
         let runtime = services.host_runtime.clone(); // safety: test-only assertion in #[cfg(test)] module.
         let runtime_surfaces = services
             .local_runtime_for_test()
@@ -5195,7 +5195,7 @@ mod tests {
         let result_writer: Arc<dyn LoopCapabilityResultWriter> = capability_io.clone();
         let factory = RefreshingLoopCapabilityPortFactory {
             runtime,
-            fallback_user_id: UserId::new("local-dev-no-host-user").expect("user id"), // safety: literal test id is valid.
+            fallback_user_id: UserId::new("standalone-no-host-user").expect("user id"), // safety: literal test id is valid.
             policy,
             workspace_mounts,
             memory_mounts: runtime_surfaces.memory_mounts_for_test().clone(),
@@ -5231,7 +5231,7 @@ mod tests {
         enable_global_auto_approve_for_run(
             &services,
             &run_context,
-            &UserId::new("local-dev-no-host-user").expect("user id"),
+            &UserId::new("standalone-no-host-user").expect("user id"),
         )
         .await;
         let port = factory
@@ -5252,7 +5252,7 @@ mod tests {
                 && !read_descriptor
                     .safe_description
                     .contains("Available scoped roots"),
-            "normal local-dev read_file description must not disclose host roots: {}",
+            "normal standalone read_file description must not disclose host roots: {}",
             read_descriptor.safe_description
         );
         let shell_descriptor = surface
@@ -5264,7 +5264,7 @@ mod tests {
             !shell_descriptor
                 .safe_description
                 .contains("shell process and network access"),
-            "normal local-dev shell description should not receive yolo disclosure: {}",
+            "normal standalone shell description should not receive yolo disclosure: {}",
             shell_descriptor.safe_description
         );
         let tool_definitions = port.tool_definitions().expect("tool definitions");
@@ -5277,7 +5277,7 @@ mod tests {
                 && !read_file_tool
                     .description
                     .contains("Available scoped roots"),
-            "normal local-dev provider tool description must not disclose host roots: {}",
+            "normal standalone provider tool description must not disclose host roots: {}",
             read_file_tool.description
         );
         let shell_tool = tool_definitions
@@ -5288,7 +5288,7 @@ mod tests {
             !shell_tool
                 .description
                 .contains("shell process and network access"),
-            "normal local-dev shell provider tool should not receive yolo disclosure: {}",
+            "normal standalone shell provider tool should not receive yolo disclosure: {}",
             shell_tool.description
         );
 
@@ -5327,14 +5327,14 @@ mod tests {
     #[tokio::test]
     async fn capability_port_restores_activated_github_extension_surface() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let storage_root = dir.path().join("local-dev");
-        let owner_id = "local-dev-github-surface-owner";
+        let storage_root = dir.path().join("standalone");
+        let owner_id = "standalone-github-surface-owner";
         {
             let services = crate::factory::build_runtime_substrate(
                 crate::deployment::local_filesystem_build_input(owner_id, storage_root.clone()),
             )
             .await
-            .expect("local-dev services build");
+            .expect("standalone services build");
             let runtime_surfaces = services
                 .local_runtime_for_test()
                 .expect("local runtime substrate");
@@ -5343,7 +5343,7 @@ mod tests {
             // install AS the surface user whose capability port is asserted
             // below; there is no separate Activate action — the port's
             // prechecked activation publishes the surface directly.
-            let surface_user = UserId::new("local-dev-github-user").expect("user id");
+            let surface_user = UserId::new("standalone-github-user").expect("user id");
             let package_ref = LifecyclePackageRef::new(LifecyclePackageKind::Extension, "github")
                 .expect("valid github ref");
             extension_management
@@ -5364,17 +5364,17 @@ mod tests {
             crate::deployment::local_filesystem_build_input(owner_id, storage_root),
         )
         .await
-        .expect("local-dev services rebuild");
+        .expect("standalone services rebuild");
         let run_context = run_context("github-surface").await;
         let restore_seed_scope = crate::runtime::capability_host::resource_scope_for_run(
             &run_context,
-            &UserId::new("local-dev-github-user").expect("user id"),
+            &UserId::new("standalone-github-user").expect("user id"),
         );
         seed_configured_account_and_secret(&services, &restore_seed_scope, "github").await;
         let wiring = capability_wiring(
             &services,
             Arc::new(InMemorySessionThreadService::default()),
-            UserId::new("local-dev-github-user").expect("user id"),
+            UserId::new("standalone-github-user").expect("user id"),
             Arc::new(
                 crate::builtin_capability_policy::builtin_capability_policy()
                     .expect("policy parses"),
@@ -5385,27 +5385,27 @@ mod tests {
             None,
             None,
         )
-        .expect("local-dev capability wiring");
+        .expect("standalone capability wiring");
         assert_github_capabilities_visible(&wiring, &run_context).await;
     }
 
     #[tokio::test]
     async fn capability_port_refreshes_extensions_after_activation() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let storage_root = dir.path().join("local-dev");
+        let storage_root = dir.path().join("standalone");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input(
-                "local-dev-live-github-surface-owner",
+                "standalone-live-github-surface-owner",
                 storage_root,
             ),
         )
         .await
-        .expect("local-dev services build");
+        .expect("standalone services build");
         let run_context = run_context("github-live-surface").await;
         let wiring = capability_wiring(
             &services,
             Arc::new(InMemorySessionThreadService::default()),
-            UserId::new("local-dev-live-github-user").expect("user id"),
+            UserId::new("standalone-live-github-user").expect("user id"),
             Arc::new(
                 crate::builtin_capability_policy::builtin_capability_policy()
                     .expect("policy parses"),
@@ -5416,7 +5416,7 @@ mod tests {
             None,
             None,
         )
-        .expect("local-dev capability wiring");
+        .expect("standalone capability wiring");
         let port = wiring
             .capability_factory
             .create_capability_port(&run_context)
@@ -5443,7 +5443,7 @@ mod tests {
         // #6520 membership: installs are private to their caller, so install
         // AS the surface user whose capability port is asserted; there is no
         // separate Activate action — prechecked activation publishes directly.
-        let surface_user = UserId::new("local-dev-live-github-user").expect("user id");
+        let surface_user = UserId::new("standalone-live-github-user").expect("user id");
         let seed_scope =
             crate::runtime::capability_host::resource_scope_for_run(&run_context, &surface_user);
         seed_configured_account_and_secret(&services, &seed_scope, "github").await;
@@ -5501,24 +5501,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_extension_search_makes_every_bundled_result_model_visible() {
+    async fn standalone_extension_search_makes_every_bundled_result_model_visible() {
         let dir = tempfile::tempdir().expect("tempdir");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input(
-                "local-dev-extension-search-owner",
-                dir.path().join("local-dev"),
+                "standalone-extension-search-owner",
+                dir.path().join("standalone"),
             ),
         )
         .await
-        .expect("local-dev services build");
+        .expect("standalone services build");
         let run_context = run_context("extension-search-loop-port").await;
         enable_global_auto_approve_for_run(
             &services,
             &run_context,
-            &UserId::new("local-dev-extension-search-user").expect("user id"),
+            &UserId::new("standalone-extension-search-user").expect("user id"),
         )
         .await;
-        let fallback_user_id = UserId::new("local-dev-extension-search-user").expect("user id");
+        let fallback_user_id = UserId::new("standalone-extension-search-user").expect("user id");
         let thread_service = Arc::new(InMemorySessionThreadService::default());
         ensure_thread_for_run(thread_service.as_ref(), &run_context, &fallback_user_id).await;
         let wiring = capability_wiring(
@@ -5535,7 +5535,7 @@ mod tests {
             None,
             None,
         )
-        .expect("local-dev capability wiring");
+        .expect("standalone capability wiring");
         let port = wiring
             .capability_factory
             .create_capability_port(&run_context)
@@ -5596,27 +5596,27 @@ mod tests {
     #[tokio::test]
     async fn register_does_not_rebuild_surface_mid_response() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let storage_root = dir.path().join("local-dev");
+        let storage_root = dir.path().join("standalone");
         let services = crate::factory::build_runtime_substrate(
             crate::deployment::local_filesystem_build_input_with_profile(
                 crate::RebornCompositionProfile::StandaloneUnrestricted,
-                "local-dev-mid-response-owner",
+                "standalone-mid-response-owner",
                 storage_root,
             )
             .with_runtime_policy(local_host_minimal_approval_policy()),
         )
         .await
-        .expect("local-dev services build");
+        .expect("standalone services build");
         let run_context = run_context("mid-response").await;
         let mid_response_seed_scope = crate::runtime::capability_host::resource_scope_for_run(
             &run_context,
-            &UserId::new("local-dev-mid-response-user").expect("user id"),
+            &UserId::new("standalone-mid-response-user").expect("user id"),
         );
         seed_configured_account_and_secret(&services, &mid_response_seed_scope, "github").await;
         let wiring = capability_wiring(
             &services,
             Arc::new(InMemorySessionThreadService::default()),
-            UserId::new("local-dev-mid-response-user").expect("user id"),
+            UserId::new("standalone-mid-response-user").expect("user id"),
             Arc::new(
                 crate::builtin_capability_policy::builtin_capability_policy()
                     .expect("policy parses"),
@@ -5627,7 +5627,7 @@ mod tests {
             None,
             None,
         )
-        .expect("local-dev capability wiring");
+        .expect("standalone capability wiring");
         let port = wiring
             .capability_factory
             .create_capability_port(&run_context)
@@ -5655,7 +5655,7 @@ mod tests {
         // #6520 membership: installs are private to their caller, so install
         // AS the surface user whose capability port is asserted; there is no
         // separate Activate action — prechecked activation publishes directly.
-        let surface_user = UserId::new("local-dev-mid-response-user").expect("user id");
+        let surface_user = UserId::new("standalone-mid-response-user").expect("user id");
         let package_ref = LifecyclePackageRef::new(LifecyclePackageKind::Extension, "github")
             .expect("valid github ref");
         extension_management
@@ -5707,9 +5707,9 @@ mod tests {
     #[tokio::test]
     async fn capability_port_exposes_activated_gsuite_extensions_to_model() {
         let harness = gsuite_surface_harness(
-            "local-dev-gsuite-surface-owner",
+            "standalone-gsuite-surface-owner",
             "gsuite-surface",
-            "local-dev-gsuite-surface-user",
+            "standalone-gsuite-surface-user",
             GsuiteExtensionState::Activated,
         )
         .await;
@@ -5725,9 +5725,9 @@ mod tests {
     #[tokio::test]
     async fn activated_gmail_provider_tool_call_without_account_returns_oauth_gate() {
         let harness = gsuite_surface_harness(
-            "local-dev-gmail-auth-owner",
+            "standalone-gmail-auth-owner",
             "gmail-auth-gate",
-            "local-dev-gmail-auth-user",
+            "standalone-gmail-auth-user",
             GsuiteExtensionState::Activated,
         )
         .await;
@@ -5775,9 +5775,9 @@ mod tests {
     #[tokio::test]
     async fn deactivated_gsuite_extension_capabilities_not_exposed_to_model() {
         let harness = gsuite_surface_harness(
-            "local-dev-gsuite-inactive-surface-owner",
+            "standalone-gsuite-inactive-surface-owner",
             "gsuite-inactive-surface",
-            "local-dev-gsuite-inactive-surface-user",
+            "standalone-gsuite-inactive-surface-user",
             GsuiteExtensionState::Installed,
         )
         .await;

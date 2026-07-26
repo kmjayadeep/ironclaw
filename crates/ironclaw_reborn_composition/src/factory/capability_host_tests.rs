@@ -9,24 +9,24 @@ mod approval_gates;
 #[tokio::test]
 async fn local_yolo_policy_mounts_confirmed_host_home_as_host() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let storage_root = dir.path().join("local-dev");
+    let storage_root = dir.path().join("standalone");
     let host_home = dir.path().join("home");
     std::fs::create_dir_all(&host_home).expect("host home root");
 
     let services = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input_with_profile(
             RebornCompositionProfile::StandaloneUnrestricted,
-            "local-dev-yolo-host-owner",
+            "standalone-unrestricted-host-owner",
             storage_root,
         )
         .with_runtime_policy(local_yolo_policy())
         .with_local_runtime_confirmed_host_home_root(host_home.clone()),
     )
     .await
-    .expect("local-dev-yolo services build");
+    .expect("standalone-unrestricted services build");
     let runtime_surfaces = services
         .local_runtime_for_test()
-        .expect("local-dev runtime substrate");
+        .expect("standalone runtime substrate");
 
     let host_mount = runtime_surfaces
         .workspace_mounts_for_test()
@@ -58,7 +58,7 @@ async fn local_yolo_policy_mounts_confirmed_host_home_as_host() {
 #[tokio::test]
 async fn local_yolo_policy_allows_workspace_under_confirmed_host_home() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let storage_root = dir.path().join("local-dev");
+    let storage_root = dir.path().join("standalone");
     let host_home = dir.path().join("home");
     let workspace_root = host_home.join("repo");
     std::fs::create_dir_all(&workspace_root).expect("workspace root");
@@ -66,7 +66,7 @@ async fn local_yolo_policy_allows_workspace_under_confirmed_host_home() {
     let services = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input_with_profile(
             RebornCompositionProfile::StandaloneUnrestricted,
-            "local-dev-yolo-host-owner",
+            "standalone-unrestricted-host-owner",
             storage_root,
         )
         .with_runtime_policy(local_yolo_policy())
@@ -74,10 +74,10 @@ async fn local_yolo_policy_allows_workspace_under_confirmed_host_home() {
         .with_local_runtime_confirmed_host_home_root(host_home),
     )
     .await
-    .expect("local-dev-yolo services build");
+    .expect("standalone-unrestricted services build");
     let runtime_surfaces = services
         .local_runtime_for_test()
-        .expect("local-dev runtime substrate");
+        .expect("standalone runtime substrate");
 
     let workspace_mount = runtime_surfaces
         .workspace_mounts_for_test()
@@ -102,7 +102,7 @@ async fn local_yolo_policy_allows_workspace_under_confirmed_host_home() {
 #[tokio::test]
 async fn local_yolo_policy_keeps_symlinked_host_home_raw_alias() {
     let dir = tempfile::tempdir().expect("tempdir"); // safety: test-only setup in #[cfg(test)] module.
-    let storage_root = dir.path().join("local-dev");
+    let storage_root = dir.path().join("standalone");
     let host_home = dir.path().join("home");
     let host_home_link = dir.path().join("home-link");
     std::fs::create_dir_all(&host_home).expect("host home root"); // safety: test-only setup in #[cfg(test)] module.
@@ -111,17 +111,17 @@ async fn local_yolo_policy_keeps_symlinked_host_home_raw_alias() {
     let services = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input_with_profile(
             RebornCompositionProfile::StandaloneUnrestricted,
-            "local-dev-yolo-host-owner",
+            "standalone-unrestricted-host-owner",
             storage_root,
         )
         .with_runtime_policy(local_yolo_policy())
         .with_local_runtime_confirmed_host_home_root(host_home_link.clone()),
     )
     .await
-    .expect("local-dev-yolo services build"); // safety: test-only assertion in #[cfg(test)] module.
+    .expect("standalone-unrestricted services build"); // safety: test-only assertion in #[cfg(test)] module.
     let runtime_surfaces = services
         .local_runtime_for_test()
-        .expect("local-dev runtime substrate"); // safety: test-only assertion in #[cfg(test)] module.
+        .expect("standalone runtime substrate"); // safety: test-only assertion in #[cfg(test)] module.
 
     let raw_aliases = runtime_surfaces
         .workspace_mounts_for_test()
@@ -148,8 +148,8 @@ async fn local_yolo_policy_requires_confirmed_host_home_root() {
     let error = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input_with_profile(
             RebornCompositionProfile::StandaloneUnrestricted,
-            "local-dev-yolo-host-owner",
-            dir.path().join("local-dev"),
+            "standalone-unrestricted-host-owner",
+            dir.path().join("standalone"),
         )
         .with_runtime_policy(local_yolo_policy()),
     )
@@ -167,8 +167,8 @@ async fn confirmed_host_home_root_is_rejected_without_matching_policy() {
 
     let error = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input(
-            "local-dev-host-owner",
-            dir.path().join("local-dev"),
+            "standalone-host-owner",
+            dir.path().join("standalone"),
         )
         .with_runtime_policy(local_host_policy())
         .with_local_runtime_confirmed_host_home_root(host_home),
@@ -188,8 +188,8 @@ async fn local_yolo_policy_rejects_confirmed_host_home_file() {
     let error = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input_with_profile(
             RebornCompositionProfile::StandaloneUnrestricted,
-            "local-dev-yolo-host-owner",
-            dir.path().join("local-dev"),
+            "standalone-unrestricted-host-owner",
+            dir.path().join("standalone"),
         )
         .with_runtime_policy(local_yolo_policy())
         .with_local_runtime_confirmed_host_home_root(host_home_file),
@@ -206,8 +206,8 @@ async fn local_yolo_policy_rejects_confirmed_host_home_filesystem_root() {
     let error = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input_with_profile(
             RebornCompositionProfile::StandaloneUnrestricted,
-            "local-dev-yolo-host-owner",
-            dir.path().join("local-dev"),
+            "standalone-unrestricted-host-owner",
+            dir.path().join("standalone"),
         )
         .with_runtime_policy(local_yolo_policy())
         .with_local_runtime_confirmed_host_home_root(filesystem_root()),
@@ -223,7 +223,7 @@ fn local_yolo_policy() -> ironclaw_host_api::runtime_policy::EffectiveRuntimePol
 }
 
 fn local_host_policy() -> ironclaw_host_api::runtime_policy::EffectiveRuntimePolicy {
-    crate::standalone_runtime_policy().expect("local-dev policy resolves") // safety: test-only helper in #[cfg(test)] module.
+    crate::standalone_runtime_policy().expect("standalone policy resolves") // safety: test-only helper in #[cfg(test)] module.
 }
 
 fn filesystem_root() -> std::path::PathBuf {

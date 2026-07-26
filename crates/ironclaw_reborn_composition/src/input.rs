@@ -791,7 +791,7 @@ impl RebornHostBindings {
         self
     }
 
-    /// Override local-dev host HTTP egress for fixture recording and replay.
+    /// Override standalone host HTTP egress for fixture recording and replay.
     ///
     /// This is compiled only for tests/test-support so Reborn QA harnesses can
     /// route host-mediated integration calls through trace record/replay

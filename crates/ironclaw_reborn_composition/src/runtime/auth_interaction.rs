@@ -153,7 +153,7 @@ impl SnapshotAuthInteractionReadModel {
                     %error,
                     %run_id,
                     gate_ref = %gate_ref.as_str(),
-                    "local-dev auth read model failed to query flow for turn gate"
+                    "standalone auth read model failed to query flow for turn gate"
                 );
                 auth_read_model_unavailable()
             })
@@ -197,7 +197,7 @@ async fn flows_for_owner(
                 tenant_id = %scope.tenant_id.as_str(),
                 user_id = %scope.user_id.as_str(),
                 thread_id = %scope.thread_id.as_str(),
-                "local-dev auth read model failed to query flows for owner"
+                "standalone auth read model failed to query flows for owner"
             );
             auth_read_model_unavailable()
         })

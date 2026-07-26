@@ -3,18 +3,18 @@
 //! `build_approval_gate_evidence_for_test`,
 //! `build_default_database_roots_for_test`,
 //! `mount_database_roots_for_test`,
-//! `build_secret_store_for_test` — mirror the production local-dev
+//! `build_secret_store_for_test` — mirror the production standalone
 //! boot sequence so the integration-test harness (`tests/support/reborn/`)
-//! drives the real local-dev composition paths without duplicating the wiring
+//! drives the real standalone composition paths without duplicating the wiring
 //! logic.
 
-/// Filename of the local-dev libSQL database within the per-user root
+/// Filename of the standalone libSQL database within the per-user root
 /// directory. Value is derived from the production factory constant so
 /// there is one owner of the string; tests access it through this
 /// test-support surface.
 pub const STANDALONE_DB_FILENAME: &str = crate::filesystem_assembly::STANDALONE_DB_FILENAME;
 
-/// Test-only accessor mirroring the full local-dev database-roots boot path
+/// Test-only accessor mirroring the full standalone database-roots boot path
 /// (`build_standalone_root_filesystem` → `build_default_database_roots`).
 ///
 /// Constructs the durable database backend and mounts it across the
@@ -36,11 +36,11 @@ pub async fn build_default_database_roots_for_test(
     crate::factory::mount_default_database_roots(root, composite).await
 }
 
-/// Test-only accessor mirroring the production local-dev boot path
+/// Test-only accessor mirroring the production standalone boot path
 /// (`build_standalone_root_filesystem` → `mount_database_roots`).
 ///
 /// Mounts `database` across the control-plane roots (`/tenants`, `/memory`,
-/// `/events`) of `root` exactly as the libSQL local-dev boot path does, so
+/// `/events`) of `root` exactly as the libSQL standalone boot path does, so
 /// downstream integration tests (the Reborn integration-test framework in
 /// `tests/support/reborn/`) construct one real `LibSqlRootFilesystem` over a
 /// composite without a second copy of the mount wiring (design spec §3.2).
@@ -57,7 +57,7 @@ where
     crate::filesystem_assembly::mount_database_roots(root, database)
 }
 
-/// Test-only entry point for building a local-dev
+/// Test-only entry point for building a standalone
 /// [`ironclaw_secrets::SecretStore`] without going through the full
 /// Reborn runtime assembly.
 ///

@@ -54,9 +54,9 @@ fn provider_tool_call(arguments: serde_json::Value) -> ProviderToolCall {
 }
 
 #[tokio::test]
-async fn local_dev_yolo_shell_translates_workspace_workdir_without_scoped_mounts() {
+async fn standalone_yolo_shell_translates_workspace_workdir_without_scoped_mounts() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let storage_root = dir.path().join("local-dev");
+    let storage_root = dir.path().join("standalone");
     let workspace_root = dir.path().join("workspace");
     let shell_workdir = workspace_root.join("qa-coding-smoke");
     std::fs::create_dir_all(&shell_workdir).expect("workspace shell dir");
@@ -65,7 +65,7 @@ async fn local_dev_yolo_shell_translates_workspace_workdir_without_scoped_mounts
     let services = crate::factory::build_runtime_substrate(
         crate::local_runtime_build_input_with_options(
             crate::RebornCompositionProfile::StandaloneUnrestricted,
-            "local-dev-shell-owner",
+            "standalone-shell-owner",
             storage_root,
             crate::RebornRuntimeProfileOptions {
                 confirm_host_access: true,
@@ -76,7 +76,7 @@ async fn local_dev_yolo_shell_translates_workspace_workdir_without_scoped_mounts
         .with_local_runtime_confirmed_host_home_root(host_home),
     )
     .await
-    .expect("local-dev services build");
+    .expect("standalone services build");
     let runtime = services.host_runtime.clone();
     let runtime_surfaces = services
         .local_runtime_for_test()
@@ -91,7 +91,7 @@ async fn local_dev_yolo_shell_translates_workspace_workdir_without_scoped_mounts
     let result_writer: Arc<dyn LoopCapabilityResultWriter> = capability_io.clone();
     let factory = RefreshingLoopCapabilityPortFactory {
         runtime,
-        fallback_user_id: UserId::new("local-dev-shell-user").expect("user id"),
+        fallback_user_id: UserId::new("standalone-shell-user").expect("user id"),
         policy,
         workspace_mounts,
         memory_mounts,
@@ -134,7 +134,7 @@ async fn local_dev_yolo_shell_translates_workspace_workdir_without_scoped_mounts
     // first-party tool dispatch).
     {
         let mut scope = run_context.scope.to_resource_scope();
-        scope.user_id = UserId::new("local-dev-shell-user").expect("user id");
+        scope.user_id = UserId::new("standalone-shell-user").expect("user id");
         ironclaw_approvals::AutoApproveSettingStorePort::set(
             runtime_surfaces.auto_approve_settings_for_test().as_ref(),
             ironclaw_approvals::AutoApproveSettingInput {
@@ -158,7 +158,7 @@ async fn local_dev_yolo_shell_translates_workspace_workdir_without_scoped_mounts
         .register_provider_tool_call_input(
             &run_context,
             &provider_tool_call(serde_json::json!({
-                "command": "mkdir -p /workspace/qa-coding-smoke && test -d /host && printf '%s:%s' local-dev-shell-ok \"$PWD\"",
+                "command": "mkdir -p /workspace/qa-coding-smoke && test -d /host && printf '%s:%s' standalone-shell-ok \"$PWD\"",
                 "workdir": "/workspace/qa-coding-smoke"
             })),
         )
@@ -199,6 +199,6 @@ async fn local_dev_yolo_shell_translates_workspace_workdir_without_scoped_mounts
     // never the host layout.
     assert_eq!(
         output["output"],
-        serde_json::json!("local-dev-shell-ok:/workspace/qa-coding-smoke")
+        serde_json::json!("standalone-shell-ok:/workspace/qa-coding-smoke")
     );
 }

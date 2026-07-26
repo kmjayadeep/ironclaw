@@ -39,7 +39,7 @@ pub(crate) struct RuntimeProductCapabilityInvoker {
     registry: Arc<ExtensionRegistry>,
     results: ProductResultFilesystem,
     // The scope→mount-view resolver the runtime's skill-management port was
-    // composed with. Reused here (rather than re-deriving a local-dev vs
+    // composed with. Reused here (rather than re-deriving a standalone vs
     // production branch) so product-surface skill gestures resolve exactly the
     // mounts the agent loop's skill tools do; the unified runtime graph exposes
     // a single composite filesystem, so which resolver is live is the only

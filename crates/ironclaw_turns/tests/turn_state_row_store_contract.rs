@@ -44,7 +44,7 @@ use ironclaw_turns::{
     },
 };
 
-/// Build a CAS-capable backend; local-dev and production mount `/turns` under
+/// Build a CAS-capable backend; standalone and production mount `/turns` under
 /// the structured `/tenants` root, not the byte-only local workspace root.
 fn engine_filesystem() -> InMemoryBackend {
     InMemoryBackend::new()

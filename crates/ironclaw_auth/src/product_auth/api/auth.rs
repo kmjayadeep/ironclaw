@@ -532,7 +532,7 @@ pub struct RebornProductAuthServices {
     auth_engine: Option<Arc<crate::AuthEngine>>,
     /// One recipe-driven blocked-gate OAuth driver covering every vendor.
     oauth_gate_driver: Option<Arc<OAuthGateFlowDriver>>,
-    /// Optional read projection for WebUI/local-dev auth interactions.
+    /// Optional read projection for WebUI/standalone auth interactions.
     ///
     /// `RebornProductAuthServices` may still support OAuth callbacks,
     /// manual-token setup, credential refresh, and continuation dispatch
@@ -920,12 +920,12 @@ impl RebornProductAuthServices {
         Ok(self)
     }
 
-    /// Enable WebUI/local-dev/composition auth-flow projection source.
+    /// Enable WebUI/standalone/composition auth-flow projection source.
     ///
     /// Exported `pub` so integration-test harnesses outside the crate can wire
     /// an in-memory fake, and so the production composition factory can attach
     /// its configured flow projection. Not part of the stable product API;
-    /// callers outside WebUI/local-dev or composition adapter wiring should use
+    /// callers outside WebUI/standalone or composition adapter wiring should use
     /// higher-level product-auth surfaces instead.
     #[doc(hidden)]
     pub fn with_flow_record_source(mut self, source: Arc<dyn AuthFlowRecordSource>) -> Self {

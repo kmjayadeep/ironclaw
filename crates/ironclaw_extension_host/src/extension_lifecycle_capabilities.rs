@@ -78,7 +78,7 @@ fn manifests() -> Result<Vec<CapabilityManifest>, ExtensionError> {
         )?,
         lifecycle_manifest(
             EXTENSION_INSTALL_CAPABILITY_ID,
-            "Install a searched Reborn extension into durable local-dev lifecycle state. Installation also attempts activation: when an extension does not require credentials or credentials are already available it publishes tools immediately, and when credentials are missing it raises the auth gate. If install reports the extension is already installed, report the installed state or credential gate it returns instead of calling a separate activation tool.",
+            "Install a searched Reborn extension into durable standalone lifecycle state. Installation also attempts activation: when an extension does not require credentials or credentials are already available it publishes tools immediately, and when credentials are missing it raises the auth gate. If install reports the extension is already installed, report the installed state or credential gate it returns instead of calling a separate activation tool.",
             vec![EffectKind::ReadFilesystem, EffectKind::WriteFilesystem],
             PermissionMode::Ask,
         )?,
@@ -92,7 +92,7 @@ fn manifests() -> Result<Vec<CapabilityManifest>, ExtensionError> {
         )?,
         lifecycle_manifest(
             EXTENSION_REMOVE_CAPABILITY_ID,
-            "Remove an installed Reborn extension from durable local-dev lifecycle state. Use this when the user asks to uninstall, remove, disable, disconnect, unpair, unlink, or revoke access for an extension, integration, app, account, external channel, or the current external chat. Pass the extension's registry id as extension_id; removal also performs extension-owned cleanup such as authentication, identity, and channel bindings when supported.",
+            "Remove an installed Reborn extension from durable standalone lifecycle state. Use this when the user asks to uninstall, remove, disable, disconnect, unpair, unlink, or revoke access for an extension, integration, app, account, external channel, or the current external chat. Pass the extension's registry id as extension_id; removal also performs extension-owned cleanup such as authentication, identity, and channel bindings when supported.",
             vec![EffectKind::ReadFilesystem, EffectKind::WriteFilesystem],
             PermissionMode::Ask,
         )?,
@@ -852,7 +852,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_agent_surface_exposes_extension_lifecycle_tools() {
+    async fn standalone_agent_surface_exposes_extension_lifecycle_tools() {
         let services = test_services("extension-tools-surface-owner", None, false).await;
         let runtime = services.host_runtime.as_ref();
 
@@ -1050,7 +1050,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_extension_lifecycle_tools_manage_visible_extension_surface() {
+    async fn standalone_extension_lifecycle_tools_manage_visible_extension_surface() {
         let services = test_services("extension-tools-owner", None, false).await;
         let runtime = services.host_runtime.as_ref();
         let extension_management = services.extension_management.clone();
@@ -1133,8 +1133,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_extension_remove_revokes_exclusive_credential_so_reactivation_requires_auth()
-    {
+    async fn standalone_extension_remove_revokes_exclusive_credential_so_reactivation_requires_auth()
+     {
         // Regression (#slack model-B): before the pairing->OAuth swap, removing an
         // extension cleared its credentials, so the agent could not silently
         // re-add it. OAuth personal credentials are stored `UserReusable` and are
@@ -1183,7 +1183,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_extension_remove_preserves_shared_credential_used_by_another_extension() {
+    async fn standalone_extension_remove_preserves_shared_credential_used_by_another_extension() {
         // Exclusivity guard: removing one extension must NOT revoke a credential
         // still used by another installed extension. Gmail and Google Calendar
         // share the `google` provider; removing Gmail must leave the Google
@@ -1244,7 +1244,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_extension_activate_returns_auth_gate_for_missing_extension_credentials() {
+    async fn standalone_extension_activate_returns_auth_gate_for_missing_extension_credentials() {
         let services = test_services("extension-tools-auth-gate-owner", None, false).await;
         let extension_management = services.extension_management.clone();
 
@@ -1293,7 +1293,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_extension_search_distinguishes_configured_from_active() {
+    async fn standalone_extension_search_distinguishes_configured_from_active() {
         let services = test_services("extension-tools-active-search-owner", None, false).await;
 
         let available_search = invoke_json(
@@ -1431,7 +1431,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_extension_activate_returns_auth_gate_when_account_lacks_required_scope() {
+    async fn standalone_extension_activate_returns_auth_gate_when_account_lacks_required_scope() {
         let services = test_services("extension-tools-scope-gate-owner", None, true).await;
         let extension_management = services.extension_management.clone();
 
@@ -1476,7 +1476,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_extension_activate_coalesces_gmail_oauth_scopes_into_one_auth_gate() {
+    async fn standalone_extension_activate_coalesces_gmail_oauth_scopes_into_one_auth_gate() {
         let services = test_services("extension-tools-gmail-scope-union-owner", None, true).await;
         let extension_management = services.extension_management.clone();
 
@@ -1521,7 +1521,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_extension_activate_maps_corrupt_configured_account_to_backend() {
+    async fn standalone_extension_activate_maps_corrupt_configured_account_to_backend() {
         let services = test_services("extension-tools-corrupt-auth-owner", None, false).await;
         let extension_management = services.extension_management.clone();
 
@@ -1562,7 +1562,7 @@ mod tests {
     /// invocation scope found no policy/credential, failed transient, and
     /// fell back to the bundled manifest with zero model-visible tools.
     #[tokio::test]
-    async fn local_dev_extension_activate_hosted_mcp_stages_discovery_and_publishes_tools() {
+    async fn standalone_extension_activate_hosted_mcp_stages_discovery_and_publishes_tools() {
         let discovery_script = std::sync::Arc::new(
             crate::extension_lifecycle::hosted_mcp_test_support::HostedMcpDiscoveryNetworkScript::with_tool_name("notion-search")
                 // Real hosted MCP providers may return verbose prose. The
@@ -1629,7 +1629,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_extension_lifecycle_tool_lists_all_and_rejects_malformed_inputs() {
+    async fn standalone_extension_lifecycle_tool_lists_all_and_rejects_malformed_inputs() {
         let services = test_services("extension-tools-invalid-owner", None, false).await;
         let list_all = invoke_json(
             &services,
@@ -1641,7 +1641,7 @@ mod tests {
         assert_eq!(list_all["payload"]["kind"], "extension_search");
         assert!(
             list_all["payload"]["count"].as_u64().unwrap_or_default() > 0,
-            "list-all extension search should return the bundled local-dev packages"
+            "list-all extension search should return the bundled standalone packages"
         );
         assert_eq!(
             invoke_json(

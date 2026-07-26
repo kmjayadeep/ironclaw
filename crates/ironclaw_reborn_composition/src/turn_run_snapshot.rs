@@ -1,5 +1,5 @@
 //! Turn-run persistence-snapshot abstraction shared by every reader of live
-//! turn-run state in this crate: the local-dev approval/auth interaction
+//! turn-run state in this crate: the standalone approval/auth interaction
 //! locators (`SnapshotApprovalTurnRunLocator` in `runtime.rs`,
 //! `SnapshotAuthInteractionReadModel` in `runtime/auth_interaction.rs`) and
 //! the trigger poller's active-run lookup (`SnapshotActiveRunLookup` in

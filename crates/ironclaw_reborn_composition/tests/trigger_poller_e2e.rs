@@ -545,7 +545,7 @@ async fn build_runtime_with<G: HostManagedModelGateway + 'static>(
     let input = local_runtime_build_input_with_options(
         RebornCompositionProfile::StandaloneUnrestricted,
         USER,
-        root.path().join("local-dev"),
+        root.path().join("standalone"),
         RebornRuntimeProfileOptions {
             confirm_host_access: true,
         },
@@ -577,7 +577,7 @@ async fn build_runtime_with_slack_delivery(
     let input = local_runtime_build_input_with_options(
         RebornCompositionProfile::StandaloneUnrestricted,
         USER,
-        root.path().join("local-dev"),
+        root.path().join("standalone"),
         RebornRuntimeProfileOptions {
             confirm_host_access: true,
         },
@@ -851,7 +851,7 @@ async fn build_runtime_with_tool_disclosure<G: HostManagedModelGateway + 'static
     let input = local_runtime_build_input_with_options(
         RebornCompositionProfile::StandaloneUnrestricted,
         USER,
-        root.path().join("local-dev"),
+        root.path().join("standalone"),
         RebornRuntimeProfileOptions {
             confirm_host_access: true,
         },
@@ -878,9 +878,9 @@ async fn build_runtime_with_tool_disclosure<G: HostManagedModelGateway + 'static
 /// the real standalone secret-store construction without process-global env
 /// mutation or platform keychain serialization.
 fn seed_test_secret_master_key(root: &Path) {
-    let local_dev_root = root.join("local-dev");
-    std::fs::create_dir_all(&local_dev_root).expect("local-dev root");
-    let key_path = local_dev_root.join(".reborn-local-dev-secrets-master-key");
+    let standalone_root = root.join("standalone");
+    std::fs::create_dir_all(&standalone_root).expect("standalone root");
+    let key_path = standalone_root.join(".reborn-local-dev-secrets-master-key");
     if !key_path.exists() {
         std::fs::write(key_path, TEST_SECRET_MASTER_KEY).expect("seed test secret master key");
     }
@@ -894,7 +894,7 @@ async fn invoke_trigger_create(runtime: &RebornRuntime, input: Value) -> Value {
     // per-tool approval gate.
     let auto_approve = runtime
         .standalone_auto_approve_settings_for_test()
-        .expect("local-dev exposes auto-approve settings for test");
+        .expect("standalone exposes auto-approve settings for test");
     let auto_approve_scope = trigger_management_execution_context().resource_scope;
     auto_approve
         .set(ironclaw_approvals::AutoApproveSettingInput {

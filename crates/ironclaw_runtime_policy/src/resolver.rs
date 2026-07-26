@@ -1077,7 +1077,7 @@ mod tests {
     fn org_ceiling_narrowing_restores_budget_enforcement() {
         // The regression this axis exists to prevent: today's composition
         // branches on the *requested* deployment profile, so an org ceiling
-        // that narrows local-yolo down to local-dev would still skip the
+        // that narrows local-yolo down to standalone would still skip the
         // budget accountant. Keying on `resolved_profile` fixes that.
         let narrowed = resolve(ResolveRequest {
             org_policy: OrgPolicyConstraints::default().set_max_profile(RuntimeProfile::LocalHost),
@@ -1111,7 +1111,7 @@ mod tests {
             DeploymentMode::LocalSingleUser,
             RuntimeProfile::LocalHost,
         ))
-        .expect("local dev resolves");
+        .expect("standalone resolves");
         assert_eq!(
             minimal_approval_bypass(&gated),
             MinimalApprovalBypass::Denied

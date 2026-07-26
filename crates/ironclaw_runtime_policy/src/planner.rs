@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn plans_local_dev_filesystem_read_against_host_workspace() {
+    fn plans_standalone_filesystem_read_against_host_workspace() {
         // Issue example: `LocalHost + filesystem.read -> HostWorkspace
         // read under selected root`. The planner forwards the
         // resolved filesystem backend; downstream composition picks

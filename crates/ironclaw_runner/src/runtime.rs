@@ -378,7 +378,7 @@ where
     /// while still ensuring the scheduler loop consumes the exact same channel.
     ///
     /// When `None` (the default), the notifier and channel are minted internally, which is
-    /// correct for local-dev and any composition that does not need to pre-mint.
+    /// correct for standalone and any composition that does not need to pre-mint.
     pub scheduler_wake_wiring: Option<SchedulerWakeWiring>,
 }
 
@@ -582,7 +582,7 @@ where
 
 fn non_production_noop_safety_context() -> InstructionSafetyContext {
     tracing::debug!(
-        "using local-development no-op instruction safety context; configure a real instruction safety scanner before product-live use"
+        "using standaloneelopment no-op instruction safety context; configure a real instruction safety scanner before product-live use"
     );
     InstructionSafetyContext::non_production_noop()
 }

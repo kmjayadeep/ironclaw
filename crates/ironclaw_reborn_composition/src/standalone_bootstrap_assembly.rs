@@ -10,17 +10,17 @@ const DEFAULT_SYSTEM_PROMPT_PATH: &str = "system/prompts/default-system.md";
 pub(crate) const LEGACY_SKILLS_BACKFILL_MARKER: &str = ".legacy-skills-backfilled";
 const LEGACY_SKILLS_BACKFILL_MAX_DEPTH: usize = 64;
 
-pub(crate) struct StandaloneBootstrapAssembly {
+pub(crate) struct HostBootstrapAssembly {
     pub(crate) default_system_prompt_path: PathBuf,
 }
 
 /// Initializes standalone host content after storage roots are prepared.
-pub(crate) struct StandaloneBootstrapAssemblyBuilder<'a> {
+pub(crate) struct HostBootstrapAssemblyBuilder<'a> {
     storage_root: &'a Path,
     owner_user_id: &'a UserId,
 }
 
-impl<'a> StandaloneBootstrapAssemblyBuilder<'a> {
+impl<'a> HostBootstrapAssemblyBuilder<'a> {
     pub(crate) fn new(storage_root: &'a Path, owner_user_id: &'a UserId) -> Self {
         Self {
             storage_root,
@@ -28,7 +28,7 @@ impl<'a> StandaloneBootstrapAssemblyBuilder<'a> {
         }
     }
 
-    pub(crate) async fn build(self) -> Result<StandaloneBootstrapAssembly, RebornBuildError> {
+    pub(crate) async fn build(self) -> Result<HostBootstrapAssembly, RebornBuildError> {
         let backfill_root = self.storage_root.to_path_buf();
         let backfill_owner_user_id = self.owner_user_id.clone();
         tokio::task::spawn_blocking(move || {
@@ -50,7 +50,7 @@ impl<'a> StandaloneBootstrapAssemblyBuilder<'a> {
         )
         .await?;
 
-        Ok(StandaloneBootstrapAssembly {
+        Ok(HostBootstrapAssembly {
             default_system_prompt_path,
         })
     }

@@ -250,7 +250,7 @@ async fn production_wiring_validation_rejects_local_only_runtime_policy() {
 
     let report = services
         .validate_production_wiring(&ProductionWiringConfig::new([]))
-        .expect_err("local-dev runtime policy must not pass production validation");
+        .expect_err("standalone runtime policy must not pass production validation");
 
     assert!(
         report.contains(
@@ -888,21 +888,21 @@ async fn local_reborn_event_store_config_does_not_satisfy_production_wiring() {
 
     let report = services
         .validate_production_wiring(&ProductionWiringConfig::new([]))
-        .expect_err("LocalDev stores are not production-verified event/audit sinks");
+        .expect_err("Standalone stores are not production-verified event/audit sinks");
 
     assert!(
         report.contains(
             ProductionWiringComponent::EventSink,
             ProductionWiringIssueKind::UnverifiedProductionImplementation
         ),
-        "LocalDev Reborn event store must not satisfy production event sink guardrail: {report:?}"
+        "Standalone Reborn event store must not satisfy production event sink guardrail: {report:?}"
     );
     assert!(
         report.contains(
             ProductionWiringComponent::AuditSink,
             ProductionWiringIssueKind::UnverifiedProductionImplementation
         ),
-        "LocalDev Reborn audit store must not satisfy production audit sink guardrail: {report:?}"
+        "Standalone Reborn audit store must not satisfy production audit sink guardrail: {report:?}"
     );
 }
 

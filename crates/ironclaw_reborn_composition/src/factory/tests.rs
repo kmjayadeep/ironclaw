@@ -155,10 +155,10 @@ fn build_runtime_substrate_uses_filesystem_resource_governor() {
         .block_on(build_runtime_substrate(
             crate::deployment::local_filesystem_build_input(
                 "resource-governor-enabled-env-owner",
-                dir.path().join("local-dev"),
+                dir.path().join("standalone"),
             ),
         ))
-        .expect("local-dev services build");
+        .expect("standalone services build");
     let runtime_surfaces = services.local_runtime_for_test().expect("local runtime");
     let scope = ResourceScope {
         tenant_id: TenantId::new("resource-governor-tenant").expect("tenant"),
@@ -453,13 +453,13 @@ async fn durable_trigger_conversation_services_propagates_init_error() {
 
 #[tokio::test]
 async fn local_runtime_trigger_create_hook_maps_conversation_init_error_to_backend() {
-    let local_dev_root = tempfile::tempdir().expect("tempdir");
+    let standalone_root = tempfile::tempdir().expect("tempdir");
     let services = build_runtime_substrate(crate::deployment::local_filesystem_build_input(
         "pairing-owner",
-        local_dev_root.path().join("local-dev"),
+        standalone_root.path().join("standalone"),
     ))
     .await
-    .expect("local-dev services build");
+    .expect("standalone services build");
     let hook = LocalRuntimeTriggerCreatorPairingHook {
         outbound_delivery_targets: Arc::clone(&services.outbound_delivery_targets),
         source_turn_state: services.turn_state.clone(),
@@ -480,14 +480,14 @@ async fn local_runtime_trigger_create_hook_maps_conversation_init_error_to_backe
 }
 
 #[tokio::test]
-async fn local_dev_services_include_repl_runtime_substrate() {
+async fn standalone_services_include_repl_runtime_substrate() {
     let dir = tempfile::tempdir().expect("tempdir");
     let services = build_runtime_substrate(crate::deployment::local_filesystem_build_input(
-        "local-dev-substrate-owner",
-        dir.path().join("local-dev"),
+        "standalone-substrate-owner",
+        dir.path().join("standalone"),
     ))
     .await
-    .expect("local-dev services build");
+    .expect("standalone services build");
 
     let _ = &services.host_runtime;
     let _ = &services.turn_coordinator;
@@ -503,14 +503,14 @@ async fn local_dev_services_include_repl_runtime_substrate() {
 }
 
 #[tokio::test]
-async fn hosted_single_tenant_rejects_local_dev_storage_input() {
+async fn hosted_single_tenant_rejects_standalone_storage_input() {
     let dir = tempfile::tempdir().expect("tempdir");
     let input = crate::deployment::local_filesystem_build_input(
         "hosted-single-tenant-local-storage-owner",
-        dir.path().join("local-dev"),
+        dir.path().join("standalone"),
     );
-    // Deliberate mismatch: swap the local-dev deployment for a hosted
-    // single-tenant one while keeping the local-dev storage input. In
+    // Deliberate mismatch: swap the standalone deployment for a hosted
+    // single-tenant one while keeping the standalone storage input. In
     // production this pairing is unreachable — storage is derived from the
     // deployment — so the dedicated storage-shape guard string
     // ("hosted single-tenant Postgres storage input") was removed in commit
@@ -527,7 +527,7 @@ async fn hosted_single_tenant_rejects_local_dev_storage_input() {
     let error = match build_runtime_substrate(input).await {
         Ok(_) => {
             panic!(
-                "mismatched hosted-single-tenant deployment over local-dev storage must fail closed"
+                "mismatched hosted-single-tenant deployment over standalone storage must fail closed"
             )
         }
         Err(error) => error,
@@ -539,21 +539,21 @@ async fn hosted_single_tenant_rejects_local_dev_storage_input() {
 }
 
 #[tokio::test]
-async fn local_dev_memory_first_party_tools_use_mounted_memory_root() {
+async fn standalone_memory_first_party_tools_use_mounted_memory_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let services = build_runtime_substrate(crate::deployment::local_filesystem_build_input(
-        "local-dev-memory-owner",
-        dir.path().join("local-dev"),
+        "standalone-memory-owner",
+        dir.path().join("standalone"),
     ))
     .await
-    .expect("local-dev services build");
+    .expect("standalone services build");
     invoke_json(
         &services,
         MEMORY_WRITE_CAPABILITY_ID,
         memory_context(MEMORY_WRITE_CAPABILITY_ID),
         serde_json::json!({
             "target": "projects/alpha/notes.md",
-            "content": "local dev mounted memory root search marker",
+            "content": "standalone mounted memory root search marker",
             "append": false
         }),
     )
@@ -589,24 +589,24 @@ async fn local_dev_memory_first_party_tools_use_mounted_memory_root() {
 }
 
 #[tokio::test]
-async fn local_dev_memory_documents_persist_across_rebuilds() {
+async fn standalone_memory_documents_persist_across_rebuilds() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let local_dev_root = dir.path().join("local-dev");
-    let owner = "local-dev-durable-memory-owner";
+    let standalone_root = dir.path().join("standalone");
+    let owner = "standalone-durable-memory-owner";
 
     let services = build_runtime_substrate(crate::deployment::local_filesystem_build_input(
         owner,
-        local_dev_root.clone(),
+        standalone_root.clone(),
     ))
     .await
-    .expect("first local-dev services build");
+    .expect("first standalone services build");
     invoke_json(
         &services,
         MEMORY_WRITE_CAPABILITY_ID,
         memory_context(MEMORY_WRITE_CAPABILITY_ID),
         serde_json::json!({
             "target": "projects/durable/notes.md",
-            "content": "local dev durable mounted memory root search marker",
+            "content": "standalone durable mounted memory root search marker",
             "append": false
         }),
     )
@@ -616,10 +616,10 @@ async fn local_dev_memory_documents_persist_across_rebuilds() {
 
     let rebuilt = build_runtime_substrate(crate::deployment::local_filesystem_build_input(
         owner,
-        local_dev_root.clone(),
+        standalone_root.clone(),
     ))
     .await
-    .expect("rebuilt local-dev services");
+    .expect("rebuilt standalone services");
 
     let tree = invoke_json(
         &rebuilt,
@@ -650,16 +650,16 @@ async fn local_dev_memory_documents_persist_across_rebuilds() {
 }
 
 #[tokio::test]
-async fn local_dev_default_product_auth_preserves_manual_token_across_rebuilds() {
+async fn standalone_default_product_auth_preserves_manual_token_across_rebuilds() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let local_dev_root = dir.path().join("local-dev");
-    let owner = "local-dev-durable-auth-owner";
+    let standalone_root = dir.path().join("standalone");
+    let owner = "standalone-durable-auth-owner";
     let services = build_runtime_substrate(crate::deployment::local_filesystem_build_input(
         owner,
-        local_dev_root.clone(),
+        standalone_root.clone(),
     ))
     .await
-    .expect("local-dev services build");
+    .expect("standalone services build");
     let product_auth = &services.product_auth;
     let scope = AuthProductScope::new(
         ResourceScope::local_default(UserId::new(owner).unwrap(), InvocationId::new()).unwrap(),
@@ -682,7 +682,7 @@ async fn local_dev_default_product_auth_preserves_manual_token_across_rebuilds()
         .submit_manual_token(ironclaw_auth::RebornManualTokenSubmitRequest::new(
             scope.clone(),
             challenge.interaction_id,
-            secrecy::SecretString::from("ghp_local_dev_pat"),
+            secrecy::SecretString::from("ghp_standalone_pat"),
         ))
         .await
         .unwrap();
@@ -699,15 +699,15 @@ async fn local_dev_default_product_auth_preserves_manual_token_across_rebuilds()
     let access_secret = account.access_secret.expect("manual token access secret");
     assert!(
         access_secret.as_str().starts_with("product-auth-manual-"),
-        "local-dev default product-auth must create durable SecretStorePort-backed handles"
+        "standalone default product-auth must create durable SecretStorePort-backed handles"
     );
 
     let rebuilt = build_runtime_substrate(crate::deployment::local_filesystem_build_input(
         owner,
-        local_dev_root.clone(),
+        standalone_root.clone(),
     ))
     .await
-    .expect("local-dev services rebuild");
+    .expect("standalone services rebuild");
     let rebuilt_product_auth = rebuilt.product_auth.as_ref();
     let rebuilt_account = rebuilt_product_auth
         .credential_account_service()
@@ -717,20 +717,20 @@ async fn local_dev_default_product_auth_preserves_manual_token_across_rebuilds()
         ))
         .await
         .unwrap()
-        .expect("manual-token account should survive local-dev rebuild");
+        .expect("manual-token account should survive standalone rebuild");
     assert_eq!(rebuilt_account.access_secret.as_ref(), Some(&access_secret));
 
     let rebuilt_filesystem = FilesystemAssemblyBuilder::new(
-        &local_dev_root,
-        &local_dev_root.join("workspace"),
+        &standalone_root,
+        &standalone_root.join("workspace"),
         DurableStorageInput::EmbeddedLibsql,
     )
     .build()
     .await
-    .expect("local-dev filesystem rebuild")
+    .expect("standalone filesystem rebuild")
     .filesystem;
     let (rebuilt_secret_store, _rebuilt_secret_crypto) = build_secret_store(
-        &local_dev_root,
+        &standalone_root,
         scoped_composite_filesystem(rebuilt_filesystem),
         None,
     )
@@ -739,16 +739,16 @@ async fn local_dev_default_product_auth_preserves_manual_token_across_rebuilds()
     let lease = rebuilt_secret_store
         .lease_once(&scope.resource, &access_secret)
         .await
-        .expect("manual token secret should survive local-dev rebuild");
+        .expect("manual token secret should survive standalone rebuild");
     let raw_secret = rebuilt_secret_store
         .consume(&scope.resource, lease.id)
         .await
-        .expect("manual token secret should decrypt after local-dev rebuild");
-    assert_eq!(raw_secret.expose_secret(), "ghp_local_dev_pat");
+        .expect("manual token secret should decrypt after standalone rebuild");
+    assert_eq!(raw_secret.expose_secret(), "ghp_standalone_pat");
 
     let flows = product_auth
         .flow_record_source()
-        .expect("local-dev product-auth flow source")
+        .expect("standalone product-auth flow source")
         .flows_for_owner(ironclaw_auth::AuthFlowOwnerScope {
             tenant_id: scope.resource.tenant_id.clone(),
             user_id: scope.resource.user_id.clone(),
@@ -792,7 +792,7 @@ fn attach_hosted_mcp_runtime_skips_services_without_http_egress() {
     assert!(services.product_auth_provider_runtime_ports().is_none());
 }
 
-/// A corrupt local-dev key file must fail loud with a path-naming error,
+/// A corrupt standalone key file must fail loud with a path-naming error,
 /// not the opaque "Invalid master key" that surfaces when the unvalidated
 /// material reaches `SecretsCrypto::new` several layers deep. Mirrors the
 /// real all-zeros key an `[env] SECRETS_MASTER_KEY = "000...0"` cargo
@@ -808,7 +808,7 @@ async fn resolve_standalone_secret_master_key_rejects_malformed_file_with_path_c
 
     let error = resolve_standalone_secret_master_key(root)
         .await
-        .expect_err("malformed local-dev master key must be rejected");
+        .expect_err("malformed standalone master key must be rejected");
 
     match error {
         RebornBuildError::InvalidConfig { reason } => {
@@ -1070,14 +1070,14 @@ async fn open_standalone_secret_store_is_visible_across_reopens_of_the_same_root
 // separate crates the `forbid` doesn't reach.
 
 #[tokio::test]
-async fn local_dev_gsuite_installs_activates_and_dispatches_through_host_runtime() {
+async fn standalone_gsuite_installs_activates_and_dispatches_through_host_runtime() {
     let dir = tempfile::tempdir().expect("tempdir");
     let services = build_runtime_substrate(crate::deployment::local_filesystem_build_input(
-        "local-dev-gsuite-owner",
-        dir.path().join("local-dev"),
+        "standalone-gsuite-owner",
+        dir.path().join("standalone"),
     ))
     .await
-    .expect("local-dev services build");
+    .expect("standalone services build");
     let runtime_surfaces = services.local_runtime_for_test().expect("local runtime");
     let extension_management = &runtime_surfaces.extension_management;
     let gmail_ref =
@@ -1087,7 +1087,7 @@ async fn local_dev_gsuite_installs_activates_and_dispatches_through_host_runtime
 
     // #6520 removed the port-side operator accessor: install as the owner the
     // runtime was constructed with.
-    let caller = UserId::new("local-dev-gsuite-owner").expect("valid lifecycle caller");
+    let caller = UserId::new("standalone-gsuite-owner").expect("valid lifecycle caller");
     extension_management
         .install(gmail_ref.clone(), &caller)
         .await
@@ -1193,18 +1193,18 @@ async fn local_dev_gsuite_installs_activates_and_dispatches_through_host_runtime
 }
 
 #[tokio::test]
-async fn local_dev_notion_mcp_installs_activates_and_reaches_auth_gate() {
+async fn standalone_notion_mcp_installs_activates_and_reaches_auth_gate() {
     let dir = tempfile::tempdir().expect("tempdir");
     let services = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input_with_profile(
             RebornCompositionProfile::StandaloneUnrestricted,
-            "local-dev-notion-mcp-owner",
-            dir.path().join("local-dev"),
+            "standalone-notion-mcp-owner",
+            dir.path().join("standalone"),
         )
         .with_runtime_policy(local_host_minimal_approval_policy()),
     )
     .await
-    .expect("local-dev services build");
+    .expect("standalone services build");
     let runtime_surfaces = services.local_runtime_for_test().expect("local runtime");
     let extension_management = &runtime_surfaces.extension_management;
     let notion_ref =
@@ -1232,7 +1232,7 @@ async fn local_dev_notion_mcp_installs_activates_and_reaches_auth_gate() {
 
     // #6520 removed the port-side operator accessor: install as the owner the
     // runtime was constructed with.
-    let caller = UserId::new("local-dev-notion-mcp-owner").expect("valid lifecycle caller");
+    let caller = UserId::new("standalone-notion-mcp-owner").expect("valid lifecycle caller");
     extension_management
         .install(notion_ref.clone(), &caller)
         .await
@@ -1273,18 +1273,18 @@ async fn local_dev_notion_mcp_installs_activates_and_reaches_auth_gate() {
 }
 
 #[tokio::test]
-async fn local_dev_web_access_installs_activates_and_dispatches_through_host_runtime() {
+async fn standalone_web_access_installs_activates_and_dispatches_through_host_runtime() {
     let dir = tempfile::tempdir().expect("tempdir");
     let services = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input_with_profile(
             RebornCompositionProfile::StandaloneUnrestricted,
-            "local-dev-web-access-owner",
-            dir.path().join("local-dev"),
+            "standalone-web-access-owner",
+            dir.path().join("standalone"),
         )
         .with_runtime_policy(local_host_minimal_approval_policy()),
     )
     .await
-    .expect("local-dev services build");
+    .expect("standalone services build");
     let runtime_surfaces = services.local_runtime_for_test().expect("local runtime");
     let extension_management = &runtime_surfaces.extension_management;
     let web_access_ref =
@@ -1292,7 +1292,7 @@ async fn local_dev_web_access_installs_activates_and_dispatches_through_host_run
 
     // #6520 removed the port-side operator accessor: install as the owner the
     // runtime was constructed with.
-    let caller = UserId::new("local-dev-web-access-owner").expect("valid lifecycle caller");
+    let caller = UserId::new("standalone-web-access-owner").expect("valid lifecycle caller");
     extension_management
         .install(web_access_ref.clone(), &caller)
         .await
@@ -1710,17 +1710,17 @@ async fn production_libsql_builder_rejects_invalid_owner_id_at_composition_bound
 }
 
 #[tokio::test]
-async fn local_dev_nearai_mcp_auto_bootstraps_from_injected_config() {
+async fn standalone_nearai_mcp_auto_bootstraps_from_injected_config() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let owner = "local-dev-nearai-mcp-owner";
+    let owner = "standalone-nearai-mcp-owner";
     let services = build_runtime_substrate(nearai_bootstrap_input_with_base(
         owner,
-        dir.path().join("local-dev"),
+        dir.path().join("standalone"),
         "https://nearai-db.example.test:9443/v1",
         "nearai-test-key",
     ))
     .await
-    .expect("local-dev services build");
+    .expect("standalone services build");
     let runtime_surfaces = services.local_runtime_for_test().expect("local runtime");
     let extension_management = &runtime_surfaces.extension_management;
     let nearai_ref =
@@ -1849,7 +1849,7 @@ async fn local_dev_nearai_mcp_auto_bootstraps_from_injected_config() {
     );
     let sso_scope = ResourceScope {
         tenant_id: nearai_account_scope.tenant_id.clone(),
-        user_id: UserId::new("local-dev-nearai-mcp-sso-user").unwrap(),
+        user_id: UserId::new("standalone-nearai-mcp-sso-user").unwrap(),
         agent_id: nearai_account_scope.agent_id.clone(),
         project_id: nearai_account_scope.project_id.clone(),
         mission_id: None,
@@ -1871,10 +1871,10 @@ async fn local_dev_nearai_mcp_auto_bootstraps_from_injected_config() {
 }
 
 #[tokio::test]
-async fn local_dev_nearai_mcp_rebootstrap_reuses_existing_account() {
+async fn standalone_nearai_mcp_rebootstrap_reuses_existing_account() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path().join("local-dev");
-    let owner = "local-dev-nearai-mcp-idempotent-owner";
+    let root = dir.path().join("standalone");
+    let owner = "standalone-nearai-mcp-idempotent-owner";
     let auth_scope = AuthProductScope::new(
         default_runtime_owner_scope(UserId::new(owner).unwrap()).expect("NEAR AI MCP owner scope"),
         AuthSurface::Api,
@@ -1882,7 +1882,7 @@ async fn local_dev_nearai_mcp_rebootstrap_reuses_existing_account() {
 
     let first = build_runtime_substrate(nearai_bootstrap_input(owner, root, "nearai-first-key"))
         .await
-        .expect("first local-dev services build");
+        .expect("first standalone services build");
     let first_account = first
         .product_auth
         .as_ref()
@@ -1940,19 +1940,19 @@ async fn local_dev_nearai_mcp_rebootstrap_reuses_existing_account() {
 }
 
 #[tokio::test]
-async fn local_dev_nearai_mcp_bootstrap_reinstalls_discovered_reused_credential() {
+async fn standalone_nearai_mcp_bootstrap_reinstalls_discovered_reused_credential() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let owner = "local-dev-nearai-mcp-discovered-owner";
+    let owner = "standalone-nearai-mcp-discovered-owner";
     let nearai_ref =
         LifecyclePackageRef::new(LifecyclePackageKind::Extension, "nearai").expect("valid ref");
 
     let services = build_runtime_substrate(nearai_bootstrap_input(
         owner,
-        dir.path().join("local-dev"),
+        dir.path().join("standalone"),
         "nearai-test-key",
     ))
     .await
-    .expect("local-dev services build");
+    .expect("standalone services build");
     let extension_management = &services
         .local_runtime_for_test()
         .expect("local runtime")
@@ -2029,7 +2029,7 @@ async fn local_dev_nearai_mcp_bootstrap_reinstalls_discovered_reused_credential(
 }
 
 #[tokio::test]
-async fn local_dev_nearai_mcp_invalid_base_url_fails_build() {
+async fn standalone_nearai_mcp_invalid_base_url_fails_build() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = ironclaw_operator::llm_admin::nearai_mcp::NearAiMcpBootstrapConfig::new(
         "http://private.near.ai",
@@ -2038,8 +2038,8 @@ async fn local_dev_nearai_mcp_invalid_base_url_fails_build() {
     .expect("config shape");
     let error = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input(
-            "local-dev-nearai-mcp-invalid-owner",
-            dir.path().join("local-dev"),
+            "standalone-nearai-mcp-invalid-owner",
+            dir.path().join("standalone"),
         )
         .with_nearai_mcp_bootstrap_config(config),
     )
@@ -2069,9 +2069,9 @@ fn attach_hosted_mcp_runtime_skips_services_without_runtime_http_egress() {
 }
 
 #[tokio::test]
-async fn local_dev_services_persist_thread_records_across_rebuilds() {
+async fn standalone_services_persist_thread_records_across_rebuilds() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path().join("local-dev");
+    let root = dir.path().join("standalone");
     let scope = ironclaw_threads::ThreadScope {
         tenant_id: ironclaw_host_api::TenantId::new("persist-tenant").unwrap(),
         agent_id: ironclaw_host_api::AgentId::new("persist-agent").unwrap(),
@@ -2086,7 +2086,7 @@ async fn local_dev_services_persist_thread_records_across_rebuilds() {
         root.clone(),
     ))
     .await
-    .expect("first local-dev services build");
+    .expect("first standalone services build");
     services
         .local_runtime_for_test()
         .expect("local runtime")
@@ -2107,7 +2107,7 @@ async fn local_dev_services_persist_thread_records_across_rebuilds() {
         root.clone(),
     ))
     .await
-    .expect("rebuilt local-dev services");
+    .expect("rebuilt standalone services");
     let history = rebuilt
         .local_runtime_for_test()
         .expect("rebuilt local runtime")
@@ -2122,29 +2122,29 @@ async fn local_dev_services_persist_thread_records_across_rebuilds() {
     assert_eq!(history.thread.thread_id, thread_id);
     assert!(
         root.join("reborn-local-dev.db").exists(),
-        "local-dev should use a libSQL database under the local-dev root"
+        "standalone should use a libSQL database under the standalone root"
     );
 }
 
 #[tokio::test]
-async fn local_dev_setup_marker_workspace_filesystem_is_read_only() {
+async fn standalone_setup_marker_workspace_filesystem_is_read_only() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let storage_root = dir.path().join("local-dev");
+    let storage_root = dir.path().join("standalone");
     let marker_path = storage_root.join("workspace/markers/setup.done");
     std::fs::create_dir_all(marker_path.parent().expect("marker parent"))
         .expect("marker directory");
     std::fs::write(&marker_path, "done").expect("marker file");
     let services = build_runtime_substrate(crate::deployment::local_filesystem_build_input(
-        "local-dev-marker-workspace-owner",
+        "standalone-marker-workspace-owner",
         storage_root,
     ))
     .await
-    .expect("local-dev services build");
+    .expect("standalone services build");
     let runtime_surfaces = services
         .local_runtime_for_test()
-        .expect("local-dev runtime substrate");
+        .expect("standalone runtime substrate");
     let scope = ResourceScope::local_default(
-        UserId::new("local-dev-marker-user").expect("valid user"),
+        UserId::new("standalone-marker-user").expect("valid user"),
         InvocationId::new(),
     )
     .expect("valid resource scope");
@@ -2172,15 +2172,15 @@ async fn local_dev_setup_marker_workspace_filesystem_is_read_only() {
 }
 
 #[tokio::test]
-async fn local_dev_skill_management_invokes_through_first_party_runtime() {
+async fn standalone_skill_management_invokes_through_first_party_runtime() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let storage_root = dir.path().join("local-dev");
+    let storage_root = dir.path().join("standalone");
     let services = build_runtime_substrate(crate::deployment::local_filesystem_build_input(
-        "local-dev-skill-tools-owner",
+        "standalone-skill-tools-owner",
         storage_root.clone(),
     ))
     .await
-    .expect("local-dev services build");
+    .expect("standalone services build");
 
     let install_output = invoke_json(
         &services,
@@ -2196,7 +2196,7 @@ async fn local_dev_skill_management_invokes_through_first_party_runtime() {
     assert_eq!(install_output["name"], "runtime-sentinel");
     assert!(
         storage_root
-            .join("tenants/default/users/local-dev-test-user/skills/runtime-sentinel/SKILL.md")
+            .join("tenants/default/users/standalone-test-user/skills/runtime-sentinel/SKILL.md")
             .exists()
     );
 
@@ -2246,7 +2246,7 @@ async fn local_dev_skill_management_invokes_through_first_party_runtime() {
     assert_eq!(auto_activate_output["auto_activate"], false);
     let updated_skill = std::fs::read_to_string(
         storage_root
-            .join("tenants/default/users/local-dev-test-user/skills/runtime-sentinel/SKILL.md"),
+            .join("tenants/default/users/standalone-test-user/skills/runtime-sentinel/SKILL.md"),
     )
     .expect("updated skill");
     assert!(updated_skill.contains("auto_activate: false"));
@@ -2262,21 +2262,21 @@ async fn local_dev_skill_management_invokes_through_first_party_runtime() {
     assert_eq!(remove_output["removed"], true);
     assert!(
         !storage_root
-            .join("tenants/default/users/local-dev-test-user/skills/runtime-sentinel/SKILL.md")
+            .join("tenants/default/users/standalone-test-user/skills/runtime-sentinel/SKILL.md")
             .exists()
     );
 }
 
 #[tokio::test]
-async fn local_dev_workspace_mounts_do_not_authorize_skill_writes() {
+async fn standalone_workspace_mounts_do_not_authorize_skill_writes() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let storage_root = dir.path().join("local-dev");
+    let storage_root = dir.path().join("standalone");
     let services = build_runtime_substrate(crate::deployment::local_filesystem_build_input(
-        "local-dev-workspace-skill-boundary-owner",
+        "standalone-workspace-skill-boundary-owner",
         storage_root.clone(),
     ))
     .await
-    .expect("local-dev services build");
+    .expect("standalone services build");
 
     let failure = invoke_json(
         &services,
@@ -2293,15 +2293,15 @@ async fn local_dev_workspace_mounts_do_not_authorize_skill_writes() {
     assert_eq!(failure, RuntimeFailureKind::Authorization);
     assert!(
         !storage_root
-            .join("tenants/default/users/local-dev-test-user/skills/blocked/SKILL.md")
+            .join("tenants/default/users/standalone-test-user/skills/blocked/SKILL.md")
             .exists()
     );
 }
 
 #[test]
-fn local_dev_workspace_root_overlapping_skill_root_is_rejected() {
+fn standalone_workspace_root_overlapping_skill_root_is_rejected() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let storage_root = dir.path().join("local-dev");
+    let storage_root = dir.path().join("standalone");
 
     for skill_root in [
         storage_root.join("skills"),
@@ -2327,9 +2327,9 @@ fn local_dev_workspace_root_overlapping_skill_root_is_rejected() {
 }
 
 #[test]
-fn local_dev_legacy_skill_backfill_marker_preserves_deletions() {
+fn standalone_legacy_skill_backfill_marker_preserves_deletions() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let storage_root = dir.path().join("local-dev");
+    let storage_root = dir.path().join("standalone");
     let legacy_skill_dir = storage_root.join("skills/legacy-skill");
     std::fs::create_dir_all(&legacy_skill_dir).expect("legacy skill dir");
     std::fs::write(legacy_skill_dir.join("SKILL.md"), "legacy skill").expect("legacy skill");
@@ -2352,9 +2352,9 @@ fn local_dev_legacy_skill_backfill_marker_preserves_deletions() {
 
 #[cfg(unix)]
 #[test]
-fn local_dev_legacy_skill_backfill_skips_symlinks() {
+fn standalone_legacy_skill_backfill_skips_symlinks() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let storage_root = dir.path().join("local-dev");
+    let storage_root = dir.path().join("standalone");
     let legacy_root = storage_root.join("skills");
     let target_dir = storage_root.join("target-skill");
     std::fs::create_dir_all(&legacy_root).expect("legacy root");
@@ -2535,7 +2535,7 @@ fn memory_context(capability_id: &str) -> ExecutionContext {
 fn gsuite_context(capability_id: &str) -> ExecutionContext {
     let extension_id = ExtensionId::new("caller").expect("valid extension id");
     let mut context = ExecutionContext::local_default(
-        UserId::new("local-dev-test-user").expect("valid user id"),
+        UserId::new("standalone-test-user").expect("valid user id"),
         extension_id.clone(),
         RuntimeKind::FirstParty,
         TrustClass::FirstParty,
@@ -2593,7 +2593,7 @@ use crate::approval_test_support::disable_global_auto_approve;
 fn notion_mcp_context(capability_id: &str) -> ExecutionContext {
     let extension_id = ExtensionId::new("caller").expect("valid extension id");
     let mut context = ExecutionContext::local_default(
-        UserId::new("local-dev-test-user").expect("valid user id"),
+        UserId::new("standalone-test-user").expect("valid user id"),
         extension_id.clone(),
         RuntimeKind::Mcp,
         TrustClass::Sandbox,
@@ -2624,7 +2624,7 @@ fn notion_mcp_context(capability_id: &str) -> ExecutionContext {
 fn web_access_context(capability_id: &str) -> ExecutionContext {
     let extension_id = ExtensionId::new("caller").expect("valid extension id");
     let mut context = ExecutionContext::local_default(
-        UserId::new("local-dev-test-user").expect("valid user id"),
+        UserId::new("standalone-test-user").expect("valid user id"),
         extension_id.clone(),
         RuntimeKind::FirstParty,
         TrustClass::FirstParty,
@@ -2667,7 +2667,7 @@ fn web_access_network_policy() -> NetworkPolicy {
 fn execution_context(capability_id: &str, mounts: MountView) -> ExecutionContext {
     let extension_id = ExtensionId::new("caller").expect("valid extension id");
     let mut context = ExecutionContext::local_default(
-        UserId::new("local-dev-test-user").expect("valid user id"),
+        UserId::new("standalone-test-user").expect("valid user id"),
         extension_id.clone(),
         RuntimeKind::FirstParty,
         TrustClass::FirstParty,
@@ -2709,7 +2709,7 @@ fn capability_grant(
 
 fn skill_mounts() -> MountView {
     let scope = ironclaw_host_api::ResourceScope::local_default(
-        UserId::new("local-dev-test-user").expect("valid user id"),
+        UserId::new("standalone-test-user").expect("valid user id"),
         ironclaw_host_api::InvocationId::new(),
     )
     .expect("valid resource scope");
@@ -2769,7 +2769,7 @@ fn notion_mcp_allowed_effects() -> Vec<EffectKind> {
 
 fn local_host_minimal_approval_policy() -> ironclaw_host_api::runtime_policy::EffectiveRuntimePolicy
 {
-    let mut policy = crate::standalone_runtime_policy().expect("local-dev policy resolves");
+    let mut policy = crate::standalone_runtime_policy().expect("standalone policy resolves");
     policy.requested_profile = ironclaw_host_api::runtime_policy::RuntimeProfile::LocalYolo;
     policy.resolved_profile = ironclaw_host_api::runtime_policy::RuntimeProfile::LocalYolo;
     policy.approval_policy = ironclaw_host_api::runtime_policy::ApprovalPolicy::Minimal;
@@ -2789,14 +2789,14 @@ fn skill_md(name: &str, description: &str, prompt: &str) -> String {
 /// `std::ptr::addr_eq` (trait objects of different traits cannot be compared
 /// with `Arc::ptr_eq` directly).
 #[tokio::test]
-async fn local_dev_outbound_store_durable_shares_one_allocation_across_all_roles() {
+async fn standalone_outbound_store_durable_shares_one_allocation_across_all_roles() {
     let dir = tempfile::tempdir().expect("tempdir");
     let services = build_runtime_substrate(crate::deployment::local_filesystem_build_input(
         "outbound-store-alloc-owner",
-        dir.path().join("local-dev"),
+        dir.path().join("standalone"),
     ))
     .await
-    .expect("local-dev services build");
+    .expect("standalone services build");
 
     let runtime_surfaces = services.local_runtime_for_test().expect("local runtime");
 
@@ -2996,10 +2996,10 @@ async fn completed_lifecycle_activation_continuation_installs_the_extension() {
     let owner = "lifecycle-continuation-owner";
     let services = build_runtime_substrate(crate::deployment::local_filesystem_build_input(
         owner,
-        dir.path().join("local-dev"),
+        dir.path().join("standalone"),
     ))
     .await
-    .expect("local-dev services build");
+    .expect("standalone services build");
     let runtime_surfaces = services.local_runtime_for_test().expect("local runtime");
     let product_auth = Arc::clone(&services.product_auth);
     let user = UserId::new(owner).expect("owner user id");
@@ -3148,19 +3148,19 @@ async fn channel_pairing_completions_run_the_lifecycle_wrapped_continuation_disp
     let dir = tempfile::tempdir().expect("tempdir");
     let services = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input(
-            "local-dev-pairing-continuation-owner",
-            dir.path().join("local-dev"),
+            "standalone-pairing-continuation-owner",
+            dir.path().join("standalone"),
         )
         .with_bundled_first_party_for_test()
         .with_account_setup_descriptors(vec![pairing_account_setup_descriptor("pairing-fixture")]),
     )
     .await
-    .expect("local-dev services build");
+    .expect("standalone services build");
 
     let channel_pairing = services
         .channel_pairing
         .as_ref()
-        .expect("local-dev build composes the channel pairing registry");
+        .expect("standalone build composes the channel pairing registry");
     let mut pairing_services_checked = 0usize;
     let mut shared_dispatcher = None;
     for extension_id in ["pairing-fixture"] {
@@ -3224,13 +3224,13 @@ async fn telegram_remove_with_authenticated_actor_deletes_the_membership() {
     let dir = tempfile::tempdir().expect("tempdir");
     let services = build_runtime_substrate(
         crate::deployment::local_filesystem_build_input(
-            "local-dev-telegram-remove-owner",
-            dir.path().join("local-dev"),
+            "standalone-telegram-remove-owner",
+            dir.path().join("standalone"),
         )
         .with_bundled_first_party_for_test(),
     )
     .await
-    .expect("local-dev services build");
+    .expect("standalone services build");
     let runtime_surfaces = services.local_runtime_for_test().expect("local runtime");
     let extension_management = &runtime_surfaces.extension_management;
     let caller = UserId::new("telegram-remove-user").expect("user id");

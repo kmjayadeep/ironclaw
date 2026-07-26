@@ -80,7 +80,7 @@ pub(crate) async fn disable_global_auto_approve(
 ) {
     runtime
         .auto_approve_settings()
-        .expect("local-dev auto-approve store") // safety: test-only helper in #[cfg(test)] module.
+        .expect("standalone auto-approve store") // safety: test-only helper in #[cfg(test)] module.
         .set(AutoApproveSettingInput {
             scope: context.resource_scope.clone(),
             enabled: false,
@@ -112,25 +112,25 @@ pub(crate) async fn invoke_with_standalone_approval(
     let host_runtime = runtime.host_runtime().expect("host runtime composed"); // safety: test-only helper in #[cfg(test)] module.
     let approval_requests = runtime
         .approval_requests()
-        .expect("local-dev runtime approval store"); // safety: test-only helper in #[cfg(test)] module.
+        .expect("standalone runtime approval store"); // safety: test-only helper in #[cfg(test)] module.
     let capability_leases = runtime
         .capability_leases()
-        .expect("local-dev runtime capability lease store"); // safety: test-only helper in #[cfg(test)] module.
+        .expect("standalone runtime capability lease store"); // safety: test-only helper in #[cfg(test)] module.
     let capability_policy = runtime
         .capability_policy()
-        .expect("local-dev runtime capability policy"); // safety: test-only helper in #[cfg(test)] module.
+        .expect("standalone runtime capability policy"); // safety: test-only helper in #[cfg(test)] module.
     let workspace_mounts = runtime
         .workspace_mounts()
-        .expect("local-dev runtime workspace mounts"); // safety: test-only helper in #[cfg(test)] module.
+        .expect("standalone runtime workspace mounts"); // safety: test-only helper in #[cfg(test)] module.
     let skill_mounts = runtime
         .skill_mounts()
-        .expect("local-dev runtime skill mounts"); // safety: test-only helper in #[cfg(test)] module.
+        .expect("standalone runtime skill mounts"); // safety: test-only helper in #[cfg(test)] module.
     let memory_mounts = runtime
         .memory_mounts()
-        .expect("local-dev runtime memory mounts"); // safety: test-only helper in #[cfg(test)] module.
+        .expect("standalone runtime memory mounts"); // safety: test-only helper in #[cfg(test)] module.
     let system_extensions_lifecycle_mounts = runtime
         .system_extensions_lifecycle_mounts()
-        .expect("local-dev runtime system extension lifecycle mounts"); // safety: test-only helper in #[cfg(test)] module.
+        .expect("standalone runtime system extension lifecycle mounts"); // safety: test-only helper in #[cfg(test)] module.
     let capability = CapabilityId::new(capability_id).expect("valid capability id"); // safety: test-only helper in #[cfg(test)] module.
     let estimate = ResourceEstimate::default();
     let outcome = host_runtime
@@ -147,13 +147,13 @@ pub(crate) async fn invoke_with_standalone_approval(
             let approval_record = approval_requests
                 .get(&context.resource_scope, gate.approval_request_id)
                 .await
-                .expect("local-dev approval record read") // safety: test-only helper in #[cfg(test)] module.
-                .expect("local-dev approval request persisted"); // safety: test-only helper in #[cfg(test)] module.
+                .expect("standalone approval record read") // safety: test-only helper in #[cfg(test)] module.
+                .expect("standalone approval request persisted"); // safety: test-only helper in #[cfg(test)] module.
             let policy_action = BuiltinApprovalPolicyAction::from_host_action(
                 approval_record.request.action.as_ref(),
             )
-            .expect("dispatch or spawn action in local-dev approval"); // safety: test-only approval helper compiled only under #[cfg(test)].
-            // For local-dev builtin capabilities, derive lease terms through the
+            .expect("dispatch or spawn action in standalone approval"); // safety: test-only approval helper compiled only under #[cfg(test)].
+            // For standalone builtin capabilities, derive lease terms through the
             // capability policy (single source of truth, can't drift from production).
             // For extension capabilities not registered in the builtin policy (e.g.
             // third-party skills like gsuite), fall back to the execution context grants.
@@ -178,12 +178,12 @@ pub(crate) async fn invoke_with_standalone_approval(
                 Action::Dispatch { .. } => resolver
                     .approve_dispatch(&context.resource_scope, gate.approval_request_id, approval)
                     .await
-                    .expect("local-dev approval issues dispatch resume lease"), // safety: test-only helper in #[cfg(test)] module.
+                    .expect("standalone approval issues dispatch resume lease"), // safety: test-only helper in #[cfg(test)] module.
                 Action::SpawnCapability { .. } => resolver
                     .approve_spawn(&context.resource_scope, gate.approval_request_id, approval)
                     .await
-                    .expect("local-dev approval issues spawn resume lease"), // safety: test-only helper in #[cfg(test)] module.
-                other => panic!("unexpected local-dev approval action: {other:?}"),
+                    .expect("standalone approval issues spawn resume lease"), // safety: test-only helper in #[cfg(test)] module.
+                other => panic!("unexpected standalone approval action: {other:?}"),
             };
 
             host_runtime
@@ -203,7 +203,7 @@ pub(crate) async fn invoke_with_standalone_approval(
 
 /// Fallback: build a `LeaseApproval` from an extension capability's grant in
 /// the execution context. Used only when the capability is not registered in the
-/// local-dev builtin policy (e.g. third-party extension skills).
+/// standalone builtin policy (e.g. third-party extension skills).
 fn lease_approval_from_context(
     context: &ExecutionContext,
     capability: &CapabilityId,

@@ -101,7 +101,7 @@ mod tests {
     #[tokio::test]
     async fn local_skill_list_lists_all_skills_from_reborn_storage() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let storage_root = dir.path().join("local-dev");
+        let storage_root = dir.path().join("standalone");
         for index in 0..55 {
             write_skill(&storage_root, &format!("list-skill-{index:02}"));
         }
@@ -128,7 +128,7 @@ mod tests {
     #[tokio::test]
     async fn local_skill_list_missing_storage_reports_bundled_without_creating_state() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let storage_root = dir.path().join("missing-local-dev");
+        let storage_root = dir.path().join("missing-standalone");
 
         let result = list_reborn_local_skills("list-owner", &storage_root)
             .await
@@ -146,7 +146,7 @@ mod tests {
     #[tokio::test]
     async fn local_skill_list_rejects_non_directory_storage_root() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let storage_root = dir.path().join("local-dev");
+        let storage_root = dir.path().join("standalone");
         std::fs::write(&storage_root, "not a directory").expect("storage root file");
 
         let error = match list_reborn_local_skills("list-owner", &storage_root).await {
@@ -172,7 +172,7 @@ mod tests {
     #[tokio::test]
     async fn local_skill_list_rejects_invalid_owner_id() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let storage_root = dir.path().join("local-dev");
+        let storage_root = dir.path().join("standalone");
         std::fs::create_dir_all(&storage_root).expect("storage root");
 
         let error = match list_reborn_local_skills("list/owner", &storage_root).await {
@@ -198,7 +198,7 @@ mod tests {
     #[tokio::test]
     async fn local_skill_list_prefers_user_skill_over_bundled_duplicate_name() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let storage_root = dir.path().join("local-dev");
+        let storage_root = dir.path().join("standalone");
         write_skill(&storage_root, "code-review");
 
         let result = list_reborn_local_skills("list-owner", &storage_root)
@@ -235,7 +235,7 @@ mod tests {
     #[tokio::test]
     async fn local_skill_list_prefers_embedded_bundled_summary_over_storage_system_skill() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let storage_root = dir.path().join("local-dev");
+        let storage_root = dir.path().join("standalone");
         write_system_skill(&storage_root, "code-review", "old system description");
         let bundled_code_review = bundled_reborn_skill_summaries()
             .expect("bundled summaries")

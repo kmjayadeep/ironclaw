@@ -323,7 +323,7 @@ pub async fn invoke_with_standalone_approval(
                 .expect("approval request persisted");
             let Action::Dispatch { .. } = approval_record.request.action.as_ref() else {
                 panic!(
-                    "unexpected local-dev lifecycle approval action: {:?}",
+                    "unexpected standalone lifecycle approval action: {:?}",
                     approval_record.request.action
                 );
             };

@@ -185,7 +185,7 @@ async fn enable_host_runtime_auto_approve_for_harness_user(
 ) {
     let auto_approve = services
         .standalone_auto_approve_settings_for_test()
-        .expect("local-dev host runtime auto-approve settings");
+        .expect("standalone host runtime auto-approve settings");
     let scope = ResourceScope {
         tenant_id: binding.tenant_id.clone(),
         user_id: binding
@@ -262,7 +262,7 @@ impl ProductLiveAgentLoopHarness {
             let services = build_runtime(RebornRuntimeInput::from_build_input(
                 ironclaw_reborn_composition::local_filesystem_build_input(
                     "planned-harness-host-runtime",
-                    root.path().join("local-dev"),
+                    root.path().join("standalone"),
                 ),
             ))
             .await
@@ -736,7 +736,7 @@ struct ProductLiveHostRuntimeCapabilityFactory {
     // Durable gate-record + replay-payload stores wired into the ProductLive
     // capability port, so a raise and its later resume round-trip through the
     // SAME store (both built over one in-memory filesystem below). Modeling the
-    // production wiring the local-dev path already has (#6287).
+    // production wiring the standalone path already has (#6287).
     gate_record_store: Arc<dyn ironclaw_run_state::GateRecordStorePort>,
     replay_payload_store: Arc<dyn ironclaw_capabilities::ReplayPayloadStorePort>,
 }

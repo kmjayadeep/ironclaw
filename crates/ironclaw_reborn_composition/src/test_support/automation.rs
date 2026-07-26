@@ -57,7 +57,7 @@ where
     ))
 }
 
-/// Repoint the local-dev runtime's trigger-source lookup seams at the harness
+/// Repoint the standalone runtime's trigger-source lookup seams at the harness
 /// turn-state store. Integration groups build the capability harness before the
 /// group coordinator owns its store, so production's single-store wiring must
 /// be late-bound for both active-run listing and trigger delivery inheritance.

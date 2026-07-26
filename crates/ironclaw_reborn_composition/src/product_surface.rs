@@ -331,7 +331,7 @@ struct LocalSkillsProductService {
     // flag-reading selector is wired (the production assembly) — the toggle then
     // reports unavailable instead of writing to a flag nothing reads.
     //
-    // Process-global by design: this is a single-operator local-dev switch, so it
+    // Process-global by design: this is a single-operator standalone switch, so it
     // is intentionally not scoped per caller. A future multi-user surface would
     // need a per-tenant flag.
     auto_activate_learned: Option<Arc<AtomicBool>>,

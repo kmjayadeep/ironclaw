@@ -28,11 +28,11 @@ fn profile_parse_accepts_kebab_and_snake_case() {
         RebornCompositionProfile::Disabled
     );
     assert_eq!(
-        "local_dev".parse::<RebornCompositionProfile>().unwrap(),
+        "local-dev".parse::<RebornCompositionProfile>().unwrap(),
         RebornCompositionProfile::Standalone
     );
     assert_eq!(
-        "local_dev_yolo"
+        "standalone_yolo"
             .parse::<RebornCompositionProfile>()
             .unwrap(),
         RebornCompositionProfile::StandaloneUnrestricted
@@ -111,7 +111,7 @@ fn profile_predicates_capture_storage_contract() {
 }
 
 #[test]
-fn local_dev_yolo_runtime_policy_inherits_host_environment() {
+fn standalone_yolo_runtime_policy_inherits_host_environment() {
     let policy = standalone_unrestricted_runtime_policy(true).expect("policy resolves");
 
     assert_eq!(policy.requested_profile, RuntimeProfile::LocalYolo);
@@ -124,7 +124,7 @@ fn local_dev_yolo_runtime_policy_inherits_host_environment() {
 }
 
 #[test]
-fn local_dev_yolo_runtime_policy_requires_disclosure() {
+fn standalone_yolo_runtime_policy_requires_disclosure() {
     let error =
         standalone_unrestricted_runtime_policy(false).expect_err("yolo requires confirmation");
 
@@ -468,7 +468,7 @@ async fn hosted_single_tenant_volume_factory_readiness_includes_preview_diagnost
 }
 
 #[tokio::test]
-async fn local_dev_factory_readiness_includes_non_production_diagnostic() {
+async fn standalone_factory_readiness_includes_non_production_diagnostic() {
     let dir = tempfile::tempdir().unwrap();
     let input = local_runtime_build_input_with_options(
         RebornCompositionProfile::Standalone,
@@ -490,7 +490,7 @@ async fn local_dev_factory_readiness_includes_non_production_diagnostic() {
 }
 
 #[tokio::test]
-async fn local_dev_yolo_factory_readiness_includes_non_production_diagnostic() {
+async fn standalone_yolo_factory_readiness_includes_non_production_diagnostic() {
     let dir = tempfile::tempdir().unwrap();
     let input = local_runtime_build_input_with_options(
         RebornCompositionProfile::StandaloneUnrestricted,

@@ -426,7 +426,7 @@ pub fn builtin_first_party_handlers_with_trigger_clock(
 
 /// Like [`builtin_first_party_handlers_with_trigger_create_hook`] but routes the
 /// memory capabilities through an explicit memory provider resolver (issue
-/// #3537) instead of hardwiring the native provider. Used by the local-dev
+/// #3537) instead of hardwiring the native provider. Used by the standalone
 /// composition path (no process-backend filtering).
 pub fn builtin_first_party_handlers_with_trigger_create_hook_and_memory_resolver(
     trigger_repository: Arc<dyn ironclaw_triggers::TriggerRepository>,

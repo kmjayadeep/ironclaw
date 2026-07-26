@@ -35,7 +35,7 @@ impl MasterKeyProvisionOutcome {
     }
 }
 
-/// Provisions a local-dev master key in the OS keychain if absent (no cached
+/// Provisions a standalone master key in the OS keychain if absent (no cached
 /// dotfile, no keychain key); no-op if either already exists. Never fails
 /// `execute()` — an unavailable/denied keychain reports
 /// [`MasterKeyProvisionOutcome::Suppressed`], matching the resolver's own
@@ -46,7 +46,7 @@ impl MasterKeyProvisionOutcome {
 /// (`provision_standalone_keychain_master_key`) are two separate
 /// check-then-act steps with no lock between them, so two concurrent
 /// `onboard` runs against the same home could both observe "absent" and
-/// both provision. This is accepted for LocalDev: onboarding is a
+/// both provision. This is accepted for Standalone: onboarding is a
 /// single-operator, run-once-by-hand flow (never invoked concurrently by
 /// `serve`, which only reads keys, never writes the keychain), so the
 /// realistic worst case is a wrongly-regenerated key from running `onboard`
@@ -55,7 +55,7 @@ pub(crate) fn provision_master_key(
     boot: &RebornBootConfig,
 ) -> anyhow::Result<MasterKeyProvisionOutcome> {
     // Must match the root `resolve_standalone_secret_master_key_with_env`
-    // actually reads/writes (`<home>/local-dev/…`, not the bare home) — see
+    // actually reads/writes (`<home>/standalone/…`, not the bare home) — see
     // `crate::runtime::local_runtime_storage_root`. Checking the bare home
     // here always misses the cached dotfile, so onboarding would
     // re-attempt keychain provisioning on every rerun (PR #6174 item D).

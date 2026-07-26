@@ -116,7 +116,7 @@ fn profile_predicates_capture_hosted_volume_local_runtime_contract() {
 }
 
 #[test]
-fn profile_default_is_local_dev_for_explicit_binary_invocations() {
+fn profile_default_is_standalone_for_explicit_binary_invocations() {
     assert_eq!(RebornProfile::default(), RebornProfile::Standalone);
 }
 
@@ -153,7 +153,7 @@ fn boot_config_resolves_home_and_profile_from_env_parts() {
 }
 
 #[test]
-fn boot_config_defaults_profile_to_local_dev() {
+fn boot_config_defaults_profile_to_standalone() {
     let temp = tempfile::tempdir().expect("tempdir");
 
     let config =

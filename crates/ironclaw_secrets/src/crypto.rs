@@ -40,7 +40,7 @@ pub struct SecretsCrypto {
 /// Validate raw master-key bytes against the same rules [`SecretsCrypto::new`]
 /// enforces, without constructing a crypto instance.
 ///
-/// Callers that resolve key material from a *named* source (a local-dev key
+/// Callers that resolve key material from a *named* source (a standalone key
 /// file, the `SECRETS_MASTER_KEY` env var) use this to fail loud with a
 /// source-naming error instead of the opaque [`SecretError::InvalidMasterKey`]
 /// that surfaces when an already-wrapped key reaches `new` several layers

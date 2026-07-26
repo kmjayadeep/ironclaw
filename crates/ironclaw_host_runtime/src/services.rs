@@ -880,7 +880,9 @@ fn local_testing_runtime_policy() -> EffectiveRuntimePolicy {
         RuntimeProfile::LocalHost,
     ))
     .unwrap_or_else(|error| {
-        panic!("LocalSingleUser + LocalDev runtime policy must resolve for local testing: {error}")
+        panic!(
+            "LocalSingleUser + Standalone runtime policy must resolve for local testing: {error}"
+        )
     })
 }
 

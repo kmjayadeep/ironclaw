@@ -254,7 +254,7 @@ mod tests {
         // Regression for the mode-as-type leak (§4.4): the gate policy used to
         // hold a `RuntimeProfile` and ask it about itself. It now consumes a
         // resolved value, so a tenant/org ceiling that narrows `LocalYolo`
-        // down to `LocalDev` also re-gates `Minimal` — authority reductions
+        // down to `Standalone` also re-gates `Minimal` — authority reductions
         // reach this axis instead of stopping at the requested profile.
         let narrowed = ironclaw_runtime_policy::resolve(ResolveRequest {
             yolo_disclosure_acknowledged: true,

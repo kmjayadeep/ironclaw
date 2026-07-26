@@ -1586,7 +1586,7 @@ slack_user_id = "U123"
         let services_input = with_product_auth_callback_origin(
             ironclaw_reborn_composition::local_filesystem_build_input(
                 "oauth-owner",
-                dir.path().join("local-dev"),
+                dir.path().join("standalone"),
             ),
             "http://127.0.0.1:3000",
         )
@@ -1613,7 +1613,7 @@ slack_user_id = "U123"
         let services_input = with_product_auth_callback_origin(
             ironclaw_reborn_composition::local_filesystem_build_input(
                 "oauth-owner",
-                dir.path().join("local-dev"),
+                dir.path().join("standalone"),
             ),
             webui_oauth_callback_origin(
                 SocketAddr::from(([0, 0, 0, 0], 3000)),
@@ -1663,7 +1663,7 @@ slack_user_id = "U123"
         let services_input = with_product_auth_callback_origin(
             ironclaw_reborn_composition::local_filesystem_build_input(
                 "oauth-owner",
-                dir.path().join("local-dev"),
+                dir.path().join("standalone"),
             ),
             &callback_origin,
         )

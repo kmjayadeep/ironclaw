@@ -18,7 +18,7 @@
 //!   `ironclaw_conversations` using trusted installation configuration for
 //!   tenant/default scope selection.
 //! - [`IdempotencyLedger`] — durable action deduplication port.
-//! - [`InMemoryIdempotencyLedger`] — local-dev/test ledger with in-flight lease
+//! - [`InMemoryIdempotencyLedger`] — standalone/test ledger with in-flight lease
 //!   recovery semantics.
 //! - [`ProductInboundAction`] — durable ledger record for inbound actions.
 

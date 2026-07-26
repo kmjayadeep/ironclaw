@@ -329,7 +329,7 @@ impl RebornRuntimeStores {
     /// The generic `[channel.config]` configure port (extension-runtime
     /// §6.4): the production surface the WebUI setup service and the
     /// lifecycle configure action route operator channel config through.
-    /// `None` without a local-dev runtime.
+    /// `None` without a standalone runtime.
     pub(crate) fn channel_config_service(
         &self,
     ) -> Option<Arc<dyn ironclaw_product::ChannelConfigProductService>> {
@@ -379,7 +379,7 @@ impl RebornRuntimeStores {
     ///
     /// This deliberately does NOT reuse `workspace_filesystem`:
     /// that handle is intentionally read-only (it backs setup-marker reads —
-    /// see `local_dev_setup_marker_workspace_filesystem_is_read_only`), so
+    /// see `standalone_setup_marker_workspace_filesystem_is_read_only`), so
     /// writing through it fails closed with `PermissionDenied`.
     ///
     /// Single owner of this recipe — both `RebornRuntime::webui_workspace_filesystem`
@@ -431,7 +431,7 @@ impl RebornRuntimeStores {
 
     /// Test-support access to the extension installation store for this
     /// composition. Returns `None` for production-profile compositions that did
-    /// not wire up local-dev extension management.
+    /// not wire up standalone extension management.
     ///
     /// Mirrors the `installation_store` that `build_local_runtime` wires into
     /// `RebornLocalExtensionManagementPort`. For tests only — zero bytes
@@ -443,12 +443,12 @@ impl RebornRuntimeStores {
         Some(self.extension_management.installation_store_for_test())
     }
 
-    /// Test-support access to the local-dev memory filesystem that backs the
+    /// Test-support access to the standalone memory filesystem that backs the
     /// user-profile source (E-PROFILE seam). This is the raw `RootFilesystem`
     /// that `MemoryBackedUserProfileSource` reads `context/profile.json` from and
     /// that the `profile_set` capability writes through, enabling a profile
     /// write→read-back round-trip at the integration tier. Returns `None` for
-    /// production-profile compositions without a local-dev runtime.
+    /// production-profile compositions without a standalone runtime.
     #[cfg(feature = "test-support")]
     pub(crate) fn standalone_profile_filesystem_for_test(
         &self,
@@ -456,22 +456,22 @@ impl RebornRuntimeStores {
         Some(Arc::clone(&self.extension_filesystem) as Arc<dyn ironclaw_filesystem::RootFilesystem>)
     }
 
-    /// Test-support access to the local-dev project service backing the synthetic
+    /// Test-support access to the standalone project service backing the synthetic
     /// `project_create` capability (E-PROJ seam). Returns `None` for
-    /// production-profile compositions without a local-dev runtime.
+    /// production-profile compositions without a standalone runtime.
     #[cfg(feature = "test-support")]
     pub(crate) fn standalone_project_service_for_test(&self) -> Option<Arc<dyn ProjectService>> {
         Some(Arc::clone(&self.project_service))
     }
 
-    /// Test-support access to the local-dev session thread service (durable
+    /// Test-support access to the standalone session thread service (durable
     /// tool-result projection seam, issue #5838). This is the SAME `Arc`
     /// production's `capability_wiring` passes to
     /// `StagedCapabilityIo::new_with_durable_previews` and to the
     /// `result_read` synthetic capability, so a harness built over this
     /// `RebornServices` can drive its own real `StagedCapabilityIo` through
     /// `staged_capability_io_for_test`. Returns `None` for production-profile
-    /// compositions without a local-dev runtime.
+    /// compositions without a standalone runtime.
     #[cfg(feature = "test-support")]
     pub(crate) fn standalone_thread_service_for_test(
         &self,
@@ -479,11 +479,11 @@ impl RebornRuntimeStores {
         Some(Arc::clone(&self.thread_service))
     }
 
-    /// Test-support access to the local-dev communication-preference repository
+    /// Test-support access to the standalone communication-preference repository
     /// (W6-COLD-SPOTS seam). This is the SAME `Arc` that `build_local_runtime_runtime_stores`
     /// wires into `RebornRuntimeStores::outbound_preferences` via
     /// `build_outbound_stores`, for tests only. Returns `None` for
-    /// production-profile compositions without a local-dev runtime.
+    /// production-profile compositions without a standalone runtime.
     #[cfg(feature = "test-support")]
     pub(crate) fn standalone_outbound_preferences_for_test(
         &self,
@@ -491,12 +491,12 @@ impl RebornRuntimeStores {
         Some(Arc::clone(&self.outbound_preferences))
     }
 
-    /// Test-support access to the on-disk local-dev storage root (W6-COLD-SPOTS
+    /// Test-support access to the on-disk standalone storage root (W6-COLD-SPOTS
     /// seam), for tests only — mirrors the same `standalone_storage_root`
     /// that `build_local_runtime_runtime_stores` establishes in production. Used to reopen
     /// a fresh outbound-preferences store at the same root (see
     /// `open_standalone_outbound_preferences_store_for_test`). Returns `None` for
-    /// production-profile compositions without a local-dev runtime.
+    /// production-profile compositions without a standalone runtime.
     #[cfg(feature = "test-support")]
     pub(crate) fn standalone_storage_root_for_test(&self) -> Option<PathBuf> {
         self.standalone_storage_root.clone()
@@ -532,7 +532,7 @@ impl RebornRuntimeStores {
     /// `PermissionDenied`. Bundled into one accessor (rather than two, mirroring
     /// `standalone_profile_filesystem_for_test` / `standalone_project_service_for_test`
     /// above) because the two are always populated together. Returns `None` for
-    /// production-profile compositions without a local-dev runtime.
+    /// production-profile compositions without a standalone runtime.
     #[cfg(feature = "test-support")]
     pub(crate) fn standalone_attachment_test_support_for_test(
         &self,
@@ -548,12 +548,12 @@ impl RebornRuntimeStores {
         })
     }
 
-    /// Test-support access to the local-dev per-tool permission override store
+    /// Test-support access to the standalone per-tool permission override store
     /// (C-SYNTH outbound seam). Backs `StoreApprovalSettingsProvider::tool_override`,
     /// which the synthetic `outbound_delivery_target_set` capability consults for
     /// its settings decision — a `Disabled` override drives the `policy_denied`
     /// route. Mirrors `standalone_auto_approve_settings_for_test`; `None` for
-    /// production-profile compositions without a local-dev runtime.
+    /// production-profile compositions without a standalone runtime.
     #[cfg(feature = "test-support")]
     pub(crate) fn standalone_tool_permission_overrides_for_test(
         &self,
@@ -563,10 +563,10 @@ impl RebornRuntimeStores {
         Some(overrides)
     }
 
-    /// Test-support access to the local-dev persistent approval-policy store
+    /// Test-support access to the standalone persistent approval-policy store
     /// (C-SYNTH outbound seam). Backs `StoreApprovalSettingsProvider::tool_always_allow`.
     /// Mirrors `standalone_auto_approve_settings_for_test`; `None` for
-    /// production-profile compositions without a local-dev runtime.
+    /// production-profile compositions without a standalone runtime.
     #[cfg(feature = "test-support")]
     pub(crate) fn standalone_persistent_approval_policies_for_test(
         &self,
@@ -582,7 +582,7 @@ impl RebornRuntimeStores {
     /// [`open_standalone_trigger_repository_for_test`] (independent reopened
     /// repo, for persistence/reopen tests). Backs the cold-LIST scenario
     /// (W5-WEBUI-API-1 Enabler B.1). Test-support only; zero bytes shipped in
-    /// production builds. `None` w/o local-dev runtime.
+    /// production builds. `None` w/o standalone runtime.
     #[cfg(feature = "test-support")]
     pub(crate) fn standalone_shared_trigger_repository_for_test(
         &self,
@@ -590,13 +590,13 @@ impl RebornRuntimeStores {
         Some(Arc::clone(&self.trigger_repository))
     }
 
-    /// WebUI-facing `InboundAttachmentReader` view over the local-dev
+    /// WebUI-facing `InboundAttachmentReader` view over the standalone
     /// workspace filesystem, mirroring production's `webui.rs`
     /// (`ProjectScopedAttachmentReader` construction at `webui.rs` ~line 153).
     /// Shares [`Self::standalone_workspace_attachment_reader_for_test`]'s
     /// construction recipe with [`Self::standalone_attachment_test_support_for_test`]
     /// rather than re-deriving it. Test-support only; zero bytes shipped in
-    /// production builds. `None` w/o a local-dev runtime.
+    /// production builds. `None` w/o a standalone runtime.
     #[cfg(feature = "test-support")]
     pub(crate) fn standalone_inbound_attachment_reader_for_test(
         &self,
@@ -606,7 +606,7 @@ impl RebornRuntimeStores {
     }
 
     /// C-JOURNEY: publish a bundled first-party WASM extension package (e.g. a
-    /// WASM tool extension) directly into the local-dev active-extension
+    /// WASM tool extension) directly into the standalone active-extension
     /// registry + trust policy, bypassing the multi-turn
     /// `builtin.extension_install` → `builtin.extension_activate` capability
     /// handshake. Reaches the SAME `ActiveExtensionPublisher::publish` step
@@ -615,7 +615,7 @@ impl RebornRuntimeStores {
     /// capabilities reachable for dispatch without scripting install/activate
     /// turns can seed it at construction time. Returns `None` for
     /// production-profile
-    /// compositions without a local-dev runtime (mirrors
+    /// compositions without a standalone runtime (mirrors
     /// `extension_installation_store_for_test`).
     #[cfg(feature = "test-support")]
     pub(crate) async fn publish_bundled_extension_for_test(
@@ -656,7 +656,7 @@ impl RebornRuntimeStores {
     /// recorder (`delivered_gate_routes`), and the preference service
     /// (`outbound_preferences`). Integration proofs build generic
     /// run-delivery components over these so observer and coordinator share
-    /// one delivery ledger. `None` without a local-dev runtime.
+    /// one delivery ledger. `None` without a standalone runtime.
     #[cfg(feature = "test-support")]
     #[allow(clippy::type_complexity)]
     pub(crate) fn outbound_delivery_stores_for_test(
@@ -673,12 +673,12 @@ impl RebornRuntimeStores {
         ))
     }
 
-    /// Test-support authority snapshot for active local-dev extensions.
+    /// Test-support authority snapshot for active standalone extensions.
     ///
     /// Binary-E2E harnesses build capability ports at the host-runtime boundary
     /// instead of going through `RefreshingLoopCapabilityPortFactory`, so they need
     /// the same active-extension grants and provider trust that production
-    /// local-dev recomputes whenever the model-visible surface is refreshed.
+    /// standalone recomputes whenever the model-visible surface is refreshed.
     #[cfg(feature = "test-support")]
     pub(crate) async fn standalone_active_extension_authority_for_test(
         &self,
@@ -807,7 +807,7 @@ pub struct RebornApprovalTestParts {
 }
 
 /// Thin void wrapper over [`build_default_database_roots`] for
-/// `#[cfg(feature = "test-support")]` callers that need to mount the local-dev
+/// `#[cfg(feature = "test-support")]` callers that need to mount the standalone
 /// database roots but don't need the opaque `DurableBackend` handle
 /// (which is private to this module).
 ///
@@ -822,7 +822,7 @@ pub(crate) async fn mount_default_database_roots(
         .map(|_| ())
 }
 
-/// Test-only (T5 restart-survival seam): open a FRESH local-dev root
+/// Test-only (T5 restart-survival seam): open a FRESH standalone root
 /// filesystem at an existing `storage_root`, for reconstructing the generic
 /// channel-identity store the way production boot does
 /// (`build_runtime_substrate` → `FilesystemChannelIdentityStore::new` over the
@@ -845,7 +845,7 @@ pub(crate) async fn open_standalone_root_filesystem_for_test(
 }
 
 /// Test-only (E-DURABLE seam): open a FRESH, independent
-/// [`ExtensionInstallationStore`] at an existing local-dev `storage_root`,
+/// [`ExtensionInstallationStore`] at an existing standalone `storage_root`,
 /// paralleling how `assert_reply_persists_after_reopen` opens a fresh libsql
 /// handle rather than reusing the live one. Reuses the production
 /// [`build_standalone_root_filesystem`] mounts and
@@ -854,7 +854,7 @@ pub(crate) async fn open_standalone_root_filesystem_for_test(
 /// running harness wrote while extension package files still live on disk
 /// (mirrors the production install-store load in [`build_runtime_substrate`],
 /// above at the `extension_installation_store` binding). The store's virtual
-/// state path has no identity dependency for local-dev profiles, so no
+/// state path has no identity dependency for standalone profiles, so no
 /// tenant/user context is needed. Tests only; zero bytes in production builds.
 #[cfg(feature = "test-support")]
 pub(crate) async fn open_standalone_extension_installation_store_for_test(
@@ -894,7 +894,7 @@ pub(crate) async fn open_standalone_extension_installation_store_for_test(
 }
 
 /// Test-only (C-DURABLE seam): open a FRESH, independent
-/// [`ironclaw_run_state::ApprovalRequestStore`] at an existing local-dev
+/// [`ironclaw_run_state::ApprovalRequestStore`] at an existing standalone
 /// `storage_root`, paralleling [`open_standalone_extension_installation_store_for_test`]
 /// (same on-disk root; a sibling capability store). Reuses
 /// [`mount_default_database_roots`] + the production [`crate::wrap_scoped`]
@@ -930,7 +930,7 @@ pub(crate) async fn open_standalone_outbound_preferences_store_for_test(
 /// [`ironclaw_approvals::ToolPermissionOverrideStore`] /
 /// [`ironclaw_approvals::AutoApproveSettingStore`] /
 /// [`ironclaw_approvals::PersistentApprovalPolicyStore`] handles at an
-/// existing local-dev `storage_root`, paralleling
+/// existing standalone `storage_root`, paralleling
 /// [`open_standalone_approval_request_store_for_test`] (same on-disk root;
 /// sibling capability stores). Reuses [`mount_default_database_roots`]
 /// plus the production [`crate::wrap_scoped`] so the reopen mounts and scopes
@@ -969,12 +969,12 @@ pub(crate) async fn open_standalone_approval_settings_stores_for_test(
 }
 
 /// Test-only (C-DURABLE seam): open a FRESH, independent
-/// [`ironclaw_triggers::TriggerRepository`] at an existing local-dev
+/// [`ironclaw_triggers::TriggerRepository`] at an existing standalone
 /// `storage_root`, paralleling [`open_standalone_extension_installation_store_for_test`].
 /// Reuses [`open_standalone_libsql_database`] (the same libSQL-open sequence
 /// production uses) AND delegates to [`trigger_repository_for_durable_backend`] for
 /// repository construction + migrations, so the reopen path shares the SAME
-/// construction code as production local-dev wiring — never a second place to
+/// construction code as production standalone wiring — never a second place to
 /// update if trigger repository setup changes. Tests only; zero bytes in
 /// production builds.
 #[cfg(feature = "test-support")]

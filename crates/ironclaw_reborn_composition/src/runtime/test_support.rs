@@ -131,7 +131,7 @@ impl RebornRuntime {
     ///
     /// [`standalone_approval_interaction_service_with_turn_state_for_test`]: Self::standalone_approval_interaction_service_with_turn_state_for_test
     #[cfg(feature = "test-support")]
-    pub fn local_dev_auth_interaction_service_with_turn_state_for_test<F>(
+    pub fn standalone_auth_interaction_service_with_turn_state_for_test<F>(
         &self,
         turn_coordinator: Arc<dyn TurnCoordinator>,
         turn_state: Arc<ironclaw_turns::TurnStateRowStore<F>>,

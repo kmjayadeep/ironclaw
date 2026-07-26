@@ -949,7 +949,7 @@ fn local_resolver_accepts_direct_required_network_with_egress_service() {
 }
 
 #[test]
-fn local_resolver_allows_raw_diagnostics_only_for_local_dev_and_yolo() {
+fn local_resolver_allows_raw_diagnostics_only_for_standalone_and_yolo() {
     let resolver = ConfiguredInvocationServicesResolver::new(
         Arc::new(DiskFilesystem::new()),
         Some(Arc::new(NoopRuntimeHttpEgress)),

@@ -399,7 +399,7 @@ fn local_host_shell_authorization_inputs(
     (descriptor, context, trust_decision)
 }
 
-/// Run the local-dev authorizer for a Trace Commons capability with the
+/// Run the standalone authorizer for a Trace Commons capability with the
 /// given descriptor `effects` and return its decision. Asserts up front that
 /// the effects WOULD require an approval gate without an exemption, so a
 /// "skips gate" assertion can't pass via a non-gating default policy.
@@ -473,7 +473,7 @@ async fn trace_commons_authorize_decision(
 }
 
 #[tokio::test]
-async fn local_dev_trace_commons_profile_set_requires_approval_gate() {
+async fn standalone_trace_commons_profile_set_requires_approval_gate() {
     // profile_set publishes a PUBLIC community profile and is deliberately
     // NOT on the approval-gate exemption list: a model-controlled
     // `confirmed=true` is not sufficient consent for a public external
@@ -497,7 +497,7 @@ async fn local_dev_trace_commons_profile_set_requires_approval_gate() {
 }
 
 /// Surface-visibility regression test: `builtin.profile_set` must be
-/// Available (Allow) in the local-dev authorizer, not RequireApproval.
+/// Available (Allow) in the standalone authorizer, not RequireApproval.
 ///
 /// This exercises the FULL authorizer path (grant lookup + effect-set
 /// check + exemption list) to guard against the MissingGrant regression
@@ -507,7 +507,7 @@ async fn local_dev_trace_commons_profile_set_requires_approval_gate() {
 /// decision can only come from the exemption list, not from a non-gating
 /// default policy.
 #[tokio::test]
-async fn local_dev_builtin_profile_set_skips_approval_gate() {
+async fn standalone_builtin_profile_set_skips_approval_gate() {
     let decision = trace_commons_authorize_decision(
         PROFILE_SET_CAPABILITY_ID,
         vec![EffectKind::ReadFilesystem, EffectKind::WriteFilesystem],
@@ -521,7 +521,7 @@ async fn local_dev_builtin_profile_set_skips_approval_gate() {
 }
 
 #[tokio::test]
-async fn local_dev_trace_commons_onboard_skips_approval_gate() {
+async fn standalone_trace_commons_onboard_skips_approval_gate() {
     // onboard IS exempt (it runs its own in-turn confirmed=true consent
     // before the network POST). Cover it with its real
     // network + external_write + filesystem-write effects so dropping the
@@ -543,7 +543,7 @@ async fn local_dev_trace_commons_onboard_skips_approval_gate() {
 }
 
 #[tokio::test]
-async fn local_dev_authorizer_refreshes_approval_settings_on_next_invocation() {
+async fn standalone_authorizer_refreshes_approval_settings_on_next_invocation() {
     let user_id = UserId::new("test-user").expect("user id");
     let overrides = Arc::new(in_memory_backed_capability_permission_override_store());
     let auto_approve = Arc::new(in_memory_backed_auto_approve_setting_store());
@@ -576,7 +576,7 @@ async fn local_dev_authorizer_refreshes_approval_settings_on_next_invocation() {
     let before = local_host_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
     assert!(
         matches!(before, ironclaw_host_api::Decision::RequireApproval { .. }),
-        "local-dev shell dispatch should gate when global auto-approve is off, got {before:?}"
+        "standalone shell dispatch should gate when global auto-approve is off, got {before:?}"
     );
 
     let scope = ironclaw_host_api::ResourceScope::local_default(
@@ -601,7 +601,7 @@ async fn local_dev_authorizer_refreshes_approval_settings_on_next_invocation() {
 }
 
 #[tokio::test]
-async fn local_dev_authorizer_observes_global_auto_approve_revocation_on_next_invocation() {
+async fn standalone_authorizer_observes_global_auto_approve_revocation_on_next_invocation() {
     let user_id = UserId::new("test-user").expect("user id");
     let auto_approve = Arc::new(in_memory_backed_auto_approve_setting_store());
     enable_global_auto_approve(&auto_approve, &user_id).await;
@@ -641,7 +641,7 @@ async fn local_dev_authorizer_observes_global_auto_approve_revocation_on_next_in
 }
 
 #[tokio::test]
-async fn local_dev_authorizer_caches_global_auto_approve_within_one_invocation() {
+async fn standalone_authorizer_caches_global_auto_approve_within_one_invocation() {
     let user_id = UserId::new("test-user").expect("user id");
     let auto_approve = Arc::new(CountingAutoApproveSettingStore::enabled());
     let settings = Arc::new(StoreApprovalSettingsProvider::new(
@@ -716,7 +716,7 @@ async fn local_dev_authorizer_caches_global_auto_approve_within_one_invocation()
 }
 
 #[tokio::test]
-async fn local_dev_authorizer_coalesces_concurrent_global_auto_approve_misses() {
+async fn standalone_authorizer_coalesces_concurrent_global_auto_approve_misses() {
     let user_id = UserId::new("test-user").expect("user id");
     let auto_approve = Arc::new(CountingAutoApproveSettingStore::enabled_with_delay(
         Duration::from_millis(25),
@@ -764,7 +764,7 @@ async fn local_dev_authorizer_coalesces_concurrent_global_auto_approve_misses() 
 }
 
 #[tokio::test]
-async fn local_dev_authorizer_coalesces_concurrent_scope_listing_settings_misses() {
+async fn standalone_authorizer_coalesces_concurrent_scope_listing_settings_misses() {
     let user_id = UserId::new("test-user").expect("user id");
     let scope = ironclaw_host_api::ResourceScope::local_default(
         user_id,
@@ -855,7 +855,7 @@ async fn local_dev_authorizer_coalesces_concurrent_scope_listing_settings_misses
 }
 
 #[tokio::test]
-async fn local_dev_authorizer_releases_global_auto_approve_inflight_when_leader_is_cancelled() {
+async fn standalone_authorizer_releases_global_auto_approve_inflight_when_leader_is_cancelled() {
     let user_id = UserId::new("test-user").expect("user id");
     let scope = ironclaw_host_api::ResourceScope::local_default(
         user_id,
@@ -901,7 +901,7 @@ async fn local_dev_authorizer_releases_global_auto_approve_inflight_when_leader_
 }
 
 #[tokio::test]
-async fn local_dev_authorizer_fails_closed_when_override_lookup_errors() {
+async fn standalone_authorizer_fails_closed_when_override_lookup_errors() {
     let user_id = UserId::new("test-user").expect("user id");
     let auto_approve = Arc::new(in_memory_backed_auto_approve_setting_store());
     let scope = ironclaw_host_api::ResourceScope::local_default(
