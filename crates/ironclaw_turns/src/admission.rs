@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use ironclaw_host_api::{AgentId, ProjectId, TenantId, UserId};
 use serde::{Deserialize, Serialize};
 
-use crate::{TurnActor, TurnRunId, TurnScope};
+use crate::TurnRunId;
+#[cfg(any(test, feature = "test-support"))]
+use crate::{TurnActor, TurnScope};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]

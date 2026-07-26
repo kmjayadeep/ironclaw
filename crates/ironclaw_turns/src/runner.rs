@@ -4,12 +4,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BlockedReason, CapabilityActivityId, LoopExitMapping, ResolvedRunProfile, SanitizedFailure,
-    TurnCheckpointId, TurnError, TurnId, TurnLeaseToken, TurnRunId, TurnRunState, TurnRunnerId,
-    TurnScope, TurnTimestamp,
+    TurnCheckpointId, TurnLeaseToken, TurnRunId, TurnRunState, TurnRunnerId, TurnScope,
+    TurnTimestamp,
     run_profile::{LoopCheckpointStateRef, LoopModelRouteSnapshot},
 };
 #[cfg(any(test, feature = "test-support"))]
-use crate::events::EventCursor;
+use crate::{TurnError, TurnId, events::EventCursor};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaimRunRequest {
