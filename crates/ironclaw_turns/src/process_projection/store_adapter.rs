@@ -4,17 +4,17 @@ use async_trait::async_trait;
 use ironclaw_host_api::ResourceScope;
 use ironclaw_processes::{
     CancelProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
-    GetProcessCheckpointRequest, GetProcessSnapshotRequest, JournaledProcessSnapshot,
-    KillProcessRequest, ProcessCheckpointPort, ProcessCheckpointRecord, ProcessControlPort,
-    ProcessControlResult, ProcessGateQuery, ProcessGateQuerySource, ProcessGateRecord,
-    ProcessJournalCursor, ProcessJournalPage, ProcessJournalSource, ProcessJournalStoreError,
-    ProcessLeaseRequest, ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult,
-    ProcessLifecycleLookupSource, ProcessRuntimePort, ProcessStateTransitionRequest,
-    ProcessSubmissionPort, ProcessTransitionPort, ProcessTreePort, ProcessTreeReservation,
-    PruneReleasedProcessRequest, RecordProcessCheckpointRequest,
-    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse,
-    ReleaseProcessTreeRequest, ReserveProcessTreeRequest, ResumeProcessRequest, StopProcessRequest,
-    SubmitProcessRequest, SuspendProcessRequest,
+    GetProcessCheckpointRequest, GetProcessInputRequest, GetProcessSnapshotRequest,
+    JournaledProcessSnapshot, KillProcessRequest, ProcessCheckpointPort, ProcessCheckpointRecord,
+    ProcessControlPort, ProcessControlResult, ProcessGateQuery, ProcessGateQuerySource,
+    ProcessGateRecord, ProcessInputPort, ProcessInputRecord, ProcessJournalCursor,
+    ProcessJournalPage, ProcessJournalSource, ProcessJournalStoreError, ProcessLeaseRequest,
+    ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,
+    ProcessRuntimePort, ProcessStateTransitionRequest, ProcessSubmissionPort,
+    ProcessTransitionPort, ProcessTreePort, ProcessTreeReservation, PruneReleasedProcessRequest,
+    RecordProcessCheckpointRequest, RecoverExpiredProcessLeasesRequest,
+    RecoverExpiredProcessLeasesResponse, ReleaseProcessTreeRequest, ReserveProcessTreeRequest,
+    ResumeProcessRequest, StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
 };
 
 use crate::TurnError;
@@ -95,6 +95,21 @@ impl ProcessCheckpointPort for ProcessJournalStoreTurnAdapter {
     ) -> Result<Option<ProcessCheckpointRecord>, Self::Error> {
         self.runtime
             .get_process_checkpoint(request)
+            .await
+            .map_err(turn_error_from_process_journal_store_error)
+    }
+}
+
+#[async_trait]
+impl ProcessInputPort for ProcessJournalStoreTurnAdapter {
+    type Error = TurnError;
+
+    async fn get_process_input(
+        &self,
+        request: GetProcessInputRequest,
+    ) -> Result<Option<ProcessInputRecord>, Self::Error> {
+        self.runtime
+            .get_process_input(request)
             .await
             .map_err(turn_error_from_process_journal_store_error)
     }

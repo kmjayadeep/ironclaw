@@ -38,12 +38,11 @@ use ironclaw_runner::planned_driver_factory::{
 };
 use ironclaw_runner::runtime::{
     DefaultPlannedRuntimeConfig, DefaultPlannedRuntimeParts, ProcessRuntimeSystem,
-    RuntimeSubagentGoalStore, build_product_live_planned_runtime,
+    build_product_live_planned_runtime,
 };
 use ironclaw_runner::subagent::await_edge::{
     boot_recovery::ScopeRecoveryDriver, resolver::AwaitEdgeResolver, store::AwaitEdgeStore,
 };
-use ironclaw_runner::subagent::goal_store::in_memory_backed_subagent_goal_store;
 use ironclaw_threads::{
     InMemorySessionThreadService, MessageStatus, SessionThreadService, ThreadHistoryRequest,
     ThreadScope,
@@ -437,10 +436,8 @@ fn process_runtime_fixture() -> (
 }
 
 /// Test-only in-memory await-edge trio (writer/settler/evidence trait
-/// objects, plus the goal store the resolver and `subagent_goal_store`
-/// share) — these harness tests don't exercise real subagent spawn/settle
-/// flows, so in-memory `ScopedFilesystem` fixtures are enough for their
-/// purposes.
+/// objects. These harness tests don't exercise real subagent spawn/settle
+/// flows.
 #[allow(clippy::type_complexity)]
 fn test_await_edge_trio(
     process_system: &ProcessRuntimeSystem,
@@ -451,13 +448,10 @@ fn test_await_edge_trio(
     Arc<dyn ironclaw_loop_host::AwaitEdgeWriter>,
     Arc<dyn ironclaw_loop_host::AwaitEdgeSettler>,
     Arc<dyn ironclaw_runner::loop_exit_applier::AwaitDependentRunEvidenceStore>,
-    Arc<dyn RuntimeSubagentGoalStore>,
 ) {
     let store = Arc::new(AwaitEdgeStore::new(process_system.dependencies()));
-    let goal_store = Arc::new(in_memory_backed_subagent_goal_store());
     let resolver = Arc::new(AwaitEdgeResolver::new_unbound(
         Arc::clone(&store),
-        goal_store.clone() as Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
         Arc::clone(turn_store) as Arc<dyn ironclaw_turns::AgentTurnSpawnTreeRuntimePort>,
         capability_result_writer,
         thread_service,
@@ -470,7 +464,6 @@ fn test_await_edge_trio(
         driver as Arc<dyn ironclaw_loop_host::AwaitEdgeWriter>,
         resolver as Arc<dyn ironclaw_loop_host::AwaitEdgeSettler>,
         store as Arc<dyn ironclaw_runner::loop_exit_applier::AwaitDependentRunEvidenceStore>,
-        goal_store as Arc<dyn RuntimeSubagentGoalStore>,
     )
 }
 
@@ -722,17 +715,13 @@ async fn user_message_no_profile_uses_product_live_runtime_and_persists_reply() 
     let cancellation_factory = Arc::new(ReadyRunCancellationFactory::default());
     let unused_capability_result_writer: Arc<dyn LoopCapabilityResultWriter> =
         Arc::new(UnusedCapabilityResultWriter);
-    let (
-        subagent_await_edge_writer,
-        subagent_await_edge_settler,
-        subagent_await_edge_evidence,
-        subagent_goal_store,
-    ) = test_await_edge_trio(
-        &process_system,
-        &turn_store,
-        Arc::clone(&unused_capability_result_writer),
-        Arc::new(thread_service.clone()),
-    );
+    let (subagent_await_edge_writer, subagent_await_edge_settler, subagent_await_edge_evidence) =
+        test_await_edge_trio(
+            &process_system,
+            &turn_store,
+            Arc::clone(&unused_capability_result_writer),
+            Arc::new(thread_service.clone()),
+        );
     let composition = build_product_live_planned_runtime(DefaultPlannedRuntimeParts {
         attachment_read_port: None,
         gate_record_store: None,
@@ -745,7 +734,6 @@ async fn user_message_no_profile_uses_product_live_runtime_and_persists_reply() 
         capability_factory: Arc::new(EmptyCapabilityFactory),
         capability_surface_resolver: Arc::new(AllowAllCapabilitySurfaceResolver),
         capability_result_writer: Arc::clone(&unused_capability_result_writer),
-        subagent_goal_store,
         subagent_await_edge_writer,
         subagent_await_edge_settler,
         subagent_await_edge_evidence: Arc::clone(&subagent_await_edge_evidence),
@@ -897,17 +885,13 @@ async fn user_message_no_profile_can_cancel_product_live_run_from_product_path()
     let cancellation_factory = Arc::new(ReadyRunCancellationFactory::default());
     let unused_capability_result_writer: Arc<dyn LoopCapabilityResultWriter> =
         Arc::new(UnusedCapabilityResultWriter);
-    let (
-        subagent_await_edge_writer,
-        subagent_await_edge_settler,
-        subagent_await_edge_evidence,
-        subagent_goal_store,
-    ) = test_await_edge_trio(
-        &process_system,
-        &turn_store,
-        Arc::clone(&unused_capability_result_writer),
-        Arc::new(thread_service.clone()),
-    );
+    let (subagent_await_edge_writer, subagent_await_edge_settler, subagent_await_edge_evidence) =
+        test_await_edge_trio(
+            &process_system,
+            &turn_store,
+            Arc::clone(&unused_capability_result_writer),
+            Arc::new(thread_service.clone()),
+        );
     let composition = build_product_live_planned_runtime(DefaultPlannedRuntimeParts {
         attachment_read_port: None,
         gate_record_store: None,
@@ -920,7 +904,6 @@ async fn user_message_no_profile_can_cancel_product_live_run_from_product_path()
         capability_factory: Arc::new(EmptyCapabilityFactory),
         capability_surface_resolver: Arc::new(AllowAllCapabilitySurfaceResolver),
         capability_result_writer: Arc::clone(&unused_capability_result_writer),
-        subagent_goal_store,
         subagent_await_edge_writer,
         subagent_await_edge_settler,
         subagent_await_edge_evidence: Arc::clone(&subagent_await_edge_evidence),
@@ -1088,17 +1071,13 @@ async fn product_live_runtime_rejects_unretained_cancellation_factory() {
 
     let unused_capability_result_writer: Arc<dyn LoopCapabilityResultWriter> =
         Arc::new(UnusedCapabilityResultWriter);
-    let (
-        subagent_await_edge_writer,
-        subagent_await_edge_settler,
-        subagent_await_edge_evidence,
-        subagent_goal_store,
-    ) = test_await_edge_trio(
-        &process_system,
-        &turn_store,
-        Arc::clone(&unused_capability_result_writer),
-        Arc::new(thread_service.clone()),
-    );
+    let (subagent_await_edge_writer, subagent_await_edge_settler, subagent_await_edge_evidence) =
+        test_await_edge_trio(
+            &process_system,
+            &turn_store,
+            Arc::clone(&unused_capability_result_writer),
+            Arc::new(thread_service.clone()),
+        );
     let error = match build_product_live_planned_runtime(DefaultPlannedRuntimeParts {
         attachment_read_port: None,
         gate_record_store: None,
@@ -1111,7 +1090,6 @@ async fn product_live_runtime_rejects_unretained_cancellation_factory() {
         capability_factory: Arc::new(EmptyCapabilityFactory),
         capability_surface_resolver: Arc::new(AllowAllCapabilitySurfaceResolver),
         capability_result_writer: Arc::clone(&unused_capability_result_writer),
-        subagent_goal_store,
         subagent_await_edge_writer,
         subagent_await_edge_settler,
         subagent_await_edge_evidence: Arc::clone(&subagent_await_edge_evidence),

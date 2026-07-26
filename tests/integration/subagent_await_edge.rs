@@ -136,6 +136,7 @@ async fn process_dependency_journal_stress_closes_each_record_and_releases_capac
                     metadata: serde_json::json!({"index": index}),
                 }),
                 checkpoint_ref: None,
+                input: None,
                 created_at: Utc::now(),
                 metadata: serde_json::Value::Null,
             })
@@ -233,6 +234,7 @@ async fn submit_root<F>(
             spawn_tree_descendant_cap: None,
             dependency: None,
             checkpoint_ref: None,
+            input: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
         })
@@ -264,6 +266,7 @@ async fn submit_child<F>(
             spawn_tree_descendant_cap: Some(cap),
             dependency,
             checkpoint_ref: None,
+            input: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
         })

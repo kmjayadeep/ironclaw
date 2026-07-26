@@ -11,14 +11,16 @@ use ironclaw_host_api::{
 };
 use ironclaw_processes::{
     CancelProcessRequest, ClaimProcessesRequest, CloseProcessDependencyRequest,
-    GetProcessCheckpointRequest, GetProcessSnapshotRequest, JournaledProcessSnapshot,
-    KillProcessRequest, MAX_PROCESS_CHECKPOINT_PAYLOAD_BYTES, ProcessCheckpointId,
-    ProcessCheckpointPayload, ProcessCheckpointPort, ProcessCheckpointRef, ProcessConcurrencyClass,
-    ProcessConcurrencyLimits, ProcessControlPort, ProcessDependencyPort, ProcessDependencyQuery,
-    ProcessDependencyState, ProcessDependencySubmission, ProcessGateOwnerMatch, ProcessGateQuery,
-    ProcessGateQuerySource, ProcessJournalCommit, ProcessJournalCommitObserver,
-    ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind, ProcessJournalObserverRegistry,
-    ProcessJournalSource, ProcessJournalStore, ProcessKind, ProcessLeaseRequest, ProcessLeaseToken,
+    GetProcessCheckpointRequest, GetProcessInputRequest, GetProcessSnapshotRequest,
+    JournaledProcessSnapshot, KillProcessRequest, MAX_PROCESS_CHECKPOINT_PAYLOAD_BYTES,
+    MAX_PROCESS_INPUT_PAYLOAD_BYTES, ProcessCheckpointId, ProcessCheckpointPayload,
+    ProcessCheckpointPort, ProcessCheckpointRef, ProcessConcurrencyClass, ProcessConcurrencyLimits,
+    ProcessControlPort, ProcessDependencyPort, ProcessDependencyQuery, ProcessDependencyState,
+    ProcessDependencySubmission, ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource,
+    ProcessInputPayload, ProcessInputPort, ProcessInputRef, ProcessInputSubmission,
+    ProcessJournalCommit, ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalEntry,
+    ProcessJournalError, ProcessJournalKind, ProcessJournalObserverRegistry, ProcessJournalSource,
+    ProcessJournalStore, ProcessKind, ProcessLeaseRequest, ProcessLeaseToken,
     ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupRequest,
     ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
     ProcessOperationId, ProcessStateTransitionRequest, ProcessSubmissionPort, ProcessSuspension,
@@ -85,6 +87,7 @@ async fn process_journal_fails_closed_when_backend_lacks_event_rows() {
             spawn_tree_descendant_cap: None,
             dependency: None,
             checkpoint_ref: None,
+            input: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
         })
@@ -117,6 +120,7 @@ async fn process_journal_rows_serialize_concurrent_store_handles() {
         spawn_tree_descendant_cap: None,
         dependency: None,
         checkpoint_ref: None,
+        input: None,
         created_at: Utc::now(),
         metadata: serde_json::Value::Null,
     };
@@ -150,6 +154,7 @@ async fn process_journal_rows_serialize_concurrent_store_handles() {
         spawn_tree_descendant_cap: None,
         dependency: None,
         checkpoint_ref: None,
+        input: None,
         created_at: Utc::now(),
         metadata: serde_json::Value::Null,
     };
@@ -264,6 +269,7 @@ async fn legacy_materialized_state_imports_once_before_row_native_commands() {
         status: ProcessLifecycleStatus::Queued,
         suspension: None,
         checkpoint_ref: None,
+        input_ref: None,
         failure: None,
         journal_cursor: cursor,
         lease: None,
@@ -421,6 +427,7 @@ async fn process_observer_receives_commits_once_not_idempotency_replays() {
         spawn_tree_descendant_cap: None,
         dependency: None,
         checkpoint_ref: None,
+        input: None,
         created_at: Utc::now(),
         metadata: serde_json::Value::Null,
     };
@@ -490,6 +497,7 @@ async fn process_claim_enforces_owner_and_class_concurrency_limits_atomically() 
                 spawn_tree_descendant_cap: None,
                 dependency: None,
                 checkpoint_ref: None,
+                input: None,
                 created_at: Utc::now(),
                 metadata: serde_json::Value::Null,
             })
@@ -530,6 +538,7 @@ async fn process_tree_submission_reserves_and_releases_capacity_atomically() {
         spawn_tree_descendant_cap: Some(1),
         dependency: None,
         checkpoint_ref: None,
+        input: None,
         created_at: Utc::now(),
         metadata: serde_json::Value::Null,
     };
@@ -600,6 +609,7 @@ async fn consuming_dependency_atomically_releases_tree_capacity() {
                 metadata: json!({"projection": "runner-owned"}),
             }),
             checkpoint_ref: None,
+            input: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
         })
@@ -631,6 +641,7 @@ async fn consuming_dependency_atomically_releases_tree_capacity() {
                 metadata: json!({"must_not_persist": true}),
             }),
             checkpoint_ref: None,
+            input: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
         })
@@ -719,6 +730,7 @@ async fn consuming_dependency_atomically_releases_tree_capacity() {
             spawn_tree_descendant_cap: Some(1),
             dependency: None,
             checkpoint_ref: None,
+            input: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
         })
@@ -748,6 +760,7 @@ async fn process_journal_store_owns_lifecycle_and_gate_projection() {
             spawn_tree_descendant_cap: None,
             dependency: None,
             checkpoint_ref: None,
+            input: None,
             created_at: Utc::now(),
             metadata: json!({
                 "agent_turn": {
@@ -886,6 +899,7 @@ async fn process_journal_store_completes_claimed_process() {
             spawn_tree_descendant_cap: None,
             dependency: None,
             checkpoint_ref: None,
+            input: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
         })
@@ -940,6 +954,7 @@ async fn process_journal_store_relinquishes_claim_with_fresh_reclaim_lease() {
             spawn_tree_descendant_cap: None,
             dependency: None,
             checkpoint_ref: None,
+            input: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
         })
@@ -1002,6 +1017,7 @@ async fn process_journal_store_rejects_wrong_lease() {
             spawn_tree_descendant_cap: None,
             dependency: None,
             checkpoint_ref: None,
+            input: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
         })
@@ -1213,6 +1229,7 @@ async fn exclusive_process_submission_uses_authoritative_live_projection() {
         spawn_tree_descendant_cap: None,
         dependency: None,
         checkpoint_ref: None,
+        input: None,
         created_at: Utc::now(),
         metadata: serde_json::Value::Null,
     };
@@ -1242,6 +1259,88 @@ async fn exclusive_process_submission_uses_authoritative_live_projection() {
     assert_eq!(replacement.status, ProcessLifecycleStatus::Queued);
 }
 
+#[tokio::test]
+async fn process_input_is_atomic_private_and_scope_bound() {
+    let store = ProcessJournalStore::new(in_memory_backed_processes_filesystem());
+    let scope = scope();
+    let process_id = ProcessId::new();
+    let input_ref = ProcessInputRef::new("subagent-goal:v1").expect("input ref");
+    let payload = br#"{"task":"inspect the process journal"}"#.to_vec();
+
+    let snapshot = store
+        .submit_process(SubmitProcessRequest {
+            process_id,
+            process_kind: ProcessKind::AgentTurn,
+            scope: scope.clone(),
+            exclusive_within_scope: false,
+            operation_id: None,
+            owner_user_id: Some(scope.user_id.clone()),
+            concurrency_class: None,
+            parent_process_id: None,
+            root_process_id: None,
+            spawn_tree_descendant_cap: None,
+            dependency: None,
+            checkpoint_ref: None,
+            input: Some(ProcessInputSubmission {
+                input_ref: input_ref.clone(),
+                payload: ProcessInputPayload::new(payload.clone()).expect("bounded input"),
+            }),
+            created_at: Utc::now(),
+            metadata: serde_json::Value::Null,
+        })
+        .await
+        .expect("submit process with input");
+
+    assert_eq!(snapshot.input_ref.as_ref(), Some(&input_ref));
+    let serialized_snapshot = serde_json::to_vec(&snapshot).expect("serialize snapshot");
+    assert!(
+        !serialized_snapshot
+            .windows(payload.len())
+            .any(|window| window == payload)
+    );
+
+    let stored = store
+        .get_process_input(GetProcessInputRequest {
+            process_id,
+            scope: scope.clone(),
+        })
+        .await
+        .expect("read process input")
+        .expect("process input exists");
+    assert_eq!(stored.input_ref, input_ref);
+    assert_eq!(stored.payload.as_bytes(), payload);
+
+    let mut foreign_scope = scope;
+    foreign_scope.user_id = UserId::new("other-user").expect("user");
+    assert!(
+        store
+            .get_process_input(GetProcessInputRequest {
+                process_id,
+                scope: foreign_scope,
+            })
+            .await
+            .expect("scope-bound input query")
+            .is_none()
+    );
+}
+
+#[test]
+fn process_input_payload_is_bounded_and_redacted() {
+    let error = ProcessInputPayload::new(vec![0; MAX_PROCESS_INPUT_PAYLOAD_BYTES + 1])
+        .expect_err("oversized process input must fail");
+    assert!(matches!(
+        error,
+        ProcessJournalError::InputPayloadTooLong {
+            actual
+        } if actual == MAX_PROCESS_INPUT_PAYLOAD_BYTES + 1
+    ));
+
+    let payload = ProcessInputPayload::new(b"private-goal".to_vec()).expect("bounded input");
+    let debug = format!("{payload:?}");
+    assert!(debug.contains("<redacted>"));
+    assert!(!debug.contains("private-goal"));
+}
+
 async fn submit_internal_process<F>(
     store: &ProcessJournalStore<F>,
     scope: &ResourceScope,
@@ -1264,6 +1363,7 @@ where
             spawn_tree_descendant_cap: None,
             dependency: None,
             checkpoint_ref: None,
+            input: None,
             created_at: Utc::now(),
             metadata: serde_json::Value::Null,
         })

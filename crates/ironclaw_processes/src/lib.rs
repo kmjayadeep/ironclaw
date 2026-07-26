@@ -36,24 +36,26 @@ pub use invocation_state::{
 };
 pub use journal::{
     CancelProcessRequest, ClaimProcessesRequest, ClaimedProcess, CloseProcessDependencyRequest,
-    FailProcessRequest, GetProcessCheckpointRequest, GetProcessSnapshotRequest,
-    JournaledProcessSnapshot, KillProcessRequest, MAX_PROCESS_CHECKPOINT_PAYLOAD_BYTES,
+    FailProcessRequest, GetProcessCheckpointRequest, GetProcessInputRequest,
+    GetProcessSnapshotRequest, JournaledProcessSnapshot, KillProcessRequest,
+    MAX_PROCESS_CHECKPOINT_PAYLOAD_BYTES, MAX_PROCESS_INPUT_PAYLOAD_BYTES,
     OpenProcessDependencyRequest, ProcessCheckpointId, ProcessCheckpointPayload,
     ProcessCheckpointPort, ProcessCheckpointRecord, ProcessCheckpointRef, ProcessConcurrencyClass,
     ProcessConcurrencyLimits, ProcessControlPort, ProcessControlResult, ProcessDependencyPort,
     ProcessDependencyQuery, ProcessDependencyRecord, ProcessDependencyState,
     ProcessDependencySubmission, ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource,
-    ProcessGateRecord, ProcessGateScopeMatch, ProcessJournalCommit, ProcessJournalCommitObserver,
-    ProcessJournalCursor, ProcessJournalEntry, ProcessJournalError, ProcessJournalKind,
-    ProcessJournalObserverRegistry, ProcessJournalPage, ProcessJournalProjectionCursor,
-    ProcessJournalProjectionRequest, ProcessJournalProjectionSnapshot, ProcessJournalSource,
-    ProcessKind, ProcessLeaseRequest, ProcessLeaseSnapshot, ProcessLeaseToken,
-    ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupRequest,
-    ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
-    ProcessOperationId, ProcessOutcome, ProcessSnapshotSource, ProcessStateTransitionRequest,
-    ProcessSubmissionPort, ProcessSuspension, ProcessSuspensionKind, ProcessTerminalEvidence,
-    ProcessTransitionPort, ProcessTreePort, ProcessTreeReservation, ProcessWorkerId,
-    PruneReleasedProcessRequest, RecordProcessCheckpointRequest,
+    ProcessGateRecord, ProcessGateScopeMatch, ProcessInputPayload, ProcessInputPort,
+    ProcessInputRecord, ProcessInputRef, ProcessInputSubmission, ProcessJournalCommit,
+    ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalEntry, ProcessJournalError,
+    ProcessJournalKind, ProcessJournalObserverRegistry, ProcessJournalPage,
+    ProcessJournalProjectionCursor, ProcessJournalProjectionRequest,
+    ProcessJournalProjectionSnapshot, ProcessJournalSource, ProcessKind, ProcessLeaseRequest,
+    ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleLookupBatchRequest,
+    ProcessLifecycleLookupRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,
+    ProcessLifecycleStatus, ProcessOperationId, ProcessOutcome, ProcessSnapshotSource,
+    ProcessStateTransitionRequest, ProcessSubmissionPort, ProcessSuspension, ProcessSuspensionKind,
+    ProcessTerminalEvidence, ProcessTransitionPort, ProcessTreePort, ProcessTreeReservation,
+    ProcessWorkerId, PruneReleasedProcessRequest, RecordProcessCheckpointRequest,
     RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse,
     ReleaseProcessTreeRequest, ReserveProcessTreeRequest, ResumeProcessRequest,
     SettleProcessDependencyRequest, StopProcessRequest, SubmitProcessRequest,
@@ -92,6 +94,7 @@ pub trait ProcessRuntimePort:
     + ProcessTreePort<Error = ProcessJournalStoreError>
     + ProcessDependencyPort<Error = ProcessJournalStoreError>
     + ProcessCheckpointPort<Error = ProcessJournalStoreError>
+    + ProcessInputPort<Error = ProcessJournalStoreError>
     + Send
     + Sync
 {

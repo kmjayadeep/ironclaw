@@ -50,7 +50,6 @@ use ironclaw_runner::{
     subagent::await_edge::{
         boot_recovery::ScopeRecoveryDriver, resolver::AwaitEdgeResolver, store::AwaitEdgeStore,
     },
-    subagent::goal_store::in_memory_backed_subagent_goal_store,
 };
 use ironclaw_threads::{
     InMemorySessionThreadService, SessionThreadService, ThreadHistoryRequest, ThreadMessageRecord,
@@ -361,10 +360,8 @@ impl ProductLiveAgentLoopHarness {
         let capability_result_writer: Arc<dyn LoopCapabilityResultWriter> =
             Arc::new(ProductLiveCapabilityIo::default());
         let await_edge_store = Arc::new(AwaitEdgeStore::new(process_system.dependencies()));
-        let await_edge_goal_store = Arc::new(in_memory_backed_subagent_goal_store());
         let await_edge_resolver = Arc::new(AwaitEdgeResolver::new_unbound(
             Arc::clone(&await_edge_store),
-            await_edge_goal_store.clone() as Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
             turn_store.clone() as Arc<dyn ironclaw_turns::AgentTurnSpawnTreeRuntimePort>,
             capability_result_writer.clone(),
             Arc::new(thread_service.clone()),
@@ -385,7 +382,6 @@ impl ProductLiveAgentLoopHarness {
             capability_factory,
             capability_surface_resolver: Arc::new(AllowAllCapabilitySurfaceResolver),
             capability_result_writer,
-            subagent_goal_store: await_edge_goal_store,
             subagent_await_edge_writer: await_edge_driver
                 as Arc<dyn ironclaw_loop_host::AwaitEdgeWriter>,
             subagent_await_edge_settler: await_edge_resolver

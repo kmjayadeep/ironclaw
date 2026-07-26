@@ -64,7 +64,6 @@ where
         capability_factory: _,
         capability_surface_resolver: _,
         capability_result_writer: _,
-        subagent_goal_store: _,
         subagent_await_edge_writer: _,
         subagent_await_edge_settler: _,
         subagent_await_edge_evidence: _,

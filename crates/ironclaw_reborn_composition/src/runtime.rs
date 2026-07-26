@@ -79,14 +79,12 @@ use ironclaw_runner::milestone_events::{
 };
 use ironclaw_runner::runtime::{
     DefaultPlannedRuntimeBuildError, DefaultPlannedRuntimeConfig, DefaultPlannedRuntimeParts,
-    ProcessRuntimeSystem, RuntimeSubagentGoalStore, ToolDisclosureMode,
-    build_default_planned_runtime,
+    ProcessRuntimeSystem, ToolDisclosureMode, build_default_planned_runtime,
 };
 use ironclaw_runner::subagent::await_edge::{
     boot_recovery::ScopeRecoveryDriver, resolver::AwaitEdgeResolver, store::AwaitEdgeStore,
 };
 use ironclaw_runner::subagent::flavors::StaticSubagentDefinitionResolver;
-use ironclaw_runner::subagent::goal_store::SubagentGoalStore;
 use ironclaw_threads::{
     AcceptInboundMessageRequest, EnsureThreadRequest, MessageContent, MessageKind, MessageStatus,
     SessionThreadService, ThreadHistoryRequest, ThreadScope,
@@ -379,7 +377,6 @@ struct RuntimeStoreParts {
     resource_governor: Arc<dyn ironclaw_resources::ResourceGovernor>,
     budget_gate_store: Arc<dyn ironclaw_resources::BudgetGateStorePort>,
     broadcast_budget_event_sink: Arc<ironclaw_resources::BroadcastBudgetEventSink>,
-    subagent_goal_store: Arc<dyn RuntimeSubagentGoalStore>,
     /// §3 replacement for `subagent_gate_store`: built here (not later, once
     /// `capability_result_writer` becomes available) because `F` (the
     /// filesystem backend generic) is only nameable while the configured graph
@@ -410,8 +407,6 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
     let admin_secret_provisioner = Arc::clone(&services.admin_secret_provisioner);
     let project_service = Arc::clone(&services.project_service);
 
-    let subagent_goal_store = Arc::new(SubagentGoalStore::new(Arc::clone(&scoped_filesystem)))
-        as Arc<dyn RuntimeSubagentGoalStore>;
     let processes = services.processes.clone();
     let turn_projection = Arc::new(processes.agent_turn_runtime());
     let loop_checkpoint_store = Arc::new(ironclaw_turns::ProcessLoopCheckpointStore::new(
@@ -422,7 +417,6 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
         let store = Arc::new(AwaitEdgeStore::new(processes.dependencies()));
         let resolver = Arc::new(AwaitEdgeResolver::new_unbound_deferred_result_writer(
             Arc::clone(&store),
-            Arc::clone(&subagent_goal_store) as Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
             Arc::clone(&turn_projection) as Arc<dyn ironclaw_turns::AgentTurnSpawnTreeRuntimePort>,
             Arc::clone(&thread_service),
         ));
@@ -448,7 +442,6 @@ fn runtime_store_parts(services: &RebornRuntimeStores) -> RuntimeStoreParts {
         resource_governor,
         budget_gate_store,
         broadcast_budget_event_sink,
-        subagent_goal_store,
         subagent_await_edge_writer,
         subagent_await_edge_settler,
         subagent_await_edge_evidence,
@@ -3536,7 +3529,6 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         resource_governor,
         budget_gate_store,
         broadcast_budget_event_sink,
-        subagent_goal_store,
         subagent_await_edge_writer,
         subagent_await_edge_settler,
         subagent_await_edge_evidence,
@@ -4076,7 +4068,6 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         capability_factory,
         capability_surface_resolver,
         capability_result_writer,
-        subagent_goal_store,
         subagent_await_edge_writer,
         subagent_await_edge_settler,
         subagent_await_edge_evidence,

@@ -19,6 +19,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 pub const MAX_PROCESS_CHECKPOINT_PAYLOAD_BYTES: usize = 64 * 1024;
+pub const MAX_PROCESS_INPUT_PAYLOAD_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -92,6 +93,60 @@ impl fmt::Debug for ProcessCheckpointPayload {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ProcessCheckpointPayload")
+            .field("len", &self.0.len())
+            .field("payload", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProcessInputRef(String);
+
+impl ProcessInputRef {
+    pub fn new(value: impl Into<String>) -> Result<Self, ProcessJournalError> {
+        let value = value.into();
+        validate_opaque_ref("process input", &value)?;
+        Ok(Self(value))
+    }
+
+    pub fn from_trusted(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProcessInputPayload(Vec<u8>);
+
+impl ProcessInputPayload {
+    pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, ProcessJournalError> {
+        let bytes = bytes.into();
+        if bytes.len() > MAX_PROCESS_INPUT_PAYLOAD_BYTES {
+            return Err(ProcessJournalError::InputPayloadTooLong {
+                actual: bytes.len(),
+            });
+        }
+        Ok(Self(bytes))
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+impl fmt::Debug for ProcessInputPayload {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProcessInputPayload")
             .field("len", &self.0.len())
             .field("payload", &"<redacted>")
             .finish()
@@ -306,6 +361,8 @@ pub struct JournaledProcessSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_ref: Option<ProcessCheckpointRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_ref: Option<ProcessInputRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<SanitizedFailure>,
     pub journal_cursor: ProcessJournalCursor,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -463,9 +520,32 @@ pub struct SubmitProcessRequest {
     pub dependency: Option<ProcessDependencySubmission>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_ref: Option<ProcessCheckpointRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<ProcessInputSubmission>,
     pub created_at: Timestamp,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub metadata: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessInputSubmission {
+    pub input_ref: ProcessInputRef,
+    pub payload: ProcessInputPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessInputRecord {
+    pub process_id: ProcessId,
+    pub scope: ResourceScope,
+    pub input_ref: ProcessInputRef,
+    pub payload: ProcessInputPayload,
+    pub created_at: Timestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetProcessInputRequest {
+    pub process_id: ProcessId,
+    pub scope: ResourceScope,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -820,6 +900,16 @@ pub trait ProcessCheckpointPort: Send + Sync {
     ) -> Result<Option<ProcessCheckpointRecord>, Self::Error>;
 }
 
+#[async_trait]
+pub trait ProcessInputPort: Send + Sync {
+    type Error: Send + Sync + 'static;
+
+    async fn get_process_input(
+        &self,
+        request: GetProcessInputRequest,
+    ) -> Result<Option<ProcessInputRecord>, Self::Error>;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessLeaseRequest {
     pub process_id: ProcessId,
@@ -1020,6 +1110,10 @@ pub enum ProcessJournalError {
         "process checkpoint payload is {actual} bytes; maximum is {MAX_PROCESS_CHECKPOINT_PAYLOAD_BYTES}"
     )]
     CheckpointPayloadTooLong { actual: usize },
+    #[error(
+        "process input payload is {actual} bytes; maximum is {MAX_PROCESS_INPUT_PAYLOAD_BYTES}"
+    )]
+    InputPayloadTooLong { actual: usize },
 }
 
 fn validate_opaque_ref(kind: &'static str, value: &str) -> Result<(), ProcessJournalError> {

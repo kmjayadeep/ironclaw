@@ -13,7 +13,7 @@ use ironclaw_loop_host::{
     ProductLiveCancellationReadiness, RunCancellationFactory, SpawnSubagentFlavorDescriptor,
     SpawnSubagentInputCodec, SubagentDefinitionResolver, SubagentPromptComposer,
     SubagentPromptMaterialSource, SubagentSpawnCapabilityPort, SubagentSpawnDeps,
-    SubagentSpawnGoalStore, SubagentSpawnLimits, verify_product_live_cancellation_probe,
+    SubagentSpawnLimits, verify_product_live_cancellation_probe,
 };
 use ironclaw_memory::MemoryService;
 use ironclaw_processes::ProcessTransitionPort;
@@ -47,7 +47,7 @@ use crate::{
     },
     subagent::{
         capability_surface::SubagentCapabilitySurfaceResolver, flavors,
-        goal_store::SubagentGoalStorePort, prompt_material::GateBackedSubagentPromptMaterialSource,
+        prompt_material::GateBackedSubagentPromptMaterialSource,
     },
     text_loop_driver::TextOnlyModelReplyDriverConfig,
     tool_disclosure_port::ToolDisclosureCapabilityDecorator,
@@ -276,12 +276,8 @@ where
     pub capability_factory: Arc<dyn LoopCapabilityPortFactory>,
     pub capability_surface_resolver: Arc<dyn CapabilitySurfaceProfileResolver>,
     pub capability_result_writer: Arc<dyn LoopCapabilityResultWriter>,
-    pub subagent_goal_store: Arc<dyn RuntimeSubagentGoalStore>,
-    /// §3 replacement: `subagent_gate_store` split into three trait-object
-    /// handles onto the same underlying await-edge store + resolver pair
-    /// (constructed together in composition, where the `filesystem-goal-store`
-    /// feature is enabled) — kept as trait objects here so `runtime.rs`
-    /// itself stays feature/backend-generic-free.
+    /// Await-edge writer, settlement, and evidence views over the process
+    /// dependency journal.
     pub subagent_await_edge_writer: Arc<dyn AwaitEdgeWriter>,
     pub subagent_await_edge_settler: Arc<dyn AwaitEdgeSettler>,
     pub subagent_await_edge_evidence: Arc<dyn AwaitDependentRunEvidenceStore>,
@@ -362,16 +358,6 @@ where
     /// When `None` (the default), the notifier and channel are minted internally, which is
     /// correct for local-dev and any composition that does not need to pre-mint.
     pub scheduler_wake_wiring: Option<SchedulerWakeWiring>,
-}
-
-pub trait RuntimeSubagentGoalStore:
-    SubagentGoalStorePort + SubagentSpawnGoalStore + Send + Sync
-{
-}
-
-impl<T> RuntimeSubagentGoalStore for T where
-    T: SubagentGoalStorePort + SubagentSpawnGoalStore + Send + Sync
-{
 }
 
 pub struct RebornRuntimeLoopComposition<S, G>
@@ -668,7 +654,7 @@ where
     let agent_turn_runtime_port: Arc<dyn AgentTurnRuntimePort> = agent_turn_runtime.clone();
     let subagent_prompt_source: Arc<dyn SubagentPromptMaterialSource> =
         Arc::new(GateBackedSubagentPromptMaterialSource::new(
-            Arc::clone(&parts.subagent_goal_store),
+            process_system.inputs(),
             Arc::clone(&parts.thread_service),
         ));
     let subagent_prompt_composer = SubagentPromptComposer::new(Arc::clone(&subagent_prompt_source));
@@ -679,7 +665,6 @@ where
             agent_turn_runtime: agent_turn_runtime.clone()
                 as Arc<dyn AgentTurnSpawnTreeRuntimePort>,
             thread_service: Arc::clone(&parts.thread_service),
-            goal_store: Arc::clone(&parts.subagent_goal_store) as Arc<dyn SubagentSpawnGoalStore>,
             await_edge_writer: Arc::clone(&parts.subagent_await_edge_writer),
             definition_resolver: Arc::clone(&parts.subagent_definition_resolver),
             spawn_input_codec: Arc::clone(&parts.subagent_spawn_input_codec),

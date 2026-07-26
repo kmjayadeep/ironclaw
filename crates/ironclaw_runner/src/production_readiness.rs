@@ -102,7 +102,6 @@ pub enum RebornLoopProductionComponent {
     InputControl,
     LoopExitApplier,
     AgentTurnRuntimePort,
-    SubagentGoalStorePort,
     SubagentCompletionObserver,
     SubagentAwaitEdgeStore,
     WakeNotifier,
@@ -355,7 +354,6 @@ pub struct RebornLoopComponentGraphReadiness {
     pub input_control: RebornComponentReadiness,
     pub loop_exit_applier: RebornComponentReadiness,
     pub agent_turn_runtime: RebornComponentReadiness,
-    pub subagent_goal_store: RebornComponentReadiness,
     pub subagent_completion_observer: RebornComponentReadiness,
     /// §3 replacement: the 3 dead-component readiness fields this used to
     /// sit alongside (`subagent_result_tombstone_store` — unwired dead code;
@@ -381,7 +379,6 @@ impl RebornLoopComponentGraphReadiness {
             input_control: RebornComponentReadiness::production_verified(required),
             loop_exit_applier: RebornComponentReadiness::production_verified(required),
             agent_turn_runtime: RebornComponentReadiness::production_verified(required),
-            subagent_goal_store: RebornComponentReadiness::production_verified(required),
             subagent_completion_observer: RebornComponentReadiness::production_verified(required),
             subagent_await_edge_store: RebornComponentReadiness::production_verified(required),
             wake_notifier: RebornComponentReadiness::production_verified(required),
@@ -437,10 +434,6 @@ impl RebornLoopComponentGraphReadiness {
             (
                 RebornLoopProductionComponent::AgentTurnRuntimePort,
                 self.agent_turn_runtime,
-            ),
-            (
-                RebornLoopProductionComponent::SubagentGoalStorePort,
-                self.subagent_goal_store,
             ),
             (
                 RebornLoopProductionComponent::SubagentCompletionObserver,
@@ -743,7 +736,6 @@ fn component_subject(component: RebornLoopProductionComponent) -> &'static str {
         RebornLoopProductionComponent::InputControl => "input_control",
         RebornLoopProductionComponent::LoopExitApplier => "loop_exit_applier",
         RebornLoopProductionComponent::AgentTurnRuntimePort => "agent_turn_runtime",
-        RebornLoopProductionComponent::SubagentGoalStorePort => "subagent_goal_store",
         RebornLoopProductionComponent::SubagentCompletionObserver => "subagent_completion_observer",
         RebornLoopProductionComponent::SubagentAwaitEdgeStore => "subagent_await_edge_store",
         RebornLoopProductionComponent::WakeNotifier => "wake_notifier",

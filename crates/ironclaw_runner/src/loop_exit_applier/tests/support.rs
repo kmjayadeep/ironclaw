@@ -53,9 +53,7 @@ pub(super) fn empty_await_dependent_run_evidence() -> Arc<dyn AwaitDependentRunE
 /// Minimal in-memory test double recording one `(scope, run_id, gate_ref,
 /// mode)` tuple — enough for the two real-evidence tests in `mod.rs`
 /// (accept a matching blocking-mode gate, reject a background-mode one)
-/// without pulling in the real filesystem-backed `AwaitEdgeStore`
-/// (feature-gated behind `filesystem-goal-store`; this test module is
-/// `#[cfg(test)]`-only and must stay compilable without that feature).
+/// without pulling in the process-journal-backed `AwaitEdgeStore`.
 pub(super) struct RecordingAwaitDependentRunEvidence {
     scope: TurnScope,
     run_id: TurnRunId,

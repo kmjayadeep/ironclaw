@@ -14,6 +14,7 @@ use ironclaw_host_api::{
     CapabilityId, InvocationId, LoopRef, ProviderToolName, Resolution, ResolutionBatch,
     RuntimeKind, Suspension, ThreadId,
 };
+use ironclaw_processes::{ProcessInputPayload, ProcessInputRef, ProcessInputSubmission};
 use ironclaw_threads::{
     AcceptInboundMessageRequest, EnsureThreadRequest, MessageContent, SessionThreadService,
     ThreadMessageId, ThreadScope,
@@ -247,9 +248,10 @@ pub struct SubagentDefinition {
     pub requested_run_profile: RunProfileRequest,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubagentGoalRecord {
     pub task: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff: Option<String>,
 }
 
@@ -341,22 +343,6 @@ pub trait SubagentDefinitionResolver: Send + Sync {
     }
 }
 
-#[async_trait]
-pub trait SubagentSpawnGoalStore: Send + Sync {
-    async fn put_goal(
-        &self,
-        scope: &TurnScope,
-        run_id: TurnRunId,
-        goal: SubagentGoalRecord,
-    ) -> Result<(), AgentLoopHostError>;
-
-    async fn delete_goal(
-        &self,
-        scope: &TurnScope,
-        run_id: TurnRunId,
-    ) -> Result<(), AgentLoopHostError>;
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SubagentSpawnLimits {
     pub max_depth: u32,
@@ -380,7 +366,6 @@ pub struct SubagentSpawnDeps {
     pub child_runs: Arc<dyn TurnSpawnTreePort>,
     pub agent_turn_runtime: Arc<dyn AgentTurnSpawnTreeRuntimePort>,
     pub thread_service: Arc<dyn SessionThreadService>,
-    pub goal_store: Arc<dyn SubagentSpawnGoalStore>,
     pub await_edge_writer: Arc<dyn crate::AwaitEdgeWriter>,
     pub definition_resolver: Arc<dyn SubagentDefinitionResolver>,
     pub spawn_input_codec: Arc<dyn SpawnSubagentInputCodec>,
@@ -408,7 +393,6 @@ struct SpawnContext {
 
 #[derive(Default)]
 struct SpawnCompensationState {
-    goal_written: Option<(TurnScope, TurnRunId)>,
     /// (child_scope, child_run_id) — the parent_run_id needed for
     /// `abandon_awaited_child` is the enclosing `run_context.run_id` at
     /// rollback time.
@@ -454,9 +438,6 @@ impl SpawnCompensationState {
                 .await_edge_writer
                 .abandon_awaited_child(child_scope, run_context.run_id, *child_run_id)
                 .await;
-        }
-        if let Some((scope, run_id)) = self.goal_written.as_ref() {
-            let _ = deps.goal_store.delete_goal(scope, *run_id).await;
         }
         if let Some((scope, tree_root)) = self.submitted_child_tree.as_ref() {
             // Idempotency key for the release-tree-descendants dedup guard
@@ -969,18 +950,25 @@ impl SubagentSpawnCapabilityPort {
                 None,
             ));
         }
-        self.deps
-            .goal_store
-            .put_goal(
-                &child_turn_scope,
-                child_run_id,
-                SubagentGoalRecord {
-                    task: args.task.clone(),
-                    handoff: args.handoff.clone(),
-                },
+        let goal_payload = serde_json::to_vec(&SubagentGoalRecord {
+            task: args.task.clone(),
+            handoff: args.handoff.clone(),
+        })
+        .map_err(|error| {
+            AgentLoopHostError::new(
+                AgentLoopHostErrorKind::Internal,
+                format!("subagent goal serialization failed: {error}"),
             )
-            .await?;
-        compensation.goal_written = Some((child_turn_scope.clone(), child_run_id));
+        })?;
+        let process_input = ProcessInputSubmission {
+            input_ref: ProcessInputRef::from_trusted("subagent-goal:v1"),
+            payload: ProcessInputPayload::new(goal_payload).map_err(|error| {
+                AgentLoopHostError::new(
+                    AgentLoopHostErrorKind::InvalidInvocation,
+                    format!("subagent goal is invalid: {error}"),
+                )
+            })?,
+        };
 
         let dependency_record = AwaitedChildSetRecord {
             gate_ref: gate_ref.clone(),
@@ -1054,6 +1042,7 @@ impl SubagentSpawnCapabilityPort {
                     group_ref: Some(gate_ref.as_str().to_string()),
                     metadata: dependency_metadata,
                 }),
+                process_input: Some(process_input),
             })
             .await
             .map_err(map_turn_error)?;

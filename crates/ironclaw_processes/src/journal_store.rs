@@ -107,7 +107,7 @@ enum StoredProcessJournalRecord {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum StoredProcessCommand {
     ImportLegacyState(Box<ProcessJournalMaterializedState>),
-    Submit(SubmitProcessRequest),
+    Submit(Box<SubmitProcessRequest>),
     Claim {
         request: ClaimProcessesRequest,
         now: ironclaw_host_api::Timestamp,
@@ -150,6 +150,26 @@ enum StoredCommandOutcome {
     TreePruned,
     Dependency(Option<ProcessDependencyRecord>),
     Checkpointed(ProcessCheckpointRecord),
+}
+
+#[async_trait]
+impl<F> crate::ProcessInputPort for ProcessJournalStore<F>
+where
+    F: RootFilesystem + Send + Sync + 'static,
+{
+    type Error = ProcessJournalStoreError;
+
+    async fn get_process_input(
+        &self,
+        request: crate::GetProcessInputRequest,
+    ) -> Result<Option<crate::ProcessInputRecord>, Self::Error> {
+        let state = self.load_state().await?;
+        Ok(state
+            .inputs
+            .get(&request.process_id)
+            .filter(|record| process_scope_visible(&record.scope, &request.scope))
+            .cloned())
+    }
 }
 
 struct CachedProjection {
@@ -235,7 +255,10 @@ where
         &self,
         request: SubmitProcessRequest,
     ) -> Result<(JournaledProcessSnapshot, bool), ProcessJournalStoreError> {
-        match self.execute(StoredProcessCommand::Submit(request)).await? {
+        match self
+            .execute(StoredProcessCommand::Submit(Box::new(request)))
+            .await?
+        {
             StoredCommandOutcome::Submitted(snapshot, changed) => Ok((snapshot, changed)),
             outcome => Err(unexpected_outcome("submit", outcome)),
         }

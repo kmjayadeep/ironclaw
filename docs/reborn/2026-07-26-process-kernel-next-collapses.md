@@ -180,13 +180,23 @@ Do not embed unbounded or secret-bearing payloads directly in journal entries.
 
 ## Slice 5: make subagent goals immutable process input
 
-`runner/subagent/goal_store.rs` is 527 lines for write-once, scoped payloads
-keyed by child run. This is generic immutable process input, not lifecycle
-authority.
+Status on `process-journal-kernel-transition`: implemented. Process submission
+now accepts a bounded, debug-redacted immutable input payload and exposes only
+its opaque schema ref in process snapshots and lifecycle events. The payload is
+committed in the same physical journal row as child identity, tree reservation,
+and dependency creation, then read through the scope-bound `ProcessInputPort`.
 
-Add a bounded `ProcessInputRef` backed by the host artifact/filesystem service,
-store the reference on process submission, and delete the bespoke goal store.
-The `SubagentGoal` schema remains agent-owned.
+Subagent spawning serializes the agent-owned `SubagentGoalRecord` as
+`subagent-goal:v1` process input. Prompt material projects it from the process
+journal, with the persisted child-thread message retained as legacy fallback.
+The 527-line goal store, its filesystem records, write/delete compensation,
+runtime trait union, composition field, readiness component, and test doubles
+are deleted.
+
+The payload is stored directly in the private command row rather than through a
+new artifact subsystem. That keeps submission atomic and avoids replacing one
+small bespoke store with a larger generic one. The bounded payload is absent
+from public process snapshots and event projections.
 
 ## Slice 6: generalize scheduler wake and cancellation
 

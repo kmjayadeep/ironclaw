@@ -12,8 +12,8 @@ use super::{
 };
 use crate::{
     ClaimedProcess, JournaledProcessSnapshot, ProcessCheckpointId, ProcessCheckpointRecord,
-    ProcessControlResult, ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind,
-    ProcessJournalPage, ProcessKind, ProcessLeaseSnapshot, ProcessLeaseToken,
+    ProcessControlResult, ProcessInputRecord, ProcessJournalCursor, ProcessJournalEntry,
+    ProcessJournalKind, ProcessJournalPage, ProcessKind, ProcessLeaseSnapshot, ProcessLeaseToken,
     ProcessLifecycleStatus, ProcessTreeReservation, RecoverExpiredProcessLeasesResponse,
     types::same_scope_owner,
 };
@@ -40,6 +40,8 @@ pub(super) struct ProcessJournalMaterializedState {
     #[serde(default)]
     pub(super) checkpoints: HashMap<ProcessCheckpointId, ProcessCheckpointRecord>,
     #[serde(default)]
+    pub(super) inputs: HashMap<ProcessId, ProcessInputRecord>,
+    #[serde(default)]
     legacy_imported: bool,
 }
 
@@ -56,6 +58,7 @@ impl Default for ProcessJournalMaterializedState {
             tree_reservations: HashMap::new(),
             dependencies: HashMap::new(),
             checkpoints: HashMap::new(),
+            inputs: HashMap::new(),
             legacy_imported: false,
         }
     }
@@ -90,7 +93,7 @@ impl ProcessJournalMaterializedState {
                 }
                 Ok(StoredCommandOutcome::Imported)
             }
-            StoredProcessCommand::Submit(request) => self.apply_submit(request),
+            StoredProcessCommand::Submit(request) => self.apply_submit(*request),
             StoredProcessCommand::Claim {
                 request,
                 now,
@@ -228,6 +231,7 @@ impl ProcessJournalMaterializedState {
             None
         };
         let dependency = request.dependency.clone();
+        let input = request.input.clone();
         let cursor = self.next_cursor();
         let snapshot = JournaledProcessSnapshot {
             process_id: request.process_id,
@@ -236,6 +240,7 @@ impl ProcessJournalMaterializedState {
             status: ProcessLifecycleStatus::Queued,
             suspension: None,
             checkpoint_ref: request.checkpoint_ref,
+            input_ref: input.as_ref().map(|input| input.input_ref.clone()),
             failure: None,
             journal_cursor: cursor,
             lease: None,
@@ -252,6 +257,18 @@ impl ProcessJournalMaterializedState {
             ProcessJournalKind::Submitted,
         ));
         self.processes.insert(snapshot.process_id, snapshot.clone());
+        if let Some(input) = input {
+            self.inputs.insert(
+                snapshot.process_id,
+                ProcessInputRecord {
+                    process_id: snapshot.process_id,
+                    scope: snapshot.scope.clone(),
+                    input_ref: input.input_ref,
+                    payload: input.payload,
+                    created_at: snapshot.created_at,
+                },
+            );
+        }
         if let Some((root_process_id, descendant_count)) = tree_reservation {
             let released_processes = self
                 .tree_reservations

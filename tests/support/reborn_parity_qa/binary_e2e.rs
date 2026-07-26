@@ -40,7 +40,6 @@ use ironclaw_runner::subagent::{
         boot_recovery::ScopeRecoveryDriver, resolver::AwaitEdgeResolver, store::AwaitEdgeStore,
     },
     flavors::StaticSubagentDefinitionResolver,
-    goal_store::in_memory_backed_subagent_goal_store,
 };
 use ironclaw_runner::turn_scheduler::{SchedulerTurnRunWakeNotifier, TurnRunSchedulerHandle};
 use ironclaw_runner::{
@@ -796,10 +795,8 @@ impl RebornBinaryE2EHarness {
             None,
         )?;
         let await_edge_store = Arc::new(AwaitEdgeStore::new(process_system.dependencies()));
-        let await_edge_goal_store = Arc::new(in_memory_backed_subagent_goal_store());
         let await_edge_resolver = Arc::new(AwaitEdgeResolver::new_unbound(
             Arc::clone(&await_edge_store),
-            await_edge_goal_store.clone() as Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
             turn_runtime.clone() as Arc<dyn ironclaw_turns::AgentTurnSpawnTreeRuntimePort>,
             capability_result_writer.clone(),
             thread_harness.service.clone(),
@@ -853,7 +850,6 @@ impl RebornBinaryE2EHarness {
             capability_factory,
             capability_surface_resolver,
             capability_result_writer,
-            subagent_goal_store: await_edge_goal_store,
             subagent_await_edge_writer: await_edge_driver
                 as Arc<dyn ironclaw_loop_host::AwaitEdgeWriter>,
             subagent_await_edge_settler: await_edge_resolver

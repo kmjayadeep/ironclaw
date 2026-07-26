@@ -211,6 +211,7 @@ impl AgentTurnProcessRuntime {
                 spawn_tree_descendant_cap: None,
                 dependency: None,
                 checkpoint_ref: None,
+                input: None,
                 created_at: request.received_at,
                 metadata: json!({ "agent_turn": metadata }),
             })
@@ -311,6 +312,7 @@ impl AgentTurnProcessRuntime {
                 spawn_tree_descendant_cap: Some(request.spawn_tree_descendant_cap),
                 dependency: request.process_dependency,
                 checkpoint_ref: None,
+                input: request.process_input,
                 created_at: request.received_at,
                 metadata: json!({ "agent_turn": metadata }),
             })
@@ -473,6 +475,7 @@ impl AgentTurnProcessRuntime {
                 spawn_tree_descendant_cap: None,
                 dependency: None,
                 checkpoint_ref: snapshot.checkpoint_ref,
+                input: None,
                 created_at: Utc::now(),
                 metadata: json!({ "agent_turn": metadata }),
             })
@@ -780,6 +783,7 @@ impl TurnRunProcessExt for TurnRunRecord {
             status: process_status_from_turn_status(self.status),
             suspension: process_suspension_from_record(self),
             checkpoint_ref: self.checkpoint_id.map(process_checkpoint_ref),
+            input_ref: None,
             failure: self.failure.clone(),
             journal_cursor: ProcessJournalCursor(self.event_cursor.0),
             lease: process_lease_from_record(self),
@@ -806,6 +810,7 @@ impl TurnRunStateProcessExt for TurnRunState {
             status: process_status_from_turn_status(self.status),
             suspension: process_suspension_from_state(self),
             checkpoint_ref: self.checkpoint_id.map(process_checkpoint_ref),
+            input_ref: None,
             failure: self.failure.clone(),
             journal_cursor: ProcessJournalCursor(self.event_cursor.0),
             lease: None,

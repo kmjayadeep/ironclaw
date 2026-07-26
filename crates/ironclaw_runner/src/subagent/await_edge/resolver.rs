@@ -43,7 +43,6 @@ use crate::subagent::untrusted_text::{
 
 pub struct AwaitEdgeResolver<S: SessionThreadService + ?Sized> {
     store: Arc<AwaitEdgeStore>,
-    goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
     agent_turn_runtime: RwLock<Arc<dyn AgentTurnSpawnTreeRuntimePort>>,
     // Deferred-bind, mirroring `coordinator` below: most callers have a
     // result writer in hand immediately (`new_unbound`, the common case),
@@ -67,7 +66,6 @@ where
 {
     pub fn new_unbound(
         store: Arc<AwaitEdgeStore>,
-        goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
         agent_turn_runtime: Arc<dyn AgentTurnSpawnTreeRuntimePort>,
         result_writer: Arc<dyn ironclaw_loop_host::LoopCapabilityResultWriter>,
         thread_service: Arc<S>,
@@ -77,7 +75,6 @@ where
         let _ = result_writer_cell.set(result_writer);
         Self {
             store,
-            goal_store,
             agent_turn_runtime: RwLock::new(agent_turn_runtime),
             result_writer: result_writer_cell,
             coordinator: OnceLock::new(),
@@ -92,13 +89,11 @@ where
     /// `Arc<dyn AwaitEdgeSettler>`.
     pub fn new_unbound_deferred_result_writer(
         store: Arc<AwaitEdgeStore>,
-        goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
         agent_turn_runtime: Arc<dyn AgentTurnSpawnTreeRuntimePort>,
         thread_service: Arc<S>,
     ) -> Self {
         Self {
             store,
-            goal_store,
             agent_turn_runtime: RwLock::new(agent_turn_runtime),
             result_writer: OnceLock::new(),
             coordinator: OnceLock::new(),
@@ -743,12 +738,6 @@ where
             .await?;
 
         for (member_child_run_id, _) in &group {
-            self.goal_store
-                .delete_goal(child_scope, *member_child_run_id)
-                .await
-                .map_err(|error| TurnError::Unavailable {
-                    reason: error.safe_summary,
-                })?;
             self.close_edge(child_scope, parent_run_id, *member_child_run_id)
                 .await?;
         }
@@ -909,19 +898,11 @@ mod tests {
         let store = Arc::new(AwaitEdgeStore::new(Arc::new(
             ironclaw_processes::ProcessJournalStore::new(recon_scoped_fs()),
         )));
-        let goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore> =
-            Arc::new(crate::subagent::goal_store::in_memory_backed_subagent_goal_store());
         let agent_turn_runtime: Arc<dyn AgentTurnSpawnTreeRuntimePort> =
             Arc::new(ironclaw_turns::test_support::in_memory_agent_turn_runtime());
         let result_writer: Arc<dyn ironclaw_loop_host::LoopCapabilityResultWriter> =
             Arc::new(ReconResultWriter);
-        AwaitEdgeResolver::new_unbound(
-            store,
-            goal_store,
-            agent_turn_runtime,
-            result_writer,
-            thread_service,
-        )
+        AwaitEdgeResolver::new_unbound(store, agent_turn_runtime, result_writer, thread_service)
     }
 
     fn recon_child_record(

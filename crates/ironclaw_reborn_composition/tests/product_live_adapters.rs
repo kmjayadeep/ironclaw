@@ -47,7 +47,6 @@ use ironclaw_runner::{
             boot_recovery::ScopeRecoveryDriver, resolver::AwaitEdgeResolver, store::AwaitEdgeStore,
         },
         flavors::StaticSubagentDefinitionResolver,
-        goal_store::{SubagentGoalStore, in_memory_backed_subagent_goal_store},
     },
 };
 use ironclaw_threads::{InMemorySessionThreadService, SessionThreadService, ThreadScope};
@@ -81,10 +80,6 @@ fn adapters_from_runtime(
             .expect("runtime exposes host runtime"),
         config,
     )
-}
-
-fn in_memory_subagent_goal_store() -> Arc<SubagentGoalStore<InMemoryBackend>> {
-    Arc::new(in_memory_backed_subagent_goal_store())
 }
 
 async fn write_capability_result_for_test(
@@ -1384,10 +1379,8 @@ async fn adapter_bundle_satisfies_product_live_runtime_readiness_gate() {
             await_edge_mounts,
         ))),
     )));
-    let subagent_goal_store = in_memory_subagent_goal_store();
     let await_edge_resolver = Arc::new(AwaitEdgeResolver::new_unbound(
         Arc::clone(&await_edge_store),
-        subagent_goal_store.clone() as Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
         turn_state.clone() as Arc<dyn ironclaw_turns::AgentTurnSpawnTreeRuntimePort>,
         adapters.capability_result_writer.clone(),
         Arc::clone(&thread_service),
@@ -1408,7 +1401,6 @@ async fn adapter_bundle_satisfies_product_live_runtime_readiness_gate() {
         capability_factory: adapters.capability_factory,
         capability_surface_resolver: adapters.capability_surface_resolver,
         capability_result_writer: adapters.capability_result_writer,
-        subagent_goal_store,
         subagent_await_edge_writer: await_edge_driver
             as Arc<dyn ironclaw_loop_host::AwaitEdgeWriter>,
         subagent_await_edge_settler: await_edge_resolver

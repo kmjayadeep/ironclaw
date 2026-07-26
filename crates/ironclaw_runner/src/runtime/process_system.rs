@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use ironclaw_processes::{
-    ProcessCheckpointPort, ProcessDependencyPort, ProcessJournalCommitObserver,
+    ProcessCheckpointPort, ProcessDependencyPort, ProcessInputPort, ProcessJournalCommitObserver,
     ProcessJournalObserverRegistry, ProcessJournalSource, ProcessJournalStoreError,
     ProcessRuntimePort, ProcessSubmissionPort, ProcessTransitionPort,
 };
@@ -109,6 +109,10 @@ impl ProcessRuntimeSystem {
     pub fn checkpoints(&self) -> Arc<dyn ProcessCheckpointPort<Error = ironclaw_turns::TurnError>> {
         Arc::clone(&self.adapter)
             as Arc<dyn ProcessCheckpointPort<Error = ironclaw_turns::TurnError>>
+    }
+
+    pub fn inputs(&self) -> Arc<dyn ProcessInputPort<Error = ironclaw_turns::TurnError>> {
+        Arc::clone(&self.adapter) as Arc<dyn ProcessInputPort<Error = ironclaw_turns::TurnError>>
     }
 
     pub fn agent_turn_runtime(&self) -> ironclaw_turns::AgentTurnProcessRuntime {

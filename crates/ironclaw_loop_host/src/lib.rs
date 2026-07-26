@@ -109,8 +109,8 @@ pub use subagent_spawn_port::{
     InMemoryAwaitEdgeWriter, JsonSpawnSubagentInputCodec, SpawnSubagentArgs,
     SpawnSubagentFlavorDescriptor, SpawnSubagentInputCodec, SpawnSubagentMode, SubagentDefinition,
     SubagentDefinitionResolver, SubagentGoalRecord, SubagentKindId, SubagentSpawnCapabilityPort,
-    SubagentSpawnDeps, SubagentSpawnGoalStore, SubagentSpawnLimits, SubagentThreadKind,
-    SubagentThreadMetadata, build_spawn_subagent_parameters_schema,
+    SubagentSpawnDeps, SubagentSpawnLimits, SubagentThreadKind, SubagentThreadMetadata,
+    build_spawn_subagent_parameters_schema,
 };
 pub use system_inference::{GuardedSystemInferencePort, ModelGatewayBackedSystemInferencePort};
 pub use user_profile_context::{EmptyUserProfileSource, HostUserProfileSource};
