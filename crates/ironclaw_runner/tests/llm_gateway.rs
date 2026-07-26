@@ -1040,6 +1040,40 @@ async fn malformed_spawn_subagent_input_is_model_repairable_through_the_gateway(
             "{stage}-stage rejection must surface to the loop, not trigger a second provider call"
         );
     }
+
+    // Control: the same armed registration error with a WELL-FORMED payload
+    // must not reject. Without this, the assertions above would pass on a port
+    // double that rejects unconditionally — proving error routing, not that the
+    // missing `mission` field is what triggers the rejection.
+    let provider = Arc::new(ToolAwareProvider::tool_calls(vec![ToolCall {
+        id: "call_1".to_string(),
+        name: "builtin__spawn_subagent".to_string(),
+        arguments: serde_json::json!({"flavor": "explorer", "mission": "survey the repo"}),
+        reasoning: None,
+        signature: None,
+        arguments_parse_error: None,
+    }]));
+    let gateway = LlmProviderModelGateway::with_provider_identity(
+        STATIC_PROVIDER_ID,
+        Arc::clone(&provider),
+        LlmModelProfilePolicy::new()
+            .allow_model_profile(interactive_model(), Some("host-selected-model".to_string())),
+    );
+    let capabilities = Arc::new(
+        GatewayCapabilityPort::with_spawn_subagent_surface()
+            .with_provider_tool_registration_error(AgentLoopHostErrorKind::InvalidInvocation),
+    );
+
+    gateway
+        .stream_model_with_capabilities(model_request(interactive_model()), capabilities.clone())
+        .await
+        .expect("a well-formed spawn payload must register even with the error armed");
+
+    assert_eq!(
+        capabilities.registered.lock().unwrap().len(),
+        1,
+        "a well-formed spawn payload must reach registration"
+    );
 }
 
 fn repair_request_messages(
@@ -4435,7 +4469,14 @@ impl LoopCapabilityPort for GatewayCapabilityPort {
         ironclaw_turns::run_profile::AgentLoopHostError,
     > {
         let tool_call = request.tool_call;
-        if let Some(kind) = self.registration_error {
+        // Reject at registration only when the payload is actually malformed —
+        // the injected error is armed, but the *missing field* is what fires it.
+        // An unconditional rejection here would prove error routing while
+        // saying nothing about the malformed input the test is named for.
+        if let Some(kind) = self
+            .registration_error
+            .filter(|_| tool_call.arguments.get("mission").is_none())
+        {
             return Err(ironclaw_turns::run_profile::AgentLoopHostError::new(
                 kind,
                 "invalid spawn_subagent input: missing field mission",
