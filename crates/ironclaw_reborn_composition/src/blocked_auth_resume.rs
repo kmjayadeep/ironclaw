@@ -79,6 +79,7 @@ impl BlockedAuthResumeFanout {
             .query_process_gates(ProcessGateQuery {
                 scope: event.scope.resource.without_thread_and_mission(),
                 gate_kind: ProcessSuspensionKind::Authorization,
+                scope_match: Some(ironclaw_processes::ProcessGateScopeMatch::Owner),
                 owner_user_id: Some(user_id.clone()),
                 gate_ref: None,
                 owner_match: Some(ProcessGateOwnerMatch::Explicit),

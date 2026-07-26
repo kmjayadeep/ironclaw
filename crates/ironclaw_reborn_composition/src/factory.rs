@@ -167,8 +167,6 @@ use ironclaw_triggers::{
     TriggerRepository,
 };
 use ironclaw_trust::{AdminConfig, AdminEntry, HostTrustAssignment, HostTrustPolicy};
-#[cfg(test)]
-use ironclaw_turns::TurnStateRowStore;
 use ironclaw_turns::{CheckpointStateStorePort, ExternalToolCatalog, InMemoryExternalToolCatalog};
 use ironclaw_turns::{GetRunStateRequest, InMemoryRunProfileResolver, TurnScope, TurnStateStore};
 use secrecy::SecretString;
@@ -1092,7 +1090,7 @@ pub(crate) struct RebornRuntimeStores {
     pub(crate) scoped_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
     pub(crate) processes: ProcessRuntimeSystem,
     #[cfg(test)]
-    pub(crate) turn_state: Arc<TurnStateRowStore<CompositeRootFilesystem>>,
+    pub(crate) turn_state: Arc<ironclaw_turns::AgentTurnProcessRuntime>,
     pub(crate) checkpoint_state_store: Arc<dyn CheckpointStateStorePort>,
     pub(crate) thread_service: Arc<dyn SessionThreadService>,
     pub(crate) trigger_repository: Arc<dyn TriggerRepository>,
@@ -1320,7 +1318,7 @@ impl std::fmt::Debug for RebornRuntimeStores {
             .field("readiness", &self.readiness)
             .field("extension_management", &true)
             .field("scoped_filesystem", &"Arc<ScopedFilesystem>")
-            .field("turn_state", &"Arc<TurnStateRowStore>");
+            .field("turn_state", &"Arc<AgentTurnProcessRuntime>");
         debug.finish()
     }
 }
@@ -1572,31 +1570,6 @@ fn configured_runtime_owner_scope(
         local_runtime_identity.tenant_id.clone(),
         local_runtime_identity.agent_id.clone(),
     )
-}
-
-#[cfg(test)]
-fn owner_turn_state_filesystem<F>(
-    filesystem: Arc<F>,
-    owner_scope: &ResourceScope,
-) -> Result<Arc<ScopedFilesystem<F>>, ironclaw_host_api::HostApiError>
-where
-    F: RootFilesystem + 'static,
-{
-    let view = crate::invocation_mount_view(owner_scope)?;
-    Ok(Arc::new(ScopedFilesystem::with_fixed_view(
-        filesystem, view,
-    )))
-}
-
-#[cfg(test)]
-fn production_turn_state_store<F>(
-    filesystem: Arc<ScopedFilesystem<F>>,
-    limits: ironclaw_turns::TurnStateStoreLimits,
-) -> TurnStateRowStore<F>
-where
-    F: RootFilesystem + 'static,
-{
-    TurnStateRowStore::new(filesystem).with_limits(limits)
 }
 
 async fn local_dev_trigger_repository(
@@ -4480,10 +4453,6 @@ async fn build_backend_production(
             default_runtime_owner_scope(owner_user_id.clone()).map_err(RebornBuildError::Mount)?
         }
     };
-    #[cfg(test)]
-    let test_turn_state_filesystem =
-        owner_turn_state_filesystem(Arc::clone(&stores.filesystem), &turn_state_scope)
-            .map_err(RebornBuildError::Mount)?;
     let secret_store: Arc<dyn SecretStorePort> = stores.secret_credentials.secret_store.clone();
     let skill_management_filesystem: Arc<dyn RootFilesystem> = stores.filesystem.clone();
     let skill_management = Arc::new(RebornLocalSkillManagementPort::new_with_mount_resolver(
@@ -4612,11 +4581,6 @@ async fn build_backend_production(
     let process_lifecycle_lookup_source = processes.lifecycle();
     let process_gate_query_source = processes.gates();
     let process_turn_state = Arc::new(processes.agent_turn_runtime());
-    #[cfg(test)]
-    let test_turn_state = Arc::new(production_turn_state_store(
-        test_turn_state_filesystem,
-        turn_state_store_limits,
-    ));
     let trigger_source_reply_target: Arc<std::sync::RwLock<Arc<dyn TriggerSourceReplyTarget>>> =
         Arc::new(std::sync::RwLock::new(Arc::new(
             TurnStateTriggerSourceReplyTarget::new(
@@ -5589,7 +5553,7 @@ async fn build_backend_production(
         scoped_filesystem: Arc::clone(&stores.scoped_filesystem),
         processes,
         #[cfg(test)]
-        turn_state: test_turn_state,
+        turn_state: process_turn_state,
         checkpoint_state_store,
         thread_service,
         trigger_repository: Arc::clone(&trigger_repository),

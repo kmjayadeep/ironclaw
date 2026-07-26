@@ -1156,6 +1156,7 @@ impl ProcessGateApprovalTurnRunLocator {
             .query_process_gates(ProcessGateQuery {
                 scope: scope.to_resource_scope(),
                 gate_kind: ProcessSuspensionKind::Approval,
+                scope_match: None,
                 owner_user_id: Some(scope.user_id.clone()),
                 gate_ref,
                 owner_match: Some(ProcessGateOwnerMatch::ExplicitOrActor),

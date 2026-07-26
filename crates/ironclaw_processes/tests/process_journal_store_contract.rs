@@ -359,6 +359,7 @@ async fn process_journal_store_owns_lifecycle_and_gate_projection() {
         .query_process_gates(ProcessGateQuery {
             scope: scope.clone(),
             gate_kind: ProcessSuspensionKind::Authorization,
+            scope_match: None,
             owner_user_id: Some(owner),
             gate_ref: Some(gate_ref.clone()),
             owner_match: Some(ProcessGateOwnerMatch::Explicit),

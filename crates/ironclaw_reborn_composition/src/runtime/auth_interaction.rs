@@ -63,6 +63,7 @@ impl ProcessGateAuthInteractionReadModel {
             .query_process_gates(ProcessGateQuery {
                 scope: turn_scope_for_interaction(scope).to_resource_scope(),
                 gate_kind: ProcessSuspensionKind::Authorization,
+                scope_match: None,
                 owner_user_id: Some(scope.user_id.clone()),
                 gate_ref,
                 owner_match: Some(ProcessGateOwnerMatch::Explicit),

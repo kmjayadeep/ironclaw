@@ -1493,9 +1493,21 @@ fn process_gate_snapshot_matches(
     let Some(suspension) = &snapshot.suspension else {
         return false;
     };
+    let scope_matches = match request
+        .scope_match
+        .unwrap_or(crate::ProcessGateScopeMatch::Exact)
+    {
+        crate::ProcessGateScopeMatch::Exact => same_scope_owner(&snapshot.scope, &request.scope),
+        crate::ProcessGateScopeMatch::Owner => {
+            snapshot.scope.tenant_id == request.scope.tenant_id
+                && snapshot.scope.user_id == request.scope.user_id
+                && snapshot.scope.agent_id == request.scope.agent_id
+                && snapshot.scope.project_id == request.scope.project_id
+        }
+    };
     snapshot.status == ProcessLifecycleStatus::Suspended
         && suspension.kind == request.gate_kind
-        && same_scope_owner(&snapshot.scope, &request.scope)
+        && scope_matches
         && request
             .gate_ref
             .as_ref()
