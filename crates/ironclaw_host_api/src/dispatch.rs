@@ -203,6 +203,59 @@ pub enum RuntimeDispatchErrorKind {
 /// they reject arbitrary summaries mentioning raw tool input.
 pub const INPUT_ENCODE_HUMAN_SUMMARY: &str = "the tool input could not be encoded";
 
+/// Lossless injection into the unified [`FailureKind`](crate::FailureKind):
+/// every precise mechanism name survives 1:1 — this replaces the retired
+/// 22→12 coarsening fold that destroyed 17 names (and with them, every
+/// remediation hint) on the way to the loop. The single non-identity edge is
+/// `Unknown` → `Internal` (the retired fold's own mapping): `Unknown` is the
+/// dispatch lane's redaction bucket, and `Internal` is the unified retryable
+/// host-fault bucket it always landed in.
+impl From<RuntimeDispatchErrorKind> for crate::FailureKind {
+    fn from(kind: RuntimeDispatchErrorKind) -> Self {
+        match kind {
+            RuntimeDispatchErrorKind::Backend => Self::Backend,
+            RuntimeDispatchErrorKind::Client => Self::Client,
+            RuntimeDispatchErrorKind::Executor => Self::Executor,
+            RuntimeDispatchErrorKind::ExitFailure => Self::ExitFailure,
+            RuntimeDispatchErrorKind::ExtensionRuntimeMismatch => Self::ExtensionRuntimeMismatch,
+            RuntimeDispatchErrorKind::FilesystemDenied => Self::FilesystemDenied,
+            RuntimeDispatchErrorKind::Guest => Self::Guest,
+            RuntimeDispatchErrorKind::InputEncode => Self::InputEncode,
+            RuntimeDispatchErrorKind::InvalidResult => Self::InvalidResult,
+            RuntimeDispatchErrorKind::Manifest => Self::Manifest,
+            RuntimeDispatchErrorKind::Memory => Self::Memory,
+            RuntimeDispatchErrorKind::MethodMissing => Self::MethodMissing,
+            RuntimeDispatchErrorKind::NetworkDenied => Self::NetworkDenied,
+            RuntimeDispatchErrorKind::OperationFailed => Self::OperationFailed,
+            RuntimeDispatchErrorKind::OutputDecode => Self::OutputDecode,
+            RuntimeDispatchErrorKind::OutputTooLarge => Self::OutputTooLarge,
+            RuntimeDispatchErrorKind::PolicyDenied => Self::PolicyDenied,
+            RuntimeDispatchErrorKind::Resource => Self::Resource,
+            RuntimeDispatchErrorKind::SecretDenied => Self::SecretDenied,
+            RuntimeDispatchErrorKind::UndeclaredCapability => Self::UndeclaredCapability,
+            RuntimeDispatchErrorKind::UnsupportedRunner => Self::UnsupportedRunner,
+            RuntimeDispatchErrorKind::Unknown => Self::Internal,
+        }
+    }
+}
+
+/// Lossless injection for the dispatch-control-plane siblings — each has its
+/// own named variant in the unified vocabulary (they were previously coarsened
+/// into `InvalidOutput`/`MissingRuntime`/`Authorization`/`Backend`).
+impl From<DispatchFailureKind> for crate::FailureKind {
+    fn from(kind: DispatchFailureKind) -> Self {
+        match kind {
+            DispatchFailureKind::UnknownCapability => Self::UnknownCapability,
+            DispatchFailureKind::UnknownProvider => Self::UnknownProvider,
+            DispatchFailureKind::RuntimeMismatch => Self::RuntimeMismatch,
+            DispatchFailureKind::MissingRuntimeBackend => Self::MissingRuntimeBackend,
+            DispatchFailureKind::UnsupportedRuntime => Self::UnsupportedRunner,
+            DispatchFailureKind::AuthRequired => Self::AuthRequired,
+            DispatchFailureKind::Runtime(kind) => kind.into(),
+        }
+    }
+}
+
 impl RuntimeDispatchErrorKind {
     pub const fn as_str(self) -> &'static str {
         match self {
