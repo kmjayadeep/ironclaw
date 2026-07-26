@@ -41,11 +41,10 @@ use ironclaw_host_runtime::{
     RuntimeWorkId, TenantSandboxProcessPort, builtin_first_party_handlers,
 };
 use ironclaw_processes::{
-    BackgroundProcessManager, ProcessError, ProcessHost, ProcessInvocationError,
-    ProcessInvocationRecord, ProcessInvocationStart, ProcessInvocationStatePort,
-    ProcessInvocationStatus, ProcessJournalStore, ProcessManager, ProcessResultStore,
-    ProcessRuntimePort, ProcessServices, ProcessStatus, capability_process_record,
-    submit_capability_process,
+    BackgroundProcessManager, ProcessError, ProcessInvocationError, ProcessInvocationRecord,
+    ProcessInvocationStart, ProcessInvocationStatePort, ProcessInvocationStatus,
+    ProcessJournalStore, ProcessManager, ProcessResultStore, ProcessRuntimePort, ProcessServices,
+    ProcessStatus, capability_process_record, submit_capability_process,
 };
 use ironclaw_reborn_event_store::{
     RebornEventStoreConfig, RebornEventStoreError, RebornProfile, build_reborn_event_stores,
@@ -5694,7 +5693,7 @@ async fn spawned_obligation_lifecycle_releases_resources_and_discards_handoffs_o
     .await;
 
     let process = fixture.spawn().await;
-    let host = ProcessHost::from_runtime(fixture.process_store.process_runtime());
+    let host = fixture.process_services.host();
     host.kill(&fixture.scope, process.process_id).await.unwrap();
 
     assert!(matches!(

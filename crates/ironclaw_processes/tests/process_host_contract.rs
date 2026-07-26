@@ -12,8 +12,8 @@ use tokio::time::timeout;
 
 #[tokio::test]
 async fn process_host_status_reads_scoped_process_record() {
-    let store = in_mem_process_store();
-    let host = ProcessHost::new(&store);
+    let (process_services, store) = process_services_and_runtime();
+    let host = process_services.host();
     let invocation_id = InvocationId::new();
     let process_id = ProcessId::new();
     let scope = sample_scope(invocation_id, "tenant1", "user1");
@@ -24,7 +24,7 @@ async fn process_host_status_reads_scoped_process_record() {
     other_scope.project_id = Some(ProjectId::new("project2").unwrap());
 
     submit_capability_process(
-        &store,
+        store.as_ref(),
         process_start(process_id, invocation_id, scope.clone()),
     )
     .await
@@ -43,14 +43,14 @@ async fn process_host_status_reads_scoped_process_record() {
 
 #[tokio::test]
 async fn process_host_kill_transitions_running_process() {
-    let store = in_mem_process_store();
-    let host = ProcessHost::new(&store);
+    let (process_services, store) = process_services_and_runtime();
+    let host = process_services.host();
     let invocation_id = InvocationId::new();
     let process_id = ProcessId::new();
     let scope = sample_scope(invocation_id, "tenant1", "user1");
 
     submit_capability_process(
-        &store,
+        store.as_ref(),
         process_start(process_id, invocation_id, scope.clone()),
     )
     .await
@@ -95,15 +95,16 @@ async fn process_host_await_process_returns_terminal_exit_after_background_compl
 
 #[tokio::test]
 async fn process_host_kill_retries_result_side_effect_for_already_killed_process() {
-    let store = in_mem_process_store();
+    let store = Arc::new(in_mem_process_store());
     let (result_store, backend) = result_store_failing_first_kill_write();
-    let host = ProcessHost::new(&store).with_result_store(result_store.clone());
+    let process_services = ProcessServices::new(Arc::clone(&store), Arc::clone(&result_store));
+    let host = process_services.host();
     let invocation_id = InvocationId::new();
     let process_id = ProcessId::new();
     let scope = sample_scope(invocation_id, "tenant1", "user1");
 
     submit_capability_process(
-        &store,
+        store.as_ref(),
         process_start(process_id, invocation_id, scope.clone()),
     )
     .await
@@ -155,14 +156,14 @@ async fn process_host_kill_retries_result_side_effect_for_already_killed_process
 
 #[tokio::test]
 async fn process_host_await_process_returns_terminal_exit_for_already_killed_process() {
-    let store = in_mem_process_store();
-    let host = ProcessHost::new(&store);
+    let (process_services, store) = process_services_and_runtime();
+    let host = process_services.host();
     let invocation_id = InvocationId::new();
     let process_id = ProcessId::new();
     let scope = sample_scope(invocation_id, "tenant1", "user1");
 
     submit_capability_process(
-        &store,
+        store.as_ref(),
         process_start(process_id, invocation_id, scope.clone()),
     )
     .await
@@ -176,8 +177,8 @@ async fn process_host_await_process_returns_terminal_exit_for_already_killed_pro
 
 #[tokio::test]
 async fn process_host_await_process_fails_closed_for_unknown_or_other_scope_process() {
-    let store = in_mem_process_store();
-    let host = ProcessHost::new(&store);
+    let (process_services, store) = process_services_and_runtime();
+    let host = process_services.host();
     let invocation_id = InvocationId::new();
     let process_id = ProcessId::new();
     let scope = sample_scope(invocation_id, "tenant1", "user1");
@@ -191,7 +192,7 @@ async fn process_host_await_process_fails_closed_for_unknown_or_other_scope_proc
     assert!(matches!(missing, ProcessError::UnknownProcess { process_id: id } if id == process_id));
 
     submit_capability_process(
-        &store,
+        store.as_ref(),
         process_start(process_id, invocation_id, scope.clone()),
     )
     .await
@@ -206,14 +207,16 @@ async fn process_host_await_process_fails_closed_for_unknown_or_other_scope_proc
 
 #[tokio::test]
 async fn process_host_subscribe_emits_initial_and_terminal_records() {
-    let store = in_mem_process_store();
-    let host = ProcessHost::new(&store).with_poll_interval(Duration::from_millis(5));
+    let (process_services, store) = process_services_and_runtime();
+    let host = process_services
+        .host()
+        .with_poll_interval(Duration::from_millis(5));
     let invocation_id = InvocationId::new();
     let process_id = ProcessId::new();
     let scope = sample_scope(invocation_id, "tenant1", "user1");
 
     submit_capability_process(
-        &store,
+        store.as_ref(),
         process_start(process_id, invocation_id, scope.clone()),
     )
     .await
@@ -223,7 +226,7 @@ async fn process_host_subscribe_emits_initial_and_terminal_records() {
     let initial = subscription.next().await.unwrap().unwrap();
     assert_eq!(initial.status, ProcessStatus::Running);
 
-    complete_capability_process(&store, &scope, process_id)
+    complete_capability_process(store.as_ref(), &scope, process_id)
         .await
         .unwrap();
 
@@ -265,14 +268,16 @@ async fn process_host_subscribe_tracks_background_completion() {
 
 #[tokio::test]
 async fn process_host_subscribe_closes_after_initial_terminal_record() {
-    let store = in_mem_process_store();
-    let host = ProcessHost::new(&store).with_poll_interval(Duration::from_millis(5));
+    let (process_services, store) = process_services_and_runtime();
+    let host = process_services
+        .host()
+        .with_poll_interval(Duration::from_millis(5));
     let invocation_id = InvocationId::new();
     let process_id = ProcessId::new();
     let scope = sample_scope(invocation_id, "tenant1", "user1");
 
     submit_capability_process(
-        &store,
+        store.as_ref(),
         process_start(process_id, invocation_id, scope.clone()),
     )
     .await
@@ -290,8 +295,8 @@ async fn process_host_subscribe_closes_after_initial_terminal_record() {
 
 #[tokio::test]
 async fn process_host_subscribe_fails_closed_for_unknown_or_other_scope_process() {
-    let store = in_mem_process_store();
-    let host = ProcessHost::new(&store);
+    let (process_services, store) = process_services_and_runtime();
+    let host = process_services.host();
     let invocation_id = InvocationId::new();
     let process_id = ProcessId::new();
     let scope = sample_scope(invocation_id, "tenant1", "user1");
@@ -305,7 +310,7 @@ async fn process_host_subscribe_fails_closed_for_unknown_or_other_scope_process(
     assert!(matches!(missing, ProcessError::UnknownProcess { process_id: id } if id == process_id));
 
     submit_capability_process(
-        &store,
+        store.as_ref(),
         process_start(process_id, invocation_id, scope.clone()),
     )
     .await
@@ -313,6 +318,12 @@ async fn process_host_subscribe_fails_closed_for_unknown_or_other_scope_process(
 
     let hidden = host.subscribe(&other_scope, process_id).await.unwrap_err();
     assert!(matches!(hidden, ProcessError::UnknownProcess { process_id: id } if id == process_id));
+}
+
+fn process_services_and_runtime() -> (ProcessServices, Arc<dyn ProcessRuntimePort>) {
+    let process_services = ProcessServices::in_memory();
+    let runtime = process_services.process_runtime();
+    (process_services, runtime)
 }
 
 /// The real `ProcessResultStore` over a [`FaultInjecting`] backend

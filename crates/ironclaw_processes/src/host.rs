@@ -1,8 +1,6 @@
 //! Host-facing process query API.
 //!
-//! [`ProcessHost`] wraps the authoritative [`ProcessRuntimePort`](crate::ProcessRuntimePort) and an
-//! optional [`ProcessResultStorePort`](crate::types::ProcessResultStorePort) and
-//! [`ProcessCancellationRegistry`](crate::cancellation::ProcessCancellationRegistry).
+//! [`ProcessHost`] wraps the unified [`ProcessServices`](crate::ProcessServices).
 //! It is the read/poll/await/cancel surface used by host runtimes; spawning
 //! processes lives in [`crate::services`].
 
@@ -12,36 +10,22 @@ use ironclaw_host_api::{ProcessId, ResourceScope};
 use serde_json::Value;
 use tokio::time::{Duration, sleep};
 
-use crate::cancellation::ProcessCancellationRegistry;
 use crate::capability_process::{map_process_journal_error, process_record_from_snapshot};
-use crate::types::{
-    ProcessError, ProcessExit, ProcessRecord, ProcessResultRecord, ProcessResultStorePort,
-    ProcessStatus,
-};
+use crate::services::ProcessServices;
+use crate::types::{ProcessError, ProcessExit, ProcessRecord, ProcessResultRecord, ProcessStatus};
 use crate::{GetProcessSnapshotRequest, KillProcessRequest, ProcessRuntimePort};
 
 /// Host-facing lifecycle API over process current state.
 pub struct ProcessHost {
-    runtime: Arc<dyn ProcessRuntimePort>,
+    process_services: ProcessServices,
     poll_interval: Duration,
-    cancellation_registry: Option<Arc<ProcessCancellationRegistry>>,
-    result_store: Option<Arc<dyn ProcessResultStorePort>>,
 }
 
 impl ProcessHost {
-    pub fn new<R>(runtime: &R) -> Self
-    where
-        R: ProcessRuntimePort + Clone + 'static,
-    {
-        Self::from_runtime(Arc::new(runtime.clone()))
-    }
-
-    pub fn from_runtime(runtime: Arc<dyn ProcessRuntimePort>) -> Self {
+    pub(crate) fn new(process_services: ProcessServices) -> Self {
         Self {
-            runtime,
+            process_services,
             poll_interval: Duration::from_millis(10),
-            cancellation_registry: None,
-            result_store: None,
         }
     }
 
@@ -50,40 +34,14 @@ impl ProcessHost {
         self
     }
 
-    pub fn with_cancellation_registry(
-        mut self,
-        registry: Arc<ProcessCancellationRegistry>,
-    ) -> Self {
-        self.cancellation_registry = Some(registry);
-        self
-    }
-
-    pub fn with_result_store<S>(mut self, store: Arc<S>) -> Self
-    where
-        S: ProcessResultStorePort + 'static,
-    {
-        self.result_store = Some(store);
-        self
-    }
-
-    pub fn with_result_store_dyn(mut self, store: Arc<dyn ProcessResultStorePort>) -> Self {
-        self.result_store = Some(store);
-        self
-    }
-
-    fn result_store(&self) -> Result<&dyn ProcessResultStorePort, ProcessError> {
-        self.result_store
-            .as_deref()
-            .ok_or(ProcessError::ProcessResultStoreUnavailable)
-    }
-
     async fn process_record(
         &self,
         scope: &ResourceScope,
         process_id: ProcessId,
     ) -> Result<Option<ProcessRecord>, ProcessError> {
         match self
-            .runtime
+            .process_services
+            .process_runtime()
             .get_process_snapshot(GetProcessSnapshotRequest {
                 scope: scope.clone(),
                 process_id,
@@ -112,7 +70,8 @@ impl ProcessHost {
         process_id: ProcessId,
     ) -> Result<ProcessRecord, ProcessError> {
         match self
-            .runtime
+            .process_services
+            .process_runtime()
             .kill_process(KillProcessRequest {
                 scope: scope.clone(),
                 process_id,
@@ -148,12 +107,13 @@ impl ProcessHost {
     }
 
     async fn record_kill_side_effects(&self, record: &ProcessRecord) -> Result<(), ProcessError> {
-        if let Some(registry) = &self.cancellation_registry {
-            registry.cancel(&record.scope, record.process_id);
-        }
-        if let Some(result_store) = &self.result_store {
-            result_store.kill(&record.scope, record.process_id).await?;
-        }
+        self.process_services
+            .cancellation_registry()
+            .cancel(&record.scope, record.process_id);
+        self.process_services
+            .result_store()
+            .kill(&record.scope, record.process_id)
+            .await?;
         Ok(())
     }
 
@@ -162,7 +122,10 @@ impl ProcessHost {
         scope: &ResourceScope,
         process_id: ProcessId,
     ) -> Result<Option<ProcessResultRecord>, ProcessError> {
-        self.result_store()?.get(scope, process_id).await
+        self.process_services
+            .result_store()
+            .get(scope, process_id)
+            .await
     }
 
     pub async fn output(
@@ -170,7 +133,10 @@ impl ProcessHost {
         scope: &ResourceScope,
         process_id: ProcessId,
     ) -> Result<Option<Value>, ProcessError> {
-        self.result_store()?.output(scope, process_id).await
+        self.process_services
+            .result_store()
+            .output(scope, process_id)
+            .await
     }
 
     pub async fn await_result(
@@ -188,7 +154,7 @@ impl ProcessHost {
                 .await?
                 .ok_or(ProcessError::UnknownProcess { process_id })?;
             if record.status.is_terminal() {
-                if self.result_store.is_none() || terminal_without_result_seen {
+                if terminal_without_result_seen {
                     return Err(ProcessError::ProcessResultUnavailable { process_id });
                 }
                 terminal_without_result_seen = true;
@@ -226,7 +192,7 @@ impl ProcessHost {
             .await?
             .ok_or(ProcessError::UnknownProcess { process_id })?;
         Ok(ProcessSubscription {
-            runtime: Arc::clone(&self.runtime),
+            runtime: self.process_services.process_runtime(),
             scope: scope.clone(),
             process_id,
             poll_interval: self.poll_interval,

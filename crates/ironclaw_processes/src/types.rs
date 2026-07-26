@@ -156,8 +156,6 @@ pub enum ProcessError {
         original: Box<ProcessError>,
         cleanup: ResourceError,
     },
-    #[error("process result store is not configured")]
-    ProcessResultStoreUnavailable,
     #[error("process result is unavailable for {process_id}")]
     ProcessResultUnavailable { process_id: ProcessId },
     #[error("invalid stored process record: {reason}")]

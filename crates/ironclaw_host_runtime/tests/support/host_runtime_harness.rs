@@ -994,6 +994,7 @@ pub(crate) struct SpawnObligationFixture {
     pub(crate) authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer>,
     pub(crate) handler: Arc<BuiltinObligationHandler>,
     pub(crate) process_manager: Arc<BackgroundProcessManager>,
+    pub(crate) process_services: ProcessServices,
     pub(crate) process_store: Arc<ProcessObligationLifecycleStore>,
     pub(crate) governor: Arc<InMemoryResourceGovernor>,
     pub(crate) context: ExecutionContext,
@@ -1127,7 +1128,7 @@ where
     let submission_lifecycle: Arc<dyn ironclaw_processes::ProcessSubmissionLifecycle> =
         process_store.clone();
     let process_manager = Arc::new(
-        BackgroundProcessManager::new(process_services, Arc::new(executor))
+        BackgroundProcessManager::new(process_services.clone(), Arc::new(executor))
             .with_submission_lifecycle(submission_lifecycle)
             .with_error_handler(move |failure| {
                 let reconcile = match failure.stage {
@@ -1155,6 +1156,7 @@ where
         authorizer,
         handler,
         process_manager,
+        process_services,
         process_store,
         governor,
         context,

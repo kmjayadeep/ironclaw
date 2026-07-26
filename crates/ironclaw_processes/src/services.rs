@@ -142,9 +142,7 @@ impl ProcessServices {
     }
 
     pub fn host(&self) -> ProcessHost {
-        ProcessHost::from_runtime(Arc::clone(&self.process_runtime))
-            .with_cancellation_registry(Arc::clone(&self.cancellation_registry))
-            .with_result_store_dyn(Arc::clone(&self.result_store))
+        ProcessHost::new(self.clone())
     }
 
     pub fn background_manager<E>(&self, executor: Arc<E>) -> BackgroundProcessManager

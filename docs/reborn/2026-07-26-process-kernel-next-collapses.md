@@ -232,7 +232,9 @@ and `DefaultHostRuntime` retains one optional `ProcessServices` field instead
 of decomposing it into three independently wired ports. Large result bodies
 remain externalized from journal rows, and cancellation tokens remain
 process-local execution coordination; neither concern leaks through
-host-runtime construction anymore.
+host-runtime construction anymore. `ProcessHost` is likewise created only by
+`ProcessServices`; its raw runtime/result/cancellation constructors and
+optional-store failure state are deleted.
 
 ## Recommended order
 

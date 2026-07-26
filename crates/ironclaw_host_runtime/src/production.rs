@@ -1279,7 +1279,6 @@ fn unavailable_from_process_error(error: ProcessError) -> HostRuntimeError {
         }
         ProcessError::Resource(_) => "process resource lifecycle failed",
         ProcessError::ResourceCleanupFailed { .. } => "process resource cleanup failed",
-        ProcessError::ProcessResultStoreUnavailable => "process result store unavailable",
         ProcessError::ProcessResultUnavailable { .. } => "process result unavailable",
         ProcessError::InvalidStoredRecord { .. } => "process stored record invalid",
         ProcessError::InvalidPath(_) => "process storage path invalid",
