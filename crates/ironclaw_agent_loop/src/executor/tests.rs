@@ -7105,6 +7105,51 @@ async fn stale_surface_batch_failure_is_recoverable() {
     );
 }
 
+/// Regression test for epic #6284 item 1: a caller-shaped capability port
+/// error (here `Unauthorized`, but any kind whose
+/// `capability_port_error_is_terminal` is false) returned from the batch
+/// dispatch must NOT end the run as `HostUnavailable { Capability }`.
+///
+/// Pre-fix (RED): every non-Cancelled port `Err` funneled through
+/// `capability_host_error` and killed the run. Post-fix (GREEN): the executor
+/// routes the error by `FailureKind::fate` — the model receives a tool-error
+/// observation (kind `authorization`) via `handle_capability_error`, the loop
+/// continues, and the scripted final reply completes the run.
+#[tokio::test]
+async fn recoverable_batch_port_error_surfaces_as_model_visible_tool_error() {
+    let host = MockHost::new(vec![provider_calls_response(), reply_response()])
+        .fail_batch_with(AgentLoopHostErrorKind::Unauthorized);
+    let executor = CanonicalAgentLoopExecutor;
+    let state = LoopExecutionState::initial_for_run(host.run_context());
+
+    let exit = executor
+        .execute_family(&crate::families::default(), &host, state)
+        .await
+        .expect(
+            "REGRESSION: an Unauthorized capability port error must not kill the run as \
+             HostUnavailable — it must surface to the model as a tool error",
+        );
+    assert!(
+        matches!(exit, LoopExit::Completed(_)),
+        "run must complete after the model observes the authorization tool error; got {exit:?}"
+    );
+
+    // The model saw the failure as a tool-error observation with the honest
+    // unified kind (Unauthorized -> Authorization), not a run-ending fault.
+    let appended = host.appended_result_refs();
+    let observation = appended
+        .iter()
+        .find_map(|request| request.model_observation.as_ref())
+        .expect("a tool-error observation must be appended for the failed call");
+    assert_eq!(observation.status, ToolObservationStatus::Error);
+    match &observation.detail {
+        ToolObservationDetail::GenericFailure { failure_kind, .. } => {
+            assert_eq!(*failure_kind, FailureKind::Authorization);
+        }
+        other => panic!("expected GenericFailure observation detail, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn non_stale_batch_failure_stays_terminal() {
     let host =

@@ -135,6 +135,39 @@ pub(super) fn model_error_class(error: &AgentLoopHostError) -> Option<ModelError
     }
 }
 
+/// Whether a capability-stage port `Err` is a genuine host fault that must end
+/// the run (`capability_host_error`), as opposed to a caller-shaped failure the
+/// model can recover from (surfaced as a tool error via
+/// `handle_capability_error`, routed by `FailureKind::fate`).
+///
+/// Exhaustive on purpose — a new port kind must decide its dispatch
+/// disposition here instead of inheriting a wildcard bucket. Terminal kinds
+/// are cancellation plus the Internal/Resource-shaped host faults (the host's
+/// own machinery failed: budget accounting, checkpointing, transcript,
+/// availability); everything else describes the *call*, which the model can
+/// route around.
+pub(super) fn capability_port_error_is_terminal(kind: AgentLoopHostErrorKind) -> bool {
+    match kind {
+        AgentLoopHostErrorKind::Cancelled
+        | AgentLoopHostErrorKind::Unavailable
+        | AgentLoopHostErrorKind::Internal
+        | AgentLoopHostErrorKind::BudgetExceeded
+        | AgentLoopHostErrorKind::BudgetApprovalRequired
+        | AgentLoopHostErrorKind::BudgetAccountingFailed
+        | AgentLoopHostErrorKind::CheckpointRejected
+        | AgentLoopHostErrorKind::TranscriptWriteFailed => true,
+        AgentLoopHostErrorKind::Unauthorized
+        | AgentLoopHostErrorKind::CredentialUnavailable
+        | AgentLoopHostErrorKind::ScopeMismatch
+        | AgentLoopHostErrorKind::StaleSurface
+        | AgentLoopHostErrorKind::InvalidInvocation
+        | AgentLoopHostErrorKind::Invalid
+        | AgentLoopHostErrorKind::InvalidOutput
+        | AgentLoopHostErrorKind::ContentFiltered
+        | AgentLoopHostErrorKind::PolicyDenied => false,
+    }
+}
+
 pub(super) fn capability_host_error(error: AgentLoopHostError) -> AgentLoopExecutorError {
     if error.kind == AgentLoopHostErrorKind::Cancelled {
         return AgentLoopExecutorError::Cancelled;

@@ -35,10 +35,10 @@ use super::{
     attach_failure_explanation, batch_policy_kind, cancelled_exit, capability_batch_counts,
     capability_call_signature, capability_error_failure_category, capability_host_error,
     capability_invocation_from_auth_resume_candidate, capability_invocation_from_candidate,
-    capability_is_visible, capability_summary, clear_matching_pending_auth_resume,
-    clear_matching_pending_external_tool_resume, failed_exit, honor_retry_alteration,
-    model_visible_capability_failure_observation, push_call_signature_once, push_completed_result,
-    sanitized_strategy_summary_or_fallback,
+    capability_is_visible, capability_port_error_is_terminal, capability_summary,
+    clear_matching_pending_auth_resume, clear_matching_pending_external_tool_resume, failed_exit,
+    honor_retry_alteration, model_visible_capability_failure_observation, push_call_signature_once,
+    push_completed_result, sanitized_strategy_summary_or_fallback,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -125,9 +125,15 @@ impl ExecutorStage<CapabilityInput> for CapabilityStage {
                 ),
                 diagnostic_ref: None,
             };
-            match self
-                .handle_capability_error(ctx, state, call, summary, None, &mut capability_batch)
-                .await?
+            match Box::pin(self.handle_capability_error(
+                ctx,
+                state,
+                call,
+                summary,
+                None,
+                &mut capability_batch,
+            ))
+            .await?
             {
                 BatchStep::Continue(next) => state = *next,
                 BatchStep::Exit(exit) => return Ok(TurnCompletedStep::Exit(exit)),
@@ -297,16 +303,51 @@ impl ExecutorStage<CapabilityInput> for CapabilityStage {
                         safe_summary: stale_summary.clone(),
                         diagnostic_ref: None,
                     };
-                    match self
-                        .handle_capability_error(
-                            ctx,
-                            state,
-                            call,
-                            summary,
-                            None,
-                            &mut capability_batch,
-                        )
-                        .await?
+                    match Box::pin(self.handle_capability_error(
+                        ctx,
+                        state,
+                        call,
+                        summary,
+                        None,
+                        &mut capability_batch,
+                    ))
+                    .await?
+                    {
+                        BatchStep::Continue(next) => state = *next,
+                        BatchStep::Exit(exit) => return Ok(TurnCompletedStep::Exit(exit)),
+                    }
+                }
+                return self
+                    .completed_turn(ctx, state, result_refs_start, capability_batch)
+                    .await;
+            }
+            // A caller-shaped port error (unauthorized, scope mismatch,
+            // invalid invocation, policy denied, ...) must not end the run:
+            // surface it to the model as a tool error for every call in the
+            // batch — mirroring the StaleSurface arm above — and let the
+            // recovery strategy route it by `FailureKind::fate`. Only genuine
+            // host faults keep the terminal `capability_host_error` path
+            // below.
+            Err(error) if !capability_port_error_is_terminal(error.kind) => {
+                let summary = capability_port_error_summary(&error);
+                let observation = capability_port_error_observation(&error);
+                for call in visible_calls {
+                    push_call_signature_once(&mut state, &mut signatures, &call)?;
+                    state
+                        .recent_failure_kinds
+                        .push(capability_error_to_failure_kind(summary.kind));
+                    // Boxed: this second inlined `handle_capability_error`
+                    // call site would otherwise grow the (already enormous)
+                    // executor future past the test-thread stack.
+                    match Box::pin(self.handle_capability_error(
+                        ctx,
+                        state,
+                        call,
+                        summary.clone(),
+                        Some(observation.clone()),
+                        &mut capability_batch,
+                    ))
+                    .await?
                     {
                         BatchStep::Continue(next) => state = *next,
                         BatchStep::Exit(exit) => return Ok(TurnCompletedStep::Exit(exit)),
@@ -480,6 +521,40 @@ impl ExecutorStage<CapabilityInput> for CapabilityStage {
     }
 }
 
+/// Strategy-visible summary for a capability-stage port `Err` whose kind is
+/// NOT a terminal host fault (`capability_port_error_is_terminal` == false).
+/// The kind projection is owned by `AgentLoopHostErrorKind::failure_kind`;
+/// the summary text fail-softs through `capability_failed_summary` (a summary
+/// that trips the strict validator degrades to a canned fallback instead of
+/// borking the run).
+fn capability_port_error_summary(
+    error: &ironclaw_turns::run_profile::AgentLoopHostError,
+) -> CapabilityErrorSummary {
+    let kind = error.kind.failure_kind();
+    CapabilityErrorSummary {
+        kind,
+        safe_summary: capability_failed_summary(kind, error.safe_summary.clone()),
+        diagnostic_ref: error.diagnostic_ref.clone(),
+    }
+}
+
+/// Model-visible observation for a recoverable capability-stage port `Err`.
+/// Carries the port error's secret-scrubbed `detail` (when present) so the
+/// model can retry or explain instead of guessing from the kind alone.
+fn capability_port_error_observation(
+    error: &ironclaw_turns::run_profile::AgentLoopHostError,
+) -> ModelVisibleToolObservation {
+    let failure = CapabilityFailure {
+        error_kind: error.kind.failure_kind(),
+        safe_summary: error.safe_summary.clone(),
+        detail: error
+            .detail
+            .clone()
+            .map(|text| CapabilityFailureDetail::Diagnostic { text }),
+    };
+    model_visible_capability_failure_observation(&failure)
+}
+
 fn capability_failed_summary(
     error_kind: FailureKind,
     safe_summary: String,
@@ -648,14 +723,14 @@ impl CapabilityStage {
                         ),
                         diagnostic_ref: None,
                     };
-                    self.handle_capability_error(
+                    Box::pin(self.handle_capability_error(
                         ctx,
                         state,
                         call,
                         summary,
                         model_observation,
                         capability_batch,
-                    )
+                    ))
                     .await
                 }
             },
@@ -676,8 +751,15 @@ impl CapabilityStage {
                     safe_summary: capability_denied_summary(reason, safe_summary),
                     diagnostic_ref: None,
                 };
-                self.handle_capability_error(ctx, state, call, summary, None, capability_batch)
-                    .await
+                Box::pin(self.handle_capability_error(
+                    ctx,
+                    state,
+                    call,
+                    summary,
+                    None,
+                    capability_batch,
+                ))
+                .await
             }
             Resolution::Blocked(Blocked::Approval(waypoint)) => {
                 let gate_ref = loop_gate_ref_from_origin(waypoint.origin.as_ref())?;
@@ -994,6 +1076,15 @@ impl CapabilityStage {
                             model_observation = None;
                             continue;
                         }
+                        // Caller-shaped port error on the retry dispatch:
+                        // re-enter the recovery loop with the new summary so
+                        // the strategy routes it by fate (mirrors the
+                        // StaleSurface arm above) instead of ending the run.
+                        Err(error) if !capability_port_error_is_terminal(error.kind) => {
+                            summary = capability_port_error_summary(&error);
+                            model_observation = Some(capability_port_error_observation(&error));
+                            continue;
+                        }
                         Err(error) => return Err(capability_host_error(error)),
                     };
                     match retry {
@@ -1210,16 +1301,15 @@ impl CapabilityStage {
                 safe_summary: SanitizedStrategySummary::from_trusted_static(planner_summary),
                 diagnostic_ref: None,
             };
-            match self
-                .handle_capability_error(
-                    ctx,
-                    state,
-                    call,
-                    summary,
-                    model_observation,
-                    capability_batch,
-                )
-                .await?
+            match Box::pin(self.handle_capability_error(
+                ctx,
+                state,
+                call,
+                summary,
+                model_observation,
+                capability_batch,
+            ))
+            .await?
             {
                 BatchStep::Continue(next) => state = *next,
                 BatchStep::Exit(exit) => {

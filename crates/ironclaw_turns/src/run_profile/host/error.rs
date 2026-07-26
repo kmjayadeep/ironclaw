@@ -65,6 +65,33 @@ impl AgentLoopHostErrorKind {
             Self::Internal => "internal",
         }
     }
+
+    /// Project this loop-host error kind onto the unified closed
+    /// [`ironclaw_host_api::FailureKind`] vocabulary. Exhaustive on purpose: a
+    /// new `AgentLoopHostErrorKind` variant must pick its honest failure kind
+    /// here instead of falling into a wildcard bucket. Decision sites ask
+    /// [`ironclaw_host_api::FailureKind::fate`] for the disposition.
+    pub fn failure_kind(self) -> ironclaw_host_api::FailureKind {
+        use ironclaw_host_api::FailureKind;
+        match self {
+            Self::Unauthorized => FailureKind::Authorization,
+            Self::CredentialUnavailable => FailureKind::AuthRequired,
+            Self::ScopeMismatch => FailureKind::Authorization,
+            Self::StaleSurface => FailureKind::StaleSurface,
+            Self::InvalidInvocation | Self::Invalid => FailureKind::InputEncode,
+            Self::InvalidOutput => FailureKind::OutputDecode,
+            Self::ContentFiltered => FailureKind::OperationFailed,
+            Self::PolicyDenied => FailureKind::PolicyDenied,
+            Self::BudgetExceeded | Self::BudgetApprovalRequired | Self::BudgetAccountingFailed => {
+                FailureKind::Resource
+            }
+            Self::Unavailable => FailureKind::Unavailable,
+            Self::Cancelled => FailureKind::Cancelled,
+            Self::CheckpointRejected | Self::TranscriptWriteFailed | Self::Internal => {
+                FailureKind::Internal
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

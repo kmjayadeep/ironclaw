@@ -2301,7 +2301,7 @@ impl HostRuntimeLoopCapabilityPort {
                     capability_id: requested_capability_id,
                     provider: None,
                     runtime: None,
-                    reason_kind: failure_kind_for_host_error_kind(host_error.kind),
+                    reason_kind: host_error.kind.failure_kind(),
                     safe_summary: None,
                 };
                 guard.commit();
@@ -2783,7 +2783,7 @@ impl HostRuntimeLoopCapabilityPort {
                     capability_id: requested_capability_id.clone(),
                     provider: Some(provider),
                     runtime: Some(runtime),
-                    reason_kind: failure_kind_for_host_error_kind(host_error.kind),
+                    reason_kind: host_error.kind.failure_kind(),
                     // Host/infra fault, not a model-visible tool error: keep the
                     // detail server-side, surface only the kind.
                     safe_summary: None,
@@ -3929,33 +3929,6 @@ fn capability_denied_reason_kind(
             "capability denied reason kind could not be represented",
         )
     })
-}
-
-/// Project a loop-host error kind onto the unified closed [`FailureKind`]
-/// vocabulary for terminal capability-failure milestones. Exhaustive on
-/// purpose: a new `AgentLoopHostErrorKind` variant must pick its honest
-/// failure kind here instead of falling into a wildcard bucket.
-fn failure_kind_for_host_error_kind(kind: AgentLoopHostErrorKind) -> FailureKind {
-    match kind {
-        AgentLoopHostErrorKind::Unauthorized => FailureKind::Authorization,
-        AgentLoopHostErrorKind::CredentialUnavailable => FailureKind::AuthRequired,
-        AgentLoopHostErrorKind::ScopeMismatch => FailureKind::Authorization,
-        AgentLoopHostErrorKind::StaleSurface => FailureKind::StaleSurface,
-        AgentLoopHostErrorKind::InvalidInvocation | AgentLoopHostErrorKind::Invalid => {
-            FailureKind::InputEncode
-        }
-        AgentLoopHostErrorKind::InvalidOutput => FailureKind::OutputDecode,
-        AgentLoopHostErrorKind::ContentFiltered => FailureKind::OperationFailed,
-        AgentLoopHostErrorKind::PolicyDenied => FailureKind::PolicyDenied,
-        AgentLoopHostErrorKind::BudgetExceeded
-        | AgentLoopHostErrorKind::BudgetApprovalRequired
-        | AgentLoopHostErrorKind::BudgetAccountingFailed => FailureKind::Resource,
-        AgentLoopHostErrorKind::Unavailable => FailureKind::Unavailable,
-        AgentLoopHostErrorKind::Cancelled => FailureKind::Cancelled,
-        AgentLoopHostErrorKind::CheckpointRejected
-        | AgentLoopHostErrorKind::TranscriptWriteFailed
-        | AgentLoopHostErrorKind::Internal => FailureKind::Internal,
-    }
 }
 
 fn runtime_safe_summary(message: Option<String>, fallback: &'static str) -> String {
