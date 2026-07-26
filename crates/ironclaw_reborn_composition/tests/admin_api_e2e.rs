@@ -111,7 +111,7 @@ impl WebuiAuthenticator for DualAuthenticator {
     }
 }
 
-fn local_dev_effective_policy() -> EffectiveRuntimePolicy {
+fn local_host_effective_policy() -> EffectiveRuntimePolicy {
     EffectiveRuntimePolicy {
         deployment: DeploymentMode::LocalSingleUser,
         requested_profile: RuntimeProfile::LocalHost,
@@ -140,7 +140,7 @@ async fn build_admin_harness() -> AdminHarness {
     let storage_root: PathBuf = root.path().join("local-dev");
     let build_input =
         ironclaw_reborn_composition::local_filesystem_build_input(OPERATOR_USER, storage_root)
-            .with_runtime_policy(local_dev_effective_policy());
+            .with_runtime_policy(local_host_effective_policy());
     build_admin_harness_from(root, build_input).await
 }
 

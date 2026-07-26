@@ -1201,7 +1201,7 @@ async fn local_dev_notion_mcp_installs_activates_and_reaches_auth_gate() {
             "local-dev-notion-mcp-owner",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_minimal_approval_policy()),
+        .with_runtime_policy(local_host_minimal_approval_policy()),
     )
     .await
     .expect("local-dev services build");
@@ -1281,7 +1281,7 @@ async fn local_dev_web_access_installs_activates_and_dispatches_through_host_run
             "local-dev-web-access-owner",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_minimal_approval_policy()),
+        .with_runtime_policy(local_host_minimal_approval_policy()),
     )
     .await
     .expect("local-dev services build");
@@ -2767,7 +2767,7 @@ fn notion_mcp_allowed_effects() -> Vec<EffectKind> {
     ]
 }
 
-fn local_dev_minimal_approval_policy() -> ironclaw_host_api::runtime_policy::EffectiveRuntimePolicy
+fn local_host_minimal_approval_policy() -> ironclaw_host_api::runtime_policy::EffectiveRuntimePolicy
 {
     let mut policy = crate::standalone_runtime_policy().expect("local-dev policy resolves");
     policy.requested_profile = ironclaw_host_api::runtime_policy::RuntimeProfile::LocalYolo;

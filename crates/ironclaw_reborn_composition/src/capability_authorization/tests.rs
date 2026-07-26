@@ -278,11 +278,11 @@ impl ironclaw_approvals::CapabilityPermissionOverrideStorePort
     }
 }
 
-async fn local_dev_shell_decision_with_authorizer(
+async fn local_host_shell_decision_with_authorizer(
     authorizer: &dyn TrustAwareCapabilityDispatchAuthorizer,
     scope_user: &UserId,
 ) -> ironclaw_host_api::Decision {
-    let (descriptor, context, trust_decision) = local_dev_shell_authorization_inputs(scope_user);
+    let (descriptor, context, trust_decision) = local_host_shell_authorization_inputs(scope_user);
     authorizer
         .authorize_dispatch_with_trust(
             &context,
@@ -293,15 +293,15 @@ async fn local_dev_shell_decision_with_authorizer(
         .await
 }
 
-/// `local_dev_shell_authorization_inputs` with the descriptor's manifest
+/// `local_host_shell_authorization_inputs` with the descriptor's manifest
 /// `default_permission` overridden, so a test can drive a manifest-ineligible
 /// tool (`PermissionMode::Deny`) through the real store-backed gate.
-fn local_dev_shell_authorization_inputs_with_permission(
+fn local_host_shell_authorization_inputs_with_permission(
     scope_user: &UserId,
     permission: PermissionMode,
 ) -> (CapabilityDescriptor, ExecutionContext, TrustDecision) {
     let (mut descriptor, context, trust_decision) =
-        local_dev_shell_authorization_inputs(scope_user);
+        local_host_shell_authorization_inputs(scope_user);
     descriptor.default_permission = permission;
     (descriptor, context, trust_decision)
 }
@@ -349,7 +349,7 @@ async fn seed_shell_tool_override(
         .expect("tool override set");
 }
 
-fn local_dev_shell_authorization_inputs(
+fn local_host_shell_authorization_inputs(
     scope_user: &UserId,
 ) -> (CapabilityDescriptor, ExecutionContext, TrustDecision) {
     let capability_id = CapabilityId::new("builtin.shell").expect("capability id");
@@ -573,7 +573,7 @@ async fn local_dev_authorizer_refreshes_approval_settings_on_next_invocation() {
             .expect("auto-approve setting update");
     }
 
-    let before = local_dev_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
+    let before = local_host_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
     assert!(
         matches!(before, ironclaw_host_api::Decision::RequireApproval { .. }),
         "local-dev shell dispatch should gate when global auto-approve is off, got {before:?}"
@@ -593,7 +593,7 @@ async fn local_dev_authorizer_refreshes_approval_settings_on_next_invocation() {
         .await
         .expect("auto-approve setting update");
 
-    let after = local_dev_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
+    let after = local_host_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
     assert!(
         matches!(after, ironclaw_host_api::Decision::Allow { .. }),
         "same authorizer should observe the store update on the next invocation, got {after:?}"
@@ -613,7 +613,7 @@ async fn local_dev_authorizer_observes_global_auto_approve_revocation_on_next_in
     let policy = Arc::new(builtin_capability_policy().expect("capability policy"));
     let authorizer = capability_authorizer(None, policy, settings);
 
-    let before = local_dev_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
+    let before = local_host_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
     assert!(
         matches!(before, ironclaw_host_api::Decision::Allow { .. }),
         "global auto-approve should initially allow the gated shell capability, got {before:?}"
@@ -633,7 +633,7 @@ async fn local_dev_authorizer_observes_global_auto_approve_revocation_on_next_in
         .await
         .expect("auto-approve setting update");
 
-    let after = local_dev_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
+    let after = local_host_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
     assert!(
         matches!(after, ironclaw_host_api::Decision::RequireApproval { .. }),
         "revoked global auto-approve must gate the next invocation, got {after:?}"
@@ -651,7 +651,7 @@ async fn local_dev_authorizer_caches_global_auto_approve_within_one_invocation()
     ));
     let policy = Arc::new(builtin_capability_policy().expect("capability policy"));
     let authorizer = capability_authorizer(None, policy, settings);
-    let (descriptor, context, trust_decision) = local_dev_shell_authorization_inputs(&user_id);
+    let (descriptor, context, trust_decision) = local_host_shell_authorization_inputs(&user_id);
 
     for _ in 0..2 {
         let decision = authorizer
@@ -675,7 +675,7 @@ async fn local_dev_authorizer_caches_global_auto_approve_within_one_invocation()
     );
 
     let (next_descriptor, next_context, next_trust_decision) =
-        local_dev_shell_authorization_inputs(&user_id);
+        local_host_shell_authorization_inputs(&user_id);
     let decision = authorizer
         .authorize_dispatch_with_trust(
             &next_context,
@@ -695,7 +695,7 @@ async fn local_dev_authorizer_caches_global_auto_approve_within_one_invocation()
     );
 
     let (expired_descriptor, expired_context, expired_trust_decision) =
-        local_dev_shell_authorization_inputs(&user_id);
+        local_host_shell_authorization_inputs(&user_id);
     let decision = authorizer
         .authorize_dispatch_with_trust(
             &expired_context,
@@ -728,7 +728,7 @@ async fn local_dev_authorizer_coalesces_concurrent_global_auto_approve_misses() 
     ));
     let policy = Arc::new(builtin_capability_policy().expect("capability policy"));
     let authorizer = capability_authorizer(None, policy, settings);
-    let (descriptor, context, trust_decision) = local_dev_shell_authorization_inputs(&user_id);
+    let (descriptor, context, trust_decision) = local_host_shell_authorization_inputs(&user_id);
 
     let mut handles = Vec::new();
     for _ in 0..32 {
@@ -926,7 +926,7 @@ async fn local_dev_authorizer_fails_closed_when_override_lookup_errors() {
     let policy = Arc::new(builtin_capability_policy().expect("capability policy"));
     let authorizer = capability_authorizer(None, policy, settings);
 
-    let decision = local_dev_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
+    let decision = local_host_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
     assert!(
         matches!(
             decision,
@@ -952,7 +952,7 @@ async fn per_tool_disabled_overrides_global_auto_approve_through_store() {
     let policy = Arc::new(builtin_capability_policy().expect("capability policy"));
     let authorizer = capability_authorizer(None, policy, settings);
 
-    let decision = local_dev_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
+    let decision = local_host_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
     assert!(
         matches!(decision, ironclaw_host_api::Decision::Deny { .. }),
         "a per-tool Disabled override must deny even with global auto-approve on, got {decision:?}"
@@ -975,7 +975,7 @@ async fn per_tool_ask_each_time_overrides_global_auto_approve_through_store() {
     let policy = Arc::new(builtin_capability_policy().expect("capability policy"));
     let authorizer = capability_authorizer(None, policy, settings);
 
-    let decision = local_dev_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
+    let decision = local_host_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
     assert!(
         matches!(
             decision,
@@ -1004,7 +1004,7 @@ async fn global_auto_approve_does_not_bypass_manifest_ineligible_tool_through_st
     // fix, exercised here through the real store-backed provider rather than
     // the unit-level stub).
     let (descriptor, context, trust_decision) =
-        local_dev_shell_authorization_inputs_with_permission(&user_id, PermissionMode::Deny);
+        local_host_shell_authorization_inputs_with_permission(&user_id, PermissionMode::Deny);
     let decision = authorizer
         .authorize_dispatch_with_trust(
             &context,

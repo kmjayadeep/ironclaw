@@ -165,7 +165,7 @@ impl RebornRuntimeStores {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn local_dev_storage_root_for_direct_test(&self) -> &PathBuf {
+    pub(crate) fn standalone_storage_root_for_direct_test(&self) -> &PathBuf {
         self.standalone_storage_root
             .as_ref()
             .expect("local runtime storage root")
@@ -498,7 +498,7 @@ impl RebornRuntimeStores {
     /// `open_standalone_outbound_preferences_store_for_test`). Returns `None` for
     /// production-profile compositions without a local-dev runtime.
     #[cfg(feature = "test-support")]
-    pub(crate) fn local_dev_storage_root_for_test(&self) -> Option<PathBuf> {
+    pub(crate) fn standalone_storage_root_for_test(&self) -> Option<PathBuf> {
         self.standalone_storage_root.clone()
     }
 

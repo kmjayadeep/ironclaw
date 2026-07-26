@@ -830,11 +830,11 @@ async fn local_dev_test_support_interaction_service_accessors_build_real_service
     let turn_coordinator = runtime.turn_coordinator_for_test();
 
     let approval_interaction_service = runtime
-        .local_dev_approval_interaction_service_for_test(turn_coordinator.clone())
+        .standalone_approval_interaction_service_for_test(turn_coordinator.clone())
         .expect("local-dev capability policy and grantee resolver should construct cleanly")
         .expect("local-dev runtime should support the approval interaction test accessor");
     let auth_interaction_service = runtime
-        .local_dev_auth_interaction_service_for_test(turn_coordinator)
+        .standalone_auth_interaction_service_for_test(turn_coordinator)
         .expect("local-dev runtime should support the auth interaction test accessor");
 
     let scope = TurnScope::new(
@@ -866,7 +866,7 @@ async fn local_dev_test_support_interaction_service_accessors_build_real_service
 }
 
 /// Delegates every `TurnCoordinator` method to `inner`, counting `resume_turn`
-/// calls. Proves `local_dev_approval_interaction_service_for_test` actually
+/// calls. Proves `standalone_approval_interaction_service_for_test` actually
 /// wires the *caller-supplied* coordinator into resolve/resume, not the
 /// runtime's own (henrypark133 review, PR #5654).
 struct SpyTurnCoordinator {
@@ -1063,7 +1063,7 @@ async fn local_dev_test_support_interaction_services_use_supplied_turn_coordinat
     let spy_dyn: Arc<dyn TurnCoordinator> = spy.clone();
 
     let approval_interaction_service = runtime
-        .local_dev_approval_interaction_service_for_test(spy_dyn)
+        .standalone_approval_interaction_service_for_test(spy_dyn)
         .expect("local-dev capability policy and grantee resolver should construct cleanly")
         .expect("local-dev runtime should support the approval interaction test accessor");
 

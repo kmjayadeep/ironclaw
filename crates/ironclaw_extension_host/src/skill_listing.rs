@@ -2,7 +2,8 @@ use std::collections::HashSet;
 
 use ironclaw_skills::{
     ManagedSkillSource, ScopedSkillManagementBuildError, ScopedSkillManagementError,
-    SkillManagementError, SkillManagementErrorKind, build_existing_local_dev_skill_management_port,
+    SkillManagementError, SkillManagementErrorKind,
+    build_existing_standalone_skill_management_port,
 };
 
 use crate::RebornBuildError;
@@ -13,7 +14,7 @@ pub async fn list_reborn_local_skills(
     standalone_storage_root: impl Into<std::path::PathBuf>,
 ) -> Result<Vec<ironclaw_skills::SkillSummary>, RebornSkillListError> {
     let mut skills =
-        match build_existing_local_dev_skill_management_port(owner_id, standalone_storage_root)? {
+        match build_existing_standalone_skill_management_port(owner_id, standalone_storage_root)? {
             Some(skill_management) => {
                 let scope = skill_management
                     .owner_scope()

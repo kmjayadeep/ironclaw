@@ -684,14 +684,14 @@ pub fn local_filesystem_build_input_with_profile(
     bindings
 }
 
-/// Resolved policy for the standalone local development runtime profile.
+/// Resolved policy for the standalone runtime profile.
 pub fn standalone_runtime_policy() -> Result<EffectiveRuntimePolicy, ResolveError> {
-    local_runtime_policy_for_local_dev_shape("local-dev")
+    local_host_runtime_policy_for_profile_label("local-dev")
 }
 
 /// Resolved policy for the hosted single-tenant local product surface.
 pub fn hosted_single_tenant_runtime_policy() -> Result<EffectiveRuntimePolicy, ResolveError> {
-    local_runtime_policy_for_local_dev_shape("hosted-single-tenant")
+    local_host_runtime_policy_for_profile_label("hosted-single-tenant")
 }
 
 /// Resolved policy for a hosted single-tenant preview backed by the local
@@ -744,7 +744,7 @@ fn local_runtime_policy(
         .ok_or(RebornRuntimeProfileError::MissingPolicyRequest { profile })
 }
 
-fn local_runtime_policy_for_local_dev_shape(
+fn local_host_runtime_policy_for_profile_label(
     profile_name: &'static str,
 ) -> Result<EffectiveRuntimePolicy, ResolveError> {
     local_runtime_policy(
@@ -754,7 +754,7 @@ fn local_runtime_policy_for_local_dev_shape(
     .map_err(|error| match error {
         RebornRuntimeProfileError::Policy(error) => error,
         RebornRuntimeProfileError::UnsupportedProfile { .. } => {
-            unreachable!("{profile_name} uses the local-dev runtime policy shape")
+            unreachable!("{profile_name} uses the local-host runtime policy shape")
         }
         RebornRuntimeProfileError::MissingPolicyRequest { .. } => {
             unreachable!("{profile_name} carries a runtime-policy request")

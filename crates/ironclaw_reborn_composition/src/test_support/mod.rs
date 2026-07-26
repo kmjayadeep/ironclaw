@@ -35,10 +35,10 @@
 //! 9. [`trace_capture`] — `trace_capture_turn_event_sink_for_test`, the
 //!    production `TraceCaptureTurnEventSink` factory for the integration-test
 //!    harness (C-TRACECAP seam).
-//! 10. [`automation`] — `local_dev_automation_product_service_for_test`, the
+//! 10. [`automation`] — `standalone_automation_product_service_for_test`, the
 //!     production `RebornAutomationProductService` constructor for the
 //!     automations-cold-LIST scenario (W5-WEBUI-API-1 Enabler B.2), plus
-//!     `local_dev_trigger_active_run_lookup_for_test` (the raw
+//!     `standalone_trigger_active_run_lookup_for_test` (the raw
 //!     `TriggerActiveRunLookup`, for wiring the `builtin.trigger_list`
 //!     capability directly rather than through the service, #5886).
 //! 11. [`projection`] — `build_product_event_stream_for_test`, a deliberately
@@ -82,8 +82,8 @@ mod user_profile;
 
 #[cfg(feature = "test-support")]
 pub use automation::{
-    local_dev_automation_product_service_for_test, local_dev_trigger_active_run_lookup_for_test,
-    rebind_local_dev_trigger_source_turn_state_for_test,
+    rebind_standalone_trigger_source_turn_state_for_test,
+    standalone_automation_product_service_for_test, standalone_trigger_active_run_lookup_for_test,
 };
 pub use budget_gateway::{
     BudgetTestGateway, FailingTestGateway, ScriptedReply, assistant_reply_without_text_for_test,

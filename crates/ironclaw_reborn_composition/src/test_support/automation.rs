@@ -20,7 +20,7 @@ use crate::turn_run_snapshot::TurnRunSnapshotSource;
 /// store backs the active-hold projection from the same run state the harness
 /// coordinator writes, mirroring production's automation-backing pair (#5886).
 #[cfg(feature = "test-support")]
-pub fn local_dev_automation_product_service_for_test<F>(
+pub fn standalone_automation_product_service_for_test<F>(
     trigger_repository: Arc<dyn TriggerRepository>,
     turn_state: Arc<TurnStateRowStore<F>>,
 ) -> Arc<dyn AutomationProductService>
@@ -46,7 +46,7 @@ where
 /// instead of through the WebUI automations service — see
 /// `HostRuntimeCapabilityHarness::install_trigger_active_run_lookup_for_test` (#5886).
 #[cfg(feature = "test-support")]
-pub fn local_dev_trigger_active_run_lookup_for_test<F>(
+pub fn standalone_trigger_active_run_lookup_for_test<F>(
     turn_state: Arc<TurnStateRowStore<F>>,
 ) -> Arc<dyn TriggerActiveRunLookup>
 where
@@ -62,7 +62,7 @@ where
 /// group coordinator owns its store, so production's single-store wiring must
 /// be late-bound for both active-run listing and trigger delivery inheritance.
 #[cfg(feature = "test-support")]
-pub fn rebind_local_dev_trigger_source_turn_state_for_test<F>(
+pub fn rebind_standalone_trigger_source_turn_state_for_test<F>(
     runtime: &crate::RebornRuntime,
     turn_state: Arc<TurnStateRowStore<F>>,
 ) -> Result<(), String>

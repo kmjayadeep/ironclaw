@@ -953,7 +953,7 @@ async fn local_dev_adapter_exposes_skill_install_provider_tool_schema_requires_s
                     Principal::User(user_id),
                     [SKILL_INSTALL_CAPABILITY_ID],
                     skill_install_effects.clone(),
-                    local_dev_network_policy(),
+                    local_host_network_policy(),
                 ))
                 .with_provider_trust_for_effects(
                     ExtensionId::new("builtin").unwrap(),
@@ -1835,7 +1835,7 @@ fn grant_for_principal_with_effects(
     }
 }
 
-fn local_dev_network_policy() -> NetworkPolicy {
+fn local_host_network_policy() -> NetworkPolicy {
     NetworkPolicy {
         allowed_targets: vec![NetworkTargetPattern {
             scheme: None,

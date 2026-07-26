@@ -64,7 +64,7 @@ pub async fn ensure_bundled_reborn_skills_installed(
     standalone_storage_root: &Path,
 ) -> Result<(), RebornBuildError> {
     let bundled_skills = embedded_reborn_skill_bundles()?;
-    let filesystem = local_dev_storage_filesystem(standalone_storage_root)?;
+    let filesystem = standalone_storage_filesystem(standalone_storage_root)?;
     let system_skills_root = system_skills_root_path()?;
     create_dir_all(&filesystem, &system_skills_root).await?;
     let install_lock = BundledSkillInstallLock::acquire(&filesystem, &system_skills_root).await?;
@@ -123,10 +123,10 @@ fn embedded_reborn_skill_bundles() -> Result<Vec<EmbeddedRebornSkillBundle>, Reb
     })
 }
 
-fn local_dev_storage_filesystem(
+fn standalone_storage_filesystem(
     standalone_storage_root: &Path,
 ) -> Result<DiskFilesystem, RebornBuildError> {
-    let storage_root = prepare_local_dev_storage_root(standalone_storage_root)?;
+    let storage_root = prepare_standalone_storage_root(standalone_storage_root)?;
     let mut filesystem = DiskFilesystem::new();
     filesystem
         .mount_local(
@@ -137,16 +137,16 @@ fn local_dev_storage_filesystem(
     Ok(filesystem)
 }
 
-fn prepare_local_dev_storage_root(
+fn prepare_standalone_storage_root(
     standalone_storage_root: &Path,
 ) -> Result<PathBuf, RebornBuildError> {
-    reject_existing_symlink(standalone_storage_root, "local-dev skill storage root")?;
+    reject_existing_symlink(standalone_storage_root, "standalone skill storage root")?;
     fs::create_dir_all(standalone_storage_root).map_err(invalid_config)?;
-    reject_existing_symlink(standalone_storage_root, "local-dev skill storage root")?;
+    reject_existing_symlink(standalone_storage_root, "standalone skill storage root")?;
     let metadata = fs::metadata(standalone_storage_root).map_err(invalid_config)?;
     if !metadata.is_dir() {
         return Err(invalid_config(format!(
-            "local-dev skill storage root is not a directory: {}",
+            "standalone skill storage root is not a directory: {}",
             standalone_storage_root.display()
         )));
     }

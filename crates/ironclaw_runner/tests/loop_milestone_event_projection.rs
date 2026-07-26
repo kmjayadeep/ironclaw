@@ -871,7 +871,7 @@ impl HostFixture {
                 max_messages: 8,
                 ..TextOnlyLoopHostConfig::default()
             },
-            InstructionSafetyContext::local_development_noop(),
+            InstructionSafetyContext::non_production_noop(),
         )
         .build_text_only_host(RebornLoopDriverHostRequest {
             claimed_run: self.claimed.clone(),

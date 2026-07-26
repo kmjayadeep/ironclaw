@@ -170,7 +170,7 @@ async fn confirmed_host_home_root_is_rejected_without_matching_policy() {
             "local-dev-host-owner",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_policy())
+        .with_runtime_policy(local_host_policy())
         .with_local_runtime_confirmed_host_home_root(host_home),
     )
     .await
@@ -222,7 +222,7 @@ fn local_yolo_policy() -> ironclaw_host_api::runtime_policy::EffectiveRuntimePol
     crate::standalone_unrestricted_runtime_policy(true).expect("local-yolo policy resolves") // safety: test-only helper in #[cfg(test)] module.
 }
 
-fn local_dev_policy() -> ironclaw_host_api::runtime_policy::EffectiveRuntimePolicy {
+fn local_host_policy() -> ironclaw_host_api::runtime_policy::EffectiveRuntimePolicy {
     crate::standalone_runtime_policy().expect("local-dev policy resolves") // safety: test-only helper in #[cfg(test)] module.
 }
 

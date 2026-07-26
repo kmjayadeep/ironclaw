@@ -119,7 +119,7 @@ async fn local_dev_extension_activate_accepts_manual_token_from_webui_gate_scope
 ///
 /// Drives ONLY the composition's public surface: `build_runtime_substrate` (the
 /// local-dev path always derives `nearai_mcp_host_managed_scope` from the
-/// boot owner — see `local_dev_nearai_mcp_owner_scope` in `factory.rs` — so no
+/// boot owner — see `standalone_nearai_mcp_owner_scope` in `factory.rs` — so no
 /// live NEAR AI config injection is needed to prove the wiring) and
 /// `RebornProductAuthServices`'s existing `pub(crate)`
 /// `runtime_credential_account_selection_service()` accessor (this test file

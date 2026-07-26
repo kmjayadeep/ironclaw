@@ -2358,7 +2358,7 @@ async fn turn_runner_worker_completes_after_libsql_turn_and_thread_services_reop
             max_messages: 8,
             require_model_route_snapshot: false,
         },
-        InstructionSafetyContext::local_development_noop(),
+        InstructionSafetyContext::non_production_noop(),
     );
     let mut registry = DriverRegistry::new();
     registry
@@ -2616,7 +2616,7 @@ async fn turn_runner_worker_full_reborn_fails_when_checkpoint_state_disk_is_full
             max_messages: 8,
             require_model_route_snapshot: false,
         },
-        InstructionSafetyContext::local_development_noop(),
+        InstructionSafetyContext::non_production_noop(),
     )
     .with_driver_requirements(driver_requirements_for(
         &descriptor,
@@ -2699,7 +2699,7 @@ async fn turn_runner_worker_full_reborn_retry_recovers_after_transient_checkpoin
             max_messages: 8,
             require_model_route_snapshot: false,
         },
-        InstructionSafetyContext::local_development_noop(),
+        InstructionSafetyContext::non_production_noop(),
     )
     .with_driver_requirements(driver_requirements_for(
         &descriptor,
@@ -3568,7 +3568,7 @@ async fn turn_runner_worker_fails_when_real_host_factory_rejects_claimed_scope()
             max_messages: 8,
             require_model_route_snapshot: false,
         },
-        InstructionSafetyContext::local_development_noop(),
+        InstructionSafetyContext::non_production_noop(),
     );
 
     let executor = Arc::new(RebornTurnRunExecutor::new(
@@ -5835,7 +5835,7 @@ async fn text_only_host_default_cancellation_factory_observes_durable_cancel_req
             max_messages: 8,
             require_model_route_snapshot: false,
         },
-        InstructionSafetyContext::local_development_noop(),
+        InstructionSafetyContext::non_production_noop(),
     );
 
     assert!(factory.cancellation_observation_kind().is_live_capable());
@@ -5870,7 +5870,7 @@ async fn text_only_host_factory_rejects_thread_scope_mismatch() {
             max_messages: 8,
             require_model_route_snapshot: false,
         },
-        InstructionSafetyContext::local_development_noop(),
+        InstructionSafetyContext::non_production_noop(),
     );
 
     let error = factory
@@ -8898,7 +8898,7 @@ impl HostFactory for CapabilityHostFactory {
                 max_messages: 8,
                 require_model_route_snapshot: false,
             },
-            InstructionSafetyContext::local_development_noop(),
+            InstructionSafetyContext::non_production_noop(),
         )
         .build_text_only_host_with_capabilities(
             RebornLoopDriverHostRequest {
@@ -9476,7 +9476,7 @@ impl HostFixture {
             loop_checkpoint_store,
             self.milestone_sink.clone(),
             config,
-            InstructionSafetyContext::local_development_noop(),
+            InstructionSafetyContext::non_production_noop(),
         )
     }
 

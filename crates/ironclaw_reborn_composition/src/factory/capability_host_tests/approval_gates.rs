@@ -36,7 +36,7 @@ async fn local_dev_ask_destructive_shell_invocation_blocks_then_resumes_with_one
             "local-dev-approval-owner",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_policy()),
+        .with_runtime_policy(local_host_policy()),
     )
     .await
     .expect("local-dev services build"); // safety: test-only local-dev fixture setup.
@@ -219,7 +219,7 @@ async fn local_dev_auto_approve_setting_update_skips_next_shell_gate() {
             "local-dev-auto-approve-owner",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_policy()),
+        .with_runtime_policy(local_host_policy()),
     )
     .await
     .expect("local-dev services build"); // safety: test-only local-dev fixture setup.
@@ -275,7 +275,7 @@ async fn local_dev_default_allow_echo_auto_approves_when_global_unset() {
             "local-dev-echo-default-on",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_policy()),
+        .with_runtime_policy(local_host_policy()),
     )
     .await
     .expect("local-dev services build"); // safety: test-only local-dev fixture setup.
@@ -316,7 +316,7 @@ async fn local_dev_default_allow_echo_asks_when_global_auto_approve_is_off() {
             "local-dev-echo-default-ask",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_policy()),
+        .with_runtime_policy(local_host_policy()),
     )
     .await
     .expect("local-dev services build");
@@ -359,7 +359,7 @@ async fn local_dev_ask_each_time_echo_approval_resume_uses_one_shot_lease() {
             "local-dev-echo-ask-resume",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_policy()),
+        .with_runtime_policy(local_host_policy()),
     )
     .await
     .expect("local-dev services build");
@@ -484,7 +484,7 @@ async fn local_dev_legacy_persistent_echo_grant_does_not_override_global_off() {
             "local-dev-echo-legacy-grant",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_policy()),
+        .with_runtime_policy(local_host_policy()),
     )
     .await
     .expect("local-dev services build");
@@ -548,7 +548,7 @@ async fn local_dev_settings_page_always_allow_echo_overrides_global_off() {
             "local-dev-echo-settings-allow",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_policy()),
+        .with_runtime_policy(local_host_policy()),
     )
     .await
     .expect("local-dev services build");
@@ -615,7 +615,7 @@ async fn local_dev_settings_page_always_allow_policy_skips_next_shell_gate() {
             "local-dev-settings-allow-owner",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_policy()),
+        .with_runtime_policy(local_host_policy()),
     )
     .await
     .expect("local-dev services build");
@@ -765,7 +765,7 @@ async fn local_dev_denied_shell_approval_does_not_issue_resume_lease() {
             "local-dev-deny-owner",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_policy()),
+        .with_runtime_policy(local_host_policy()),
     )
     .await
     .expect("local-dev services build");
@@ -961,13 +961,13 @@ fn echo_dispatch_lease_approval() -> LeaseApproval {
 }
 
 fn tenant_sandbox_process_policy() -> ironclaw_host_api::runtime_policy::EffectiveRuntimePolicy {
-    let mut policy = local_dev_policy();
+    let mut policy = local_host_policy();
     policy.process_backend = ironclaw_host_api::runtime_policy::ProcessBackendKind::TenantSandbox;
     policy
 }
 
 fn local_dev_minimal_policy() -> ironclaw_host_api::runtime_policy::EffectiveRuntimePolicy {
-    let mut policy = local_dev_policy();
+    let mut policy = local_host_policy();
     // Minimal is a profile-scoped bypass, so model the resolver's local-yolo
     // output instead of only overriding the approval enum.
     policy.requested_profile = ironclaw_host_api::runtime_policy::RuntimeProfile::LocalYolo;
@@ -978,7 +978,7 @@ fn local_dev_minimal_policy() -> ironclaw_host_api::runtime_policy::EffectiveRun
 
 fn local_dev_minimal_enterprise_policy() -> ironclaw_host_api::runtime_policy::EffectiveRuntimePolicy
 {
-    let mut policy = local_dev_policy();
+    let mut policy = local_host_policy();
     policy.resolved_profile =
         ironclaw_host_api::runtime_policy::RuntimeProfile::EnterpriseYoloDedicated;
     policy.approval_policy = ironclaw_host_api::runtime_policy::ApprovalPolicy::Minimal;
@@ -1081,7 +1081,7 @@ async fn local_dev_ask_destructive_spawn_capability_blocks_then_resumes() {
             "local-dev-spawn-approval-owner",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_policy()),
+        .with_runtime_policy(local_host_policy()),
     )
     .await
     .expect("local-dev services build"); // safety: test-only helper in #[cfg(test)] module.
@@ -1155,7 +1155,7 @@ async fn local_dev_ask_destructive_spawn_dispatch_only_capability_requires_appro
             "local-dev-echo-spawn-owner",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_policy()),
+        .with_runtime_policy(local_host_policy()),
     )
     .await
     .expect("local-dev services build"); // safety: test-only helper in #[cfg(test)] module.
@@ -1244,7 +1244,7 @@ async fn local_dev_ungranted_capability_returns_denied_not_approval_gate() {
             "local-dev-deny-owner",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_policy()),
+        .with_runtime_policy(local_host_policy()),
     )
     .await
     .expect("local-dev services build"); // safety: test-only helper in #[cfg(test)] module.
@@ -1279,7 +1279,7 @@ async fn local_dev_one_shot_lease_regates_on_second_invocation() {
             "local-dev-regate-owner",
             dir.path().join("local-dev"),
         )
-        .with_runtime_policy(local_dev_policy()),
+        .with_runtime_policy(local_host_policy()),
     )
     .await
     .expect("local-dev services build"); // safety: test-only helper in #[cfg(test)] module.

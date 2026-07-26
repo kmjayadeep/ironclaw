@@ -194,15 +194,15 @@ fn network_denied_runtime_policy() -> EffectiveRuntimePolicy {
     }
 }
 
-fn local_dev_builtin_visible_request() -> VisibleCapabilityRequest {
+fn local_host_builtin_visible_request() -> VisibleCapabilityRequest {
     let grants = CapabilitySet {
         grants: vec![
-            local_dev_grant("builtin.echo", vec![EffectKind::DispatchCapability]),
-            local_dev_grant(
+            local_host_grant("builtin.echo", vec![EffectKind::DispatchCapability]),
+            local_host_grant(
                 "builtin.http",
                 vec![EffectKind::DispatchCapability, EffectKind::Network],
             ),
-            local_dev_grant(
+            local_host_grant(
                 "builtin.http.save",
                 vec![
                     EffectKind::DispatchCapability,
@@ -256,7 +256,7 @@ fn production_builtin_visible_request() -> VisibleCapabilityRequest {
 fn production_process_capability_execution_context() -> ExecutionContext {
     let grants = CapabilitySet {
         grants: vec![
-            local_dev_grant(
+            local_host_grant(
                 SHELL_CAPABILITY_ID,
                 vec![
                     EffectKind::DispatchCapability,
@@ -267,7 +267,7 @@ fn production_process_capability_execution_context() -> ExecutionContext {
                     EffectKind::Network,
                 ],
             ),
-            local_dev_grant(
+            local_host_grant(
                 SPAWN_SUBAGENT_CAPABILITY_ID,
                 vec![EffectKind::DispatchCapability, EffectKind::SpawnProcess],
             ),
@@ -399,7 +399,7 @@ async fn assert_process_capabilities_unavailable_for_processless_runtime(
     );
 }
 
-fn local_dev_grant(capability: &str, allowed_effects: Vec<EffectKind>) -> CapabilityGrant {
+fn local_host_grant(capability: &str, allowed_effects: Vec<EffectKind>) -> CapabilityGrant {
     CapabilityGrant {
         id: CapabilityGrantId::new(),
         capability: CapabilityId::new(capability).unwrap(),
@@ -440,15 +440,15 @@ async fn invoke_trigger_management(
 fn trigger_management_execution_context() -> ExecutionContext {
     let grants = CapabilitySet {
         grants: vec![
-            local_dev_grant(
+            local_host_grant(
                 ironclaw_host_runtime::TRIGGER_CREATE_CAPABILITY_ID,
                 vec![EffectKind::DispatchCapability, EffectKind::ExternalWrite],
             ),
-            local_dev_grant(
+            local_host_grant(
                 ironclaw_host_runtime::TRIGGER_LIST_CAPABILITY_ID,
                 vec![EffectKind::DispatchCapability],
             ),
-            local_dev_grant(
+            local_host_grant(
                 ironclaw_host_runtime::TRIGGER_REMOVE_CAPABILITY_ID,
                 vec![EffectKind::DispatchCapability, EffectKind::ExternalWrite],
             ),
@@ -777,7 +777,7 @@ async fn local_dev_runtime_policy_exposes_http_capability() {
         .expect("local dev exposes host runtime");
 
     let surface = runtime
-        .visible_capabilities(local_dev_builtin_visible_request())
+        .visible_capabilities(local_host_builtin_visible_request())
         .await
         .unwrap();
     let visible_ids = surface
@@ -814,7 +814,7 @@ async fn local_dev_runtime_policy_hides_http_capability() {
         .expect("local dev exposes host runtime");
 
     let surface = runtime
-        .visible_capabilities(local_dev_builtin_visible_request())
+        .visible_capabilities(local_host_builtin_visible_request())
         .await
         .unwrap();
     let visible_ids = surface

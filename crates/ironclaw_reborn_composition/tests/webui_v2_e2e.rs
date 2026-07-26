@@ -108,7 +108,7 @@ impl WebuiAuthenticator for TwoUserTokens {
 
 // ─── runtime policy ───────────────────────────────────────────────────
 
-fn local_dev_effective_policy() -> EffectiveRuntimePolicy {
+fn local_host_effective_policy() -> EffectiveRuntimePolicy {
     // Mirrors the policy the in-mod runtime tests use. Avoids the
     // public `standalone_runtime_policy()` helper because that returns a
     // `ResolvedRuntimePolicy` shape; `RebornHostBindings::with_runtime_policy`
@@ -135,7 +135,7 @@ fn local_yolo_effective_policy() -> EffectiveRuntimePolicy {
         requested_profile: RuntimeProfile::LocalYolo,
         resolved_profile: RuntimeProfile::LocalYolo,
         approval_policy: ApprovalPolicy::Minimal,
-        ..local_dev_effective_policy()
+        ..local_host_effective_policy()
     }
 }
 
@@ -569,7 +569,7 @@ async fn build_harness() -> Harness {
 }
 
 async fn build_harness_with_gateway(gateway: Arc<dyn HostManagedModelGateway>) -> Harness {
-    build_harness_with_gateway_and_policy(gateway, local_dev_effective_policy()).await
+    build_harness_with_gateway_and_policy(gateway, local_host_effective_policy()).await
 }
 
 async fn build_harness_with_gateway_and_policy(
@@ -589,7 +589,7 @@ async fn build_harness_on_storage(storage_root: impl AsRef<Path>) -> Harness {
         storage_root.as_ref().to_path_buf(),
         None,
         Arc::new(ToolCallingGateway::with_sensitive_tool_message()),
-        local_dev_effective_policy(),
+        local_host_effective_policy(),
     )
     .await
 }
@@ -624,7 +624,7 @@ async fn build_harness_without_google_oauth_backend() -> Harness {
         storage_root,
         Some(root),
         Arc::new(ToolCallingGateway::default()),
-        local_dev_effective_policy(),
+        local_host_effective_policy(),
         USER,
         USER,
         None,
@@ -1276,7 +1276,7 @@ async fn webui_v2_timeline_persists_display_preview_under_authenticated_owner() 
         storage_root,
         Some(root),
         Arc::new(ToolCallingGateway::default()),
-        local_dev_effective_policy(),
+        local_host_effective_policy(),
         "e2e-runtime-owner",
         USER,
     )
@@ -1974,7 +1974,7 @@ mod operator_llm_config {
         let gateway = Arc::new(ToolCallingGateway::default());
         let input = RebornRuntimeInput::from_build_input(
             ironclaw_reborn_composition::local_filesystem_build_input(USER, storage_root)
-                .with_runtime_policy(local_dev_effective_policy())
+                .with_runtime_policy(local_host_effective_policy())
                 .with_bundled_first_party_for_test(),
         )
         .with_identity(RebornRuntimeIdentity {
@@ -2165,7 +2165,7 @@ async fn wait_for_assistant_reply(router: &axum::Router, thread_id: &str, needle
 async fn webui_filesystem_memory_mount_is_scoped_to_authenticated_user() {
     let harness = build_two_user_harness(
         Arc::new(MemoryWriteGateway::default()),
-        local_dev_effective_policy(),
+        local_host_effective_policy(),
     )
     .await;
     let router = &harness.router;

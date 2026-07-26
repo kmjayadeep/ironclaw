@@ -57,7 +57,7 @@ impl RebornRuntime {
     ///
     /// For tests only -- gated behind `test-support`, ships zero bytes in production builds.
     #[cfg(feature = "test-support")]
-    pub fn local_dev_approval_interaction_service_for_test(
+    pub fn standalone_approval_interaction_service_for_test(
         &self,
         turn_coordinator: Arc<dyn TurnCoordinator>,
     ) -> Result<Option<Arc<dyn ApprovalInteractionService>>, RebornRuntimeError> {
@@ -76,7 +76,7 @@ impl RebornRuntime {
     ///
     /// For tests only -- gated behind `test-support`, ships zero bytes in production builds.
     #[cfg(feature = "test-support")]
-    pub fn local_dev_auth_interaction_service_for_test(
+    pub fn standalone_auth_interaction_service_for_test(
         &self,
         turn_coordinator: Arc<dyn TurnCoordinator>,
     ) -> Option<Arc<dyn AuthInteractionService>> {
@@ -87,7 +87,7 @@ impl RebornRuntime {
         ))
     }
 
-    /// Like [`local_dev_approval_interaction_service_for_test`], but lets
+    /// Like [`standalone_approval_interaction_service_for_test`], but lets
     /// the caller substitute the turn-run snapshot source the interaction
     /// service's approval locator reads from — for harnesses whose real runs
     /// live in a DIFFERENT `TurnStateStore` composition than this
@@ -101,9 +101,9 @@ impl RebornRuntime {
     /// For tests only -- gated behind `test-support`, ships zero bytes in
     /// production builds.
     ///
-    /// [`local_dev_approval_interaction_service_for_test`]: Self::local_dev_approval_interaction_service_for_test
+    /// [`standalone_approval_interaction_service_for_test`]: Self::standalone_approval_interaction_service_for_test
     #[cfg(feature = "test-support")]
-    pub fn local_dev_approval_interaction_service_with_turn_state_for_test<F>(
+    pub fn standalone_approval_interaction_service_with_turn_state_for_test<F>(
         &self,
         turn_coordinator: Arc<dyn TurnCoordinator>,
         turn_state: Arc<ironclaw_turns::TurnStateRowStore<F>>,
@@ -123,13 +123,13 @@ impl RebornRuntime {
     }
 
     /// Auth-side counterpart of
-    /// [`local_dev_approval_interaction_service_with_turn_state_for_test`]. See
+    /// [`standalone_approval_interaction_service_with_turn_state_for_test`]. See
     /// that method's doc for why the turn-state override exists.
     ///
     /// For tests only -- gated behind `test-support`, ships zero bytes in
     /// production builds.
     ///
-    /// [`local_dev_approval_interaction_service_with_turn_state_for_test`]: Self::local_dev_approval_interaction_service_with_turn_state_for_test
+    /// [`standalone_approval_interaction_service_with_turn_state_for_test`]: Self::standalone_approval_interaction_service_with_turn_state_for_test
     #[cfg(feature = "test-support")]
     pub fn local_dev_auth_interaction_service_with_turn_state_for_test<F>(
         &self,

@@ -896,7 +896,7 @@ impl RegistryPersistentApprovalGranteeResolver {
 }
 
 /// Shared local-dev `DefaultApprovalInteractionService` wiring recipe. Used by both
-/// `build_reborn_runtime` and `test_support::local_dev_approval_interaction_service_for_test`
+/// `build_reborn_runtime` and `test_support::standalone_approval_interaction_service_for_test`
 /// so the two never drift (W5-WEBUI-API-2 follow-up). `audit_sink` is `None` from the
 /// test accessor: production wires one for audit-log observability only, not
 /// correctness the test needs. Propagates policy/resolver construction failures

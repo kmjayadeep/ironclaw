@@ -894,7 +894,7 @@ impl RebornProductAuthServices {
     /// silently start failing the moment any caller clones the `Arc` first).
     ///
     /// `scope` must be the process's own boot-time owner scope (composition
-    /// derives it from `local_dev_nearai_mcp_owner_scope`), never a
+    /// derives it from `standalone_nearai_mcp_owner_scope`), never a
     /// per-request, per-thread, or per-user scope — the fallback selector
     /// reuses it as the credential lookup target for every matching SSO
     /// caller. This rejects a mission/thread-scoped value as a fail-closed
@@ -1850,7 +1850,7 @@ impl RebornProductAuthServices {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn local_dev_in_memory(
+    pub fn in_memory_for_test(
         continuation_dispatcher: Arc<dyn RebornAuthContinuationDispatcher>,
     ) -> Self {
         let services = Arc::new(crate::InMemoryAuthProductServices::new());

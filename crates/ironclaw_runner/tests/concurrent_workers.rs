@@ -629,7 +629,7 @@ async fn scheduler_executor_two_runs_concurrently() {
                 max_messages: 8,
                 require_model_route_snapshot: false,
             },
-            InstructionSafetyContext::local_development_noop(),
+            InstructionSafetyContext::non_production_noop(),
         )
         .with_identity_context_source(
             Arc::new(EmptyIdentityContextSource) as Arc<dyn HostIdentityContextSource>
@@ -908,7 +908,7 @@ async fn scheduler_executor_applies_loop_exit_end_to_end() {
                 max_messages: 8,
                 require_model_route_snapshot: false,
             },
-            InstructionSafetyContext::local_development_noop(),
+            InstructionSafetyContext::non_production_noop(),
         )
         .with_identity_context_source(
             Arc::new(EmptyIdentityContextSource) as Arc<dyn HostIdentityContextSource>

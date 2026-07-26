@@ -1158,7 +1158,7 @@ impl Fixture {
                 max_messages: 8,
                 require_model_route_snapshot: false,
             },
-            InstructionSafetyContext::local_development_noop(),
+            InstructionSafetyContext::non_production_noop(),
         )
     }
 

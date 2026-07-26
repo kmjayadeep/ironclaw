@@ -162,7 +162,7 @@ mod tests {
         .expect("enabling global auto-approve should succeed");
     }
 
-    fn local_dev_minimal_approval_policy()
+    fn local_host_minimal_approval_policy()
     -> ironclaw_host_api::runtime_policy::EffectiveRuntimePolicy {
         let mut policy = crate::standalone_runtime_policy().expect("local-dev policy resolves");
         policy.requested_profile = ironclaw_host_api::runtime_policy::RuntimeProfile::LocalYolo;
@@ -501,7 +501,7 @@ mod tests {
                 "extension-remove-generic-unpair-tool-copy",
                 dir.path().join("local-dev"),
             )
-            .with_runtime_policy(local_dev_minimal_approval_policy()),
+            .with_runtime_policy(local_host_minimal_approval_policy()),
         )
         .await
         .expect("local-dev services build");
@@ -625,7 +625,7 @@ mod tests {
                 owner,
                 dir.path().join("local-dev"),
             )
-            .with_runtime_policy(local_dev_minimal_approval_policy())
+            .with_runtime_policy(local_host_minimal_approval_policy())
             .with_vendor_oauth_client(ironclaw_auth::GOOGLE_PROVIDER_ID, google_oauth_backend),
         )
         .await
@@ -2057,15 +2057,15 @@ mod tests {
         assert!(capability_ids.contains(&SHELL_CAPABILITY_ID));
         assert!(capability_ids.contains(&HTTP_CAPABILITY_ID));
         assert!(capability_ids.contains(&HTTP_SAVE_CAPABILITY_ID));
-        let local_dev_allowed_effects = vec![
+        let local_host_allowed_effects = vec![
             EffectKind::DispatchCapability,
             EffectKind::ReadFilesystem,
             EffectKind::WriteFilesystem,
         ];
-        let local_dev_shell_network_policy =
+        let local_host_shell_network_policy =
             crate::builtin_capability_policy::dev_wildcard_network_policy();
         assert_eq!(
-            local_dev_allowed_effects,
+            local_host_allowed_effects,
             vec![
                 EffectKind::DispatchCapability,
                 EffectKind::ReadFilesystem,
@@ -2147,7 +2147,7 @@ mod tests {
         assert!(shell_grant.constraints.mounts.mounts.is_empty());
         assert_eq!(
             shell_grant.constraints.network,
-            local_dev_shell_network_policy
+            local_host_shell_network_policy
         );
 
         let http_grant = grant_for(HTTP_CAPABILITY_ID);
@@ -2158,7 +2158,7 @@ mod tests {
         assert!(http_grant.constraints.mounts.mounts.is_empty());
         assert_eq!(
             http_grant.constraints.network,
-            local_dev_shell_network_policy
+            local_host_shell_network_policy
         );
 
         let http_save_grant = grant_for(HTTP_SAVE_CAPABILITY_ID);
@@ -2173,7 +2173,7 @@ mod tests {
         assert_eq!(http_save_grant.constraints.mounts, workspace_mounts);
         assert_eq!(
             http_save_grant.constraints.network,
-            local_dev_shell_network_policy
+            local_host_shell_network_policy
         );
 
         let memory_write_grant = grant_for(MEMORY_WRITE_CAPABILITY_ID);
@@ -2208,7 +2208,7 @@ mod tests {
         let extension_remove_grant = grant_for(EXTENSION_REMOVE_CAPABILITY_ID);
         assert_eq!(
             extension_remove_grant.constraints.allowed_effects,
-            local_dev_allowed_effects
+            local_host_allowed_effects
         );
         assert_eq!(
             extension_remove_grant.constraints.mounts,
@@ -2255,7 +2255,7 @@ mod tests {
         let read_file_grant = grant_for(READ_FILE_CAPABILITY_ID);
         assert_eq!(
             read_file_grant.constraints.allowed_effects,
-            local_dev_allowed_effects
+            local_host_allowed_effects
         );
         assert_eq!(read_file_grant.constraints.mounts, workspace_mounts);
         assert_eq!(
@@ -2277,7 +2277,7 @@ mod tests {
         assert_eq!(skill_install_grant.constraints.mounts, skill_mounts);
         assert_eq!(
             skill_install_grant.constraints.network,
-            local_dev_shell_network_policy
+            local_host_shell_network_policy
         );
 
         let skill_update_grant = grant_for(SKILL_UPDATE_CAPABILITY_ID);
@@ -4499,7 +4499,7 @@ mod tests {
                 "local-yolo-outbound-delivery-owner",
                 dir.path().join("local-dev"),
             )
-            .with_runtime_policy(local_dev_minimal_approval_policy()),
+            .with_runtime_policy(local_host_minimal_approval_policy()),
         )
         .await
         .expect("local-dev-yolo services build");
@@ -5056,7 +5056,7 @@ mod tests {
                 "local-dev-skill-port-owner",
                 storage_root.clone(),
             )
-            .with_runtime_policy(local_dev_minimal_approval_policy()),
+            .with_runtime_policy(local_host_minimal_approval_policy()),
         )
         .await
         .expect("local-dev services build"); // safety: test-only assertion in #[cfg(test)] module.
@@ -5603,7 +5603,7 @@ mod tests {
                 "local-dev-mid-response-owner",
                 storage_root,
             )
-            .with_runtime_policy(local_dev_minimal_approval_policy()),
+            .with_runtime_policy(local_host_minimal_approval_policy()),
         )
         .await
         .expect("local-dev services build");
