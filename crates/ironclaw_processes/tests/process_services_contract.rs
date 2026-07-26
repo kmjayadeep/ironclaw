@@ -38,9 +38,7 @@ async fn process_services_wire_background_results_to_host() {
         Some(json!({"ok": true}))
     );
     assert_eq!(
-        services
-            .process_store()
-            .get(&scope, process_id)
+        capability_process_record(services.process_runtime().as_ref(), &scope, process_id)
             .await
             .unwrap()
             .unwrap()
@@ -55,11 +53,12 @@ async fn background_manager_recovers_queued_processes_present_at_startup() {
     let invocation_id = InvocationId::new();
     let process_id = ProcessId::new();
     let scope = sample_scope(invocation_id, "tenant1", "user1");
-    services
-        .process_store()
-        .start(process_start(process_id, invocation_id, scope.clone()))
-        .await
-        .unwrap();
+    submit_capability_process(
+        services.process_runtime().as_ref(),
+        process_start(process_id, invocation_id, scope.clone()),
+    )
+    .await
+    .unwrap();
 
     let _manager = services.background_manager(Arc::new(SuccessExecutor));
     let host = services.host().with_poll_interval(Duration::from_millis(5));
@@ -175,9 +174,7 @@ async fn background_manager_passes_spawn_mounts_and_reservation_to_executor() {
     assert_eq!(reservation.scope, request.scope);
     assert_eq!(reservation.estimate, estimate);
     assert_eq!(
-        services
-            .process_store()
-            .get(&scope, process_id)
+        capability_process_record(services.process_runtime().as_ref(), &scope, process_id)
             .await
             .unwrap()
             .expect("process record must be persisted")

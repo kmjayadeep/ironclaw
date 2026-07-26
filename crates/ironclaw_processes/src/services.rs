@@ -1,9 +1,9 @@
 //! Composition + spawn surface for process services.
 //!
-//! - [`ProcessServices`] bundles a process store, a result store, and a
+//! - [`ProcessServices`] bundles a process runtime, a result store, and a
 //!   shared [`ProcessCancellationRegistry`] so the host and background manager
 //!   stay coordinated through a single graph.
-//! - [`BackgroundProcessManager`] is the compatibility [`ProcessManager`] that
+//! - [`BackgroundProcessManager`] is the capability [`ProcessManager`] that
 //!   journals capability work and registers its executor with the generic
 //!   [`ProcessSupervisor`].
 //!
@@ -23,29 +23,29 @@ use ironclaw_filesystem::{RootFilesystem, ScopedFilesystem};
 use ironclaw_host_api::{ProcessId, ResourceReservation, ResourceScope};
 
 use crate::cancellation::ProcessCancellationRegistry;
-use crate::compatibility::{
+use crate::capability_process::{
     capability_process_record, complete_capability_process, fail_capability_process,
 };
 use crate::host::ProcessHost;
 use crate::result_store::ProcessResultStore;
 use crate::types::{
     ProcessError, ProcessExecutionRequest, ProcessExecutor, ProcessManager, ProcessRecord,
-    ProcessResultStorePort, ProcessStart, ProcessStatus, ProcessStorePort,
+    ProcessResultStorePort, ProcessStart, ProcessStatus, ProcessSubmissionLifecycle,
 };
 use crate::{
     ClaimedProcess, GetProcessInputRequest, JournalProcessExecutor, ProcessExecutorFailure,
     ProcessJournalStore, ProcessKind, ProcessRuntimePort, ProcessSupervisor,
-    ProcessSupervisorConfig, ProcessSupervisorHandle,
+    ProcessSupervisorConfig, ProcessSupervisorHandle, submit_capability_process,
 };
 
 /// Stage at which a background task failed to persist state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackgroundFailureStage {
-    /// `ProcessStorePort::get` failed during the post-execution status probe.
+    /// Process snapshot lookup failed during the post-execution status probe.
     StoreLookup,
-    /// `ProcessStorePort::complete` failed when promoting to `Completed`.
+    /// Journal completion failed when promoting to `Completed`.
     StoreComplete,
-    /// `ProcessStorePort::fail` failed when promoting to `Failed`.
+    /// Journal failure recording failed when promoting to `Failed`.
     StoreFail,
     /// `ProcessResultStorePort::complete` failed.
     ResultStoreComplete,
@@ -71,7 +71,7 @@ pub struct BackgroundFailure {
 pub type BackgroundErrorHandler = dyn Fn(BackgroundFailure) + Send + Sync;
 
 pub struct ProcessServices {
-    process_store: Arc<dyn ProcessStorePort>,
+    process_runtime: Arc<dyn ProcessRuntimePort>,
     result_store: Arc<dyn ProcessResultStorePort>,
     process_store_type: (&'static str, TypeId),
     result_store_type: (&'static str, TypeId),
@@ -81,7 +81,7 @@ pub struct ProcessServices {
 impl Clone for ProcessServices {
     fn clone(&self) -> Self {
         Self {
-            process_store: Arc::clone(&self.process_store),
+            process_runtime: Arc::clone(&self.process_runtime),
             result_store: Arc::clone(&self.result_store),
             process_store_type: self.process_store_type,
             result_store_type: self.result_store_type,
@@ -91,29 +91,29 @@ impl Clone for ProcessServices {
 }
 
 impl ProcessServices {
-    pub fn new<S, R>(process_store: Arc<S>, result_store: Arc<R>) -> Self
+    pub fn new<S, R>(process_runtime: Arc<S>, result_store: Arc<R>) -> Self
     where
-        S: ProcessStorePort + 'static,
+        S: ProcessRuntimePort + 'static,
         R: ProcessResultStorePort + 'static,
     {
         Self::from_parts(
-            process_store,
+            process_runtime,
             result_store,
             Arc::new(ProcessCancellationRegistry::new()),
         )
     }
 
     pub fn from_parts<S, R>(
-        process_store: Arc<S>,
+        process_runtime: Arc<S>,
         result_store: Arc<R>,
         cancellation_registry: Arc<ProcessCancellationRegistry>,
     ) -> Self
     where
-        S: ProcessStorePort + 'static,
+        S: ProcessRuntimePort + 'static,
         R: ProcessResultStorePort + 'static,
     {
         Self {
-            process_store,
+            process_runtime,
             result_store,
             process_store_type: (type_name::<S>(), TypeId::of::<S>()),
             result_store_type: (type_name::<R>(), TypeId::of::<R>()),
@@ -121,8 +121,8 @@ impl ProcessServices {
         }
     }
 
-    pub fn process_store(&self) -> Arc<dyn ProcessStorePort> {
-        Arc::clone(&self.process_store)
+    pub fn process_runtime(&self) -> Arc<dyn ProcessRuntimePort> {
+        Arc::clone(&self.process_runtime)
     }
 
     pub fn result_store(&self) -> Arc<dyn ProcessResultStorePort> {
@@ -142,7 +142,7 @@ impl ProcessServices {
     }
 
     pub fn host(&self) -> ProcessHost {
-        ProcessHost::from_runtime(self.process_store.process_runtime())
+        ProcessHost::from_runtime(Arc::clone(&self.process_runtime))
             .with_cancellation_registry(Arc::clone(&self.cancellation_registry))
             .with_result_store_dyn(Arc::clone(&self.result_store))
     }
@@ -151,7 +151,7 @@ impl ProcessServices {
     where
         E: ProcessExecutor + 'static,
     {
-        BackgroundProcessManager::new_dyn(Arc::clone(&self.process_store), executor)
+        BackgroundProcessManager::new_dyn(Arc::clone(&self.process_runtime), executor)
             .with_cancellation_registry(Arc::clone(&self.cancellation_registry))
             .with_result_store_dyn(Arc::clone(&self.result_store))
             .start_supervisor()
@@ -180,8 +180,9 @@ impl ProcessServices {
 }
 
 pub struct BackgroundProcessManager {
-    store: Arc<dyn ProcessStorePort>,
+    runtime: Arc<dyn ProcessRuntimePort>,
     executor: Arc<dyn ProcessExecutor + 'static>,
+    submission_lifecycle: Option<Arc<dyn ProcessSubmissionLifecycle>>,
     cancellation_registry: Option<Arc<ProcessCancellationRegistry>>,
     result_store: Option<Arc<dyn ProcessResultStorePort>>,
     error_handler: Option<Arc<BackgroundErrorHandler>>,
@@ -189,26 +190,35 @@ pub struct BackgroundProcessManager {
 }
 
 impl BackgroundProcessManager {
-    pub fn new<S, E>(store: Arc<S>, executor: Arc<E>) -> Self
+    pub fn new<S, E>(runtime: Arc<S>, executor: Arc<E>) -> Self
     where
-        S: ProcessStorePort + 'static,
+        S: ProcessRuntimePort + 'static,
         E: ProcessExecutor + 'static,
     {
-        Self::new_dyn(store, executor)
+        Self::new_dyn(runtime, executor)
     }
 
-    pub fn new_dyn<E>(store: Arc<dyn ProcessStorePort>, executor: Arc<E>) -> Self
+    pub fn new_dyn<E>(runtime: Arc<dyn ProcessRuntimePort>, executor: Arc<E>) -> Self
     where
         E: ProcessExecutor + 'static,
     {
         Self {
-            store,
+            runtime,
             executor,
+            submission_lifecycle: None,
             cancellation_registry: None,
             result_store: None,
             error_handler: None,
             supervisor: Mutex::new(None),
         }
+    }
+
+    pub fn with_submission_lifecycle(
+        mut self,
+        lifecycle: Arc<dyn ProcessSubmissionLifecycle>,
+    ) -> Self {
+        self.submission_lifecycle = Some(lifecycle);
+        self
     }
 
     pub fn with_cancellation_registry(
@@ -257,7 +267,7 @@ impl BackgroundProcessManager {
                     reason: "process supervisor mutex poisoned".to_string(),
                 })?;
         if supervisor.is_none() {
-            let runtime = self.store.process_runtime();
+            let runtime = Arc::clone(&self.runtime);
             let executor = Arc::new(BackgroundJournalExecutor {
                 runtime: Arc::clone(&runtime),
                 executor: Arc::clone(&self.executor),
@@ -288,7 +298,27 @@ impl BackgroundProcessManager {
 impl ProcessManager for BackgroundProcessManager {
     /// Journal the request, then wake the shared process supervisor.
     async fn spawn(&self, start: ProcessStart) -> Result<ProcessRecord, ProcessError> {
-        let record = self.store.start(start).await?;
+        if let Some(lifecycle) = &self.submission_lifecycle {
+            lifecycle.before_submit(&start).await?;
+        }
+        let record = match submit_capability_process(self.runtime.as_ref(), start.clone()).await {
+            Ok(record) => record,
+            Err(error) => {
+                if let Some(lifecycle) = &self.submission_lifecycle
+                    && let Err(cleanup_error) = lifecycle.submit_failed(&start).await
+                {
+                    return Err(ProcessError::InvalidStoredRecord {
+                        reason: format!(
+                            "process submit failed: {error}; lifecycle cleanup failed: {cleanup_error}"
+                        ),
+                    });
+                }
+                return Err(error);
+            }
+        };
+        if let Some(lifecycle) = &self.submission_lifecycle {
+            lifecycle.submitted(&record).await?;
+        }
         if let Some(registry) = &self.cancellation_registry {
             registry.register(&record.scope, record.process_id);
         }
@@ -351,7 +381,7 @@ impl BackgroundJournalExecutor {
                 scope: scope.clone(),
             })
             .await
-            .map_err(crate::compatibility::map_journal_error)?
+            .map_err(crate::capability_process::map_process_journal_error)?
             .ok_or_else(|| ProcessError::InvalidStoredRecord {
                 reason: format!("process {process_id} has no durable input"),
             })

@@ -574,7 +574,7 @@ fn production_wiring_components_keep_host_runtime_stable_names() {
         ProductionWiringComponent::TrustPolicy,
         ProductionWiringComponent::Filesystem,
         ProductionWiringComponent::ResourceGovernor,
-        ProductionWiringComponent::ProcessStorePort,
+        ProductionWiringComponent::ProcessRuntimePort,
         ProductionWiringComponent::ProcessResultStorePort,
         ProductionWiringComponent::InvocationState,
         ProductionWiringComponent::ApprovalRequests,

@@ -44,7 +44,7 @@ use ironclaw_processes::{
     BackgroundProcessManager, ProcessError, ProcessHost, ProcessInvocationError,
     ProcessInvocationRecord, ProcessInvocationStart, ProcessInvocationStatePort,
     ProcessInvocationStatus, ProcessJournalStore, ProcessManager, ProcessResultStore,
-    ProcessRuntimePort, ProcessStatus, ProcessStorePort,
+    ProcessRuntimePort, ProcessStatus, capability_process_record, submit_capability_process,
 };
 use ironclaw_reborn_event_store::{
     RebornEventStoreConfig, RebornEventStoreError, RebornProfile, build_reborn_event_stores,
@@ -235,7 +235,7 @@ async fn production_wiring_validation_rejects_missing_components_and_local_only_
     );
     assert!(
         report.contains(
-            ProductionWiringComponent::ProcessStorePort,
+            ProductionWiringComponent::ProcessRuntimePort,
             ProductionWiringIssueKind::LocalOnlyImplementation
         ),
         "in-memory process store should be reported as local-only: {report:?}"
@@ -417,7 +417,7 @@ async fn with_filesystem_resource_governor_closes_process_reservations_on_cancel
         mounts,
     ));
     let process_services = ironclaw_processes::in_memory_backed_process_services();
-    let process_store = process_services.process_store();
+    let process_runtime = process_services.process_runtime();
 
     let services = HostRuntimeServices::new(
         Arc::new(registry_with_manifest(SCRIPT_MANIFEST)),
@@ -446,7 +446,9 @@ async fn with_filesystem_resource_governor_closes_process_reservations_on_cancel
     let mut start = process_start(process_id, scope.invocation_id, scope.clone());
     start.estimated_resources = estimate;
     start.resource_reservation_id = Some(reservation_id);
-    process_store.start(start).await.unwrap();
+    submit_capability_process(process_runtime.as_ref(), start)
+        .await
+        .unwrap();
 
     let runtime = services.host_runtime_for_local_testing();
     let outcome = runtime
@@ -2299,15 +2301,21 @@ async fn process_lifecycle_projects_through_durable_replay_without_output_leaks(
     );
     let process_store =
         Arc::new(obligation_services.process_obligation_lifecycle_store(inner_process_store));
+    process_store
+        .register_journal_observer(process_store.process_runtime().as_ref())
+        .unwrap();
     let durable_event_log: Arc<dyn DurableEventLog> = event_log.clone();
     process_store.set_event_sink(Arc::new(DurableEventSink::new(durable_event_log)));
     let result_store = Arc::new(ProcessResultStore::new(processes_filesystem));
-    let manager = BackgroundProcessManager::new(
-        Arc::clone(&process_store),
+    let submission_lifecycle: Arc<dyn ironclaw_processes::ProcessSubmissionLifecycle> =
+        process_store.clone();
+    let manager = BackgroundProcessManager::new_dyn(
+        process_store.process_runtime(),
         Arc::new(BackgroundExecutor::success_with_output(json!({
             "result": "PROCESS_OUTPUT_SENTINEL_3022 /tmp/process-output-private"
         }))),
     )
+    .with_submission_lifecycle(submission_lifecycle)
     .with_result_store(Arc::clone(&result_store));
     let process_id = ProcessId::new();
     let invocation_id = InvocationId::new();
@@ -2325,8 +2333,8 @@ async fn process_lifecycle_projects_through_durable_replay_without_output_leaks(
     )
     .await;
 
-    let host =
-        ProcessHost::new(process_store.as_ref()).with_result_store(Arc::clone(&result_store));
+    let host = ProcessHost::from_runtime(process_store.process_runtime())
+        .with_result_store(Arc::clone(&result_store));
     let output = host
         .output(&scope, process.process_id)
         .await
@@ -2409,7 +2417,7 @@ async fn process_lifecycle_projects_through_durable_replay_without_output_leaks(
 async fn host_runtime_services_cancel_projects_kill_event_from_configured_event_sink() {
     let event_log = Arc::new(InMemoryDurableEventLog::new());
     let process_services = ironclaw_processes::in_memory_backed_process_services();
-    let process_store = process_services.process_store();
+    let process_runtime = process_services.process_runtime();
     let result_store = process_services.result_store();
     let runtime = HostRuntimeServices::new(
         Arc::new(registry_with_manifest(SCRIPT_MANIFEST)),
@@ -2428,7 +2436,9 @@ async fn host_runtime_services_cancel_projects_kill_event_from_configured_event_
     start.input = json!({
         "message": "KILL_PROCESS_INPUT_SENTINEL_3022 /tmp/process-kill-private"
     });
-    process_store.start(start).await.unwrap();
+    submit_capability_process(process_runtime.as_ref(), start)
+        .await
+        .unwrap();
 
     let outcome = runtime
         .cancel_work(CancelRuntimeWorkRequest::new(
@@ -3302,7 +3312,7 @@ async fn host_runtime_services_resume_spawn_rejects_changed_actor_before_input_a
     let approval_requests = Arc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
     let capability_leases = Arc::new(in_memory_backed_capability_lease_store());
     let process_services = ironclaw_processes::in_memory_backed_process_services();
-    let process_store = process_services.process_store();
+    let process_runtime = process_services.process_runtime();
     let sandbox_executor = Arc::new(RecordingSandboxProcessExecutor::default());
     let services = HostRuntimeServices::new(
         Arc::new(registry_with_host_bundled_manifest(
@@ -3394,8 +3404,8 @@ async fn host_runtime_services_resume_spawn_rejects_changed_actor_before_input_a
         );
         assert!(sandbox_executor.requests().is_empty());
         assert!(
-            process_store
-                .records_for_scope(&scope)
+            process_runtime
+                .process_snapshots(&scope)
                 .await
                 .unwrap()
                 .is_empty(),
@@ -3443,8 +3453,8 @@ async fn host_runtime_services_resume_spawn_rejects_changed_actor_before_input_a
     .await;
     assert!(sandbox_executor.requests().is_empty());
     assert!(
-        process_store
-            .records_for_scope(&scope)
+        process_runtime
+            .process_snapshots(&scope)
             .await
             .unwrap()
             .is_empty()
@@ -5460,7 +5470,7 @@ async fn host_runtime_services_wasm_input_encode_releases_prepared_reservation()
 #[tokio::test]
 async fn host_runtime_services_cancel_and_status_share_process_result_and_cancellation_graph() {
     let process_services = ironclaw_processes::in_memory_backed_process_services();
-    let process_store = process_services.process_store();
+    let process_runtime = process_services.process_runtime();
     let result_store = process_services.result_store();
     let cancellation_registry = process_services.cancellation_registry();
     let registry = Arc::new(registry_with_manifest(SCRIPT_MANIFEST));
@@ -5477,10 +5487,12 @@ async fn host_runtime_services_cancel_and_status_share_process_result_and_cancel
     let process_id = ProcessId::new();
     let scope = sample_scope(invocation_id);
     let token = cancellation_registry.register(&scope, process_id);
-    process_store
-        .start(process_start(process_id, invocation_id, scope.clone()))
-        .await
-        .unwrap();
+    submit_capability_process(
+        process_runtime.as_ref(),
+        process_start(process_id, invocation_id, scope.clone()),
+    )
+    .await
+    .unwrap();
 
     let status = runtime
         .runtime_status(RuntimeStatusRequest::new(
@@ -5513,7 +5525,7 @@ async fn host_runtime_services_cancel_and_status_share_process_result_and_cancel
 #[tokio::test]
 async fn host_runtime_services_cancel_writes_killed_result_when_reservation_is_stale() {
     let process_services = ironclaw_processes::in_memory_backed_process_services();
-    let process_store = process_services.process_store();
+    let process_runtime = process_services.process_runtime();
     let result_store = process_services.result_store();
     let cancellation_registry = process_services.cancellation_registry();
     let registry = Arc::new(registry_with_manifest(SCRIPT_MANIFEST));
@@ -5533,7 +5545,9 @@ async fn host_runtime_services_cancel_writes_killed_result_when_reservation_is_s
     let token = cancellation_registry.register(&scope, process_id);
     let mut start = process_start(process_id, invocation_id, scope.clone());
     start.resource_reservation_id = Some(stale_reservation_id);
-    process_store.start(start).await.unwrap();
+    submit_capability_process(process_runtime.as_ref(), start)
+        .await
+        .unwrap();
 
     let outcome = runtime
         .cancel_work(CancelRuntimeWorkRequest::new(
@@ -5546,8 +5560,7 @@ async fn host_runtime_services_cancel_writes_killed_result_when_reservation_is_s
 
     assert_eq!(outcome.cancelled, vec![RuntimeWorkId::Process(process_id)]);
     assert!(token.is_cancelled());
-    let record = process_store
-        .get(&scope, process_id)
+    let record = capability_process_record(process_runtime.as_ref(), &scope, process_id)
         .await
         .unwrap()
         .unwrap();
@@ -5559,7 +5572,7 @@ async fn host_runtime_services_cancel_writes_killed_result_when_reservation_is_s
 #[tokio::test]
 async fn host_runtime_services_cancel_records_kill_side_effects_when_cleanup_fails() {
     let process_services = ironclaw_processes::in_memory_backed_process_services();
-    let process_store = process_services.process_store();
+    let process_runtime = process_services.process_runtime();
     let result_store = process_services.result_store();
     let cancellation_registry = process_services.cancellation_registry();
     let registry = Arc::new(registry_with_manifest(SCRIPT_MANIFEST));
@@ -5578,7 +5591,9 @@ async fn host_runtime_services_cancel_records_kill_side_effects_when_cleanup_fai
     let token = cancellation_registry.register(&scope, process_id);
     let mut start = process_start(process_id, invocation_id, scope.clone());
     start.resource_reservation_id = Some(ResourceReservationId::new());
-    process_store.start(start).await.unwrap();
+    submit_capability_process(process_runtime.as_ref(), start)
+        .await
+        .unwrap();
 
     let _error = runtime
         .cancel_work(CancelRuntimeWorkRequest::new(
@@ -5593,8 +5608,7 @@ async fn host_runtime_services_cancel_records_kill_side_effects_when_cleanup_fai
         token.is_cancelled(),
         "cleanup errors after terminalization must not skip cooperative cancellation"
     );
-    let record = process_store
-        .get(&scope, process_id)
+    let record = capability_process_record(process_runtime.as_ref(), &scope, process_id)
         .await
         .unwrap()
         .unwrap();
@@ -5678,7 +5692,7 @@ async fn spawned_obligation_lifecycle_releases_resources_and_discards_handoffs_o
     .await;
 
     let process = fixture.spawn().await;
-    let host = ProcessHost::new(fixture.process_store.as_ref());
+    let host = ProcessHost::from_runtime(fixture.process_store.process_runtime());
     host.kill(&fixture.scope, process.process_id).await.unwrap();
 
     assert!(matches!(
@@ -5722,7 +5736,9 @@ async fn process_obligation_lifecycle_cleans_record_started_before_wrapper_exist
     let mut start = process_start(process_id, invocation_id, scope.clone());
     start.estimated_resources = estimate;
     start.resource_reservation_id = Some(reservation_id);
-    inner_store.start(start).await.unwrap();
+    submit_capability_process(inner_store.as_ref(), start)
+        .await
+        .unwrap();
 
     let lifecycle_store = obligation_services.process_obligation_lifecycle_store(inner_store);
     lifecycle_store.kill(&scope, process_id).await.unwrap();
@@ -5757,10 +5773,12 @@ async fn process_obligation_lifecycle_cleans_legacy_handoffs_without_resource_re
     )
     .await;
     let process_id = ProcessId::new();
-    inner_store
-        .start(process_start(process_id, invocation_id, scope.clone()))
-        .await
-        .unwrap();
+    submit_capability_process(
+        inner_store.as_ref(),
+        process_start(process_id, invocation_id, scope.clone()),
+    )
+    .await
+    .unwrap();
 
     let lifecycle_store = obligation_services.process_obligation_lifecycle_store(inner_store);
     lifecycle_store.kill(&scope, process_id).await.unwrap();

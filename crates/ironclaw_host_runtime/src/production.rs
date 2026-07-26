@@ -41,8 +41,9 @@ use ironclaw_process_sandbox::{
 };
 use ironclaw_processes::{
     ProcessCancellationRegistry, ProcessError, ProcessHost, ProcessInvocationError,
-    ProcessInvocationStatePort, ProcessInvocationStatus, ProcessManager, ProcessResultStorePort,
-    ProcessStart, ProcessStatus, ProcessStorePort,
+    ProcessInvocationStatePort, ProcessInvocationStatus, ProcessKind, ProcessManager,
+    ProcessResultStorePort, ProcessRuntimePort, ProcessStart, ProcessStatus,
+    map_process_journal_error, process_record_from_snapshot,
 };
 use ironclaw_secrets::SecretStorePort;
 use ironclaw_trust::{HostTrustPolicy, TrustPolicy};
@@ -122,7 +123,7 @@ pub struct DefaultHostRuntime {
     persistent_approval_policies: Option<Arc<dyn PersistentApprovalPolicyStorePort>>,
     process_manager: Option<Arc<dyn ProcessManager>>,
     // arch-exempt: optional_arc, process stores are absent unless process execution is wired, plan #4539
-    process_store: Option<Arc<dyn ProcessStorePort>>,
+    process_runtime: Option<Arc<dyn ProcessRuntimePort>>,
     // arch-exempt: optional_arc, process stores are absent unless process execution is wired, plan #4539
     process_result_store: Option<Arc<dyn ProcessResultStorePort>>,
     process_cancellation_registry: Option<Arc<ProcessCancellationRegistry>>,
@@ -198,7 +199,7 @@ impl DefaultHostRuntime {
             capability_leases: None,
             persistent_approval_policies: None,
             process_manager: None,
-            process_store: None,
+            process_runtime: None,
             process_result_store: None,
             process_cancellation_registry: None,
             surface_filesystem: None,
@@ -285,10 +286,8 @@ impl DefaultHostRuntime {
         self
     }
 
-    /// Attaches the process store used for status and cancellation fanout.
-    // arch-exempt: optional_arc, process stores are absent unless process execution is wired, plan #4539
-    pub fn with_process_store(mut self, process_store: Arc<dyn ProcessStorePort>) -> Self {
-        self.process_store = Some(process_store);
+    pub fn with_process_runtime(mut self, process_runtime: Arc<dyn ProcessRuntimePort>) -> Self {
+        self.process_runtime = Some(process_runtime);
         self
     }
 
@@ -817,12 +816,11 @@ impl HostRuntime for DefaultHostRuntime {
         let mut outcome = CancelRuntimeWorkOutcome::default();
         let mut process_invocations = Vec::new();
 
-        if let Some(process_store) = &self.process_store {
-            let records = process_store
-                .records_for_scope(&request.scope)
+        if let Some(process_runtime) = &self.process_runtime {
+            let records = capability_process_records(process_runtime.as_ref(), &request.scope)
                 .await
                 .map_err(unavailable_from_process_error)?;
-            let mut process_host = ProcessHost::new(process_store.as_ref());
+            let mut process_host = ProcessHost::from_runtime(Arc::clone(process_runtime));
             if let Some(registry) = &self.process_cancellation_registry {
                 process_host = process_host.with_cancellation_registry(Arc::clone(registry));
             }
@@ -901,9 +899,8 @@ impl HostRuntime for DefaultHostRuntime {
             );
         }
 
-        if let Some(process_store) = &self.process_store {
-            let records = process_store
-                .records_for_scope(&request.scope)
+        if let Some(process_runtime) = &self.process_runtime {
+            let records = capability_process_records(process_runtime.as_ref(), &request.scope)
                 .await
                 .map_err(unavailable_from_process_error)?;
             let mut process_invocations = Vec::new();
@@ -1322,6 +1319,20 @@ fn unavailable_from_process_error(error: ProcessError) -> HostRuntimeError {
         ProcessError::Deserialization(_) => "process deserialization failed",
     };
     HostRuntimeError::unavailable(reason)
+}
+
+async fn capability_process_records(
+    processes: &dyn ProcessRuntimePort,
+    scope: &ResourceScope,
+) -> Result<Vec<ironclaw_processes::ProcessRecord>, ProcessError> {
+    processes
+        .process_snapshots(scope)
+        .await
+        .map_err(map_process_journal_error)?
+        .into_iter()
+        .filter(|snapshot| snapshot.process_kind == ProcessKind::CapabilityInvocation)
+        .map(process_record_from_snapshot)
+        .collect()
 }
 
 fn required_runtime_backends(registry: &ExtensionRegistry) -> Vec<RuntimeKind> {

@@ -34,7 +34,8 @@ use ironclaw_host_runtime::{
 use ironclaw_processes::{
     ProcessCancellationRegistry, ProcessInvocationError, ProcessInvocationRecord,
     ProcessInvocationStart, ProcessInvocationStatePort, ProcessJournalStore, ProcessResultStore,
-    ProcessResultStorePort, ProcessStart, ProcessStatus, ProcessStorePort,
+    ProcessResultStorePort, ProcessRuntimePort, ProcessStart, ProcessStatus,
+    capability_process_record, submit_capability_process,
 };
 use ironclaw_trust::{
     AdminConfig, AdminEntry, AuthorityCeiling, EffectiveTrustClass, HostTrustAssignment,
@@ -487,7 +488,7 @@ async fn default_runtime_status_redacts_process_filesystem_errors() {
     )])
     .unwrap();
     let scoped = Arc::new(ScopedFilesystem::with_fixed_view(backend, mounts));
-    let process_store: Arc<dyn ProcessStorePort> = Arc::new(ProcessJournalStore::new(scoped));
+    let process_store: Arc<dyn ProcessRuntimePort> = Arc::new(ProcessJournalStore::new(scoped));
     let runtime = DefaultHostRuntime::new(
         registry,
         dispatcher,
@@ -495,7 +496,7 @@ async fn default_runtime_status_redacts_process_filesystem_errors() {
         CapabilitySurfaceVersion::new("surface-v1").unwrap(),
         local_test_runtime_policy(),
     )
-    .with_process_store(process_store);
+    .with_process_runtime(process_store);
 
     let context = execution_context_with_dispatch_grant();
     let error = runtime
@@ -789,13 +790,12 @@ async fn default_runtime_cancel_kills_running_processes_and_cancels_tokens() {
         CapabilitySurfaceVersion::new("surface-v1").unwrap(),
         local_test_runtime_policy(),
     )
-    .with_process_store(process_store.clone())
+    .with_process_runtime(process_store.clone())
     .with_process_cancellation_registry(cancellation_registry.clone());
 
     let context = execution_context_with_dispatch_grant();
     let process_id = ProcessId::new();
-    process_store
-        .start(process_start(&context, process_id))
+    submit_capability_process(process_store.as_ref(), process_start(&context, process_id))
         .await
         .unwrap();
     let cancellation_token = cancellation_registry.register(&context.resource_scope, process_id);
@@ -813,11 +813,11 @@ async fn default_runtime_cancel_kills_running_processes_and_cancels_tokens() {
     assert!(outcome.already_terminal.is_empty());
     assert!(outcome.unsupported.is_empty());
     assert!(cancellation_token.is_cancelled());
-    let record = process_store
-        .get(&context.resource_scope, process_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let record =
+        capability_process_record(process_store.as_ref(), &context.resource_scope, process_id)
+            .await
+            .unwrap()
+            .unwrap();
     assert_eq!(record.status, ProcessStatus::Killed);
 }
 
@@ -859,12 +859,11 @@ async fn default_runtime_status_includes_running_processes_from_process_store() 
         CapabilitySurfaceVersion::new("surface-v1").unwrap(),
         local_test_runtime_policy(),
     )
-    .with_process_store(process_store.clone());
+    .with_process_runtime(process_store.clone());
 
     let context = execution_context_with_dispatch_grant();
     let process_id = ProcessId::new();
-    process_store
-        .start(process_start(&context, process_id))
+    submit_capability_process(process_store.as_ref(), process_start(&context, process_id))
         .await
         .unwrap();
 
@@ -901,14 +900,13 @@ async fn default_runtime_cancel_writes_killed_process_result_record() {
         CapabilitySurfaceVersion::new("surface-v1").unwrap(),
         local_test_runtime_policy(),
     )
-    .with_process_store(process_store.clone())
+    .with_process_runtime(process_store.clone())
     .with_process_result_store(result_store.clone())
     .with_process_cancellation_registry(cancellation_registry.clone());
 
     let context = execution_context_with_dispatch_grant();
     let process_id = ProcessId::new();
-    process_store
-        .start(process_start(&context, process_id))
+    submit_capability_process(process_store.as_ref(), process_start(&context, process_id))
         .await
         .unwrap();
     cancellation_registry.register(&context.resource_scope, process_id);
@@ -949,7 +947,7 @@ async fn default_runtime_status_does_not_duplicate_process_backed_invocations() 
         local_test_runtime_policy(),
     )
     .with_invocation_state(run_state.clone())
-    .with_process_store(process_store.clone());
+    .with_process_runtime(process_store.clone());
 
     let context = execution_context_with_dispatch_grant();
     let process_id = ProcessId::new();
@@ -962,8 +960,7 @@ async fn default_runtime_status_does_not_duplicate_process_backed_invocations() 
         })
         .await
         .unwrap();
-    process_store
-        .start(process_start(&context, process_id))
+    submit_capability_process(process_store.as_ref(), process_start(&context, process_id))
         .await
         .unwrap();
 

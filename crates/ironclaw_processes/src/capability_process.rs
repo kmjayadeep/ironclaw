@@ -1,10 +1,6 @@
-//! Legacy capability-process DTO projection over the authoritative journal.
+//! Capability process submission and views over the authoritative journal.
 
-use std::sync::Arc;
-
-use async_trait::async_trait;
 use ironclaw_events::sanitize_error_kind;
-use ironclaw_filesystem::RootFilesystem;
 use ironclaw_host_api::{
     CapabilityId, CapabilitySet, ExtensionId, InvocationId, MountView,
     ProcessAuthorizedContinuation, ProcessId, ResourceEstimate, ResourceReservationId,
@@ -12,17 +8,16 @@ use ironclaw_host_api::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::types::{ProcessError, ProcessRecord, ProcessStart, ProcessStatus, ProcessStorePort};
+use crate::types::{ProcessError, ProcessRecord, ProcessStart, ProcessStatus};
 use crate::{
-    ClaimProcessesRequest, FailProcessRequest, GetProcessSnapshotRequest, KillProcessRequest,
-    ProcessControlPort, ProcessInputPayload, ProcessInputRef, ProcessInputSubmission,
-    ProcessJournalSource, ProcessJournalStore, ProcessJournalStoreError, ProcessKind,
-    ProcessLeaseRequest, ProcessLifecycleStatus, ProcessRuntimePort, ProcessSnapshotSource,
-    ProcessStateTransitionRequest, ProcessSubmissionPort, ProcessWorkerId, SubmitProcessRequest,
+    ClaimProcessesRequest, FailProcessRequest, GetProcessSnapshotRequest, ProcessInputPayload,
+    ProcessInputRef, ProcessInputSubmission, ProcessJournalStoreError, ProcessKind,
+    ProcessLeaseRequest, ProcessLifecycleStatus, ProcessRuntimePort, ProcessStateTransitionRequest,
+    ProcessWorkerId, SubmitProcessRequest,
 };
 
 const CAPABILITY_INPUT_REF: &str = "capability-invocation:v1";
-const COMPATIBILITY_WORKER_ID: &str = "capability-compatibility";
+const CAPABILITY_PROJECTION_WORKER_ID: &str = "capability-projection";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CapabilityProcessMetadata {
@@ -40,137 +35,6 @@ pub(crate) struct CapabilityProcessMetadata {
     pub(crate) resource_reservation_id: Option<ResourceReservationId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) authorized_continuation: Option<ProcessAuthorizedContinuation>,
-}
-
-impl<F> ProcessJournalStore<F>
-where
-    F: RootFilesystem + Send + Sync + 'static,
-{
-    async fn snapshot(
-        &self,
-        scope: &ResourceScope,
-        process_id: ProcessId,
-    ) -> Result<crate::JournaledProcessSnapshot, ProcessError> {
-        self.get_process_snapshot(GetProcessSnapshotRequest {
-            scope: scope.clone(),
-            process_id,
-        })
-        .await
-        .map_err(map_journal_error)
-    }
-}
-
-#[async_trait]
-impl<F> ProcessStorePort for ProcessJournalStore<F>
-where
-    F: RootFilesystem + Send + Sync + 'static,
-{
-    fn process_runtime(&self) -> Arc<dyn ProcessRuntimePort> {
-        Arc::new(self.clone())
-    }
-
-    async fn start(&self, start: ProcessStart) -> Result<ProcessRecord, ProcessError> {
-        let process_id = start.process_id;
-        let scope = start.scope.clone();
-        let input = serde_json::to_vec(&start.input)
-            .map_err(|error| ProcessError::Serialization(error.to_string()))
-            .and_then(|payload| {
-                ProcessInputPayload::new(payload)
-                    .map_err(|error| ProcessError::Serialization(error.to_string()))
-            })?;
-        let metadata = serde_json::to_value(CapabilityProcessMetadata {
-            invocation_id: start.invocation_id,
-            authenticated_actor_user_id: start.authenticated_actor_user_id,
-            extension_id: start.extension_id,
-            capability_id: start.capability_id,
-            runtime: start.runtime,
-            grants: start.grants,
-            mounts: start.mounts,
-            estimated_resources: start.estimated_resources,
-            resource_reservation_id: start.resource_reservation_id,
-            authorized_continuation: start.authorized_continuation,
-        })
-        .map_err(|error| ProcessError::Serialization(error.to_string()))?;
-        self.submit_process(SubmitProcessRequest {
-            process_id,
-            process_kind: ProcessKind::CapabilityInvocation,
-            scope: scope.clone(),
-            exclusive_within_scope: false,
-            operation_id: None,
-            owner_user_id: None,
-            concurrency_class: None,
-            parent_process_id: start.parent_process_id,
-            root_process_id: None,
-            spawn_tree_descendant_cap: None,
-            dependency: None,
-            checkpoint_ref: None,
-            input: Some(ProcessInputSubmission {
-                input_ref: ProcessInputRef::from_trusted(CAPABILITY_INPUT_REF),
-                payload: input,
-            }),
-            created_at: chrono::Utc::now(),
-            metadata,
-        })
-        .await
-        .map_err(map_journal_error)?;
-        let snapshot = self.snapshot(&scope, process_id).await?;
-        process_record_from_snapshot(snapshot)
-    }
-
-    async fn complete(
-        &self,
-        scope: &ResourceScope,
-        process_id: ProcessId,
-    ) -> Result<ProcessRecord, ProcessError> {
-        complete_capability_process(self, scope, process_id).await
-    }
-
-    async fn fail(
-        &self,
-        scope: &ResourceScope,
-        process_id: ProcessId,
-        error_kind: String,
-    ) -> Result<ProcessRecord, ProcessError> {
-        fail_capability_process(self, scope, process_id, error_kind).await
-    }
-
-    async fn kill(
-        &self,
-        scope: &ResourceScope,
-        process_id: ProcessId,
-    ) -> Result<ProcessRecord, ProcessError> {
-        let result = self
-            .kill_process(KillProcessRequest {
-                scope: scope.clone(),
-                process_id,
-                operation_id: None,
-                reason: None,
-            })
-            .await
-            .map_err(map_journal_error)?;
-        process_record_from_snapshot(result.state)
-    }
-
-    async fn get(
-        &self,
-        scope: &ResourceScope,
-        process_id: ProcessId,
-    ) -> Result<Option<ProcessRecord>, ProcessError> {
-        capability_process_record(self, scope, process_id).await
-    }
-
-    async fn records_for_scope(
-        &self,
-        scope: &ResourceScope,
-    ) -> Result<Vec<ProcessRecord>, ProcessError> {
-        self.process_snapshots(scope)
-            .await
-            .map_err(map_journal_error)?
-            .into_iter()
-            .filter(|snapshot| snapshot.process_kind == ProcessKind::CapabilityInvocation)
-            .map(process_record_from_snapshot)
-            .collect()
-    }
 }
 
 pub fn process_record_from_snapshot(
@@ -197,7 +61,58 @@ pub fn process_record_from_snapshot(
     })
 }
 
-pub(crate) async fn capability_process_record(
+pub async fn submit_capability_process(
+    runtime: &dyn ProcessRuntimePort,
+    start: ProcessStart,
+) -> Result<ProcessRecord, ProcessError> {
+    let process_id = start.process_id;
+    let scope = start.scope.clone();
+    let input = serde_json::to_vec(&start.input)
+        .map_err(|error| ProcessError::Serialization(error.to_string()))
+        .and_then(|payload| {
+            ProcessInputPayload::new(payload)
+                .map_err(|error| ProcessError::Serialization(error.to_string()))
+        })?;
+    let metadata = serde_json::to_value(CapabilityProcessMetadata {
+        invocation_id: start.invocation_id,
+        authenticated_actor_user_id: start.authenticated_actor_user_id,
+        extension_id: start.extension_id,
+        capability_id: start.capability_id,
+        runtime: start.runtime,
+        grants: start.grants,
+        mounts: start.mounts,
+        estimated_resources: start.estimated_resources,
+        resource_reservation_id: start.resource_reservation_id,
+        authorized_continuation: start.authorized_continuation,
+    })
+    .map_err(|error| ProcessError::Serialization(error.to_string()))?;
+    let snapshot = runtime
+        .submit_process(SubmitProcessRequest {
+            process_id,
+            process_kind: ProcessKind::CapabilityInvocation,
+            scope,
+            exclusive_within_scope: false,
+            operation_id: None,
+            owner_user_id: None,
+            concurrency_class: None,
+            parent_process_id: start.parent_process_id,
+            root_process_id: None,
+            spawn_tree_descendant_cap: None,
+            dependency: None,
+            checkpoint_ref: None,
+            input: Some(ProcessInputSubmission {
+                input_ref: ProcessInputRef::from_trusted(CAPABILITY_INPUT_REF),
+                payload: input,
+            }),
+            created_at: chrono::Utc::now(),
+            metadata,
+        })
+        .await
+        .map_err(map_process_journal_error)?;
+    process_record_from_snapshot(snapshot)
+}
+
+pub async fn capability_process_record(
     runtime: &dyn ProcessRuntimePort,
     scope: &ResourceScope,
     process_id: ProcessId,
@@ -210,14 +125,14 @@ pub(crate) async fn capability_process_record(
         .await
     {
         Ok(snapshot) => process_record_from_snapshot(snapshot).map(Some),
-        Err(error) => match map_journal_error(error) {
+        Err(error) => match map_process_journal_error(error) {
             ProcessError::UnknownProcess { .. } => Ok(None),
             error => Err(error),
         },
     }
 }
 
-pub(crate) async fn complete_capability_process(
+pub async fn complete_capability_process(
     runtime: &dyn ProcessRuntimePort,
     scope: &ResourceScope,
     process_id: ProcessId,
@@ -240,11 +155,11 @@ pub(crate) async fn complete_capability_process(
             metadata: None,
         })
         .await
-        .map_err(map_journal_error)?;
+        .map_err(map_process_journal_error)?;
     process_record_from_snapshot(snapshot)
 }
 
-pub(crate) async fn fail_capability_process(
+pub async fn fail_capability_process(
     runtime: &dyn ProcessRuntimePort,
     scope: &ResourceScope,
     process_id: ProcessId,
@@ -275,7 +190,7 @@ pub(crate) async fn fail_capability_process(
             metadata: None,
         })
         .await
-        .map_err(map_journal_error)?;
+        .map_err(map_process_journal_error)?;
     process_record_from_snapshot(snapshot)
 }
 
@@ -290,7 +205,7 @@ async fn capability_process_snapshot(
             process_id,
         })
         .await
-        .map_err(map_journal_error)
+        .map_err(map_process_journal_error)
 }
 
 async fn claim_capability_process(
@@ -303,14 +218,14 @@ async fn claim_capability_process(
     let process_id = snapshot.process_id;
     runtime
         .claim_next_processes(ClaimProcessesRequest {
-            worker_id: ProcessWorkerId::from_trusted(COMPATIBILITY_WORKER_ID),
+            worker_id: ProcessWorkerId::from_trusted(CAPABILITY_PROJECTION_WORKER_ID),
             scope_filter: Some(snapshot.scope),
             process_id_filter: Some(process_id),
             process_kind_filter: Some(ProcessKind::CapabilityInvocation),
             max_processes: 1,
         })
         .await
-        .map_err(map_journal_error)?
+        .map_err(map_process_journal_error)?
         .into_iter()
         .next()
         .map(|claimed| claimed.state)
@@ -355,7 +270,7 @@ pub(crate) fn process_status(status: ProcessLifecycleStatus) -> ProcessStatus {
     }
 }
 
-pub(crate) fn map_journal_error(error: ProcessJournalStoreError) -> ProcessError {
+pub fn map_process_journal_error(error: ProcessJournalStoreError) -> ProcessError {
     match error {
         ProcessJournalStoreError::UnknownProcess { process_id } => {
             ProcessError::UnknownProcess { process_id }

@@ -181,8 +181,8 @@ async fn capability_host_spawn_fails_closed_on_unsupported_obligations_before_pr
     assert!(executor.take_request_opt().is_none());
     assert!(
         process_services
-            .process_store()
-            .records_for_scope(&scope)
+            .process_runtime()
+            .process_snapshots(&scope)
             .await
             .unwrap()
             .is_empty()

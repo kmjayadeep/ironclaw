@@ -251,6 +251,15 @@ pub trait ProcessManager: Send + Sync {
 }
 
 #[async_trait]
+pub trait ProcessSubmissionLifecycle: Send + Sync {
+    async fn before_submit(&self, start: &ProcessStart) -> Result<(), ProcessError>;
+
+    async fn submit_failed(&self, start: &ProcessStart) -> Result<(), ProcessError>;
+
+    async fn submitted(&self, record: &ProcessRecord) -> Result<(), ProcessError>;
+}
+
+#[async_trait]
 pub trait ProcessResultStorePort: Send + Sync {
     /// Stores successful process output separately from the lifecycle record.
     async fn complete(
@@ -293,50 +302,6 @@ pub trait ProcessResultStorePort: Send + Sync {
             .await?
             .and_then(|record| record.output))
     }
-}
-
-#[async_trait]
-pub trait ProcessStorePort: Send + Sync {
-    /// Returns the authoritative runtime behind this compatibility projection.
-    fn process_runtime(&self) -> std::sync::Arc<dyn crate::ProcessRuntimePort>;
-
-    /// Submits a process for supervised execution.
-    async fn start(&self, start: ProcessStart) -> Result<ProcessRecord, ProcessError>;
-
-    /// Transitions a scoped running process to completed.
-    async fn complete(
-        &self,
-        scope: &ResourceScope,
-        process_id: ProcessId,
-    ) -> Result<ProcessRecord, ProcessError>;
-
-    /// Transitions a scoped running process to failed with a classified error kind.
-    async fn fail(
-        &self,
-        scope: &ResourceScope,
-        process_id: ProcessId,
-        error_kind: String,
-    ) -> Result<ProcessRecord, ProcessError>;
-
-    /// Marks a scoped process killed and must not reveal cross-tenant process existence.
-    async fn kill(
-        &self,
-        scope: &ResourceScope,
-        process_id: ProcessId,
-    ) -> Result<ProcessRecord, ProcessError>;
-
-    /// Loads scoped process lifecycle metadata; wrong-scope lookups must look unknown.
-    async fn get(
-        &self,
-        scope: &ResourceScope,
-        process_id: ProcessId,
-    ) -> Result<Option<ProcessRecord>, ProcessError>;
-
-    /// Lists process lifecycle records visible to the exact resource-owner scope only.
-    async fn records_for_scope(
-        &self,
-        scope: &ResourceScope,
-    ) -> Result<Vec<ProcessRecord>, ProcessError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

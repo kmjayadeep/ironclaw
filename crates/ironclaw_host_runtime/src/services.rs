@@ -39,7 +39,7 @@ use ironclaw_mcp::{McpError, McpExecutionRequest, McpExecutor, McpInvocation};
 use ironclaw_network::NetworkHttpEgress;
 use ironclaw_processes::{
     BackgroundFailureStage, ProcessExecutor, ProcessInvocationStatePort, ProcessManager,
-    ProcessResultStorePort, ProcessServices, ProcessStorePort,
+    ProcessResultStorePort, ProcessServices,
 };
 use ironclaw_reborn_event_store::{
     CoalescingEventSink, EventBatchConfig, RebornEventStoreConfig, RebornEventStoreError,
@@ -417,7 +417,7 @@ where
         let network_policy_store = Arc::new(NetworkObligationPolicyStore::new());
         let secret_injection_store = Arc::new(RuntimeSecretInjectionStore::new());
         let process_lifecycle_store = Arc::new(ProcessObligationLifecycleStore::from_dyn(
-            process_services.process_store(),
+            process_services.process_runtime(),
             Arc::clone(&network_policy_store),
             Arc::clone(&secret_injection_store),
             governor.clone(),
@@ -691,17 +691,13 @@ where
     /// stores, cancellation registry, result store, and runtime health graph.
     fn build_host_runtime(&self) -> DefaultHostRuntime {
         let lifecycle_process_store = Arc::clone(&self.process_lifecycle_store);
-        if let Err(error) = lifecycle_process_store.register_journal_observer(
-            self.process_services
-                .process_store()
-                .process_runtime()
-                .as_ref(),
-        ) {
+        if let Err(error) = lifecycle_process_store
+            .register_journal_observer(self.process_services.process_runtime().as_ref())
+        {
             tracing::error!(%error, "process obligation journal observer failed to register");
         }
-        let process_store: Arc<dyn ProcessStorePort> = lifecycle_process_store.clone();
         let dispatcher: Arc<dyn CapabilityDispatcher> = Arc::new(self.runtime_dispatcher());
-        let process_runtime = self.process_services.process_store().process_runtime();
+        let process_runtime = self.process_services.process_runtime();
         let process_executor = Arc::new(HostProcessExecutor::new(
             Arc::new(RuntimeDispatchProcessExecutor::new(
                 Arc::clone(&dispatcher),
@@ -710,11 +706,14 @@ where
             self.process_sandbox_executor.clone(),
         ));
         let result_failure_cleanup_store = Arc::clone(&lifecycle_process_store);
+        let submission_lifecycle: Arc<dyn ironclaw_processes::ProcessSubmissionLifecycle> =
+            lifecycle_process_store.clone();
         let process_manager: Arc<dyn ProcessManager> = Arc::new(
-            ironclaw_processes::BackgroundProcessManager::new(
-                lifecycle_process_store,
+            ironclaw_processes::BackgroundProcessManager::new_dyn(
+                self.process_services.process_runtime(),
                 process_executor,
             )
+            .with_submission_lifecycle(submission_lifecycle)
             .with_cancellation_registry(self.process_services.cancellation_registry())
             .with_result_store_dyn(self.process_services.result_store())
             .with_error_handler(move |failure| {
@@ -765,7 +764,7 @@ where
         .with_surface_filesystem(surface_filesystem)
         .with_trust_policy_dyn(Arc::clone(&self.trust_policy))
         .with_process_manager(process_manager)
-        .with_process_store(process_store)
+        .with_process_runtime(self.process_services.process_runtime())
         .with_process_result_store(process_result_store)
         .with_process_cancellation_registry(self.process_services.cancellation_registry())
         .with_runtime_health(runtime_health);

@@ -51,8 +51,8 @@ use ironclaw_processes::{
     BackgroundFailureStage, BackgroundProcessManager, ProcessError, ProcessExecutionRequest,
     ProcessExecutionResult, ProcessExecutor, ProcessInvocationError, ProcessInvocationRecord,
     ProcessInvocationStart, ProcessInvocationStatePort, ProcessInvocationStatus,
-    ProcessJournalStore, ProcessResultStore, ProcessResultStorePort, ProcessStart, ProcessStatus,
-    ProcessStorePort,
+    ProcessJournalStore, ProcessResultStore, ProcessResultStorePort, ProcessRuntimePort,
+    ProcessStart, ProcessStatus,
 };
 use ironclaw_resources::{
     InMemoryResourceGovernor, ResourceAccount, ResourceError, ResourceGovernor, ResourceLimits,
@@ -1075,7 +1075,7 @@ pub(crate) async fn spawn_obligation_fixture_with_process_store_and_result_store
     result_store: Arc<R>,
 ) -> SpawnObligationFixture
 where
-    P: ProcessStorePort + 'static,
+    P: ProcessRuntimePort + 'static,
     R: ProcessResultStorePort + 'static,
 {
     let registry = Arc::new(registry_with_manifest(SCRIPT_MANIFEST));
@@ -1122,8 +1122,11 @@ where
         .register_journal_observer(process_store.process_runtime().as_ref())
         .expect("process obligation observer should register");
     let cleanup_process_store = Arc::clone(&process_store);
+    let submission_lifecycle: Arc<dyn ironclaw_processes::ProcessSubmissionLifecycle> =
+        process_store.clone();
     let process_manager = Arc::new(
-        BackgroundProcessManager::new(Arc::clone(&process_store), Arc::new(executor))
+        BackgroundProcessManager::new_dyn(process_store.process_runtime(), Arc::new(executor))
+            .with_submission_lifecycle(submission_lifecycle)
             .with_result_store(result_store)
             .with_error_handler(move |failure| {
                 let reconcile = match failure.stage {
@@ -1411,7 +1414,7 @@ impl ironclaw_processes::ProcessManager for FailingSpawnManager {
 }
 
 pub(crate) async fn wait_for_status(
-    store: &dyn ProcessStorePort,
+    store: &ProcessObligationLifecycleStore,
     scope: &ResourceScope,
     process_id: ProcessId,
     status: ProcessStatus,

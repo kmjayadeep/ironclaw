@@ -24,8 +24,8 @@ use ironclaw_host_runtime::{
 };
 use ironclaw_processes::{
     ProcessExecutionRequest, ProcessExecutionResult, ProcessExecutor, ProcessInvocationStatePort,
-    ProcessInvocationStateStore, ProcessInvocationStatus, ProcessManager, ProcessServices,
-    ProcessStart, ProcessStatus, ProcessStorePort,
+    ProcessInvocationStateStore, ProcessInvocationStatus, ProcessManager, ProcessRuntimePort,
+    ProcessServices, ProcessStart, ProcessStatus, capability_process_record,
 };
 use ironclaw_reborn_event_store::{
     RebornEventStoreConfig, RebornEventStores, RebornProfile, build_reborn_event_stores,
@@ -342,7 +342,7 @@ async fn process_result_and_output_survive_filesystem_service_restart_with_scope
         .await
         .unwrap();
     wait_for_status(
-        first_services.process_store().as_ref(),
+        first_services.process_runtime().as_ref(),
         &scope,
         process_id,
         ProcessStatus::Completed,
@@ -766,13 +766,15 @@ async fn assert_blocked_run(
 }
 
 async fn wait_for_status(
-    store: &dyn ProcessStorePort,
+    processes: &dyn ProcessRuntimePort,
     scope: &ResourceScope,
     process_id: ProcessId,
     status: ProcessStatus,
 ) {
     for _ in 0..100 {
-        if let Some(record) = store.get(scope, process_id).await.unwrap()
+        if let Some(record) = capability_process_record(processes, scope, process_id)
+            .await
+            .unwrap()
             && record.status == status
         {
             return;

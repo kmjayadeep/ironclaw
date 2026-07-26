@@ -23,10 +23,12 @@ async fn process_host_status_reads_scoped_process_record() {
     let mut other_scope = sample_scope(invocation_id, "tenant1", "user1");
     other_scope.project_id = Some(ProjectId::new("project2").unwrap());
 
-    store
-        .start(process_start(process_id, invocation_id, scope.clone()))
-        .await
-        .unwrap();
+    submit_capability_process(
+        &store,
+        process_start(process_id, invocation_id, scope.clone()),
+    )
+    .await
+    .unwrap();
 
     let record = host.status(&scope, process_id).await.unwrap().unwrap();
     assert_eq!(record.process_id, process_id);
@@ -47,10 +49,12 @@ async fn process_host_kill_transitions_running_process() {
     let process_id = ProcessId::new();
     let scope = sample_scope(invocation_id, "tenant1", "user1");
 
-    store
-        .start(process_start(process_id, invocation_id, scope.clone()))
-        .await
-        .unwrap();
+    submit_capability_process(
+        &store,
+        process_start(process_id, invocation_id, scope.clone()),
+    )
+    .await
+    .unwrap();
 
     let killed = host.kill(&scope, process_id).await.unwrap();
 
@@ -95,10 +99,12 @@ async fn process_host_kill_retries_result_side_effect_for_already_killed_process
     let process_id = ProcessId::new();
     let scope = sample_scope(invocation_id, "tenant1", "user1");
 
-    store
-        .start(process_start(process_id, invocation_id, scope.clone()))
-        .await
-        .unwrap();
+    submit_capability_process(
+        &store,
+        process_start(process_id, invocation_id, scope.clone()),
+    )
+    .await
+    .unwrap();
 
     let first_err = host.kill(&scope, process_id).await.unwrap_err();
     // The real store mapped the injected `FilesystemError::Backend` on the
@@ -152,11 +158,13 @@ async fn process_host_await_process_returns_terminal_exit_for_already_killed_pro
     let process_id = ProcessId::new();
     let scope = sample_scope(invocation_id, "tenant1", "user1");
 
-    store
-        .start(process_start(process_id, invocation_id, scope.clone()))
-        .await
-        .unwrap();
-    store.kill(&scope, process_id).await.unwrap();
+    submit_capability_process(
+        &store,
+        process_start(process_id, invocation_id, scope.clone()),
+    )
+    .await
+    .unwrap();
+    host.kill(&scope, process_id).await.unwrap();
 
     let exit = host.await_process(&scope, process_id).await.unwrap();
 
@@ -179,10 +187,12 @@ async fn process_host_await_process_fails_closed_for_unknown_or_other_scope_proc
     let missing = host.await_process(&scope, process_id).await.unwrap_err();
     assert!(matches!(missing, ProcessError::UnknownProcess { process_id: id } if id == process_id));
 
-    store
-        .start(process_start(process_id, invocation_id, scope.clone()))
-        .await
-        .unwrap();
+    submit_capability_process(
+        &store,
+        process_start(process_id, invocation_id, scope.clone()),
+    )
+    .await
+    .unwrap();
 
     let hidden = host
         .await_process(&other_scope, process_id)
@@ -199,16 +209,20 @@ async fn process_host_subscribe_emits_initial_and_terminal_records() {
     let process_id = ProcessId::new();
     let scope = sample_scope(invocation_id, "tenant1", "user1");
 
-    store
-        .start(process_start(process_id, invocation_id, scope.clone()))
-        .await
-        .unwrap();
+    submit_capability_process(
+        &store,
+        process_start(process_id, invocation_id, scope.clone()),
+    )
+    .await
+    .unwrap();
 
     let mut subscription = host.subscribe(&scope, process_id).await.unwrap();
     let initial = subscription.next().await.unwrap().unwrap();
     assert_eq!(initial.status, ProcessStatus::Running);
 
-    store.complete(&scope, process_id).await.unwrap();
+    complete_capability_process(&store, &scope, process_id)
+        .await
+        .unwrap();
 
     let terminal = subscription.next().await.unwrap().unwrap();
     assert_eq!(terminal.status, ProcessStatus::Completed);
@@ -251,11 +265,13 @@ async fn process_host_subscribe_closes_after_initial_terminal_record() {
     let process_id = ProcessId::new();
     let scope = sample_scope(invocation_id, "tenant1", "user1");
 
-    store
-        .start(process_start(process_id, invocation_id, scope.clone()))
-        .await
-        .unwrap();
-    store.kill(&scope, process_id).await.unwrap();
+    submit_capability_process(
+        &store,
+        process_start(process_id, invocation_id, scope.clone()),
+    )
+    .await
+    .unwrap();
+    host.kill(&scope, process_id).await.unwrap();
 
     let mut subscription = host.subscribe(&scope, process_id).await.unwrap();
 
@@ -282,10 +298,12 @@ async fn process_host_subscribe_fails_closed_for_unknown_or_other_scope_process(
     let missing = host.subscribe(&scope, process_id).await.unwrap_err();
     assert!(matches!(missing, ProcessError::UnknownProcess { process_id: id } if id == process_id));
 
-    store
-        .start(process_start(process_id, invocation_id, scope.clone()))
-        .await
-        .unwrap();
+    submit_capability_process(
+        &store,
+        process_start(process_id, invocation_id, scope.clone()),
+    )
+    .await
+    .unwrap();
 
     let hidden = host.subscribe(&other_scope, process_id).await.unwrap_err();
     assert!(matches!(hidden, ProcessError::UnknownProcess { process_id: id } if id == process_id));

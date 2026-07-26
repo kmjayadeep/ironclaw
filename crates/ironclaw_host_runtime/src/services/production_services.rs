@@ -246,7 +246,7 @@ where
         );
         self.push_local_only(
             &mut issues,
-            ProductionWiringComponent::ProcessStorePort,
+            ProductionWiringComponent::ProcessRuntimePort,
             Some(self.component_types.process_store),
         );
         self.push_local_only(

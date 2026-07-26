@@ -7,7 +7,7 @@
 //! # Module map
 //!
 //! - [`types`] — public data types, errors, and core traits
-//!   ([`ProcessStorePort`], [`ProcessResultStorePort`], [`ProcessExecutor`],
+//!   ([`ProcessResultStorePort`], [`ProcessExecutor`],
 //!   [`ProcessManager`])
 //! - [`cancellation`] — cooperative cancellation tokens + per-process registry
 //! - [`host`] — read/poll/await/cancel surface ([`ProcessHost`],
@@ -17,7 +17,7 @@
 //!   production [`BackgroundProcessManager`]
 
 mod cancellation;
-mod compatibility;
+mod capability_process;
 mod host;
 mod invocation_state;
 mod journal;
@@ -30,7 +30,10 @@ mod test_support;
 mod types;
 
 pub use cancellation::{ProcessCancellationRegistry, ProcessCancellationToken};
-pub use compatibility::process_record_from_snapshot;
+pub use capability_process::{
+    capability_process_record, complete_capability_process, fail_capability_process,
+    map_process_journal_error, process_record_from_snapshot, submit_capability_process,
+};
 pub use host::{ProcessHost, ProcessSubscription};
 pub use invocation_state::{
     ProcessInvocationError, ProcessInvocationRecord, ProcessInvocationStart,
@@ -82,7 +85,7 @@ pub use test_support::{
 pub use types::{
     ProcessError, ProcessExecutionError, ProcessExecutionRequest, ProcessExecutionResult,
     ProcessExecutor, ProcessExit, ProcessManager, ProcessRecord, ProcessResultRecord,
-    ProcessResultStorePort, ProcessStart, ProcessStatus, ProcessStorePort,
+    ProcessResultStorePort, ProcessStart, ProcessStatus, ProcessSubmissionLifecycle,
 };
 
 /// Complete static-kernel process surface. Consumers should accept narrower

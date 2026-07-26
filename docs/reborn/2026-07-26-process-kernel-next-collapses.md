@@ -45,55 +45,35 @@ soaks as complete.
 Status on `process-journal-kernel-transition`: production lifecycle persistence
 is collapsed. Capability/background records are submitted as
 `ProcessKind::CapabilityInvocation`, and `ProcessServices` uses a journal-backed
-compatibility projection. `process_store.rs`, lifecycle decorators, and their
-parallel state-machine tests are deleted. Externalized result bodies remain in
-the dedicated result store.
-
-The compatibility `ProcessStorePort`/`ProcessRecord` surface still exists for
-the background manager and host API. It is no longer a durable authority and
-should disappear with Slice 6's generic supervisor.
+capability projection. `process_store.rs`, `compatibility.rs`,
+`ProcessStorePort`, lifecycle decorators, and their parallel state-machine
+tests are deleted. Externalized result bodies remain in the dedicated result
+store.
 
 Terminal capability-obligation cleanup is now also a process-journal commit
 observer. The observer is registered once against the final runtime and follows
 governor replacement without replacing the lifecycle component. This removes
 the semantic blocker that previously required host kill and supervisor
-completion to pass through a `ProcessStorePort` wrapper; pre-submit handoff
+completion to pass through a store wrapper; pre-submit handoff
 claiming remains the only lifecycle action that must happen before a journal
 commit.
 
 `ProcessHost` and the capability background executor now read and terminalize
-processes through `ProcessRuntimePort`. The compatibility store is no longer in
-their execution path; it remains only at capability submission boundaries that
-still need the pre-submit obligation handoff claim.
+processes through `ProcessRuntimePort`.
 
 Detached capability authorization re-minting also reads the authoritative
 journal snapshot directly. Authorization validation, host control, and
 supervisor completion therefore share one persisted process projection.
 
-`ironclaw_processes` still has a separate capability/background process stack:
+Capability submission now uses a narrow lifecycle hook for pre-commit
+obligation handoff claiming and post-submit notification. The obligation
+lifecycle component no longer implements or contains `ProcessStorePort`, and
+`ProcessServices` plus `DefaultHostRuntime` now retain `ProcessRuntimePort`
+directly.
 
-- `process_store.rs`: 920 lines
-- `services.rs`: 378 lines
-- `wrappers.rs`: 440 lines
-- `types.rs`: 452 lines
-- `host.rs`: 258 lines
-- `cancellation.rs`: 139 lines
-
-`ProcessStorePort` has its own `start`, `complete`, `fail`, `kill`, `get`, and
-`records_for_scope` lifecycle beside `ProcessJournalStore`. `ProcessRecord` is a
-second durable process record and `EventingProcessStore` projects a second event
-path.
-
-Move capability/background execution to `ProcessKind::Internal` or a named
-`CapabilityInvocation` kind. Put its extension, capability, runtime, grants,
-mount, reservation, and continuation data in typed process metadata. Adapt
-`ProcessServices` and `ProcessHost` to the journal, then delete
-`ProcessStorePort`, `ProcessStore`, and lifecycle wrappers. Keep externalized
-result bodies behind result references; do not put arbitrary output in journal
-metadata.
-
-Expected result: the largest low-risk consolidation and one lifecycle for
-agent, capability, and background work.
+`ProcessRecord` remains only as the capability-facing view returned by spawn,
+status, await, and subscription APIs. Submission and projection helpers live in
+`capability_process.rs`; they do not define a second lifecycle or storage port.
 
 ## Slice 2: dissolve `ironclaw_run_state`
 
@@ -228,23 +208,16 @@ The runner registers the executor for `ProcessKind::AgentTurn`; extension and
 host runtimes register their own executors. Scheduling policy, model turns, and
 agent-loop behavior stay outside the kernel.
 
-`ProcessServices` no longer spawns a detached lifecycle task. Its compatibility
+`ProcessServices` no longer spawns a detached lifecycle task. Its
 `BackgroundProcessManager` journals bounded durable input, wakes a
 `ProcessKind::CapabilityInvocation` supervisor, and registers cancellation when
 the process is submitted. The same supervisor now owns claiming, bounded
 concurrency, heartbeats, recovery, panic containment, and shutdown for turns and
 capability work.
 
-The remaining deletion is the compatibility `ProcessStorePort`/`ProcessRecord`
-projection used by capability and host-runtime callers. It no longer schedules
-or owns lifecycle state; callers can move incrementally to journal-native
-snapshots and ports before the adapter is removed.
-
-There is no longer a second `JournalProcessStore` object or a `ProcessStore`
-type alias: `ProcessServices`
-holds the authoritative `ProcessJournalStore` directly, and the legacy
-`ProcessStorePort` methods are a compatibility implementation on that same
-shared store.
+There is no longer a second `JournalProcessStore` object, `ProcessStore` alias,
+or `ProcessStorePort`. `ProcessServices` holds the authoritative
+`ProcessRuntimePort` directly.
 
 `ProcessServices` is also no longer generic over lifecycle/result-store
 implementations. It erases those behind its owned ports while retaining

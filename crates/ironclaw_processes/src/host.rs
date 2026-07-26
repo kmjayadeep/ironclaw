@@ -13,10 +13,10 @@ use serde_json::Value;
 use tokio::time::{Duration, sleep};
 
 use crate::cancellation::ProcessCancellationRegistry;
-use crate::compatibility::{map_journal_error, process_record_from_snapshot};
+use crate::capability_process::{map_process_journal_error, process_record_from_snapshot};
 use crate::types::{
     ProcessError, ProcessExit, ProcessRecord, ProcessResultRecord, ProcessResultStorePort,
-    ProcessStatus, ProcessStorePort,
+    ProcessStatus,
 };
 use crate::{GetProcessSnapshotRequest, KillProcessRequest, ProcessRuntimePort};
 
@@ -29,9 +29,11 @@ pub struct ProcessHost {
 }
 
 impl ProcessHost {
-    /// Compatibility constructor for callers not yet carrying the process runtime.
-    pub fn new(store: &dyn ProcessStorePort) -> Self {
-        Self::from_runtime(store.process_runtime())
+    pub fn new<R>(runtime: &R) -> Self
+    where
+        R: ProcessRuntimePort + Clone + 'static,
+    {
+        Self::from_runtime(Arc::new(runtime.clone()))
     }
 
     pub fn from_runtime(runtime: Arc<dyn ProcessRuntimePort>) -> Self {
@@ -89,7 +91,7 @@ impl ProcessHost {
             .await
         {
             Ok(snapshot) => process_record_from_snapshot(snapshot).map(Some),
-            Err(error) => match map_journal_error(error) {
+            Err(error) => match map_process_journal_error(error) {
                 ProcessError::UnknownProcess { .. } => Ok(None),
                 error => Err(error),
             },
@@ -118,7 +120,7 @@ impl ProcessHost {
                 reason: None,
             })
             .await
-            .map_err(map_journal_error)
+            .map_err(map_process_journal_error)
             .and_then(|result| process_record_from_snapshot(result.state))
         {
             Ok(record) => {
@@ -285,7 +287,7 @@ impl ProcessSubscription {
                 .await
             {
                 Ok(snapshot) => process_record_from_snapshot(snapshot)?,
-                Err(error) => return Err(map_journal_error(error)),
+                Err(error) => return Err(map_process_journal_error(error)),
             };
             if Some(record.status) != self.last_status {
                 self.last_status = Some(record.status);
