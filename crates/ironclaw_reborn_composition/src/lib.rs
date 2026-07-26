@@ -35,6 +35,7 @@ mod extension_host_assembly;
 mod factory;
 mod filesystem_assembly;
 mod google_oauth_secret_store;
+mod host_access_assembly;
 mod input;
 mod llm_admin;
 mod memory_binding;

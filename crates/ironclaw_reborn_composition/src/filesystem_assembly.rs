@@ -9,6 +9,7 @@ use ironclaw_filesystem::{
 use ironclaw_host_api::{HostPath, VirtualPath};
 
 use crate::RebornBuildError;
+use crate::host_access_assembly::HostHomeRoot;
 
 /// Compatibility filename for the embedded standalone database.
 ///
@@ -33,28 +34,6 @@ pub(crate) enum DurableBackend {
 pub(crate) enum DurableStorageInput {
     EmbeddedLibsql,
     Postgres(deadpool_postgres::Pool),
-}
-
-pub(crate) struct HostHomeRoot {
-    canonical_root: PathBuf,
-    raw_alias: PathBuf,
-}
-
-impl HostHomeRoot {
-    pub(crate) fn new(canonical_root: PathBuf, raw_alias: PathBuf) -> Self {
-        Self {
-            canonical_root,
-            raw_alias,
-        }
-    }
-
-    pub(crate) fn canonical_root(&self) -> &Path {
-        &self.canonical_root
-    }
-
-    pub(crate) fn aliases(&self) -> Vec<&Path> {
-        vec![self.raw_alias.as_path(), self.canonical_root.as_path()]
-    }
 }
 
 /// Builds the storage substrate selected by already-resolved configuration.

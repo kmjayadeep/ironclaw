@@ -17,9 +17,12 @@ use crate::filesystem_assembly::build_default_database_roots;
 #[cfg(test)]
 use crate::filesystem_assembly::mount_descriptor;
 use crate::filesystem_assembly::{
-    DurableBackend, DurableStorageInput, FilesystemAssemblyBuilder, HostHomeRoot,
+    DurableBackend, DurableStorageInput, FilesystemAssemblyBuilder,
     open_standalone_libsql_database, production_database_root_filesystem, standalone_db_path,
 };
+#[cfg(test)]
+use crate::host_access_assembly::validate_workspace_skill_isolation;
+use crate::host_access_assembly::{HostAccessAssemblyBuilder, WorkspaceFilesystems};
 use crate::input::{
     LibsqlConnectionConfig, OAuthDcrCallbackConfig, OAuthProviderBackendConfig, PostgresPoolSource,
     RebornLocalRuntimeIdentity, RebornRuntimeProcessBinding, RebornStorageInput,
@@ -788,12 +791,6 @@ impl RebornAuthContinuationDispatcher for AuthContinuationFromProduct {
     }
 }
 
-type WorkspaceFilesystems = (
-    Arc<ScopedFilesystem<CompositeRootFilesystem>>,
-    Arc<ScopedFilesystem<CompositeRootFilesystem>>,
-    MountView,
-);
-
 const LOCAL_DEV_DEFAULT_SYSTEM_PROMPT_PATH: &str = "system/prompts/default-system.md";
 const LOCAL_DEV_LEGACY_SKILLS_BACKFILL_MARKER: &str = ".legacy-skills-backfilled";
 const LOCAL_DEV_LEGACY_SKILLS_BACKFILL_MAX_DEPTH: usize = 64;
@@ -873,38 +870,6 @@ where
             reason: error.to_string(),
         }),
     }
-}
-
-fn local_dev_process_port_for_policy(
-    runtime_policy: &Option<ironclaw_host_api::runtime_policy::EffectiveRuntimePolicy>,
-    workspace_root: &Path,
-    host_home_root: Option<&HostHomeRoot>,
-) -> Option<HostProcessPort> {
-    let runtime_policy = runtime_policy.as_ref()?;
-    if runtime_policy.process_backend != ProcessBackendKind::LocalHost {
-        return None;
-    }
-    let mut process_port = if runtime_policy.secret_mode == SecretMode::InheritedEnv {
-        HostProcessPort::new_inherited_env()
-    } else {
-        HostProcessPort::new()
-    }
-    .with_workdir_alias("/workspace", workspace_root);
-    if let Some(host_home_root) = host_home_root {
-        process_port =
-            process_port.with_workdir_alias("/host", host_home_root.canonical_root().to_path_buf());
-        for alias in host_home_root.aliases() {
-            let alias_str = match alias.to_str() {
-                Some(s) => s,
-                None => {
-                    tracing::debug!(alias = ?alias, "skipping non-UTF-8 host home alias");
-                    continue;
-                }
-            };
-            process_port = process_port.with_workdir_alias(alias_str, alias.to_path_buf());
-        }
-    }
-    Some(process_port)
 }
 
 fn require_product_auth_runtime_ports<F, G, S, R>(
@@ -2384,86 +2349,6 @@ fn local_dev_outbound_store(filesystem: Arc<CompositeRootFilesystem>) -> Outboun
     }
 }
 
-fn canonicalize_local_dev_path(path: &Path, label: &str) -> Result<PathBuf, RebornBuildError> {
-    std::fs::canonicalize(path).map_err(|_| RebornBuildError::InvalidConfig {
-        reason: format!("local-dev {label} could not be resolved"),
-    })
-}
-
-/// Build the two ScopedFilesystem views used by local-dev: a read-only workspace view
-/// for skill context, and a read-write workspace view for runtime operations.
-///
-/// When `host_home_root` is present, the runtime view is the local-dev-yolo
-/// ambient coding-tool view: it grants raw workspace and host-home aliases so
-/// real local paths resolve through the same virtual roots as `/workspace` and
-/// `/host`.
-fn build_workspace_filesystems(
-    filesystem: Arc<CompositeRootFilesystem>,
-    workspace_root: &Path,
-    host_home_root: Option<&HostHomeRoot>,
-) -> Result<WorkspaceFilesystems, RebornBuildError> {
-    let read_only_workspace_mounts = workspace_mount_view(MountPermissions::read_only(), &[])
-        .map_err(|error| RebornBuildError::InvalidConfig {
-            reason: error.to_string(),
-        })?;
-    let host_home_aliases = host_home_root
-        .map(|root| root.aliases())
-        .unwrap_or_default();
-    let workspace_aliases = if host_home_root.is_some() {
-        vec![workspace_root]
-    } else {
-        Vec::new()
-    };
-    let runtime_workspace_mounts = ambient_workspace_mount_view(
-        MountPermissions::read_write(),
-        &workspace_aliases,
-        &host_home_aliases,
-    )
-    .map_err(|error| RebornBuildError::InvalidConfig {
-        reason: error.to_string(),
-    })?;
-    let skill_filesystem = Arc::new(ScopedFilesystem::new(
-        Arc::clone(&filesystem),
-        scoped_skill_context_mount_view,
-    ));
-    let workspace_filesystem = Arc::new(ScopedFilesystem::with_fixed_view(
-        filesystem,
-        read_only_workspace_mounts,
-    ));
-    Ok((
-        skill_filesystem,
-        workspace_filesystem,
-        runtime_workspace_mounts,
-    ))
-}
-
-fn canonicalize_local_dev_existing_dir(
-    path: &Path,
-    label: &str,
-) -> Result<PathBuf, RebornBuildError> {
-    let path = canonicalize_local_dev_path(path, label)?;
-    let metadata = std::fs::metadata(&path).map_err(|_| RebornBuildError::InvalidConfig {
-        reason: format!("local-dev {label} could not be inspected"),
-    })?;
-    if metadata.is_dir() {
-        Ok(path)
-    } else {
-        Err(RebornBuildError::InvalidConfig {
-            reason: format!("local-dev {label} must be an existing directory"),
-        })
-    }
-}
-
-fn canonicalize_local_dev_host_home_root(path: &Path) -> Result<PathBuf, RebornBuildError> {
-    let path = canonicalize_local_dev_existing_dir(path, "host home root")?;
-    if path.parent().is_none() {
-        return Err(RebornBuildError::InvalidConfig {
-            reason: "local-dev host home root must not be a filesystem root".to_string(),
-        });
-    }
-    Ok(path)
-}
-
 fn backfill_local_dev_legacy_user_skills(
     storage_root: &Path,
     owner_user_id: &UserId,
@@ -2618,36 +2503,8 @@ fn copy_local_dev_legacy_skill_entry(
     Ok(())
 }
 
-fn validate_local_dev_workspace_skill_isolation(
-    storage_root: &Path,
-    workspace_root: &Path,
-) -> Result<(), RebornBuildError> {
-    for (label, skill_root) in [
-        ("/skills", storage_root.join("skills")),
-        (
-            "/tenant-shared/skills",
-            storage_root.join("tenant-shared/skills"),
-        ),
-        ("/system/skills", storage_root.join("system/skills")),
-        ("/system/extensions", storage_root.join("system/extensions")),
-    ] {
-        if paths_overlap(workspace_root, &skill_root) {
-            return Err(RebornBuildError::InvalidConfig {
-                reason: format!(
-                    "local-dev workspace root must not overlap default skill root {label}"
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
 fn local_dev_default_system_prompt_path(storage_root: &Path) -> PathBuf {
     storage_root.join(LOCAL_DEV_DEFAULT_SYSTEM_PROMPT_PATH)
-}
-
-fn paths_overlap(left: &Path, right: &Path) -> bool {
-    left == right || left.starts_with(right) || right.starts_with(left)
 }
 
 pub(crate) fn builtin_extension_registry() -> Result<ExtensionRegistry, RebornBuildError> {
@@ -3259,46 +3116,16 @@ async fn build_local_storage_production_shaped(
         runtime_policy_for_local_process,
         postgres_resource_governor_singleton,
     } = input;
-    std::fs::create_dir_all(&root).map_err(|_| RebornBuildError::InvalidConfig {
-        reason: "local-dev storage root could not be initialized".to_string(),
-    })?;
-    std::fs::create_dir_all(root.join("system/extensions")).map_err(|_| {
-        RebornBuildError::InvalidConfig {
-            reason: "local-dev system extensions root could not be initialized".to_string(),
-        }
-    })?;
-    let workspace_root = workspace_root.unwrap_or_else(|| root.join("workspace"));
-    std::fs::create_dir_all(&workspace_root).map_err(|_| RebornBuildError::InvalidConfig {
-        reason: "local-dev workspace root could not be initialized".to_string(),
-    })?;
-    let root = canonicalize_local_dev_path(&root, "storage root")?;
-    let workspace_root = canonicalize_local_dev_path(&workspace_root, "workspace root")?;
-    let include_host_home = runtime_policy_for_local_process
-        .as_ref()
-        .is_some_and(|policy| {
-            policy.filesystem_backend == FilesystemBackendKind::HostWorkspaceAndHome
-        });
-    let host_home_root = match (include_host_home, host_home_root) {
-        (true, Some(path)) => Some(HostHomeRoot::new(
-            canonicalize_local_dev_host_home_root(&path)?,
-            path,
-        )),
-        (true, None) => {
-            return Err(RebornBuildError::InvalidConfig {
-                reason: "local-dev-yolo host home access requires a confirmed host home root"
-                    .to_string(),
-            });
-        }
-        (false, Some(_)) => {
-            return Err(RebornBuildError::InvalidConfig {
-                reason:
-                    "confirmed host home root was supplied but the resolved runtime policy does not allow host home access"
-                        .to_string(),
-            });
-        }
-        (false, None) => None,
-    };
-    validate_local_dev_workspace_skill_isolation(&root, &workspace_root)?;
+    let host_access = HostAccessAssemblyBuilder::new(
+        root,
+        workspace_root,
+        host_home_root,
+        runtime_policy_for_local_process,
+    )
+    .build()?;
+    let root = &host_access.storage_root;
+    let workspace_root = &host_access.workspace_root;
+    let host_home_root = host_access.host_home_root.as_ref();
     let owner_user_id =
         UserId::new(context.owner_id.clone()).map_err(|error| RebornBuildError::InvalidConfig {
             reason: error.to_string(),
@@ -3312,22 +3139,17 @@ async fn build_local_storage_production_shaped(
     .map_err(|error| RebornBuildError::InvalidConfig {
         reason: format!("local-dev legacy skill backfill task failed: {error}"),
     })??;
-    let default_system_prompt_path = local_dev_default_system_prompt_path(&root);
-    seed_default_system_prompt(&root, &default_system_prompt_path).map_err(|error| {
+    let default_system_prompt_path = local_dev_default_system_prompt_path(root);
+    seed_default_system_prompt(root, &default_system_prompt_path).map_err(|error| {
         RebornBuildError::InvalidConfig {
             reason: error.to_string(),
         }
     })?;
-    ironclaw_extension_host::bundled_skills::ensure_bundled_reborn_skills_installed(&root).await?;
+    ironclaw_extension_host::bundled_skills::ensure_bundled_reborn_skills_installed(root).await?;
 
-    context.local_process_port = local_dev_process_port_for_policy(
-        &runtime_policy_for_local_process,
-        &workspace_root,
-        host_home_root.as_ref(),
-    );
     let filesystem_bundle =
-        FilesystemAssemblyBuilder::new(&root, &workspace_root, storage_backend_input)
-            .with_host_home_root(host_home_root.as_ref())
+        FilesystemAssemblyBuilder::new(root, workspace_root, storage_backend_input)
+            .with_host_home_root(host_home_root)
             .build()
             .await?;
     let trigger_repository =
@@ -3338,7 +3160,7 @@ async fn build_local_storage_production_shaped(
     };
     let event_store = match &filesystem_bundle.durable_backend {
         DurableBackend::LibSql(_) => ironclaw_reborn_event_store::RebornEventStoreConfig::Libsql {
-            path_or_url: standalone_db_path(&root).to_string_lossy().into_owned(),
+            path_or_url: standalone_db_path(root).to_string_lossy().into_owned(),
             auth_token: None,
         },
         DurableBackend::Postgres(pool) => {
@@ -3346,16 +3168,14 @@ async fn build_local_storage_production_shaped(
         }
     };
     let filesystem = filesystem_bundle.filesystem;
-    context.workspace_filesystems = Some(build_workspace_filesystems(
-        Arc::clone(&filesystem),
-        &workspace_root,
-        host_home_root.as_ref(),
-    )?);
+    context.workspace_filesystems =
+        Some(host_access.build_workspace_filesystems(Arc::clone(&filesystem))?);
+    context.local_process_port = host_access.process_port;
     context.local_dev_storage_root = Some(root.clone());
     context.default_system_prompt_path = Some(default_system_prompt_path);
     let scoped_filesystem = crate::wrap_scoped(Arc::clone(&filesystem));
     let (_secret_store, crypto) = build_secret_store(
-        &root,
+        root,
         Arc::clone(&scoped_filesystem),
         explicit_secret_master_key,
     )

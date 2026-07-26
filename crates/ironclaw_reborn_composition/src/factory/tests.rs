@@ -2316,9 +2316,8 @@ fn local_dev_workspace_root_overlapping_skill_root_is_rejected() {
                 .to_path_buf(),
             skill_root.join("nested-workspace"),
         ] {
-            let error =
-                validate_local_dev_workspace_skill_isolation(&storage_root, &workspace_root)
-                    .expect_err("workspace root overlapping skill root should be rejected");
+            let error = validate_workspace_skill_isolation(&storage_root, &workspace_root)
+                .expect_err("workspace root overlapping skill root should be rejected");
             assert!(
                 matches!(error, RebornBuildError::InvalidConfig { .. }),
                 "unexpected error: {error:?}"
