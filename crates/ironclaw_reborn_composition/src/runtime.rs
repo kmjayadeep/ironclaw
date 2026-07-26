@@ -20,7 +20,7 @@
 //! pinned by `crates/ironclaw_architecture/tests/reborn_dependency_boundaries.rs`.
 
 // arch-exempt: large_file, needs Reborn runtime helper extraction, plan #4471
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,7 +37,9 @@ use uuid::Uuid;
 
 use ironclaw_events::{DurableAuditLog, DurableEventLog, RuntimeEvent};
 use ironclaw_extensions::{ExtensionRegistry, SharedExtensionRegistry};
-use ironclaw_filesystem::{CompositeRootFilesystem, RootFilesystem, ScopedFilesystem};
+use ironclaw_filesystem::{CompositeRootFilesystem, ScopedFilesystem};
+#[cfg(any(test, feature = "test-support"))]
+use ironclaw_filesystem::RootFilesystem;
 use ironclaw_first_party_extension_ports::{
     FirstPartySkillsExtension, FirstPartySkillsExtensionHandles, SelectableSkillContextSource,
     SkillActivationSelectorConfig, SkillExecutionAdapter, SkillInjectionMode,
@@ -57,8 +59,8 @@ use ironclaw_loop_host::{
 };
 use ironclaw_observability::live_latency_started_at;
 use ironclaw_processes::{
-    ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource, ProcessLifecycleLookupSource,
-    ProcessSuspensionKind,
+    ProcessConcurrencyClass, ProcessConcurrencyLimits, ProcessGateOwnerMatch, ProcessGateQuery,
+    ProcessGateQuerySource, ProcessLifecycleLookupSource, ProcessSuspensionKind,
 };
 use ironclaw_product::ProjectionStream;
 use ironclaw_product::{
@@ -94,8 +96,7 @@ use ironclaw_turns::{
     GetRunStateRequest, IdempotencyKey, LoopGateRef, ReplyTargetBindingRef,
     RunProfileResolutionRequest, SanitizedCancelReason, SourceBindingRef, SubmitTurnRequest,
     SubmitTurnResponse, TurnActor, TurnCoordinator, TurnError, TurnEventProjectionSource, TurnId,
-    TurnRunId, TurnRunState, TurnRunWake, TurnScope, TurnSpawnTreeStateStore, TurnStateStoreLimits,
-    TurnStatus,
+    TurnRunId, TurnRunState, TurnRunWake, TurnScope, TurnSpawnTreeStateStore, TurnStatus,
     events::EventCursor,
     run_profile::{LoopHostMilestoneSink, LoopRunContext},
 };
@@ -3438,16 +3439,25 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     }
     let trusted_laptop_access = services_input.grants_trusted_laptop_access();
     let owner_id = services_input.owner_id().to_string();
-    // Thread per-user and per-origin concurrency caps from TurnRunnerSettings into the
-    // turn-state store. The factory reads these when constructing the store so limits
-    // are applied from the very first claim.
-    let turn_state_limits = TurnStateStoreLimits {
-        max_concurrent_runs_per_user: runner.max_concurrent_runs_per_user,
-        max_concurrent_trigger_runs: runner.max_concurrent_trigger_runs,
-        max_concurrent_conversation_runs: runner.max_concurrent_conversation_runs,
-        ..TurnStateStoreLimits::default()
-    };
-    services_input = services_input.with_turn_state_store_limits(turn_state_limits);
+    let mut max_running_by_class = BTreeMap::new();
+    if let Some(limit) = runner.max_concurrent_trigger_runs {
+        max_running_by_class.insert(
+            ProcessConcurrencyClass::from_trusted("scheduled_trigger"),
+            limit.get(),
+        );
+    }
+    if let Some(limit) = runner.max_concurrent_conversation_runs {
+        max_running_by_class.insert(
+            ProcessConcurrencyClass::from_trusted("conversation"),
+            limit.get(),
+        );
+    }
+    services_input = services_input.with_process_concurrency_limits(ProcessConcurrencyLimits {
+        max_running_per_owner: runner
+            .max_concurrent_runs_per_user
+            .map(std::num::NonZeroU32::get),
+        max_running_by_class,
+    });
     let actor_user_id =
         UserId::new(owner_id.clone()).map_err(|reason| RebornRuntimeError::InvalidArgument {
             reason: format!("user id: {reason}"),

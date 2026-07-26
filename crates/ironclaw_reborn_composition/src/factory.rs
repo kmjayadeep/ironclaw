@@ -142,7 +142,7 @@ use ironclaw_outbound::{
     DeliveredGateRouteStore, OutboundStateStore, OutboundStateStorePort, TriggeredRunDeliveryStore,
 };
 use ironclaw_processes::{
-    ProcessConcurrencyClass, ProcessConcurrencyLimits, ProcessJournalStore, ProcessServices,
+    ProcessConcurrencyLimits, ProcessJournalStore, ProcessServices,
 };
 use ironclaw_product::{
     ChannelConnectionNoticePolicy, ChannelConnectionRequirement, ExtensionAccountSetupDescriptor,
@@ -3299,7 +3299,7 @@ async fn build_production_shaped(
     let oauth_provider_configs = deployment.oauth_provider_configs.clone();
     let oauth_dcr_callback = deployment.oauth_dcr_callback.clone();
     let nearai_mcp_bootstrap_config = deployment.nearai_mcp_bootstrap_config.clone();
-    let turn_state_store_limits = deployment.turn_state_store_limits;
+    let process_concurrency_limits = deployment.process_concurrency_limits.clone();
     let first_party_bundles = deployment.first_party_bundles.clone();
     let traffic_policy = deployment.traffic();
     // Build the single memory provider resolver for this runtime (issue #3537):
@@ -3373,7 +3373,7 @@ async fn build_production_shaped(
                 oauth_dcr_callback,
                 owner_id,
                 local_runtime_identity,
-                turn_state_store_limits,
+                process_concurrency_limits,
                 memory_resolver: memory_service_resolver.clone(),
                 scheduler_wake_wiring,
                 account_setup_descriptors,
@@ -3434,7 +3434,7 @@ async fn build_production_shaped(
                 oauth_dcr_callback,
                 owner_id,
                 local_runtime_identity,
-                turn_state_store_limits,
+                process_concurrency_limits,
                 memory_resolver: memory_service_resolver.clone(),
                 scheduler_wake_wiring,
                 account_setup_descriptors,
@@ -3506,7 +3506,7 @@ async fn build_production_shaped(
                 oauth_dcr_callback,
                 owner_id,
                 local_runtime_identity,
-                turn_state_store_limits,
+                process_concurrency_limits,
                 memory_resolver: memory_service_resolver.clone(),
                 scheduler_wake_wiring,
                 account_setup_descriptors,
@@ -3567,7 +3567,7 @@ async fn build_production_shaped(
                 oauth_dcr_callback,
                 owner_id,
                 local_runtime_identity,
-                turn_state_store_limits,
+                process_concurrency_limits,
                 memory_resolver: memory_service_resolver.clone(),
                 scheduler_wake_wiring,
                 account_setup_descriptors,
@@ -3774,7 +3774,7 @@ struct RebornProductionBuildContext {
     oauth_dcr_callback: Option<crate::input::OAuthDcrCallbackConfig>,
     owner_id: String,
     local_runtime_identity: Option<RebornLocalRuntimeIdentity>,
-    turn_state_store_limits: ironclaw_turns::TurnStateStoreLimits,
+    process_concurrency_limits: ProcessConcurrencyLimits,
     /// Memory provider resolver (issue #3537), carried so the local-dev profile
     /// source and the memory tools build providers through one resolver.
     memory_resolver: MemoryServiceResolver,
@@ -4391,7 +4391,7 @@ async fn build_backend_production(
         oauth_dcr_callback,
         owner_id,
         local_runtime_identity,
-        turn_state_store_limits,
+        process_concurrency_limits,
         memory_resolver,
         scheduler_wake_wiring,
         mut account_setup_descriptors,
@@ -4553,27 +4553,9 @@ async fn build_backend_production(
         broadcast_budget_event_sink,
         ..
     } = build_budget_sinks();
-    let mut max_running_by_class = BTreeMap::new();
-    if let Some(limit) = turn_state_store_limits.max_concurrent_trigger_runs {
-        max_running_by_class.insert(
-            ProcessConcurrencyClass::from_trusted("scheduled_trigger"),
-            limit.get(),
-        );
-    }
-    if let Some(limit) = turn_state_store_limits.max_concurrent_conversation_runs {
-        max_running_by_class.insert(
-            ProcessConcurrencyClass::from_trusted("conversation"),
-            limit.get(),
-        );
-    }
     let process_journal_store = Arc::new(
         ProcessJournalStore::new(Arc::clone(&stores.scoped_filesystem)).with_concurrency_limits(
-            ProcessConcurrencyLimits {
-                max_running_per_owner: turn_state_store_limits
-                    .max_concurrent_runs_per_user
-                    .map(std::num::NonZeroU32::get),
-                max_running_by_class,
-            },
+            process_concurrency_limits,
         ),
     );
     let processes =

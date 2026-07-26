@@ -496,6 +496,7 @@ where
     })
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn project_turn_events(
     events: &[TurnLifecycleEvent],
     scope: &TurnScope,

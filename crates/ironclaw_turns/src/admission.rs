@@ -251,6 +251,7 @@ pub struct TurnAdmissionReservationRecord {
     pub released: bool,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn admission_buckets(
     scope: &TurnScope,
     actor: &TurnActor,
