@@ -3,6 +3,8 @@ import React from "react";
 import { useParams } from "react-router";
 import { useT } from "../../lib/i18n";
 import { fetchIntentDetail, fetchSigningContext } from "../../lib/api";
+import { CEREMONY_OUTCOME, runCeremony } from "../../lib/ledger/ceremony";
+import { createDevicePort } from "../../lib/ledger/device-adapter";
 
 /**
  * The transaction-review page (attested-signing Phase C).
@@ -122,7 +124,7 @@ export function decodedRows(decodedTx) {
  * ready branch, so a test can assert the affordance is absent — not merely
  * disabled — whenever clear signing is unavailable.
  */
-export function SigningCeremony({ state, terminal }) {
+export function SigningCeremony({ state, terminal, onSign, running, outcome }) {
   const t = useT();
 
   // A decided intent has nothing left to sign.
@@ -156,10 +158,22 @@ export function SigningCeremony({ state, terminal }) {
       <button
         type="button"
         data-testid="review-sign-action"
+        disabled={running}
+        onClick={onSign}
         className="rounded-lg bg-[var(--v2-accent)] px-4 py-2 text-sm font-medium"
       >
-        {t("review.ceremony.connect")}
+        {t(running ? "review.ceremony.signing" : "review.ceremony.connect")}
       </button>
+      {outcome && outcome !== CEREMONY_OUTCOME.signed && (
+        <p data-testid="review-ceremony-outcome" className="mt-2 text-sm text-[var(--v2-text-muted)]">
+          {t(`review.ceremony.outcome.${outcome}`)}
+        </p>
+      )}
+      {outcome === CEREMONY_OUTCOME.signed && (
+        <p data-testid="review-ceremony-signed" className="mt-2 text-sm text-[var(--v2-text-strong)]">
+          {t("review.ceremony.outcome.signed")}
+        </p>
+      )}
     </section>
   );
 }
@@ -192,6 +206,22 @@ export function ReviewPage() {
       cancelled = true;
     };
   }, [intentId]);
+
+  const [ceremony, setCeremony] = React.useState({ running: false, outcome: null });
+
+  // Declared unconditionally, above every early return, so the hook order is
+  // identical on each render regardless of load state.
+  const runDeviceCeremony = React.useCallback(async () => {
+    setCeremony({ running: true, outcome: null });
+    const result = await runCeremony({
+      device: createDevicePort(),
+      intent: state.status === "ready" ? state.intent : null,
+      // The backend's answer, never a local guess.
+      clearSigningAvailable: signingContext.status === "available",
+      descriptor: signingContext.descriptor,
+    });
+    setCeremony({ running: false, outcome: result.outcome });
+  }, [state, signingContext]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -272,7 +302,13 @@ export function ReviewPage() {
 
       <TransactionHash hash={intent.approved_tx_hash} />
 
-      <SigningCeremony state={signingContext} terminal={terminal} />
+      <SigningCeremony
+        state={signingContext}
+        terminal={terminal}
+        running={ceremony.running}
+        outcome={ceremony.outcome}
+        onSign={runDeviceCeremony}
+      />
 
       <section className="mt-6">
         <h2 className="text-sm font-medium text-[var(--v2-text-muted)]">

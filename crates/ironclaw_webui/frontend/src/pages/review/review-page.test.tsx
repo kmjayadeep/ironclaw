@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 
 import { runVmModuleForTest } from "../../test-support/vm-module-harness";
+import { CEREMONY_OUTCOME } from "../../lib/ledger/ceremony";
 
 const HASH = "77".repeat(32);
 
@@ -79,8 +80,13 @@ function load({
         ];
       },
       useEffect: (effect) => effects.push(effect),
+      useCallback: (fn) => fn,
     },
     useParams: () => params,
+    // The harness strips imports, so the page's collaborators are injected.
+    CEREMONY_OUTCOME,
+    runCeremony: async () => ({ outcome: CEREMONY_OUTCOME.unsupported }),
+    createDevicePort: () => null,
     useT: () => (key, vars) =>
       vars ? `${key}:${JSON.stringify(vars)}` : key,
     fetchIntentDetail: () =>
@@ -336,4 +342,52 @@ test("a terminal intent never offers the device path", () => {
     }),
     null,
   );
+});
+
+/**
+ * The button must actually run the ceremony, and report a non-signed outcome
+ * to the user. A control that looks live but is wired to nothing is worse than
+ * an absent one — it teaches the user the flow works.
+ */
+test("the sign control runs the ceremony and surfaces its outcome", () => {
+  const { exports } = load({ fetchResult: INTENT });
+  const clicks = [];
+  const ready = exports.SigningCeremony({
+    state: { status: "available", descriptor: {} },
+    terminal: false,
+    running: false,
+    outcome: null,
+    onSign: () => clicks.push("clicked"),
+  });
+
+  const button = findByTestId(ready, "review-sign-action");
+  button.props.onClick();
+  assert.deepEqual(clicks, ["clicked"], "the control is wired to the ceremony");
+
+  // And a completed run reports itself.
+  const afterwards = exports.SigningCeremony({
+    state: { status: "available", descriptor: {} },
+    terminal: false,
+    running: false,
+    outcome: "unsupported",
+    onSign: () => {},
+  });
+  const message = textOf(findByTestId(afterwards, "review-ceremony-outcome"));
+  assert.ok(
+    message.includes("unsupported"),
+    "a browser that cannot reach a device must say so",
+  );
+});
+
+/** While the device is being driven, the control must not re-fire. */
+test("the sign control is disabled while a ceremony is running", () => {
+  const { exports } = load({ fetchResult: INTENT });
+  const ready = exports.SigningCeremony({
+    state: { status: "available", descriptor: {} },
+    terminal: false,
+    running: true,
+    outcome: null,
+    onSign: () => {},
+  });
+  assert.equal(findByTestId(ready, "review-sign-action").props.disabled, true);
 });

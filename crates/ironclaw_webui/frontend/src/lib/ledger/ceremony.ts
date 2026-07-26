@@ -39,6 +39,8 @@ export const CEREMONY_OUTCOME = {
   wrongApp: "wrong-app",
   /** Device went away mid-flow. */
   disconnected: "disconnected",
+  /** No device port can exist here (no WebHID, or no adapter wired). */
+  unsupported: "unsupported",
   /** Anything else, surfaced rather than swallowed. */
   failed: "failed",
 };
@@ -64,7 +66,9 @@ export async function runCeremony({
   }
 
   if (!device) {
-    return { outcome: CEREMONY_OUTCOME.failed, reason: "no device port" };
+    // Distinct from `failed`: nothing went wrong, this browser simply cannot
+    // reach a device. The user's fix is a different browser, not a retry.
+    return { outcome: CEREMONY_OUTCOME.unsupported };
   }
   if (!intent || !intent.unsigned_payload) {
     // Nothing to sign means nothing to ask for. Refusing here keeps a
