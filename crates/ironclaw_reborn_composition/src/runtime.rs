@@ -37,9 +37,9 @@ use uuid::Uuid;
 
 use ironclaw_events::{DurableAuditLog, DurableEventLog, RuntimeEvent};
 use ironclaw_extensions::{ExtensionRegistry, SharedExtensionRegistry};
-use ironclaw_filesystem::{CompositeRootFilesystem, ScopedFilesystem};
 #[cfg(any(test, feature = "test-support"))]
 use ironclaw_filesystem::RootFilesystem;
+use ironclaw_filesystem::{CompositeRootFilesystem, ScopedFilesystem};
 use ironclaw_first_party_extension_ports::{
     FirstPartySkillsExtension, FirstPartySkillsExtensionHandles, SelectableSkillContextSource,
     SkillActivationSelectorConfig, SkillExecutionAdapter, SkillInjectionMode,
@@ -1664,7 +1664,7 @@ impl RebornRuntime {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub async fn pairing_consume_for_test<F>(
+    pub async fn pairing_consume_for_test(
         &self,
         extension_id: &str,
         authenticated_installation_id: &str,
@@ -1672,13 +1672,10 @@ impl RebornRuntime {
         actor: (&str, &str, Option<&str>, &str),
         turn_world: (
             Arc<dyn ironclaw_turns::TurnCoordinator>,
-            Arc<ironclaw_turns::TurnStateRowStore<F>>,
+            Arc<dyn ProcessGateQuerySource<Error = TurnError>>,
             ironclaw_host_api::TenantId,
         ),
-    ) -> Result<Option<ironclaw_host_api::UserId>, String>
-    where
-        F: ironclaw_filesystem::RootFilesystem + Send + Sync + 'static,
-    {
+    ) -> Result<Option<ironclaw_host_api::UserId>, String> {
         let (actor_kind, external_actor_id, conversation_space_id, conversation_id) = actor;
         let Some(service) = self
             .channel_pairing
@@ -1709,10 +1706,8 @@ impl RebornRuntime {
         };
         if let Some(user_id) = paired_user.as_ref() {
             let (turn_coordinator, turn_state, tenant_id) = turn_world;
-            let continuation = crate::factory::auth_continuation_dispatcher(
-                turn_coordinator,
-                Some(turn_state as Arc<dyn ProcessGateQuerySource<Error = TurnError>>),
-            );
+            let continuation =
+                crate::factory::auth_continuation_dispatcher(turn_coordinator, Some(turn_state));
             service
                 .dispatch_pairing_completion_with_for_test(user_id, tenant_id, continuation)
                 .await

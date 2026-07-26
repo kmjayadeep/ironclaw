@@ -240,7 +240,7 @@ impl RebornRuntimeStores {
     /// continuation can see the runs that group actually executes; production
     /// composition uses one coordinator/store and needs no override.
     #[cfg(any(test, feature = "test-support"))]
-    pub(crate) async fn pairing_consume_for_test<F>(
+    pub(crate) async fn pairing_consume_for_test(
         &self,
         extension_id: &str,
         authenticated_installation_id: &str,
@@ -248,13 +248,10 @@ impl RebornRuntimeStores {
         actor: (&str, &str, Option<&str>, &str),
         turn_world: (
             Arc<dyn ironclaw_turns::TurnCoordinator>,
-            Arc<ironclaw_turns::TurnStateRowStore<F>>,
+            Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = ironclaw_turns::TurnError>>,
             ironclaw_host_api::TenantId,
         ),
-    ) -> Result<Option<ironclaw_host_api::UserId>, String>
-    where
-        F: ironclaw_filesystem::RootFilesystem + Send + Sync + 'static,
-    {
+    ) -> Result<Option<ironclaw_host_api::UserId>, String> {
         let (actor_kind, external_actor_id, conversation_space_id, conversation_id) = actor;
         let Some(service) = self
             .channel_pairing
@@ -289,17 +286,7 @@ impl RebornRuntimeStores {
         };
         if let Some(user_id) = paired_user.as_ref() {
             let (turn_coordinator, turn_state, tenant_id) = turn_world;
-            let continuation = auth_continuation_dispatcher(
-                turn_coordinator,
-                Some(
-                    turn_state
-                        as Arc<
-                            dyn ironclaw_processes::ProcessGateQuerySource<
-                                    Error = ironclaw_turns::TurnError,
-                                >,
-                        >,
-                ),
-            );
+            let continuation = auth_continuation_dispatcher(turn_coordinator, Some(turn_state));
             service
                 .dispatch_pairing_completion_with_for_test(user_id, tenant_id, continuation)
                 .await

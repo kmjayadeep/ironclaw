@@ -73,8 +73,6 @@ pub use loop_exit::{
     LoopExitViolationKind, LoopFailed, LoopFailureKind,
 };
 pub use origin::{ProductTurnContext, RunOriginAdapter, TurnOriginKind, TurnSurfaceType};
-#[cfg(feature = "test-support")]
-pub use process_projection::AgentTurnProcessTransitionAdapter;
 pub use process_projection::{
     AGENT_TURN_PROCESS_KIND, AgentTurnProcessCommitObserver, AgentTurnProcessMetadata,
     AgentTurnProcessRuntime, AgentTurnProcessStateMetadata, ProcessJournalStoreTurnAdapter,

@@ -102,23 +102,16 @@ impl RebornRuntime {
     ///
     /// [`local_dev_approval_interaction_service_for_test`]: Self::local_dev_approval_interaction_service_for_test
     #[cfg(feature = "test-support")]
-    pub fn local_dev_approval_interaction_service_with_turn_state_for_test<F>(
+    pub fn local_dev_approval_interaction_service_with_process_gates_for_test(
         &self,
         turn_coordinator: Arc<dyn TurnCoordinator>,
-        turn_state: Arc<ironclaw_turns::TurnStateRowStore<F>>,
-    ) -> Result<Option<Arc<dyn ApprovalInteractionService>>, RebornRuntimeError>
-    where
-        F: ironclaw_filesystem::RootFilesystem + Send + Sync + 'static,
-    {
+        process_gates: Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = TurnError>>,
+    ) -> Result<Option<Arc<dyn ApprovalInteractionService>>, RebornRuntimeError> {
         let Some(parts) = self.interaction_service_test_parts.as_ref() else {
             return Ok(None);
         };
-        build_approval_interaction_service_with_parts(
-            parts,
-            turn_coordinator,
-            turn_state as Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = TurnError>>,
-        )
-        .map(Some)
+        build_approval_interaction_service_with_parts(parts, turn_coordinator, process_gates)
+            .map(Some)
     }
 
     /// Auth-side counterpart of
@@ -130,17 +123,14 @@ impl RebornRuntime {
     ///
     /// [`local_dev_approval_interaction_service_with_turn_state_for_test`]: Self::local_dev_approval_interaction_service_with_turn_state_for_test
     #[cfg(feature = "test-support")]
-    pub fn local_dev_auth_interaction_service_with_turn_state_for_test<F>(
+    pub fn local_dev_auth_interaction_service_with_process_gates_for_test(
         &self,
         turn_coordinator: Arc<dyn TurnCoordinator>,
-        turn_state: Arc<ironclaw_turns::TurnStateRowStore<F>>,
-    ) -> Option<Arc<dyn AuthInteractionService>>
-    where
-        F: ironclaw_filesystem::RootFilesystem + Send + Sync + 'static,
-    {
+        process_gates: Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = TurnError>>,
+    ) -> Option<Arc<dyn AuthInteractionService>> {
         Some(build_webui_auth_interaction_service_with_turn_run_source(
             self.product_auth.as_ref(),
-            turn_state as Arc<dyn ironclaw_processes::ProcessGateQuerySource<Error = TurnError>>,
+            process_gates,
             turn_coordinator,
         ))
     }

@@ -140,9 +140,7 @@ use ironclaw_outbound::CommunicationPreferenceRepository;
 use ironclaw_outbound::{
     DeliveredGateRouteStore, OutboundStateStore, OutboundStateStorePort, TriggeredRunDeliveryStore,
 };
-use ironclaw_processes::{
-    ProcessConcurrencyLimits, ProcessJournalStore, ProcessServices,
-};
+use ironclaw_processes::{ProcessConcurrencyLimits, ProcessJournalStore, ProcessServices};
 use ironclaw_product::{
     ChannelConnectionNoticePolicy, ChannelConnectionRequirement, ExtensionAccountSetupDescriptor,
     ExtensionAccountSetupRegistry, LifecycleProductSurfaceContext,
@@ -4550,9 +4548,8 @@ async fn build_backend_production(
         ..
     } = build_budget_sinks();
     let process_journal_store = Arc::new(
-        ProcessJournalStore::new(Arc::clone(&stores.scoped_filesystem)).with_concurrency_limits(
-            process_concurrency_limits,
-        ),
+        ProcessJournalStore::new(Arc::clone(&stores.scoped_filesystem))
+            .with_concurrency_limits(process_concurrency_limits),
     );
     let processes =
         ProcessRuntimeSystem::from_process_journal_store(Arc::clone(&process_journal_store));

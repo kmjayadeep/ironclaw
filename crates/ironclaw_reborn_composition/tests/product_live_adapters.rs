@@ -64,7 +64,7 @@ use ironclaw_turns::{
 };
 
 use ironclaw_loop_host::in_memory_backed_checkpoint_state_store as in_memory_checkpoint_state_store;
-use ironclaw_turns::test_support::in_memory_turn_state_store;
+use ironclaw_turns::test_support::{in_memory_loop_checkpoint_store, in_memory_turn_state_store};
 
 async fn build_runtime_for_test(input: RebornHostBindings) -> RebornRuntime {
     build_reborn_runtime(RebornRuntimeInput::from_build_input(input))
@@ -1367,7 +1367,7 @@ async fn adapter_bundle_satisfies_product_live_runtime_readiness_gate() {
     let thread_service = Arc::new(InMemorySessionThreadService::default());
     let turn_state = Arc::new(in_memory_turn_state_store());
     let checkpoint_state_store = in_memory_checkpoint_state_store();
-    let loop_checkpoint_store = Arc::clone(&turn_state);
+    let loop_checkpoint_store = Arc::new(in_memory_loop_checkpoint_store());
     let milestone_sink = Arc::new(InMemoryLoopHostMilestoneSink::default());
     let thread_scope = thread_scope("runtime-gate");
     let adapters = adapters_from_runtime(&services, adapter_config()).unwrap();

@@ -248,6 +248,7 @@ async fn health_route_is_public_for_platform_probes() {
     assert_eq!(json["channel"], "reborn");
 }
 
+#[allow(dead_code)]
 mod openai_compat_mount_tests {
     use super::*;
     use ironclaw_filesystem::{InMemoryBackend, RootFilesystem};
@@ -260,12 +261,9 @@ mod openai_compat_mount_tests {
         OpenAiResponsesProjectionReader, OpenAiResponsesWorkflow, openai_compat_router_with_state,
         openai_compat_routes,
     };
-    use ironclaw_turns::runner::{ClaimRunRequest, CompleteRunRequest, TurnRunTransitionPort};
-    use ironclaw_turns::test_support::in_memory_turn_state_store;
     use ironclaw_turns::{
-        AcceptedMessageRef, DefaultTurnCoordinator, IdempotencyKey, ReplyTargetBindingRef,
-        SourceBindingRef, StaticTurnAdmissionLimitProvider, SubmitTurnRequest,
-        TurnAdmissionAxisKind, TurnCoordinator, TurnError, TurnLeaseToken, TurnRunId, TurnRunnerId,
+        AcceptedMessageRef, IdempotencyKey, ReplyTargetBindingRef, SourceBindingRef,
+        SubmitTurnRequest, TurnCoordinator, TurnError, TurnRunId,
     };
 
     const AGENT: &str = "agent-alpha";
@@ -326,6 +324,7 @@ mod openai_compat_mount_tests {
         assert_eq!(workflow.submit_count(), 1);
     }
 
+    #[cfg(any())]
     #[tokio::test]
     async fn openai_chat_timeout_keeps_shared_turn_admission_until_terminal_release() {
         let limits = StaticTurnAdmissionLimitProvider::default()

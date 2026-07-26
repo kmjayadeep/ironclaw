@@ -5,11 +5,10 @@
 
 use std::sync::Arc;
 
-use ironclaw_filesystem::RootFilesystem;
 use ironclaw_processes::ProcessLifecycleLookupSource;
 use ironclaw_product::AutomationProductService;
 use ironclaw_triggers::{TriggerActiveRunLookup, TriggerRepository};
-use ironclaw_turns::{TurnError, TurnStateRowStore, TurnStateStore};
+use ironclaw_turns::{TurnError, TurnStateStore};
 
 use crate::automation::trigger_poller::SnapshotActiveRunLookup;
 use crate::factory::TurnStateTriggerSourceReplyTarget;
@@ -21,16 +20,11 @@ use crate::factory::TurnStateTriggerSourceReplyTarget;
 /// store backs the active-hold projection from the same run state the harness
 /// coordinator writes, mirroring production's automation-backing pair (#5886).
 #[cfg(feature = "test-support")]
-pub fn local_dev_automation_product_service_for_test<F>(
+pub fn local_dev_automation_product_service_for_test(
     trigger_repository: Arc<dyn TriggerRepository>,
-    turn_state: Arc<TurnStateRowStore<F>>,
-) -> Arc<dyn AutomationProductService>
-where
-    F: RootFilesystem + Send + Sync + 'static,
-{
-    let active_run_lookup = Arc::new(SnapshotActiveRunLookup::new(
-        turn_state as Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
-    ));
+    processes: Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
+) -> Arc<dyn AutomationProductService> {
+    let active_run_lookup = Arc::new(SnapshotActiveRunLookup::new(processes));
     Arc::new(
         crate::automation::service::RebornAutomationProductService::new(
             trigger_repository,
@@ -47,15 +41,10 @@ where
 /// instead of through the WebUI automations service — see
 /// `HostRuntimeCapabilityHarness::install_trigger_active_run_lookup_for_test` (#5886).
 #[cfg(feature = "test-support")]
-pub fn local_dev_trigger_active_run_lookup_for_test<F>(
-    turn_state: Arc<TurnStateRowStore<F>>,
-) -> Arc<dyn TriggerActiveRunLookup>
-where
-    F: RootFilesystem + Send + Sync + 'static,
-{
-    Arc::new(SnapshotActiveRunLookup::new(
-        turn_state as Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
-    ))
+pub fn local_dev_trigger_active_run_lookup_for_test(
+    processes: Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
+) -> Arc<dyn TriggerActiveRunLookup> {
+    Arc::new(SnapshotActiveRunLookup::new(processes))
 }
 
 /// Repoint the local-dev runtime's trigger-source lookup seams at the harness
@@ -63,15 +52,11 @@ where
 /// group coordinator owns its store, so production's single-store wiring must
 /// be late-bound for both active-run listing and trigger delivery inheritance.
 #[cfg(feature = "test-support")]
-pub fn rebind_local_dev_trigger_source_turn_state_for_test<F>(
+pub fn rebind_local_dev_trigger_source_processes_for_test(
     runtime: &crate::RebornRuntime,
-    turn_state: Arc<TurnStateRowStore<F>>,
-) -> Result<(), String>
-where
-    F: RootFilesystem + Send + Sync + 'static,
-{
-    let lifecycle_source =
-        Arc::clone(&turn_state) as Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>;
+    lifecycle_source: Arc<dyn ProcessLifecycleLookupSource<Error = TurnError>>,
+    turn_state: Arc<dyn TurnStateStore>,
+) -> Result<(), String> {
     let reply_target = Arc::new(TurnStateTriggerSourceReplyTarget::new(
         turn_state as Arc<dyn TurnStateStore>,
     ));

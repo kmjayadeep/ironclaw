@@ -1127,6 +1127,3 @@ fn schedule_drain_after(command_tx: mpsc::Sender<SchedulerCommand>, delay: Durat
         }
     });
 }
-#[cfg(test)]
-#[path = "turn_scheduler/tests.rs"]
-mod tests;

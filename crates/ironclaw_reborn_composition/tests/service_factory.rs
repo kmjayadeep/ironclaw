@@ -38,6 +38,7 @@ use ironclaw_reborn_composition::{
     RebornReadinessDiagnosticComponent, RebornReadinessDiagnosticReason,
     RebornReadinessDiagnosticStatus,
 };
+use ironclaw_runner::runtime::ProcessRuntimeSystem;
 use ironclaw_runner::turn_scheduler::{
     SchedulerTurnRunWakeNotifier, TurnRunExecutor, TurnRunExecutorError, TurnRunScheduler,
     TurnRunSchedulerConfig, TurnRunSchedulerHandle,
@@ -45,11 +46,7 @@ use ironclaw_runner::turn_scheduler::{
 use ironclaw_secrets::SecretMaterial;
 use ironclaw_trust::{AdminConfig, AdminEntry, HostTrustAssignment, HostTrustPolicy};
 use ironclaw_trust::{AuthorityCeiling, EffectiveTrustClass, TrustDecision, TrustProvenance};
-use ironclaw_turns::{
-    AgentTurnProcessTransitionAdapter,
-    runner::{ClaimedTurnRun, TurnRunTransitionPort},
-    test_support::in_memory_turn_state_store,
-};
+use ironclaw_turns::runner::ClaimedTurnRun;
 use postgres_support::assert_postgres_accepts_connections;
 use secrecy::SecretString;
 use serde_json::Value;
@@ -57,18 +54,6 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 static SECRETS_MASTER_KEY_ENV_LOCK: Mutex<()> = Mutex::const_new(());
-
-fn scheduler_from_turn(
-    transitions: Arc<dyn TurnRunTransitionPort>,
-    executor: Arc<dyn TurnRunExecutor>,
-    config: TurnRunSchedulerConfig,
-) -> TurnRunScheduler {
-    TurnRunScheduler::new_with_process_transition(
-        Arc::new(AgentTurnProcessTransitionAdapter::new(transitions)),
-        executor,
-        config,
-    )
-}
 
 async fn build_runtime_for_test(
     input: RebornHostBindings,
@@ -486,10 +471,14 @@ fn empty_trust_policy() -> Arc<HostTrustPolicy> {
 }
 
 fn live_wake_notifier() -> (Arc<SchedulerTurnRunWakeNotifier>, TurnRunSchedulerHandle) {
-    let transitions: Arc<dyn TurnRunTransitionPort> = Arc::new(in_memory_turn_state_store());
+    let processes = ProcessRuntimeSystem::in_memory_ephemeral().expect("process system");
     let executor: Arc<dyn TurnRunExecutor> = Arc::new(NoopTurnRunExecutor);
-    let handle =
-        scheduler_from_turn(transitions, executor, TurnRunSchedulerConfig::default()).start();
+    let handle = TurnRunScheduler::new_with_process_transition(
+        processes.transitions(),
+        executor,
+        TurnRunSchedulerConfig::default(),
+    )
+    .start();
     (handle.wake_notifier(), handle)
 }
 

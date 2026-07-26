@@ -5,9 +5,8 @@ use std::sync::Arc;
 
 use super::*;
 use crate::{
-    AcceptedMessageRef, CapabilityActivityId, EventCursor, GateRef, LoopExitMapping,
-    ReplyTargetBindingRef, RunProfileVersion, SourceBindingRef, TurnActor, TurnId, TurnRunProfile,
-    TurnScope, runner::ApplyValidatedLoopExitRequest,
+    AcceptedMessageRef, CapabilityActivityId, EventCursor, GateRef, ReplyTargetBindingRef,
+    RunProfileVersion, SourceBindingRef, TurnActor, TurnId, TurnRunProfile, TurnScope,
 };
 
 fn scope() -> TurnScope {
@@ -61,16 +60,6 @@ fn record_with_status(status: TurnStatus) -> TurnRunRecord {
         spawn_tree_root_run_id: None,
         product_context: None,
         resume_disposition: None,
-    }
-}
-
-fn process_lease_request() -> ProcessLeaseRequest {
-    let runner_id = TurnRunnerId::new();
-    let lease_token = crate::TurnLeaseToken::new();
-    ProcessLeaseRequest {
-        process_id: process_id_from_turn_run_id(TurnRunId::new()),
-        worker_id: ProcessWorkerId::from_trusted(runner_id.to_wire_string()),
-        lease_token: ProcessLeaseToken::from_trusted(lease_token.to_wire_string()),
     }
 }
 
@@ -393,35 +382,6 @@ impl ProcessJournalSource for FakeProcessJournalSource {
 }
 
 #[test]
-fn process_lease_request_maps_to_runner_lease_requests() {
-    let request = process_lease_request();
-
-    let heartbeat = HeartbeatRequest::try_from(request.clone()).expect("heartbeat");
-    assert_eq!(
-        heartbeat.run_id,
-        turn_run_id_from_process_id(request.process_id)
-    );
-
-    let complete = CompleteRunRequest::try_from(request.clone()).expect("complete");
-    assert_eq!(
-        complete.run_id,
-        turn_run_id_from_process_id(request.process_id)
-    );
-
-    let cancel = CancelRunCompletionRequest::try_from(request.clone()).expect("cancel");
-    assert_eq!(
-        cancel.run_id,
-        turn_run_id_from_process_id(request.process_id)
-    );
-
-    let relinquish = RelinquishRunRequest::try_from(request.clone()).expect("relinquish");
-    assert_eq!(
-        relinquish.run_id,
-        turn_run_id_from_process_id(request.process_id)
-    );
-}
-
-#[test]
 fn runner_outcomes_map_to_process_outcomes() {
     let failure = crate::SanitizedFailure::new("runner_failed").expect("failure");
     let blocked = TurnRunnerOutcome::Blocked {
@@ -453,26 +413,5 @@ fn runner_outcomes_map_to_process_outcomes() {
             failure: failure.clone()
         }),
         ProcessOutcome::Failed { failure }
-    );
-}
-
-#[test]
-fn validated_exit_request_preserves_agent_loop_residue() {
-    let request = process_lease_request();
-    let loop_exit = ApplyValidatedLoopExitRequest {
-        run_id: turn_run_id_from_process_id(request.process_id),
-        runner_id: turn_runner_id_from_worker(&request.worker_id).expect("runner id"),
-        lease_token: turn_lease_token_from_process(&request.lease_token).expect("lease token"),
-        mapping: LoopExitMapping::RunnerOutcome(TurnRunnerOutcome::Completed),
-        model_usage: None,
-    };
-
-    assert_eq!(
-        loop_exit.run_id,
-        turn_run_id_from_process_id(request.process_id)
-    );
-    assert_eq!(
-        loop_exit.mapping,
-        LoopExitMapping::RunnerOutcome(TurnRunnerOutcome::Completed)
     );
 }

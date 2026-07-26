@@ -14,25 +14,17 @@ use uuid::Uuid;
 
 use ironclaw_host_api::{ProcessId, ResourceScope, SYSTEM_RESERVED_ID};
 use ironclaw_processes::{
-    CancelProcessRequest, ClaimedProcess, FailProcessRequest, GetProcessSnapshotRequest,
-    JournaledProcessSnapshot, ProcessCheckpointRef, ProcessConcurrencyClass, ProcessControlPort,
-    ProcessJournalCommit, ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalEntry,
-    ProcessJournalKind, ProcessJournalPage, ProcessJournalSource, ProcessKind, ProcessLeaseRequest,
-    ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleStatus, ProcessOperationId,
-    ProcessOutcome, ProcessRuntimePort, ProcessSubmissionPort, ProcessSuspension,
-    ProcessSuspensionKind, ProcessTreePort, ProcessWorkerId, PruneReleasedProcessRequest,
-    RecoverExpiredProcessLeasesRequest, RecoverExpiredProcessLeasesResponse,
-    ReleaseProcessTreeRequest, ReserveProcessTreeRequest, ResumeProcessRequest,
-    SubmitProcessRequest, SuspendProcessRequest,
-};
-#[cfg(feature = "test-support")]
-use ironclaw_processes::{
-    ClaimProcessesRequest, ProcessStateTransitionRequest, ProcessTransitionPort,
+    CancelProcessRequest, ClaimedProcess, GetProcessSnapshotRequest, JournaledProcessSnapshot,
+    ProcessCheckpointRef, ProcessConcurrencyClass, ProcessControlPort, ProcessJournalCommit,
+    ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind,
+    ProcessJournalPage, ProcessJournalSource, ProcessKind, ProcessLeaseSnapshot, ProcessLeaseToken,
+    ProcessLifecycleStatus, ProcessOperationId, ProcessOutcome, ProcessRuntimePort,
+    ProcessSubmissionPort, ProcessSuspension, ProcessSuspensionKind, ProcessTreePort,
+    ProcessWorkerId, PruneReleasedProcessRequest, ReleaseProcessTreeRequest,
+    ReserveProcessTreeRequest, ResumeProcessRequest, SubmitProcessRequest,
 };
 
 #[cfg(feature = "test-support")]
-#[cfg(feature = "test-support")]
-use crate::runner::{ClaimRunsRequest, TurnRunTransitionPort};
 use crate::{
     AcceptedMessageRef, AdmissionRejection, AdmissionRejectionReason, BlockedReason, GateKind,
     GateResumeDisposition, ProductTurnContext, ReplyTargetBindingRef, ResolvedRunProfile,
@@ -48,11 +40,7 @@ use crate::{
     request::{CancelRunRequest, ResumeTurnRequest, RetryTurnRequest, SubmitTurnRequest},
     response::{CancelRunResponse, ResumeTurnResponse, RetryTurnResponse, SubmitTurnResponse},
     run_profile::{LoopModelRouteSnapshot, LoopModelUsage},
-    runner::{
-        BlockRunRequest, CancelRunCompletionRequest, ClaimedTurnRun, CompleteRunRequest,
-        FailRunRequest, HeartbeatRequest, RecordRunnerFailureRequest, RecoverExpiredLeasesRequest,
-        RecoverExpiredLeasesResponse, RelinquishRunRequest, TurnRunnerOutcome,
-    },
+    runner::{ClaimedTurnRun, TurnRunnerOutcome},
     store::SpawnTreeReservation,
 };
 
@@ -1170,19 +1158,6 @@ impl From<&ClaimedTurnRun> for ClaimedProcess {
 }
 
 #[derive(Clone)]
-#[cfg(feature = "test-support")]
-pub struct AgentTurnProcessTransitionAdapter {
-    inner: Arc<dyn TurnRunTransitionPort>,
-}
-
-#[cfg(feature = "test-support")]
-impl AgentTurnProcessTransitionAdapter {
-    pub fn new(inner: Arc<dyn TurnRunTransitionPort>) -> Self {
-        Self { inner }
-    }
-}
-
-#[derive(Clone)]
 pub struct TurnEventProjectionFromProcessJournal {
     source: Arc<dyn ProcessJournalSource<Error = TurnError>>,
 }
@@ -1230,16 +1205,6 @@ impl TurnEventProjectionSource for TurnEventProjectionFromProcessJournal {
     }
 }
 
-#[cfg(feature = "test-support")]
-fn turn_scope_filter_from_process(
-    scope_filter: Option<ironclaw_host_api::ResourceScope>,
-) -> Result<Option<TurnScope>, TurnError> {
-    let Some(scope) = scope_filter else {
-        return Ok(None);
-    };
-    turn_scope_from_process_scope(scope).map(Some)
-}
-
 fn turn_scope_from_process_scope(scope: ResourceScope) -> Result<TurnScope, TurnError> {
     let Some(thread_id) = scope.thread_id else {
         return Err(TurnError::InvalidRequest {
@@ -1261,224 +1226,6 @@ fn turn_scope_from_process_scope(scope: ResourceScope) -> Result<TurnScope, Turn
             thread_id,
             Some(scope.user_id),
         ))
-    }
-}
-
-#[cfg(feature = "test-support")]
-fn turn_recover_request_from_process(
-    request: RecoverExpiredProcessLeasesRequest,
-) -> Result<RecoverExpiredLeasesRequest, TurnError> {
-    Ok(RecoverExpiredLeasesRequest {
-        now: request.now,
-        scope_filter: turn_scope_filter_from_process(request.scope_filter)?,
-    })
-}
-
-#[async_trait]
-#[cfg(feature = "test-support")]
-impl ProcessTransitionPort for AgentTurnProcessTransitionAdapter {
-    type Error = TurnError;
-
-    async fn claim_next_processes(
-        &self,
-        request: ClaimProcessesRequest,
-    ) -> Result<Vec<ClaimedProcess>, Self::Error> {
-        let claimed = self
-            .inner
-            .claim_next_runs(ClaimRunsRequest {
-                runner_id: turn_runner_id_from_worker(&request.worker_id)?,
-                scope_filter: turn_scope_filter_from_process(request.scope_filter)?,
-                max_runs: request.max_processes,
-            })
-            .await?;
-        Ok(claimed.iter().map(ClaimedProcess::from).collect())
-    }
-
-    async fn heartbeat_process(
-        &self,
-        request: ProcessLeaseRequest,
-    ) -> Result<ProcessJournalCursor, Self::Error> {
-        let cursor = self
-            .inner
-            .heartbeat(HeartbeatRequest::try_from(request)?)
-            .await?;
-        Ok(ProcessJournalCursor(cursor.0))
-    }
-
-    async fn recover_expired_process_leases(
-        &self,
-        request: RecoverExpiredProcessLeasesRequest,
-    ) -> Result<RecoverExpiredProcessLeasesResponse, Self::Error> {
-        let response = self
-            .inner
-            .recover_expired_leases(turn_recover_request_from_process(request)?)
-            .await?;
-        Ok(process_recover_response_from_turn(&response))
-    }
-
-    async fn suspend_process(
-        &self,
-        request: SuspendProcessRequest,
-    ) -> Result<JournaledProcessSnapshot, Self::Error> {
-        let state = self
-            .inner
-            .block_run(BlockRunRequest::try_from(request)?)
-            .await?;
-        Ok(state.to_process_state_snapshot())
-    }
-
-    async fn complete_process(
-        &self,
-        request: ProcessStateTransitionRequest,
-    ) -> Result<JournaledProcessSnapshot, Self::Error> {
-        let state = self
-            .inner
-            .complete_run(CompleteRunRequest::try_from(request.lease)?)
-            .await?;
-        Ok(state.to_process_state_snapshot())
-    }
-
-    async fn cancel_process(
-        &self,
-        request: ProcessStateTransitionRequest,
-    ) -> Result<JournaledProcessSnapshot, Self::Error> {
-        let state = self
-            .inner
-            .cancel_run(CancelRunCompletionRequest::try_from(request.lease)?)
-            .await?;
-        Ok(state.to_process_state_snapshot())
-    }
-
-    async fn fail_process(
-        &self,
-        request: FailProcessRequest,
-    ) -> Result<JournaledProcessSnapshot, Self::Error> {
-        let state = self
-            .inner
-            .record_runner_failure(RecordRunnerFailureRequest::try_from(request)?)
-            .await?;
-        Ok(state.to_process_state_snapshot())
-    }
-
-    async fn relinquish_process(
-        &self,
-        request: ProcessLeaseRequest,
-    ) -> Result<JournaledProcessSnapshot, Self::Error> {
-        let state = self
-            .inner
-            .relinquish_run(RelinquishRunRequest::try_from(request)?)
-            .await?;
-        Ok(state.to_process_state_snapshot())
-    }
-}
-
-impl TryFrom<ProcessLeaseRequest> for HeartbeatRequest {
-    type Error = TurnError;
-
-    fn try_from(request: ProcessLeaseRequest) -> Result<Self, Self::Error> {
-        Ok(Self {
-            run_id: turn_run_id_from_process_id(request.process_id),
-            runner_id: turn_runner_id_from_worker(&request.worker_id)?,
-            lease_token: turn_lease_token_from_process(&request.lease_token)?,
-        })
-    }
-}
-
-impl TryFrom<ProcessLeaseRequest> for CompleteRunRequest {
-    type Error = TurnError;
-
-    fn try_from(request: ProcessLeaseRequest) -> Result<Self, Self::Error> {
-        Ok(Self {
-            run_id: turn_run_id_from_process_id(request.process_id),
-            runner_id: turn_runner_id_from_worker(&request.worker_id)?,
-            lease_token: turn_lease_token_from_process(&request.lease_token)?,
-        })
-    }
-}
-
-impl TryFrom<ProcessLeaseRequest> for CancelRunCompletionRequest {
-    type Error = TurnError;
-
-    fn try_from(request: ProcessLeaseRequest) -> Result<Self, Self::Error> {
-        Ok(Self {
-            run_id: turn_run_id_from_process_id(request.process_id),
-            runner_id: turn_runner_id_from_worker(&request.worker_id)?,
-            lease_token: turn_lease_token_from_process(&request.lease_token)?,
-        })
-    }
-}
-
-impl TryFrom<ProcessLeaseRequest> for RelinquishRunRequest {
-    type Error = TurnError;
-
-    fn try_from(request: ProcessLeaseRequest) -> Result<Self, Self::Error> {
-        Ok(Self {
-            run_id: turn_run_id_from_process_id(request.process_id),
-            runner_id: turn_runner_id_from_worker(&request.worker_id)?,
-            lease_token: turn_lease_token_from_process(&request.lease_token)?,
-        })
-    }
-}
-
-impl TryFrom<FailProcessRequest> for FailRunRequest {
-    type Error = TurnError;
-
-    fn try_from(request: FailProcessRequest) -> Result<Self, Self::Error> {
-        Ok(Self {
-            run_id: turn_run_id_from_process_id(request.process_id),
-            runner_id: turn_runner_id_from_worker(&request.worker_id)?,
-            lease_token: turn_lease_token_from_process(&request.lease_token)?,
-            failure: request.failure,
-        })
-    }
-}
-
-impl TryFrom<FailProcessRequest> for RecordRunnerFailureRequest {
-    type Error = TurnError;
-
-    fn try_from(request: FailProcessRequest) -> Result<Self, Self::Error> {
-        Ok(Self {
-            run_id: turn_run_id_from_process_id(request.process_id),
-            runner_id: turn_runner_id_from_worker(&request.worker_id)?,
-            lease_token: turn_lease_token_from_process(&request.lease_token)?,
-            failure: request.failure,
-        })
-    }
-}
-
-pub fn process_recover_request_from_turn(
-    request: RecoverExpiredLeasesRequest,
-) -> RecoverExpiredProcessLeasesRequest {
-    RecoverExpiredProcessLeasesRequest {
-        now: request.now,
-        scope_filter: request.scope_filter.map(|scope| scope.to_resource_scope()),
-    }
-}
-
-pub fn process_recover_response_from_turn(
-    response: &RecoverExpiredLeasesResponse,
-) -> RecoverExpiredProcessLeasesResponse {
-    RecoverExpiredProcessLeasesResponse {
-        recovered: response
-            .recovered
-            .iter()
-            .map(TurnRunStateProcessExt::to_process_state_snapshot)
-            .collect(),
-    }
-}
-
-pub fn process_journal_page_from_turn(page: TurnEventPage) -> ProcessJournalPage {
-    ProcessJournalPage {
-        entries: page
-            .entries
-            .iter()
-            .map(TurnLifecycleProcessExt::to_process_journal_entry)
-            .collect(),
-        next_cursor: ProcessJournalCursor(page.next_cursor.0),
-        truncated: page.truncated,
-        rebase_required: page
-            .rebase_required
-            .map(|cursor| ProcessJournalCursor(cursor.0)),
     }
 }
 
@@ -1686,21 +1433,6 @@ fn blocked_reason_from_process_suspension(
         | ProcessSuspensionKind::ExternalProcess
         | ProcessSuspensionKind::ExtensionDefined => BlockedReason::ExternalTool { gate_ref },
     })
-}
-
-impl TryFrom<SuspendProcessRequest> for BlockRunRequest {
-    type Error = TurnError;
-
-    fn try_from(request: SuspendProcessRequest) -> Result<Self, Self::Error> {
-        Ok(Self {
-            run_id: turn_run_id_from_process_id(request.process_id),
-            runner_id: turn_runner_id_from_worker(&request.worker_id)?,
-            lease_token: turn_lease_token_from_process(&request.lease_token)?,
-            checkpoint_id: TurnCheckpointId::new(),
-            state_ref: crate::run_profile::LoopCheckpointStateRef::legacy_unknown(),
-            reason: blocked_reason_from_process_suspension(request.suspension)?,
-        })
-    }
 }
 
 #[cfg(test)]
