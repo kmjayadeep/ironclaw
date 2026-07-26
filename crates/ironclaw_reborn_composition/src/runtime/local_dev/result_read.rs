@@ -246,17 +246,23 @@ fn result_read_observation(
     }
 }
 
+/// The named result ref does not exist in this thread — a domain failure of
+/// the read operation, not an encoding fault (`InputEncode`) and not a
+/// retryable host outage (`Unavailable` would quietly retry a ref that can
+/// never appear). Model-visible and non-retryable.
 fn unavailable_result_reference() -> Resolution {
     resolution::failed(
-        FailureKind::InputEncode,
+        FailureKind::OperationFailed,
         "result reference is unavailable in this thread".to_string(),
         None,
     )
 }
 
+/// The stored result exists but cannot be decoded as text — an output-decode
+/// failure, not an input-encoding fault.
 fn non_text_result_content() -> Resolution {
     resolution::failed(
-        FailureKind::InputEncode,
+        FailureKind::OutputDecode,
         "stored tool result cannot be returned as text".to_string(),
         None,
     )

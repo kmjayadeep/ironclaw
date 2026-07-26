@@ -3144,7 +3144,7 @@ mod tests {
         };
         assert_eq!(
             missing_record.verdict.error_kind(),
-            Some(&FailureKind::InputEncode)
+            Some(&FailureKind::OperationFailed)
         );
         assert_eq!(
             missing_record.summary.as_str(),
@@ -3193,7 +3193,10 @@ mod tests {
         let Resolution::Done(binary) = binary else {
             panic!("binary result_read should be a recoverable failure, got {binary:?}");
         };
-        assert_eq!(binary.verdict.error_kind(), Some(&FailureKind::InputEncode));
+        assert_eq!(
+            binary.verdict.error_kind(),
+            Some(&FailureKind::OutputDecode)
+        );
         assert_eq!(
             binary.summary.as_str(),
             "stored tool result cannot be returned as text"
@@ -3230,7 +3233,7 @@ mod tests {
         };
         assert_eq!(
             unavailable.verdict.error_kind(),
-            Some(&FailureKind::InputEncode)
+            Some(&FailureKind::OperationFailed)
         );
     }
 
@@ -3745,7 +3748,7 @@ mod tests {
         };
         assert_eq!(
             failure.verdict.error_kind(),
-            Some(&FailureKind::InputEncode)
+            Some(&FailureKind::OperationFailed)
         );
         assert_eq!(
             failure.summary.as_str(),
