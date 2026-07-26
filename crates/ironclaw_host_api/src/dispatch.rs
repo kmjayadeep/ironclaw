@@ -185,6 +185,10 @@ pub enum RuntimeDispatchErrorKind {
     Manifest,
     Memory,
     MethodMissing,
+    /// Transport-level network failure (unreachable, reset, timeout) —
+    /// distinct from [`NetworkDenied`](Self::NetworkDenied), which is an egress
+    /// policy denial. Transport faults retry; policy denials never do.
+    Network,
     NetworkDenied,
     OperationFailed,
     OutputDecode,
@@ -225,6 +229,7 @@ impl From<RuntimeDispatchErrorKind> for crate::FailureKind {
             RuntimeDispatchErrorKind::Manifest => Self::Manifest,
             RuntimeDispatchErrorKind::Memory => Self::Memory,
             RuntimeDispatchErrorKind::MethodMissing => Self::MethodMissing,
+            RuntimeDispatchErrorKind::Network => Self::Network,
             RuntimeDispatchErrorKind::NetworkDenied => Self::NetworkDenied,
             RuntimeDispatchErrorKind::OperationFailed => Self::OperationFailed,
             RuntimeDispatchErrorKind::OutputDecode => Self::OutputDecode,
@@ -271,6 +276,7 @@ impl RuntimeDispatchErrorKind {
             Self::Manifest => "Manifest",
             Self::Memory => "Memory",
             Self::MethodMissing => "MethodMissing",
+            Self::Network => "Network",
             Self::NetworkDenied => "NetworkDenied",
             Self::OperationFailed => "OperationFailed",
             Self::OutputDecode => "OutputDecode",
@@ -303,6 +309,7 @@ impl RuntimeDispatchErrorKind {
             Self::Manifest => "the tool manifest is invalid",
             Self::Memory => "the tool exceeded its memory limit",
             Self::MethodMissing => "the tool method is not available",
+            Self::Network => "a network error interrupted the tool",
             Self::NetworkDenied => "the tool was denied network access",
             Self::OperationFailed => "the tool operation failed",
             Self::OutputDecode => "the tool output could not be decoded",
@@ -331,6 +338,7 @@ impl RuntimeDispatchErrorKind {
             Self::Manifest => "manifest",
             Self::Memory => "memory",
             Self::MethodMissing => "method_missing",
+            Self::Network => "network",
             Self::NetworkDenied => "network_denied",
             Self::OperationFailed => "operation_failed",
             Self::OutputDecode => "output_decode",

@@ -4277,7 +4277,7 @@ async fn builtin_http_requires_tool_call_http_egress_for_inline_output() {
     .await
     .unwrap_err();
 
-    assert_eq!(failure, FailureKind::NetworkDenied);
+    assert_eq!(failure, FailureKind::Network);
     assert!(egress.requests().is_empty());
 }
 
@@ -6745,7 +6745,7 @@ async fn builtin_http_offline_runtime_egress_returns_network_failure_without_pan
     .await
     .unwrap_err();
 
-    assert_eq!(error, FailureKind::NetworkDenied);
+    assert_eq!(error, FailureKind::Network);
     assert_eq!(egress.requests().len(), 1);
 }
 
