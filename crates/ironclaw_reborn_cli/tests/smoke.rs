@@ -1251,10 +1251,7 @@ fn skills_list_reports_reborn_skill_data() {
         "stdout: {stdout}"
     );
     assert!(stdout.contains("configured:"), "stdout: {stdout}");
-    assert!(
-        stdout.contains("source: reborn-local-dev"),
-        "stdout: {stdout}"
-    );
+    assert!(stdout.contains("source: standalone"), "stdout: {stdout}");
     assert!(
         stdout.contains("- code-review (system)"),
         "stdout: {stdout}"
@@ -1297,7 +1294,7 @@ fn skills_list_verbose_reports_reborn_skill_details() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("profile: standalone"), "stdout: {stdout}");
+    assert!(stdout.contains("profile: local-dev"), "stdout: {stdout}");
     assert!(stdout.contains("reborn_home:"), "stdout: {stdout}");
     assert!(stdout.contains("standalone_root:"), "stdout: {stdout}");
     assert!(stdout.contains("owner_id: reborn-cli"), "stdout: {stdout}");
@@ -1339,7 +1336,7 @@ fn skills_list_json_reports_reborn_skill_data() {
         json["configured"].as_u64().expect("configured count") > 1,
         "json: {json}"
     );
-    assert_eq!(json["source"], "reborn-local-dev");
+    assert_eq!(json["source"], "standalone");
     assert_skill_source(&json, "code-review", "system");
     assert_skill_source(&json, "json-helper", "user");
     assert_eq!(json["details"]["profile"], "local-dev");
@@ -1629,7 +1626,7 @@ version: "1.2.3"
 description: {description}
 activation:
   keywords: ["catalog", "helper"]
-  tags: ["local-dev"]
+  tags: ["standalone"]
 requires:
   skills: ["companion-helper"]
 ---
@@ -1641,7 +1638,7 @@ Use {name}.
 }
 
 fn reborn_cli_skill_root(reborn_home: &std::path::Path) -> std::path::PathBuf {
-    reborn_home.join("standalone/tenants/default/users/reborn-cli/skills")
+    reborn_home.join("local-dev/tenants/default/users/reborn-cli/skills")
 }
 
 #[test]

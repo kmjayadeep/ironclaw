@@ -61,7 +61,7 @@ impl SkillsListCommand {
 
         println!("IronClaw Reborn skills");
         println!("configured: {}", skills.len());
-        println!("source: reborn-local-dev");
+        println!("source: standalone");
 
         if self.verbose {
             println!("profile: {}", config.profile);
@@ -146,7 +146,7 @@ fn skills_json(skills: &[RebornSkillSummary]) -> serde_json::Value {
     serde_json::json!({
         "configured": skills.len(),
         "skills": skills.iter().map(reborn_skill_summary_json).collect::<Vec<_>>(),
-        "source": "reborn-local-dev",
+        "source": "standalone",
     })
 }
 

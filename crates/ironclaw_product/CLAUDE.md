@@ -17,10 +17,10 @@ handling, gate routing, mission routing, and redacted acknowledgements.
 | `InboundTurnService` / `DefaultInboundTurnService` | User-message turn submission path |
 | `ConversationBindingService` | Resolves external adapter refs → canonical Reborn identifiers |
 | `ProductConversationBindingService` | Adapter from product workflow bindings to `ironclaw_conversations` with trusted installation→tenant mapping |
-| `StaticProductInstallationResolver` / `ProductInstallationScope` | Host-owned installation registry used by local-dev/tests to select tenant and default agent/project scope |
+| `StaticProductInstallationResolver` / `ProductInstallationScope` | Host-owned installation registry used by standalone deployments and tests to select tenant and default agent/project scope |
 | `ProductConversationSubjectRouteResolver` | Host-owned dynamic shared-route subject resolver; product workflow consults it before static per-installation subject routes |
 | `IdempotencyLedger` | Durable action deduplication port |
-| `InMemoryIdempotencyLedger` | Local-dev/test ledger with in-flight lease recovery semantics |
+| `InMemoryIdempotencyLedger` | Standalone/test ledger with in-flight lease recovery semantics |
 | `ProductInboundAction` | Durable ledger record for inbound actions |
 | `ProductCommandAdmissionService` | Source/auth-aware admission port that decides whether a typed product command may execute |
 | `product-surface command operation` | Reborn-native product command execution port for already-admitted typed commands |
