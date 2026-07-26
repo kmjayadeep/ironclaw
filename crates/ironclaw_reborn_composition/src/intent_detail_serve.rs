@@ -22,6 +22,16 @@
 //! exist and who their approvers are — and an authenticated attacker probing
 //! ids is exactly the caller this endpoint has to assume.
 //!
+//! ## The signing-context sibling
+//!
+//! `GET /api/webchat/v2/intents/{intent_id}/signing-context` serves the
+//! ERC-7730 descriptor for the same intent, under the same authorization. It
+//! exists because the SPA has a zero-remote-origins CSP and cannot reach
+//! Ledger's context service itself (§D3). Its refusal is not an error: a
+//! transaction with no descriptor returns `{"clear_signing": "unavailable"}`
+//! with HTTP 200, and the page must render "this cannot be clear-signed"
+//! rather than offering a blind-sign path.
+//!
 //! ## What the DTO deliberately omits
 //!
 //! The signature, the review-token hash, and the agent key id never leave the
@@ -38,7 +48,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 
-use ironclaw_attestation::{IntentId, IntentRecord, IntentStore, ReviewCaller, authorize_view};
+use ironclaw_attestation::{
+    DecodedTransaction, IntentId, IntentRecord, IntentStore, ReviewCaller, authorize_view,
+};
+use ironclaw_attested_runtime::{
+    DescriptorKey, DescriptorLookup, DescriptorSource, TtlDescriptorCache,
+};
 use ironclaw_host_api::NetworkMethod;
 use ironclaw_host_api::ingress::{
     AllowedEffectPath, AuditTraceClass, BodyLimitPolicy, CorsPolicy, IngressAuthPolicy,
@@ -55,6 +70,9 @@ use crate::webui::route_mounts::ProtectedRouteMount;
 /// The detail path. `{intent_id}` is a placeholder in the route id.
 pub(crate) const INTENT_DETAIL_PATH: &str = "/api/webchat/v2/intents/{intent_id}";
 
+/// The clear-signing descriptor path for the same intent.
+pub(crate) const SIGNING_CONTEXT_PATH: &str = "/api/webchat/v2/intents/{intent_id}/signing-context";
+
 /// Per-caller ceiling. Generous for a human reading one page, tight enough that
 /// an authenticated session cannot sweep the id space quickly.
 const INTENT_DETAIL_MAX_REQUESTS: std::num::NonZero<u32> =
@@ -65,6 +83,9 @@ const INTENT_DETAIL_RATE_WINDOW_SECONDS: std::num::NonZero<u32> =
 #[derive(Clone)]
 struct IntentDetailState {
     intents: Arc<dyn IntentStore>,
+    /// Descriptors for the clear-signing sibling route. Shared so the TTL cache
+    /// is process-wide rather than per-request.
+    descriptors: Arc<TtlDescriptorCache<Arc<dyn DescriptorSource>>>,
 }
 
 /// What the review page renders.
@@ -90,12 +111,121 @@ pub(crate) struct IntentDetailDto {
     pub decoded_tx: serde_json::Value,
 }
 
-/// Build the protected detail mount.
-pub(crate) fn intent_detail_mount(intents: Arc<dyn IntentStore>) -> ProtectedRouteMount {
+/// Build the protected detail mount, including the clear-signing sibling.
+pub(crate) fn intent_detail_mount(
+    intents: Arc<dyn IntentStore>,
+    descriptors: Arc<TtlDescriptorCache<Arc<dyn DescriptorSource>>>,
+) -> ProtectedRouteMount {
     let router = Router::new()
         .route(INTENT_DETAIL_PATH, get(handle_intent_detail))
-        .with_state(IntentDetailState { intents });
-    ProtectedRouteMount::new(router, vec![intent_detail_descriptor()])
+        .route(SIGNING_CONTEXT_PATH, get(handle_signing_context))
+        .with_state(IntentDetailState {
+            intents,
+            descriptors,
+        });
+    ProtectedRouteMount::new(
+        router,
+        vec![intent_detail_descriptor(), signing_context_descriptor()],
+    )
+}
+
+/// Serve the ERC-7730 descriptor for an intent, or say plainly that there is
+/// none.
+///
+/// Authorization is identical to the detail read — an unauthorized caller gets
+/// the same uniform 404, so this route cannot be used to probe which intents
+/// exist. Beyond that gate the response is always 200: "no descriptor" is an
+/// ANSWER, not a failure, and the page renders it as a blocked ceremony.
+async fn handle_signing_context(
+    State(state): State<IntentDetailState>,
+    Extension(caller): Extension<WebUiAuthenticatedCaller>,
+    Path(intent_id): Path<String>,
+) -> Response {
+    let intent_id = IntentId::from_string(intent_id);
+    let tenant = SigningTenantId::new(caller.tenant_id.as_str());
+    let user = SigningUserId::new(caller.user_id.as_str());
+
+    let record = match state.intents.get(&tenant, &intent_id).await {
+        Ok(record) => record,
+        Err(error) => {
+            tracing::debug!(%error, "signing-context lookup did not resolve");
+            return not_found();
+        }
+    };
+    let review_caller = ReviewCaller {
+        user: &user,
+        tenant: &tenant,
+    };
+    let record = match authorize_view(&record, review_caller, now_unix_millis()) {
+        Ok(record) => record,
+        Err(_) => return not_found(),
+    };
+
+    let intent = record.intent.intent();
+    let key = descriptor_key_for(intent.chain_id.as_str(), &intent.decoded_tx);
+    // No contract call to describe (a plain transfer or a deployment) is
+    // reported as unavailable, exactly like a missing descriptor: either way
+    // the device cannot render fields, so the ceremony blocks.
+    let lookup = match key {
+        Some(key) => state.descriptors.lookup(&key, now_unix_millis()).await,
+        None => DescriptorLookup::NotAvailable,
+    };
+
+    let body = match lookup {
+        DescriptorLookup::Available { descriptor } => serde_json::json!({
+            "clear_signing": "available",
+            "descriptor": descriptor,
+        }),
+        DescriptorLookup::NotAvailable => serde_json::json!({
+            "clear_signing": "unavailable",
+        }),
+    };
+    (StatusCode::OK, Json(body)).into_response()
+}
+
+/// The descriptor key for a decoded transaction, when it describes a call.
+fn descriptor_key_for(chain_id: &str, decoded: &DecodedTransaction) -> Option<DescriptorKey> {
+    match decoded {
+        DecodedTransaction::Evm(tx) => {
+            let to = tx
+                .to
+                .as_ref()
+                .map(|address| format!("0x{}", hex::encode(address.0)));
+            DescriptorKey::from_call(chain_id, to.as_deref(), &tx.data)
+        }
+        // Clear signing is EVM-only in v1; other chains block rather than
+        // silently claiming a descriptor applies.
+        _ => None,
+    }
+}
+
+fn signing_context_descriptor() -> IngressRouteDescriptor {
+    let policy = IngressPolicy::new(IngressPolicyParts {
+        listener_class: ListenerClass::LocalGateway,
+        auth: IngressAuthPolicy::Required {
+            schemes: vec![IngressAuthScheme::BearerToken],
+        },
+        scope_source: IngressScopeSource::AuthenticatedCaller,
+        body_limit: BodyLimitPolicy::NoBody,
+        rate_limit: RateLimitPolicy::Limited {
+            scope: RateLimitScope::PerCaller,
+            max_requests: INTENT_DETAIL_MAX_REQUESTS,
+            window_seconds: INTENT_DETAIL_RATE_WINDOW_SECONDS,
+        },
+        cors: CorsPolicy::SameOriginOnly,
+        websocket_origin: WebSocketOriginPolicy::NotApplicable,
+        streaming: StreamingMode::None,
+        audit: AuditTraceClass::UserAction,
+        effect_path: AllowedEffectPath::NoEffect,
+    })
+    .expect("signing context policy must validate"); // safety: same validated shape as the detail route.
+    IngressRouteDescriptor::new(
+        "webui.v2.intent_signing_context".to_string(),
+        NetworkMethod::Get,
+        SIGNING_CONTEXT_PATH.to_string(),
+        policy,
+    )
+    .expect("signing context route descriptor must validate at startup") // safety: crate-local literals.
 }
 
 /// Resolve an intent for its bound approver, or a uniform 404.
@@ -282,11 +412,22 @@ mod tests {
             .extension(caller)
             .body(Body::empty())
             .expect("request");
-        intent_detail_mount(store)
+        intent_detail_mount(store, descriptors_for_test())
             .router
             .oneshot(request)
             .await
             .expect("response")
+    }
+
+    /// Tests default to no descriptor service: the blocked outcome is the
+    /// default everywhere, including here.
+    fn descriptors_for_test() -> Arc<TtlDescriptorCache<Arc<dyn DescriptorSource>>> {
+        Arc::new(TtlDescriptorCache::new(
+            Arc::new(ironclaw_attested_runtime::UnconfiguredDescriptorSource)
+                as Arc<dyn DescriptorSource>,
+            60_000,
+            5_000,
+        ))
     }
 
     async fn store_with(record: IntentRecord) -> Arc<dyn IntentStore> {
@@ -442,6 +583,121 @@ mod tests {
             ],
             "a new field on the review DTO must be a deliberate decision"
         );
+    }
+
+    async fn get_signing_context(
+        store: Arc<dyn IntentStore>,
+        descriptors: Arc<TtlDescriptorCache<Arc<dyn DescriptorSource>>>,
+        tenant: &str,
+        user: &str,
+    ) -> Response {
+        let caller = WebUiAuthenticatedCaller::new(
+            ironclaw_host_api::TenantId::new(tenant).expect("test tenant id"),
+            ironclaw_host_api::UserId::new(user).expect("test user id"),
+            None,
+            None,
+        );
+        let request = Request::builder()
+            .uri(format!("/api/webchat/v2/intents/{ID}/signing-context"))
+            .extension(caller)
+            .body(Body::empty())
+            .expect("request");
+        intent_detail_mount(store, descriptors)
+            .router
+            .oneshot(request)
+            .await
+            .expect("response")
+    }
+
+    /// A source that always has a descriptor, to prove the available branch is
+    /// reachable and that the blocked branch is not merely the only one wired.
+    struct AlwaysAvailable;
+
+    #[async_trait::async_trait]
+    impl DescriptorSource for AlwaysAvailable {
+        async fn lookup(&self, _key: &DescriptorKey) -> DescriptorLookup {
+            DescriptorLookup::Available {
+                descriptor: serde_json::json!({ "context": { "contract": {} } }),
+            }
+        }
+    }
+
+    /// THE fail-closed property (§D3). No descriptor service wired means every
+    /// ceremony blocks — with a 200 carrying an explicit "unavailable", never
+    /// an error a client might treat as "proceed anyway".
+    #[tokio::test]
+    async fn no_descriptor_service_blocks_the_ceremony_explicitly() {
+        let store = store_with(record(
+            "tenant-a",
+            "alice",
+            IntentState::Pending,
+            far_future(),
+        ))
+        .await;
+        let response =
+            get_signing_context(store, descriptors_for_test(), "tenant-a", "alice").await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        assert_eq!(body["clear_signing"], "unavailable");
+        assert!(
+            body.get("descriptor").is_none(),
+            "a blocked ceremony must carry nothing the client could sign from"
+        );
+    }
+
+    /// The descriptor key is derived from the TRANSACTION, never asked for by
+    /// the client — so a transaction with nothing to describe stays blocked
+    /// even against a source that would happily answer anything.
+    #[tokio::test]
+    async fn a_transaction_with_no_call_to_describe_stays_blocked_against_any_source() {
+        let store = store_with(record(
+            "tenant-a",
+            "alice",
+            IntentState::Pending,
+            far_future(),
+        ))
+        .await;
+        let descriptors: Arc<TtlDescriptorCache<Arc<dyn DescriptorSource>>> =
+            Arc::new(TtlDescriptorCache::new(
+                Arc::new(AlwaysAvailable) as Arc<dyn DescriptorSource>,
+                60_000,
+                5_000,
+            ));
+        let response = get_signing_context(store, descriptors, "tenant-a", "alice").await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The fixture is a bare transfer: no selector, nothing to describe. An
+        // always-available source cannot rescue it, because no key is ever
+        // built to ask with.
+        assert_eq!(body_of(response).await["clear_signing"], "unavailable");
+    }
+
+    /// The signing-context route must not become a softer way to probe intents
+    /// than the detail route it sits beside.
+    #[tokio::test]
+    async fn the_signing_context_route_refuses_a_non_approver_identically() {
+        let store = store_with(record(
+            "tenant-a",
+            "alice",
+            IntentState::Pending,
+            far_future(),
+        ))
+        .await;
+        let response =
+            get_signing_context(store, descriptors_for_test(), "tenant-a", "mallory").await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let store = store_with(record(
+            "tenant-a",
+            "alice",
+            IntentState::Pending,
+            far_future(),
+        ))
+        .await;
+        let response =
+            get_signing_context(store, descriptors_for_test(), "tenant-b", "alice").await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     /// A terminal intent still renders — the approver who just signed should

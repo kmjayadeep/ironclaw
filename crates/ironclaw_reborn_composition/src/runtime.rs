@@ -546,7 +546,24 @@ impl From<DefaultPlannedRuntimeBuildError> for RebornRuntimeError {
 /// `RebornRuntime` is the single user-facing handle returned by
 /// [`build_reborn_runtime`]. Downstream code never reaches into the substrate
 /// or worker machinery: it talks to the runtime through task-level methods.
+/// Positive-descriptor TTL: descriptors change rarely, so an hour keeps the
+/// context service quiet without pinning a stale document for long.
+const DESCRIPTOR_HIT_TTL_MS: i64 = 60 * 60 * 1000;
+/// Negative TTL, deliberately much shorter: a transient outage must not pin
+/// "cannot be clear-signed" for an hour, but an un-cached miss would let a
+/// page reload hammer the upstream.
+const DESCRIPTOR_MISS_TTL_MS: i64 = 30 * 1000;
+
 pub struct RebornRuntime {
+    /// Lazily-built clear-signing descriptor cache; see
+    /// `clear_signing_descriptors`.
+    clear_signing_descriptors: std::sync::OnceLock<
+        Arc<
+            ironclaw_attested_runtime::TtlDescriptorCache<
+                Arc<dyn ironclaw_attested_runtime::DescriptorSource>,
+            >,
+        >,
+    >,
     services: RebornServices,
     turn_coordinator: Arc<dyn TurnCoordinator>,
     /// Generic channel host assembly (extension-runtime P6 S2): the
@@ -1309,6 +1326,30 @@ impl RebornRuntime {
         ))
     }
 
+    /// The process-wide clear-signing descriptor cache (§D3).
+    ///
+    /// Built on first use over [`UnconfiguredDescriptorSource`], so a
+    /// deployment that has not wired a descriptor service blocks every Ledger
+    /// ceremony rather than falling through to blind signing. Wiring a real
+    /// (allowlisted, rustls) source replaces the inner source here and nothing
+    /// else — the TTL/fail-closed policy is already in the cache.
+    fn clear_signing_descriptors(
+        &self,
+    ) -> &Arc<
+        ironclaw_attested_runtime::TtlDescriptorCache<
+            Arc<dyn ironclaw_attested_runtime::DescriptorSource>,
+        >,
+    > {
+        self.clear_signing_descriptors.get_or_init(|| {
+            Arc::new(ironclaw_attested_runtime::TtlDescriptorCache::new(
+                Arc::new(ironclaw_attested_runtime::UnconfiguredDescriptorSource)
+                    as Arc<dyn ironclaw_attested_runtime::DescriptorSource>,
+                DESCRIPTOR_HIT_TTL_MS,
+                DESCRIPTOR_MISS_TTL_MS,
+            ))
+        })
+    }
+
     /// Protected intent-detail mount (`GET /api/webchat/v2/intents/{intent_id}`)
     /// for the host ingress to merge via
     /// `WebuiServeConfig::with_protected_route_mount`.
@@ -1321,9 +1362,10 @@ impl RebornRuntime {
     /// nothing to read.
     pub fn intent_detail_mount(&self) -> Option<crate::webui::route_mounts::ProtectedRouteMount> {
         let intents = self.intent_store()?;
-        Some(crate::intent_detail_serve::intent_detail_mount(Arc::clone(
-            intents,
-        )))
+        Some(crate::intent_detail_serve::intent_detail_mount(
+            Arc::clone(intents),
+            Arc::clone(self.clear_signing_descriptors()),
+        ))
     }
 
     /// Public NEAR AI login callback mount for the host ingress to merge via
@@ -4241,6 +4283,7 @@ pub async fn build_reborn_runtime(
     }
 
     let runtime = RebornRuntime {
+        clear_signing_descriptors: std::sync::OnceLock::new(),
         services,
         turn_coordinator,
         channel_host_assembly,
