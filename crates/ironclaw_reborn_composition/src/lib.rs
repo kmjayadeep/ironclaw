@@ -63,6 +63,7 @@ mod support;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 mod trigger_fire_access;
+mod trigger_poller_assembly;
 mod turn_run_snapshot;
 
 pub use admin_token::AdminApiTokenMinter;

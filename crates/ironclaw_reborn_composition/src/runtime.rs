@@ -42,7 +42,7 @@ use ironclaw_first_party_extension_ports::{
 use ironclaw_host_api::{
     ActionResultSummary, ActionSummary, AgentId, ApprovalRequestId, AuditEnvelope, AuditEventId,
     AuditStage, CapabilityId, CorrelationId, DecisionSummary, EffectKind, ExtensionId,
-    InvocationId, MountView, Principal, ProductSurface, ProjectId, ResourceScope,
+    InvocationId, MountView, Principal, ProductSurface, ResourceScope,
     RuntimeHttpEgress, TenantId, ThreadId, UserId,
 };
 use ironclaw_loop_host::{
@@ -176,21 +176,22 @@ impl OutboundDeliveryTargetProvider for StaticOutboundDeliveryTargetProvider {
     }
 }
 use crate::RebornCompositionProfile;
-#[cfg(any(test, feature = "test-support"))]
-use crate::automation::trigger_poller::TenantScopedTrustedTriggerFireAuthorizer;
 use crate::automation::trigger_poller::{
-    AccessCheckerTriggerFireAuthorizer, ConversationContentRefMaterializer,
-    SnapshotActiveRunLookup, TRIGGER_POLLER_SHUTDOWN_TIMEOUT, TriggerPollerCompositionDeps,
-    TriggerPollerRuntimeHandle, spawn_trigger_poller,
+    TRIGGER_POLLER_SHUTDOWN_TIMEOUT, TriggerPollerCompositionDeps, TriggerPollerRuntimeHandle,
+    spawn_trigger_poller,
 };
 use crate::factory::{RebornRuntimeStores, build_runtime_substrate};
 use crate::runtime_input::{
     PollSettings, RebornRuntimeIdentity, RebornRuntimeInput, TriggerFireAccessChecker,
-    TriggerFireAccessGrant, TriggerPollerAuthorizerConfig, TriggerPollerSettings,
+    TriggerFireAccessGrant,
 };
 use crate::trigger_fire_access::{
     CompositeTriggerFireChecker, IdentityMembershipTriggerFireChecker,
     StaticOwnerTriggerFireChecker,
+};
+use crate::trigger_poller_assembly::{
+    build_trigger_active_run_lookup, build_trigger_poller_services, poller_user_directory,
+    validate_trigger_poller_authorization,
 };
 use crate::{RebornBuildError, RebornReadiness};
 use production::{
@@ -849,191 +850,6 @@ pub(crate) type ComposedSelectableSkillContextSource =
     SelectableSkillContextSource<FilesystemSkillBundleSource<CompositeRootFilesystem>>;
 type ComposedSkillExecutionAdapter =
     SkillExecutionAdapter<FilesystemSkillBundleSource<CompositeRootFilesystem>>;
-
-// TODO(#4416): when a second test-only handle is
-// needed off the trigger poller seam (e.g. trusted_submitter,
-// materializer, active_run_lookup for cleanup-state tests), consolidate
-// the cfg-gated fields into a dedicated `TriggerPollerTestHandles`
-// struct exposed via a single `RebornRuntime::trigger_poller_test_handles()`
-// accessor. That removes the current `TriggerPollerServices` /
-// `TriggerPollerServicesInner` split (review f-ptr-1/f-ptr-2) without
-// inventing cfg-gated function parameters. Premature today: only one
-// test-only handle exists, so the shape isn't proven yet.
-struct TriggerPollerServices {
-    materializer: Arc<dyn ironclaw_triggers::TriggerPromptMaterializer>,
-    trusted_submitter: Arc<dyn ironclaw_triggers::TrustedTriggerFireSubmitter>,
-    /// Late-binding slot for the post-submit hook. Created here and shared
-    /// with the poller wrapper; filled by the composition root (the generic
-    /// triggered-delivery hook) without restarting the poller.
-    post_submit_hook_slot: Arc<
-        std::sync::OnceLock<Arc<dyn crate::automation::trigger_poller::PostSubmitDeliveryHook>>,
-    >,
-    /// Test-support handle on the SAME conversation services instance the
-    /// poller-side materializer/submitter use, so integration tests can call
-    /// the production `pair_external_actor` API to seed the trigger
-    /// creator's actor pairing before driving the poller. Without this
-    /// pre-seed, real `ConversationContentRefMaterializer` fails closed with
-    /// `BindingRequired` — by design — and the trusted-ingress turn is
-    /// never submitted.
-    #[cfg(any(test, feature = "test-support"))]
-    pairing_service: Arc<dyn ironclaw_conversations::ConversationActorPairingService>,
-}
-
-/// Build the trigger-poller services from already-resolved conversation
-/// services. Substrate-agnostic: the caller resolves the concrete conversation
-/// services type per substrate (local `RebornFilesystemConversationServices` /
-/// `InMemoryConversationServices`, or the production graph's
-/// `RebornFilesystemConversationServices`) and hands it in by value, so this
-/// function no longer reaches into the local substrate or branches on the
-/// durable-backend cfg.
-fn build_trigger_poller_services<C>(
-    conversation_services: C,
-    turn_coordinator: Arc<dyn TurnCoordinator>,
-    thread_service: Arc<dyn SessionThreadService>,
-    authorizer_config: TriggerPollerAuthorizerConfig,
-    access_checker: Option<Arc<dyn crate::runtime_input::TriggerFireAccessChecker>>,
-    tenant_id: TenantId,
-    default_agent_id: AgentId,
-) -> Result<TriggerPollerServices, RebornRuntimeError>
-where
-    C: ironclaw_conversations::ConversationBindingService
-        + ironclaw_conversations::SessionThreadService
-        + ironclaw_conversations::ConversationActorPairingService
-        + Clone
-        + 'static,
-{
-    let authorizer = build_trigger_fire_authorizer(authorizer_config, access_checker, tenant_id)?;
-    #[cfg(any(test, feature = "test-support"))]
-    let pairing_service: Arc<dyn ironclaw_conversations::ConversationActorPairingService> =
-        Arc::new(conversation_services.clone());
-    let TriggerPollerServicesInner {
-        materializer,
-        trusted_submitter,
-    } = build_trigger_poller_services_from_conversation_services(
-        conversation_services.clone(),
-        conversation_services,
-        turn_coordinator,
-        thread_service,
-        default_agent_id,
-        authorizer,
-    );
-    Ok(TriggerPollerServices {
-        materializer,
-        trusted_submitter,
-        post_submit_hook_slot: Arc::new(std::sync::OnceLock::new()),
-        #[cfg(any(test, feature = "test-support"))]
-        pairing_service,
-    })
-}
-
-fn trigger_poller_authorization_required_error() -> RebornRuntimeError {
-    RebornRuntimeError::InvalidArgument {
-        reason: "trigger poller cannot be enabled without a fire-time creator access checker"
-            .to_string(),
-    }
-}
-
-/// Validate the temporary trigger-poller authorizer shape after the caller has
-/// already decided to enable the poller.
-fn validate_trigger_poller_authorization(
-    trigger_poller: &TriggerPollerSettings,
-    access_checker: Option<&Arc<dyn crate::runtime_input::TriggerFireAccessChecker>>,
-) -> Result<(), RebornRuntimeError> {
-    debug_assert!(trigger_poller.enabled);
-    match trigger_poller.authorizer {
-        #[cfg(any(test, feature = "test-support"))]
-        TriggerPollerAuthorizerConfig::TenantScopedPlaceholderForTest => Ok(()),
-        TriggerPollerAuthorizerConfig::CreatorAccessRequired => access_checker
-            .map(|_| ())
-            .ok_or_else(trigger_poller_authorization_required_error),
-    }
-}
-
-fn build_trigger_fire_authorizer(
-    authorizer_config: TriggerPollerAuthorizerConfig,
-    access_checker: Option<Arc<dyn crate::runtime_input::TriggerFireAccessChecker>>,
-    tenant_id: TenantId,
-) -> Result<
-    Arc<dyn crate::automation::trigger_poller_trusted_submit::TriggerFireAuthorizer>,
-    RebornRuntimeError,
-> {
-    #[cfg(not(any(test, feature = "test-support")))]
-    let _ = tenant_id;
-    match authorizer_config {
-        #[cfg(any(test, feature = "test-support"))]
-        TriggerPollerAuthorizerConfig::TenantScopedPlaceholderForTest => Ok(Arc::new(
-            TenantScopedTrustedTriggerFireAuthorizer::new(tenant_id),
-        )),
-        TriggerPollerAuthorizerConfig::CreatorAccessRequired => access_checker
-            .map(|checker| {
-                Arc::new(AccessCheckerTriggerFireAuthorizer::new(checker))
-                    as Arc<
-                        dyn crate::automation::trigger_poller_trusted_submit::TriggerFireAuthorizer,
-                    >
-            })
-            .ok_or_else(trigger_poller_authorization_required_error),
-    }
-}
-
-struct TriggerPollerServicesInner {
-    materializer: Arc<dyn ironclaw_triggers::TriggerPromptMaterializer>,
-    trusted_submitter: Arc<dyn ironclaw_triggers::TrustedTriggerFireSubmitter>,
-}
-
-fn build_trigger_poller_services_from_conversation_services<B, S>(
-    binding_service: B,
-    session_thread_service: S,
-    turn_coordinator: Arc<dyn TurnCoordinator>,
-    thread_service: Arc<dyn SessionThreadService>,
-    default_agent_id: AgentId,
-    authorizer: Arc<dyn crate::automation::trigger_poller_trusted_submit::TriggerFireAuthorizer>,
-) -> TriggerPollerServicesInner
-where
-    B: ironclaw_conversations::ConversationBindingService + Clone + 'static,
-    S: ironclaw_conversations::SessionThreadService + 'static,
-{
-    let materializer = Arc::new(ConversationContentRefMaterializer::new(
-        binding_service.clone(),
-        Arc::clone(&thread_service),
-        default_agent_id.clone(),
-        authorizer,
-    ));
-    let trusted_submitter = ironclaw_conversations::trusted_trigger_fire_submitter(
-        binding_service,
-        session_thread_service,
-        turn_coordinator,
-    );
-    TriggerPollerServicesInner {
-        materializer,
-        trusted_submitter,
-    }
-}
-
-fn build_trigger_active_run_lookup(
-    snapshot_source: Arc<dyn TurnRunSnapshotSource>,
-) -> Arc<dyn ironclaw_triggers::TriggerActiveRunLookup> {
-    Arc::new(SnapshotActiveRunLookup::new(snapshot_source))
-}
-
-/// Resolve the fire-time `TenantMembership` user directory from the runtime's
-/// configured scoped filesystem. This is a free function because
-/// `build_reborn_runtime` needs it before the final `RebornRuntime` value
-/// exists.
-fn poller_user_directory(
-    scoped_filesystem: Arc<ScopedFilesystem<CompositeRootFilesystem>>,
-    tenant_id: &TenantId,
-    actor_user_id: &UserId,
-    agent_id: &AgentId,
-    project_id: Option<&ProjectId>,
-) -> Arc<dyn ironclaw_reborn_identity::RebornUserDirectory> {
-    filesystem_reborn_identity_store(
-        scoped_filesystem,
-        tenant_id.clone(),
-        actor_user_id.clone(),
-        agent_id.clone(),
-        project_id.cloned(),
-    )
-}
 
 struct SnapshotApprovalTurnRunLocator {
     /// A trait object (not a concrete row-store type) so a
