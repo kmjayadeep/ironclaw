@@ -71,9 +71,12 @@ async fn process_host_kill_transitions_running_process() {
 
 #[tokio::test]
 async fn process_host_await_process_returns_terminal_exit_after_background_completion() {
-    let store = Arc::new(in_mem_process_store());
-    let manager = BackgroundProcessManager::new(store.clone(), Arc::new(DelayedSuccessExecutor));
-    let host = ProcessHost::new(store.as_ref()).with_poll_interval(Duration::from_millis(5));
+    let process_services = ProcessServices::in_memory();
+    let manager =
+        BackgroundProcessManager::new(process_services.clone(), Arc::new(DelayedSuccessExecutor));
+    let host = process_services
+        .host()
+        .with_poll_interval(Duration::from_millis(5));
     let invocation_id = InvocationId::new();
     let process_id = ProcessId::new();
     let scope = sample_scope(invocation_id, "tenant1", "user1");
@@ -231,9 +234,12 @@ async fn process_host_subscribe_emits_initial_and_terminal_records() {
 
 #[tokio::test]
 async fn process_host_subscribe_tracks_background_completion() {
-    let store = Arc::new(in_mem_process_store());
-    let manager = BackgroundProcessManager::new(store.clone(), Arc::new(DelayedSuccessExecutor));
-    let host = ProcessHost::new(store.as_ref()).with_poll_interval(Duration::from_millis(5));
+    let process_services = ProcessServices::in_memory();
+    let manager =
+        BackgroundProcessManager::new(process_services.clone(), Arc::new(DelayedSuccessExecutor));
+    let host = process_services
+        .host()
+        .with_poll_interval(Duration::from_millis(5));
     let invocation_id = InvocationId::new();
     let process_id = ProcessId::new();
     let scope = sample_scope(invocation_id, "tenant1", "user1");

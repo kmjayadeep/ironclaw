@@ -225,6 +225,15 @@ concrete type identity for production-readiness validation. As a result,
 `HostRuntimeServices` carries only its filesystem and resource-governor type
 parameters instead of propagating process store types through composition.
 
+Result payload storage and live cancellation are now internal parts of that
+single process system. `BackgroundProcessManager` requires `ProcessServices`
+instead of accepting a journal and optional result/cancellation collaborators,
+and `DefaultHostRuntime` retains one optional `ProcessServices` field instead
+of decomposing it into three independently wired ports. Large result bodies
+remain externalized from journal rows, and cancellation tokens remain
+process-local execution coordination; neither concern leaks through
+host-runtime construction anymore.
+
 ## Recommended order
 
 1. Partition journal persistence and rerun the four stress artifacts.

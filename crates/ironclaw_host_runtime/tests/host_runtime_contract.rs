@@ -34,7 +34,7 @@ use ironclaw_host_runtime::{
 use ironclaw_processes::{
     ProcessCancellationRegistry, ProcessInvocationError, ProcessInvocationRecord,
     ProcessInvocationStart, ProcessInvocationStatePort, ProcessJournalStore, ProcessResultStore,
-    ProcessResultStorePort, ProcessRuntimePort, ProcessStart, ProcessStatus,
+    ProcessResultStorePort, ProcessServices, ProcessStart, ProcessStatus,
     capability_process_record, submit_capability_process,
 };
 use ironclaw_trust::{
@@ -488,7 +488,11 @@ async fn default_runtime_status_redacts_process_filesystem_errors() {
     )])
     .unwrap();
     let scoped = Arc::new(ScopedFilesystem::with_fixed_view(backend, mounts));
-    let process_store: Arc<dyn ProcessRuntimePort> = Arc::new(ProcessJournalStore::new(scoped));
+    let process_store = Arc::new(ProcessJournalStore::new(scoped));
+    let process_services = ProcessServices::new(
+        process_store,
+        Arc::new(ironclaw_processes::in_memory_backed_process_result_store()),
+    );
     let runtime = DefaultHostRuntime::new(
         registry,
         dispatcher,
@@ -496,7 +500,7 @@ async fn default_runtime_status_redacts_process_filesystem_errors() {
         CapabilitySurfaceVersion::new("surface-v1").unwrap(),
         local_test_runtime_policy(),
     )
-    .with_process_runtime(process_store);
+    .with_process_services(process_services);
 
     let context = execution_context_with_dispatch_grant();
     let error = runtime
@@ -783,6 +787,11 @@ async fn default_runtime_cancel_kills_running_processes_and_cancels_tokens() {
     let authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer> = Arc::new(GrantAuthorizer);
     let process_store = Arc::new(ironclaw_processes::in_memory_backed_process_store());
     let cancellation_registry = Arc::new(ProcessCancellationRegistry::new());
+    let process_services = ProcessServices::from_parts(
+        process_store.clone(),
+        Arc::new(ironclaw_processes::in_memory_backed_process_result_store()),
+        cancellation_registry.clone(),
+    );
     let runtime = DefaultHostRuntime::new(
         registry,
         dispatcher,
@@ -790,8 +799,7 @@ async fn default_runtime_cancel_kills_running_processes_and_cancels_tokens() {
         CapabilitySurfaceVersion::new("surface-v1").unwrap(),
         local_test_runtime_policy(),
     )
-    .with_process_runtime(process_store.clone())
-    .with_process_cancellation_registry(cancellation_registry.clone());
+    .with_process_services(process_services);
 
     let context = execution_context_with_dispatch_grant();
     let process_id = ProcessId::new();
@@ -852,6 +860,10 @@ async fn default_runtime_status_includes_running_processes_from_process_store() 
     let dispatcher = Arc::new(TestDispatcher::ok(dispatch_result()));
     let authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer> = Arc::new(GrantAuthorizer);
     let process_store = Arc::new(ironclaw_processes::in_memory_backed_process_store());
+    let process_services = ProcessServices::new(
+        process_store.clone(),
+        Arc::new(ironclaw_processes::in_memory_backed_process_result_store()),
+    );
     let runtime = DefaultHostRuntime::new(
         registry,
         dispatcher,
@@ -859,7 +871,7 @@ async fn default_runtime_status_includes_running_processes_from_process_store() 
         CapabilitySurfaceVersion::new("surface-v1").unwrap(),
         local_test_runtime_policy(),
     )
-    .with_process_runtime(process_store.clone());
+    .with_process_services(process_services);
 
     let context = execution_context_with_dispatch_grant();
     let process_id = ProcessId::new();
@@ -893,6 +905,11 @@ async fn default_runtime_cancel_writes_killed_process_result_record() {
     let process_store = Arc::new(ProcessJournalStore::new(Arc::clone(&processes_filesystem)));
     let result_store = Arc::new(ProcessResultStore::new(processes_filesystem));
     let cancellation_registry = Arc::new(ProcessCancellationRegistry::new());
+    let process_services = ProcessServices::from_parts(
+        process_store.clone(),
+        result_store.clone(),
+        cancellation_registry.clone(),
+    );
     let runtime = DefaultHostRuntime::new(
         registry,
         dispatcher,
@@ -900,9 +917,7 @@ async fn default_runtime_cancel_writes_killed_process_result_record() {
         CapabilitySurfaceVersion::new("surface-v1").unwrap(),
         local_test_runtime_policy(),
     )
-    .with_process_runtime(process_store.clone())
-    .with_process_result_store(result_store.clone())
-    .with_process_cancellation_registry(cancellation_registry.clone());
+    .with_process_services(process_services);
 
     let context = execution_context_with_dispatch_grant();
     let process_id = ProcessId::new();
@@ -939,6 +954,10 @@ async fn default_runtime_status_does_not_duplicate_process_backed_invocations() 
     let authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer> = Arc::new(GrantAuthorizer);
     let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
     let process_store = Arc::new(ironclaw_processes::in_memory_backed_process_store());
+    let process_services = ProcessServices::new(
+        process_store.clone(),
+        Arc::new(ironclaw_processes::in_memory_backed_process_result_store()),
+    );
     let runtime = DefaultHostRuntime::new(
         registry,
         dispatcher,
@@ -947,7 +966,7 @@ async fn default_runtime_status_does_not_duplicate_process_backed_invocations() 
         local_test_runtime_policy(),
     )
     .with_invocation_state(run_state.clone())
-    .with_process_runtime(process_store.clone());
+    .with_process_services(process_services);
 
     let context = execution_context_with_dispatch_grant();
     let process_id = ProcessId::new();

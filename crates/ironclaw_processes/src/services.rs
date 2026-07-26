@@ -151,10 +151,7 @@ impl ProcessServices {
     where
         E: ProcessExecutor + 'static,
     {
-        BackgroundProcessManager::new_dyn(Arc::clone(&self.process_runtime), executor)
-            .with_cancellation_registry(Arc::clone(&self.cancellation_registry))
-            .with_result_store_dyn(Arc::clone(&self.result_store))
-            .start_supervisor()
+        BackgroundProcessManager::new(self.clone(), executor).start_supervisor()
     }
     pub fn filesystem<F>(filesystem: Arc<ScopedFilesystem<F>>) -> Self
     where
@@ -180,34 +177,24 @@ impl ProcessServices {
 }
 
 pub struct BackgroundProcessManager {
-    runtime: Arc<dyn ProcessRuntimePort>,
+    process_services: ProcessServices,
     executor: Arc<dyn ProcessExecutor + 'static>,
+    // arch-exempt: optional_arc, host-owned obligation handoff is absent from generic process executors, plan #4539
     submission_lifecycle: Option<Arc<dyn ProcessSubmissionLifecycle>>,
-    cancellation_registry: Option<Arc<ProcessCancellationRegistry>>,
-    result_store: Option<Arc<dyn ProcessResultStorePort>>,
+    // arch-exempt: optional_arc, detached failure observation is installed only by hosts that own cleanup policy, plan #4539
     error_handler: Option<Arc<BackgroundErrorHandler>>,
     supervisor: Mutex<Option<ProcessSupervisorHandle>>,
 }
 
 impl BackgroundProcessManager {
-    pub fn new<S, E>(runtime: Arc<S>, executor: Arc<E>) -> Self
-    where
-        S: ProcessRuntimePort + 'static,
-        E: ProcessExecutor + 'static,
-    {
-        Self::new_dyn(runtime, executor)
-    }
-
-    pub fn new_dyn<E>(runtime: Arc<dyn ProcessRuntimePort>, executor: Arc<E>) -> Self
+    pub fn new<E>(process_services: ProcessServices, executor: Arc<E>) -> Self
     where
         E: ProcessExecutor + 'static,
     {
         Self {
-            runtime,
+            process_services,
             executor,
             submission_lifecycle: None,
-            cancellation_registry: None,
-            result_store: None,
             error_handler: None,
             supervisor: Mutex::new(None),
         }
@@ -218,27 +205,6 @@ impl BackgroundProcessManager {
         lifecycle: Arc<dyn ProcessSubmissionLifecycle>,
     ) -> Self {
         self.submission_lifecycle = Some(lifecycle);
-        self
-    }
-
-    pub fn with_cancellation_registry(
-        mut self,
-        registry: Arc<ProcessCancellationRegistry>,
-    ) -> Self {
-        self.cancellation_registry = Some(registry);
-        self
-    }
-
-    pub fn with_result_store<S>(mut self, store: Arc<S>) -> Self
-    where
-        S: ProcessResultStorePort + 'static,
-    {
-        self.result_store = Some(store);
-        self
-    }
-
-    pub fn with_result_store_dyn(mut self, store: Arc<dyn ProcessResultStorePort>) -> Self {
-        self.result_store = Some(store);
         self
     }
 
@@ -267,12 +233,12 @@ impl BackgroundProcessManager {
                     reason: "process supervisor mutex poisoned".to_string(),
                 })?;
         if supervisor.is_none() {
-            let runtime = Arc::clone(&self.runtime);
+            let runtime = self.process_services.process_runtime();
             let executor = Arc::new(BackgroundJournalExecutor {
                 runtime: Arc::clone(&runtime),
                 executor: Arc::clone(&self.executor),
-                cancellation_registry: self.cancellation_registry.clone(),
-                result_store: self.result_store.clone(),
+                cancellation_registry: self.process_services.cancellation_registry(),
+                result_store: self.process_services.result_store(),
                 error_handler: self.error_handler.clone(),
             });
             *supervisor = Some(
@@ -301,7 +267,8 @@ impl ProcessManager for BackgroundProcessManager {
         if let Some(lifecycle) = &self.submission_lifecycle {
             lifecycle.before_submit(&start).await?;
         }
-        let record = match submit_capability_process(self.runtime.as_ref(), start.clone()).await {
+        let runtime = self.process_services.process_runtime();
+        let record = match submit_capability_process(runtime.as_ref(), start.clone()).await {
             Ok(record) => record,
             Err(error) => {
                 if let Some(lifecycle) = &self.submission_lifecycle
@@ -319,9 +286,8 @@ impl ProcessManager for BackgroundProcessManager {
         if let Some(lifecycle) = &self.submission_lifecycle {
             lifecycle.submitted(&record).await?;
         }
-        if let Some(registry) = &self.cancellation_registry {
-            registry.register(&record.scope, record.process_id);
-        }
+        let cancellation_registry = self.process_services.cancellation_registry();
+        cancellation_registry.register(&record.scope, record.process_id);
         let wake_result = self.wake_notifier().and_then(|notifier| {
             notifier
                 .notify_scope(record.scope.clone())
@@ -329,10 +295,8 @@ impl ProcessManager for BackgroundProcessManager {
                     reason: error.to_string(),
                 })
         });
-        if wake_result.is_err()
-            && let Some(registry) = &self.cancellation_registry
-        {
-            registry.unregister(&record.scope, record.process_id);
+        if wake_result.is_err() {
+            cancellation_registry.unregister(&record.scope, record.process_id);
         }
         wake_result?;
         Ok(record)
@@ -342,8 +306,9 @@ impl ProcessManager for BackgroundProcessManager {
 struct BackgroundJournalExecutor {
     runtime: Arc<dyn ProcessRuntimePort>,
     executor: Arc<dyn ProcessExecutor>,
-    cancellation_registry: Option<Arc<ProcessCancellationRegistry>>,
-    result_store: Option<Arc<dyn ProcessResultStorePort>>,
+    cancellation_registry: Arc<ProcessCancellationRegistry>,
+    result_store: Arc<dyn ProcessResultStorePort>,
+    // arch-exempt: optional_arc, copied from the manager's optional host-owned cleanup callback, plan #4539
     error_handler: Option<Arc<BackgroundErrorHandler>>,
 }
 
@@ -389,11 +354,7 @@ impl BackgroundJournalExecutor {
                 serde_json::from_slice(record.payload.as_bytes())
                     .map_err(|error| ProcessError::Deserialization(error.to_string()))
             })?;
-        let cancellation = self
-            .cancellation_registry
-            .as_ref()
-            .map(|registry| registry.register(scope, process_id))
-            .unwrap_or_default();
+        let cancellation = self.cancellation_registry.register(scope, process_id);
         let resource_reservation = record
             .resource_reservation_id
             .map(|id| ResourceReservation {
@@ -446,24 +407,21 @@ impl BackgroundJournalExecutor {
         }
         match outcome {
             Ok(Ok(result)) => {
-                let persisted = if let Some(result_store) = &self.result_store {
-                    match result_store
-                        .complete(scope, process_id, result.output)
-                        .await
-                    {
-                        Ok(_) => true,
-                        Err(error) => {
-                            self.report(
-                                scope,
-                                process_id,
-                                BackgroundFailureStage::ResultStoreComplete,
-                                error,
-                            );
-                            false
-                        }
+                let persisted = match self
+                    .result_store
+                    .complete(scope, process_id, result.output)
+                    .await
+                {
+                    Ok(_) => true,
+                    Err(error) => {
+                        self.report(
+                            scope,
+                            process_id,
+                            BackgroundFailureStage::ResultStoreComplete,
+                            error,
+                        );
+                        false
                     }
-                } else {
-                    true
                 };
                 if persisted
                     && let Err(error) =
@@ -494,24 +452,21 @@ impl BackgroundJournalExecutor {
         process_id: ProcessId,
         error_kind: String,
     ) {
-        let persisted = if let Some(result_store) = &self.result_store {
-            match result_store
-                .fail(scope, process_id, error_kind.clone())
-                .await
-            {
-                Ok(_) => true,
-                Err(error) => {
-                    self.report(
-                        scope,
-                        process_id,
-                        BackgroundFailureStage::ResultStoreFail,
-                        error,
-                    );
-                    false
-                }
+        let persisted = match self
+            .result_store
+            .fail(scope, process_id, error_kind.clone())
+            .await
+        {
+            Ok(_) => true,
+            Err(error) => {
+                self.report(
+                    scope,
+                    process_id,
+                    BackgroundFailureStage::ResultStoreFail,
+                    error,
+                );
+                false
             }
-        } else {
-            true
         };
         if persisted
             && let Err(error) =
@@ -538,9 +493,7 @@ impl JournalProcessExecutor for BackgroundJournalExecutor {
             .catch_unwind()
             .await;
         self.persist_outcome(&scope, process_id, outcome).await;
-        if let Some(registry) = &self.cancellation_registry {
-            registry.unregister(&scope, process_id);
-        }
+        self.cancellation_registry.unregister(&scope, process_id);
         Ok(())
     }
 }

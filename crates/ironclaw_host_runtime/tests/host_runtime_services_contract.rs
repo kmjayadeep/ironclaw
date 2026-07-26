@@ -44,7 +44,8 @@ use ironclaw_processes::{
     BackgroundProcessManager, ProcessError, ProcessHost, ProcessInvocationError,
     ProcessInvocationRecord, ProcessInvocationStart, ProcessInvocationStatePort,
     ProcessInvocationStatus, ProcessJournalStore, ProcessManager, ProcessResultStore,
-    ProcessRuntimePort, ProcessStatus, capability_process_record, submit_capability_process,
+    ProcessRuntimePort, ProcessServices, ProcessStatus, capability_process_record,
+    submit_capability_process,
 };
 use ironclaw_reborn_event_store::{
     RebornEventStoreConfig, RebornEventStoreError, RebornProfile, build_reborn_event_stores,
@@ -2299,24 +2300,26 @@ async fn process_lifecycle_projects_through_durable_replay_without_output_leaks(
         Arc::new(SecretStore::ephemeral()),
         Arc::new(InMemoryResourceGovernor::new()),
     );
-    let process_store =
-        Arc::new(obligation_services.process_obligation_lifecycle_store(inner_process_store));
+    let process_store = Arc::new(
+        obligation_services.process_obligation_lifecycle_store(Arc::clone(&inner_process_store)),
+    );
     process_store
         .register_journal_observer(process_store.process_runtime().as_ref())
         .unwrap();
     let durable_event_log: Arc<dyn DurableEventLog> = event_log.clone();
     process_store.set_event_sink(Arc::new(DurableEventSink::new(durable_event_log)));
     let result_store = Arc::new(ProcessResultStore::new(processes_filesystem));
+    let process_services =
+        ProcessServices::new(Arc::clone(&inner_process_store), Arc::clone(&result_store));
     let submission_lifecycle: Arc<dyn ironclaw_processes::ProcessSubmissionLifecycle> =
         process_store.clone();
-    let manager = BackgroundProcessManager::new_dyn(
-        process_store.process_runtime(),
+    let manager = BackgroundProcessManager::new(
+        process_services.clone(),
         Arc::new(BackgroundExecutor::success_with_output(json!({
             "result": "PROCESS_OUTPUT_SENTINEL_3022 /tmp/process-output-private"
         }))),
     )
-    .with_submission_lifecycle(submission_lifecycle)
-    .with_result_store(Arc::clone(&result_store));
+    .with_submission_lifecycle(submission_lifecycle);
     let process_id = ProcessId::new();
     let invocation_id = InvocationId::new();
     let scope = sample_scope(invocation_id);
@@ -2333,8 +2336,7 @@ async fn process_lifecycle_projects_through_durable_replay_without_output_leaks(
     )
     .await;
 
-    let host = ProcessHost::from_runtime(process_store.process_runtime())
-        .with_result_store(Arc::clone(&result_store));
+    let host = process_services.host();
     let output = host
         .output(&scope, process.process_id)
         .await

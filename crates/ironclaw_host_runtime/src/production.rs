@@ -40,9 +40,8 @@ use ironclaw_process_sandbox::{
     PROCESS_SANDBOX_CAPABILITY_ID, SandboxProcessPlan, ValidatedSandboxProcessPlan,
 };
 use ironclaw_processes::{
-    ProcessCancellationRegistry, ProcessError, ProcessHost, ProcessInvocationError,
-    ProcessInvocationStatePort, ProcessInvocationStatus, ProcessKind, ProcessManager,
-    ProcessResultStorePort, ProcessRuntimePort, ProcessStart, ProcessStatus,
+    ProcessError, ProcessInvocationError, ProcessInvocationStatePort, ProcessInvocationStatus,
+    ProcessKind, ProcessManager, ProcessRuntimePort, ProcessServices, ProcessStart, ProcessStatus,
     map_process_journal_error, process_record_from_snapshot,
 };
 use ironclaw_secrets::SecretStorePort;
@@ -122,11 +121,7 @@ pub struct DefaultHostRuntime {
     // Until the product revoke control plane is split out.
     persistent_approval_policies: Option<Arc<dyn PersistentApprovalPolicyStorePort>>,
     process_manager: Option<Arc<dyn ProcessManager>>,
-    // arch-exempt: optional_arc, process stores are absent unless process execution is wired, plan #4539
-    process_runtime: Option<Arc<dyn ProcessRuntimePort>>,
-    // arch-exempt: optional_arc, process stores are absent unless process execution is wired, plan #4539
-    process_result_store: Option<Arc<dyn ProcessResultStorePort>>,
-    process_cancellation_registry: Option<Arc<ProcessCancellationRegistry>>,
+    process_services: Option<ProcessServices>,
     surface_filesystem: Option<Arc<dyn RootFilesystem>>,
     runtime_health: Option<Arc<dyn RuntimeBackendHealth>>,
     obligation_handler: Option<Arc<dyn CapabilityObligationHandler>>,
@@ -199,9 +194,7 @@ impl DefaultHostRuntime {
             capability_leases: None,
             persistent_approval_policies: None,
             process_manager: None,
-            process_runtime: None,
-            process_result_store: None,
-            process_cancellation_registry: None,
+            process_services: None,
             surface_filesystem: None,
             runtime_health: None,
             obligation_handler: None,
@@ -286,28 +279,8 @@ impl DefaultHostRuntime {
         self
     }
 
-    pub fn with_process_runtime(mut self, process_runtime: Arc<dyn ProcessRuntimePort>) -> Self {
-        self.process_runtime = Some(process_runtime);
-        self
-    }
-
-    /// Attaches the process result store used to persist cancellation results.
-    // arch-exempt: optional_arc, process stores are absent unless process execution is wired, plan #4539
-    pub fn with_process_result_store(
-        mut self,
-        process_result_store: Arc<dyn ProcessResultStorePort>,
-    ) -> Self {
-        self.process_result_store = Some(process_result_store);
-        self
-    }
-
-    /// Attaches the process cancellation registry used to notify running
-    /// background executors when `cancel_work` kills a process record.
-    pub fn with_process_cancellation_registry(
-        mut self,
-        registry: Arc<ProcessCancellationRegistry>,
-    ) -> Self {
-        self.process_cancellation_registry = Some(registry);
+    pub fn with_process_services(mut self, process_services: ProcessServices) -> Self {
+        self.process_services = Some(process_services);
         self
     }
 
@@ -816,17 +789,12 @@ impl HostRuntime for DefaultHostRuntime {
         let mut outcome = CancelRuntimeWorkOutcome::default();
         let mut process_invocations = Vec::new();
 
-        if let Some(process_runtime) = &self.process_runtime {
+        if let Some(process_services) = &self.process_services {
+            let process_runtime = process_services.process_runtime();
             let records = capability_process_records(process_runtime.as_ref(), &request.scope)
                 .await
                 .map_err(unavailable_from_process_error)?;
-            let mut process_host = ProcessHost::from_runtime(Arc::clone(process_runtime));
-            if let Some(registry) = &self.process_cancellation_registry {
-                process_host = process_host.with_cancellation_registry(Arc::clone(registry));
-            }
-            if let Some(result_store) = &self.process_result_store {
-                process_host = process_host.with_result_store_dyn(Arc::clone(result_store));
-            }
+            let process_host = process_services.host();
 
             for record in records {
                 if record.status != ProcessStatus::Running {
@@ -899,7 +867,8 @@ impl HostRuntime for DefaultHostRuntime {
             );
         }
 
-        if let Some(process_runtime) = &self.process_runtime {
+        if let Some(process_services) = &self.process_services {
+            let process_runtime = process_services.process_runtime();
             let records = capability_process_records(process_runtime.as_ref(), &request.scope)
                 .await
                 .map_err(unavailable_from_process_error)?;

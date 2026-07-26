@@ -52,7 +52,7 @@ use ironclaw_processes::{
     ProcessExecutionResult, ProcessExecutor, ProcessInvocationError, ProcessInvocationRecord,
     ProcessInvocationStart, ProcessInvocationStatePort, ProcessInvocationStatus,
     ProcessJournalStore, ProcessResultStore, ProcessResultStorePort, ProcessRuntimePort,
-    ProcessStart, ProcessStatus,
+    ProcessServices, ProcessStart, ProcessStatus,
 };
 use ironclaw_resources::{
     InMemoryResourceGovernor, ResourceAccount, ResourceError, ResourceGovernor, ResourceLimits,
@@ -1116,6 +1116,8 @@ where
                 handle: secret_handle,
             },
         ]));
+    let process_services =
+        ProcessServices::new(Arc::clone(&inner_process_store), Arc::clone(&result_store));
     let process_store =
         Arc::new(obligation_services.process_obligation_lifecycle_store(inner_process_store));
     process_store
@@ -1125,9 +1127,8 @@ where
     let submission_lifecycle: Arc<dyn ironclaw_processes::ProcessSubmissionLifecycle> =
         process_store.clone();
     let process_manager = Arc::new(
-        BackgroundProcessManager::new_dyn(process_store.process_runtime(), Arc::new(executor))
+        BackgroundProcessManager::new(process_services, Arc::new(executor))
             .with_submission_lifecycle(submission_lifecycle)
-            .with_result_store(result_store)
             .with_error_handler(move |failure| {
                 let reconcile = match failure.stage {
                     BackgroundFailureStage::StoreComplete => true,

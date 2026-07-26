@@ -39,7 +39,7 @@ use ironclaw_mcp::{McpError, McpExecutionRequest, McpExecutor, McpInvocation};
 use ironclaw_network::NetworkHttpEgress;
 use ironclaw_processes::{
     BackgroundFailureStage, ProcessExecutor, ProcessInvocationStatePort, ProcessManager,
-    ProcessResultStorePort, ProcessServices,
+    ProcessServices,
 };
 use ironclaw_reborn_event_store::{
     CoalescingEventSink, EventBatchConfig, RebornEventStoreConfig, RebornEventStoreError,
@@ -709,13 +709,11 @@ where
         let submission_lifecycle: Arc<dyn ironclaw_processes::ProcessSubmissionLifecycle> =
             lifecycle_process_store.clone();
         let process_manager: Arc<dyn ProcessManager> = Arc::new(
-            ironclaw_processes::BackgroundProcessManager::new_dyn(
-                self.process_services.process_runtime(),
+            ironclaw_processes::BackgroundProcessManager::new(
+                self.process_services.clone(),
                 process_executor,
             )
             .with_submission_lifecycle(submission_lifecycle)
-            .with_cancellation_registry(self.process_services.cancellation_registry())
-            .with_result_store_dyn(self.process_services.result_store())
             .with_error_handler(move |failure| {
                 let reconcile = match failure.stage {
                     BackgroundFailureStage::StoreComplete => true,
@@ -741,8 +739,6 @@ where
             })
             .start_supervisor(),
         );
-        let process_result_store: Arc<dyn ProcessResultStorePort> =
-            self.process_services.result_store();
         let runtime_health = self.runtime_health.clone().unwrap_or_else(|| {
             Arc::new(RegisteredRuntimeHealth::new(
                 self.registered_runtime_backends(),
@@ -764,9 +760,7 @@ where
         .with_surface_filesystem(surface_filesystem)
         .with_trust_policy_dyn(Arc::clone(&self.trust_policy))
         .with_process_manager(process_manager)
-        .with_process_runtime(self.process_services.process_runtime())
-        .with_process_result_store(process_result_store)
-        .with_process_cancellation_registry(self.process_services.cancellation_registry())
+        .with_process_services(self.process_services.clone())
         .with_runtime_health(runtime_health);
 
         if let Some(invocation_state) = &self.invocation_state {
