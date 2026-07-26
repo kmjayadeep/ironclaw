@@ -2639,7 +2639,7 @@ secret_master_key_env = "IRONCLAW_REBORN_SECRET_MASTER_KEY"
             services.profile(),
             RebornCompositionProfile::HostedSingleTenant
         );
-        assert_eq!(policy.requested_profile.as_str(), "local-dev");
+        assert_eq!(policy.requested_profile.as_str(), "local_dev");
         assert!(!services.grants_trusted_laptop_access());
         drop(pool_max_size);
         drop(secret_master_key);

@@ -1029,9 +1029,11 @@ mod tests {
             }
         );
 
-        // Verify through the RUNTIME storage root (`<home>/standalone`) — the same
-        // db `serve` opens at boot; pins the onboard-write/serve-read convergence.
-        let home_path = home.path().join("standalone");
+        // Verify through the compatibility RUNTIME storage root — the same db
+        // `serve` opens at boot; pins the onboard-write/serve-read convergence.
+        let home_path = home
+            .path()
+            .join(ironclaw_reborn_config::RebornProfile::Standalone.local_runtime_storage_subdir());
         let stored = crate::runtime::block_on_cli(async move {
             let store = ironclaw_reborn_composition::open_standalone_secret_store(&home_path)
                 .await
@@ -1115,9 +1117,11 @@ mod tests {
             }
         );
 
-        // Verify through the RUNTIME storage root (`<home>/standalone`) — the same
-        // db `serve` opens at boot; pins the onboard-write/serve-read convergence.
-        let home_path = home.path().join("standalone");
+        // Verify through the compatibility RUNTIME storage root — the same db
+        // `serve` opens at boot; pins the onboard-write/serve-read convergence.
+        let home_path = home
+            .path()
+            .join(ironclaw_reborn_config::RebornProfile::Standalone.local_runtime_storage_subdir());
         let stored = crate::runtime::block_on_cli(async move {
             let store = ironclaw_reborn_composition::open_standalone_secret_store(&home_path)
                 .await
@@ -1551,9 +1555,11 @@ mod tests {
             "config.toml: {config_text}"
         );
 
-        // Verify through the RUNTIME storage root (`<home>/standalone`) — the same
-        // db `serve` opens at boot; pins the onboard-write/serve-read convergence.
-        let home_path = home.path().join("standalone");
+        // Verify through the compatibility RUNTIME storage root — the same db
+        // `serve` opens at boot; pins the onboard-write/serve-read convergence.
+        let home_path = home
+            .path()
+            .join(ironclaw_reborn_config::RebornProfile::Standalone.local_runtime_storage_subdir());
         let stored = crate::runtime::block_on_cli(async move {
             let store = ironclaw_reborn_composition::open_standalone_secret_store(&home_path)
                 .await
@@ -1655,10 +1661,12 @@ mod tests {
             "config.toml: {config_text}"
         );
 
-        // Verify through the RUNTIME storage root (`<home>/standalone`) — the
-        // same db `serve` opens at boot; pins the onboard-write/serve-read
-        // convergence for the headless env-seed path too.
-        let home_path = home.path().join("standalone");
+        // Verify through the compatibility RUNTIME storage root — the same db
+        // `serve` opens at boot; pins the onboard-write/serve-read convergence
+        // for the headless env-seed path too.
+        let home_path = home
+            .path()
+            .join(ironclaw_reborn_config::RebornProfile::Standalone.local_runtime_storage_subdir());
         let stored = crate::runtime::block_on_cli(async move {
             let store = ironclaw_reborn_composition::open_standalone_secret_store(&home_path)
                 .await
@@ -1817,9 +1825,11 @@ mod tests {
             }
         );
 
-        // Verify through the RUNTIME storage root (`<home>/standalone`) — the same
-        // db `serve` opens at boot; pins the onboard-write/serve-read convergence.
-        let home_path = home.path().join("standalone");
+        // Verify through the compatibility RUNTIME storage root — the same db
+        // `serve` opens at boot; pins the onboard-write/serve-read convergence.
+        let home_path = home
+            .path()
+            .join(ironclaw_reborn_config::RebornProfile::Standalone.local_runtime_storage_subdir());
         let stored = crate::runtime::block_on_cli(async move {
             let store = ironclaw_reborn_composition::open_standalone_secret_store(&home_path)
                 .await
@@ -1946,9 +1956,11 @@ mod tests {
             }
         );
 
-        // Verify through the RUNTIME storage root (`<home>/standalone`) — the same
-        // db `serve` opens at boot; pins the onboard-write/serve-read convergence.
-        let home_path = home.path().join("standalone");
+        // Verify through the compatibility RUNTIME storage root — the same db
+        // `serve` opens at boot; pins the onboard-write/serve-read convergence.
+        let home_path = home
+            .path()
+            .join(ironclaw_reborn_config::RebornProfile::Standalone.local_runtime_storage_subdir());
         let stored = crate::runtime::block_on_cli(async move {
             let store = ironclaw_reborn_composition::open_standalone_secret_store(&home_path)
                 .await

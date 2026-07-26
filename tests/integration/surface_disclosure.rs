@@ -12,7 +12,7 @@
 //! the workspace mount view carries a confirmed `/host` alias
 //! (`HostSurfaceDisclosure::enabled`). When enabled, it appends a
 //! "confirmed scoped roots" note to the `description`/`parameters` of the
-//! local-dev scoped-path capabilities (`read_file`, `write_file`, `list_dir`,
+//! standalone scoped-path capabilities (`read_file`, `write_file`, `list_dir`,
 //! `glob`, `grep`, `apply_patch`) and a local-host-shell note to
 //! `builtin.shell` — so the model is told which host paths are genuinely
 //! mounted instead of guessing raw host paths. This test pins THAT behavior,
@@ -51,7 +51,8 @@ const SCOPED_ROOTS_NOTE_NEEDLE: &str = "Available scoped roots";
 /// `builtin.shell`'s description once the layer is enabled at all (unlike the
 /// scoped-path capabilities, `builtin.shell` gets no `scoped_roots_note`
 /// gate of its own — its branch returns immediately after appending).
-const SHELL_LOCAL_HOST_NOTE_NEEDLE: &str = "Runs on the local host with local-dev shell";
+const SHELL_LOCAL_HOST_NOTE_NEEDLE: &str =
+    "Runs on the local host with configured host process and network access";
 
 /// A harness with a confirmed `/host` mount (Change 4's new
 /// `.with_confirmed_host_mount()` backend) must surface the scoped-roots note

@@ -106,8 +106,8 @@ fn extension_install_json_uses_reborn_home_without_v1_state() {
     assert_eq!(json["payload"]["kind"], "extension_install");
     assert_eq!(json["payload"]["installed"], true);
     assert!(
-        reborn_home
-            .join("standalone/system/extensions/zztest-mcp/manifest.toml")
+        standalone_runtime_root(&reborn_home)
+            .join("system/extensions/zztest-mcp/manifest.toml")
             .exists(),
         "extension install should operate inside Reborn home"
     );
@@ -169,8 +169,8 @@ fn extension_install_auto_advances_and_remove_uses_persisted_installation_state(
     assert_eq!(remove["payload"]["kind"], "extension_remove");
     assert_eq!(remove["payload"]["removed"], true);
     assert!(
-        !reborn_home
-            .join("standalone/system/extensions/zztest-mcp")
+        !standalone_runtime_root(&reborn_home)
+            .join("system/extensions/zztest-mcp")
             .exists(),
         "extension remove should delete the installed package files"
     );
@@ -195,6 +195,11 @@ fn run_extension_json(reborn_home: &Path, args: &[&str]) -> serde_json::Value {
     serde_json::from_str(stdout.trim()).expect("valid JSON")
 }
 
+fn standalone_runtime_root(reborn_home: &Path) -> std::path::PathBuf {
+    reborn_home
+        .join(ironclaw_reborn_config::RebornProfile::Standalone.local_runtime_storage_subdir())
+}
+
 fn write_extension_fixture(reborn_home: &Path, extension_id: &str) {
     write_extension_fixture_with_metadata(
         reborn_home,
@@ -210,8 +215,8 @@ fn write_extension_fixture_with_metadata(
     name: &str,
     description: &str,
 ) {
-    let extension_root = reborn_home
-        .join("standalone/system/extensions")
+    let extension_root = standalone_runtime_root(reborn_home)
+        .join("system/extensions")
         .join(extension_id);
     fs::create_dir_all(&extension_root).expect("fixture extension dir");
     let name = toml_basic_string_value(name);
