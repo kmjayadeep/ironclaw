@@ -80,17 +80,18 @@ agent, capability, and background work.
 
 ## Slice 2: dissolve `ironclaw_run_state`
 
-Status on `process-journal-kernel-transition`: production invocation lifecycle
-is now a process-journal projection. The host runtime maps `InvocationId`
+Status on `process-journal-kernel-transition`: invocation lifecycle is now a
+native process-journal projection. The host runtime maps `InvocationId`
 directly to `ProcessId`, records authorization and approval waits as process
 suspensions, and resumes/claims the same process before terminal transition.
 The filesystem-backed `RunStateStore` and `/run-state` record path are deleted.
 
-`ironclaw_run_state` still owns compatibility lifecycle DTOs/ports and the
-approval/gate stores. Its lifecycle fake is test-only. The remaining dissolution
-is to move approval/gate ownership to `ironclaw_approvals` and replace the
-capability host's `RunStateStorePort` vocabulary with the process projection
-port directly.
+The compatibility lifecycle DTOs/ports, lifecycle fake, combined
+run-state/approval port, and host-runtime combined-store wiring are deleted.
+`CapabilityHost` and `DefaultHostRuntime` consume
+`ProcessInvocationStatePort` directly. `ironclaw_run_state` now contains only
+approval and gate persistence; its remaining dissolution is a package/ownership
+move into `ironclaw_approvals`.
 
 `ironclaw_run_state/src/lib.rs` is 1,019 lines of invocation lifecycle:
 `start`, approval/auth blocking, `complete`, `fail`, scoped lookup, and listing.

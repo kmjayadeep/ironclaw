@@ -1,8 +1,7 @@
-//! Run-state contracts for IronClaw Reborn.
+//! Durable approval and gate records for IronClaw Reborn.
 //!
-//! `ironclaw_run_state` retains compatibility vocabulary for capability
-//! invocation projections plus durable approval and gate records. Production
-//! invocation lifecycle is owned by the process journal.
+//! Process and capability-invocation lifecycle state belongs to
+//! `ironclaw_processes`; this crate owns only approval persistence and gates.
 //!
 //! Durable approval persistence is provided by [`ApprovalRequestStore`] and
 //! [`GateRecordStore`] over a
@@ -19,8 +18,8 @@ use ironclaw_filesystem::{
     ScopedFilesystem, cas_update,
 };
 use ironclaw_host_api::{
-    ApprovalRequest, ApprovalRequestId, CapabilityId, GateRecord, GateRef, HostApiError,
-    InvocationId, ResourceScope, ScopedPath, UserId,
+    ApprovalRequest, ApprovalRequestId, GateRecord, GateRef, HostApiError, ResourceScope,
+    ScopedPath,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -29,42 +28,9 @@ use thiserror::Error;
 mod test_support;
 #[cfg(any(test, feature = "test-support"))]
 pub use test_support::{
-    RunStateStore, in_memory_backed_approval_request_store, in_memory_backed_gate_record_store,
-    in_memory_backed_run_state_filesystem, in_memory_backed_run_state_store,
+    in_memory_backed_approval_filesystem, in_memory_backed_approval_request_store,
+    in_memory_backed_gate_record_store,
 };
-
-/// Current lifecycle state for one invocation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunStatus {
-    Running,
-    BlockedApproval,
-    BlockedAuth,
-    Completed,
-    Failed,
-}
-
-/// State record keyed by invocation ID.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunRecord {
-    pub invocation_id: InvocationId,
-    pub capability_id: CapabilityId,
-    pub scope: ResourceScope,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub authenticated_actor_user_id: Option<UserId>,
-    pub status: RunStatus,
-    pub approval_request_id: Option<ApprovalRequestId>,
-    pub error_kind: Option<String>,
-}
-
-/// Start metadata for a capability invocation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunStart {
-    pub invocation_id: InvocationId,
-    pub capability_id: CapabilityId,
-    pub scope: ResourceScope,
-    pub authenticated_actor_user_id: Option<UserId>,
-}
 
 /// Approval request lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,10 +54,6 @@ pub struct ApprovalRecord {
 /// Run-state and approval persistence errors.
 #[derive(Debug, Error)]
 pub enum RunStateError {
-    #[error("unknown invocation {invocation_id}")]
-    UnknownInvocation { invocation_id: InvocationId },
-    #[error("invocation {invocation_id} already exists")]
-    InvocationAlreadyExists { invocation_id: InvocationId },
     #[error("unknown approval request {request_id}")]
     UnknownApprovalRequest { request_id: ApprovalRequestId },
     #[error("approval request {request_id} already exists")]
@@ -119,57 +81,6 @@ impl From<FilesystemError> for RunStateError {
     fn from(error: FilesystemError) -> Self {
         Self::Filesystem(error.to_string())
     }
-}
-
-/// Current-state store for invocation lifecycle.
-#[async_trait]
-pub trait RunStateStorePort: Send + Sync {
-    /// Creates a running invocation record in the exact resource-owner scope.
-    async fn start(&self, start: RunStart) -> Result<RunRecord, RunStateError>;
-
-    /// Marks an invocation blocked on an approval request without granting authority by itself.
-    async fn block_approval(
-        &self,
-        scope: &ResourceScope,
-        invocation_id: InvocationId,
-        approval: ApprovalRequest,
-    ) -> Result<RunRecord, RunStateError>;
-
-    /// Marks an invocation blocked on external auth/secret resolution without exposing secret material.
-    async fn block_auth(
-        &self,
-        scope: &ResourceScope,
-        invocation_id: InvocationId,
-        error_kind: String,
-    ) -> Result<RunRecord, RunStateError>;
-
-    /// Marks an invocation completed only within the matching scope.
-    async fn complete(
-        &self,
-        scope: &ResourceScope,
-        invocation_id: InvocationId,
-    ) -> Result<RunRecord, RunStateError>;
-
-    /// Marks an invocation failed with a classified error kind, not raw runtime details.
-    async fn fail(
-        &self,
-        scope: &ResourceScope,
-        invocation_id: InvocationId,
-        error_kind: String,
-    ) -> Result<RunRecord, RunStateError>;
-
-    /// Loads one scoped invocation record; wrong-scope lookups must look unknown.
-    async fn get(
-        &self,
-        scope: &ResourceScope,
-        invocation_id: InvocationId,
-    ) -> Result<Option<RunRecord>, RunStateError>;
-
-    /// Lists invocation records visible to the exact resource-owner scope only.
-    async fn records_for_scope(
-        &self,
-        scope: &ResourceScope,
-    ) -> Result<Vec<RunRecord>, RunStateError>;
 }
 
 /// Store for approval requests emitted by authorization decisions.
@@ -221,22 +132,6 @@ pub trait ApprovalRequestStorePort: Send + Sync {
         &self,
         scope: &ResourceScope,
     ) -> Result<Vec<ApprovalRecord>, RunStateError>;
-}
-
-/// Combined run-state + approval request store with an atomic approval-block transition.
-///
-/// Production composition should prefer this interface when the same durable backend
-/// owns both invocation state and approval records. It prevents a crash between
-/// `ApprovalRequestStorePort::save_pending` and `RunStateStorePort::block_approval` from
-/// leaving a user-actionable approval disconnected from a blocked run.
-#[async_trait]
-pub trait RunStateApprovalStorePort: RunStateStorePort + ApprovalRequestStorePort {
-    async fn save_pending_and_block_approval(
-        &self,
-        scope: ResourceScope,
-        invocation_id: InvocationId,
-        approval: ApprovalRequest,
-    ) -> Result<RunRecord, RunStateError>;
 }
 
 /// Durable store for the model-visible [`GateRecord`] a pending gate renders
@@ -291,10 +186,8 @@ const GATE_RECORD_KIND: &str = "gate_record";
 
 /// Filesystem-backed approval request store under the `/approvals` mount alias.
 ///
-/// See [`RunStateStore`] for the structural-tenant-isolation
-/// rationale; this store applies the same shape to approval-request records
-/// under a sibling mount alias so a single composition can wire run state
-/// and approvals to distinct alias targets while sharing one backend.
+/// Tenant/user isolation is supplied by the scoped mount view; the remaining
+/// resource-owner dimensions are encoded structurally in record paths.
 pub struct ApprovalRequestStore<F>
 where
     F: RootFilesystem,
@@ -338,8 +231,7 @@ where
 
     /// Read-modify-write an approval record using the shared lock-free CAS helper.
     ///
-    /// Mirrors `RunStateStore::apply_update` — no per-record mutex,
-    /// no lock held across `.await`.
+    /// Uses the shared bounded CAS helper, with no lock held across `.await`.
     async fn update_status(
         &self,
         scope: &ResourceScope,
@@ -508,8 +400,7 @@ where
         let mut records = Vec::new();
         for entry in entries {
             if entry.name.ends_with(".json") {
-                // See `RunStateStore::records_for_scope` — `list_dir`
-                // returns post-resolution `VirtualPath`s; rebuild the
+                // `list_dir` returns post-resolution `VirtualPath`s; rebuild the
                 // alias-relative `ScopedPath` so the follow-up `get` runs
                 // through the per-op ACL.
                 let child = join_scoped(&root, &entry.name)?;
@@ -543,10 +434,8 @@ struct StoredGateRecord {
 
 /// Filesystem-backed gate-record store under the `/gate-records` mount alias.
 ///
-/// See [`RunStateStore`] for the structural-tenant-isolation
-/// rationale; this store applies the same shape to gate records under a sibling
-/// mount alias so a single composition can wire run state, approvals, and gate
-/// records to distinct alias targets while sharing one backend.
+/// Tenant/user isolation is supplied by the scoped mount view; the remaining
+/// resource-owner dimensions are encoded structurally in record paths.
 pub struct GateRecordStore<F>
 where
     F: RootFilesystem,

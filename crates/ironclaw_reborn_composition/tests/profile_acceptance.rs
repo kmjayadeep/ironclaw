@@ -576,7 +576,7 @@ fn production_wiring_components_keep_host_runtime_stable_names() {
         ProductionWiringComponent::ResourceGovernor,
         ProductionWiringComponent::ProcessStorePort,
         ProductionWiringComponent::ProcessResultStorePort,
-        ProductionWiringComponent::RunState,
+        ProductionWiringComponent::InvocationState,
         ProductionWiringComponent::ApprovalRequests,
         ProductionWiringComponent::CapabilityLeases,
         ProductionWiringComponent::PersistentApprovalPolicies,

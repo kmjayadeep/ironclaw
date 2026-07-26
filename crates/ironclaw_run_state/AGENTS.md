@@ -11,12 +11,15 @@
 
 ## What This Crate Owns
 
-- Durable invocation state and approval request records used by capability and approval flows, currently:
-- Run lifecycle records: `RunStatus`, `RunRecord`, `RunStart`.
-- Approval request records (control-plane state, not authority): `ApprovalStatus`, `ApprovalRecord`.
-- Store traits `RunStateStore`, `ApprovalRequestStore`, `RunStateApprovalStore`, with in-memory (`InMemoryRunStateStore`, `InMemoryApprovalRequestStore`) and filesystem (`RunStateStore`, `ApprovalRequestStore`) backends; `RunStateError`.
+- Durable approval-request and gate records used by approval flows.
+- Approval request records (control-plane state, not authority):
+  `ApprovalStatus`, `ApprovalRecord`, and `ApprovalRequestStorePort`.
+- Model-visible gate records through `GateRecordStorePort`.
+- Invocation lifecycle belongs to `ironclaw_processes`; do not recreate run
+  lifecycle DTOs or ports here.
 - Crate-local public API, tests, and fixtures needed to prove that ownership.
-- All lookups/transitions are resource-owner scoped. Durable persistence is the `Filesystem*Store` pair over a `ScopedFilesystem` — there are no separate per-backend run-state stores; the PostgreSQL/libSQL choice (gated by the `postgres`/`libsql` features) is made at the `RootFilesystem` layer underneath. Writes use compare-and-swap (`CasExpectation::Version`) over versioned roots, degrading to a process-local mutation lock only on byte-only/`Unsupported` roots.
+- All lookups/transitions are resource-owner scoped. Durable persistence uses
+  typed stores over `ScopedFilesystem`; backend choice remains below this crate.
 
 ## Do Not Move In Here
 

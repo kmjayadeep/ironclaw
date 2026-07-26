@@ -23,8 +23,8 @@ use ironclaw_host_runtime::{
 use ironclaw_network::{
     NetworkHttpEgress, NetworkHttpError, NetworkHttpRequest, NetworkHttpResponse, NetworkUsage,
 };
+use ironclaw_processes::{ProcessInvocationStatePort, ProcessInvocationStatus};
 use ironclaw_resources::{InMemoryResourceGovernor, ResourceAccount, ResourceTally};
-use ironclaw_run_state::{RunStateStorePort, RunStatus};
 use ironclaw_secrets::{SecretMaterial, SecretStore, SecretStorePort};
 use ironclaw_trust::{AdminConfig, AdminEntry, HostTrustAssignment, HostTrustPolicy};
 use serde_json::{Value, json};
@@ -39,7 +39,7 @@ async fn host_runtime_invokes_first_party_handler_through_capability_host() {
     let first_party =
         FirstPartyCapabilityRegistry::new().with_handler(capability_id(), Arc::clone(&handler));
     let events = InMemoryEventSink::new();
-    let run_state = Arc::new(ironclaw_run_state::in_memory_backed_run_state_store());
+    let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
     let governor = Arc::new(InMemoryResourceGovernor::new());
     let runtime = HostRuntimeServices::new(
         Arc::new(first_party_registry()),
@@ -51,7 +51,7 @@ async fn host_runtime_invokes_first_party_handler_through_capability_host() {
     )
     .with_first_party_capabilities(Arc::new(first_party))
     .with_trust_policy(Arc::new(first_party_trust_policy()))
-    .with_run_state(Arc::clone(&run_state))
+    .with_invocation_state(Arc::clone(&run_state))
     .with_event_sink(Arc::new(events.clone()))
     .host_runtime_for_local_testing();
     let context = execution_context(CapabilitySet {
@@ -82,7 +82,7 @@ async fn host_runtime_invokes_first_party_handler_through_capability_host() {
     assert_eq!(recorded.input, input);
 
     let run = run_state.get(&scope, invocation_id).await.unwrap().unwrap();
-    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.status, ProcessInvocationStatus::Completed);
     let tenant_account = ResourceAccount::tenant(scope.tenant_id.clone());
     assert_eq!(
         governor.reserved_for(&tenant_account),
@@ -442,7 +442,7 @@ async fn first_party_handler_panic_fails_closed_and_releases_reservation() {
     let first_party =
         FirstPartyCapabilityRegistry::new().with_handler(capability_id(), Arc::clone(&handler));
     let events = InMemoryEventSink::new();
-    let run_state = Arc::new(ironclaw_run_state::in_memory_backed_run_state_store());
+    let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
     let governor = Arc::new(InMemoryResourceGovernor::new());
     let runtime = HostRuntimeServices::new(
         Arc::new(first_party_registry()),
@@ -454,7 +454,7 @@ async fn first_party_handler_panic_fails_closed_and_releases_reservation() {
     )
     .with_first_party_capabilities(Arc::new(first_party))
     .with_trust_policy(Arc::new(first_party_trust_policy()))
-    .with_run_state(Arc::clone(&run_state))
+    .with_invocation_state(Arc::clone(&run_state))
     .with_event_sink(Arc::new(events.clone()))
     .host_runtime_for_local_testing();
     let context = execution_context(CapabilitySet {
@@ -481,7 +481,7 @@ async fn first_party_handler_panic_fails_closed_and_releases_reservation() {
     assert_eq!(failure.kind, RuntimeFailureKind::Backend);
     assert_eq!(governor.reserved_for(&account), ResourceTally::default());
     let run = run_state.get(&scope, invocation_id).await.unwrap().unwrap();
-    assert_eq!(run.status, RunStatus::Failed);
+    assert_eq!(run.status, ProcessInvocationStatus::Failed);
     assert_event_kinds(
         &events,
         &[

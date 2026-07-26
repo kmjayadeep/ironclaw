@@ -3,7 +3,7 @@
 //! This module is intentionally composition-only. It wires the owning Reborn
 //! service crates together, adapts Script/MCP/WASM runtimes into the neutral
 //! dispatcher port, and hands upper services a single [`DefaultHostRuntime`]
-//! service. Authorization, run-state transitions, approval leases, process
+//! service. Authorization, process invocation transitions, approval leases, process
 //! lifecycle, and runtime execution semantics remain in their owning crates.
 
 mod process_executor;
@@ -37,17 +37,15 @@ use ironclaw_host_api::{
 use ironclaw_mcp::{McpError, McpExecutionRequest, McpExecutor, McpInvocation};
 use ironclaw_network::NetworkHttpEgress;
 use ironclaw_processes::{
-    BackgroundFailureStage, ProcessExecutor, ProcessManager, ProcessResultStorePort,
-    ProcessServices, ProcessStorePort,
+    BackgroundFailureStage, ProcessExecutor, ProcessInvocationStatePort, ProcessManager,
+    ProcessResultStorePort, ProcessServices, ProcessStorePort,
 };
 use ironclaw_reborn_event_store::{
     CoalescingEventSink, EventBatchConfig, RebornEventStoreConfig, RebornEventStoreError,
     RebornEventStores, RebornProfile, build_reborn_event_stores,
 };
 use ironclaw_resources::{FilesystemResourceGovernor, InMemoryResourceGovernor, ResourceGovernor};
-use ironclaw_run_state::{
-    ApprovalRequestStore, ApprovalRequestStorePort, RunStateApprovalStorePort, RunStateStorePort,
-};
+use ironclaw_run_state::{ApprovalRequestStore, ApprovalRequestStorePort};
 use ironclaw_scripts::{ScriptError, ScriptExecutionRequest, ScriptExecutor, ScriptInvocation};
 use ironclaw_secrets::{
     CredentialAccountStore, CredentialSessionStore, InMemoryCredentialBroker, SecretStore,
@@ -135,9 +133,8 @@ where
     authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer>,
     process_services: ProcessServices<S, R>,
     surface_version: CapabilitySurfaceVersion,
-    run_state: Option<Arc<dyn RunStateStorePort>>,
+    invocation_state: Option<Arc<dyn ProcessInvocationStatePort>>,
     approval_requests: Option<Arc<dyn ApprovalRequestStorePort>>,
-    run_state_approval_store: Option<Arc<dyn RunStateApprovalStorePort>>,
     capability_leases: Option<Arc<dyn CapabilityLeaseStorePort>>,
     // arch-exempt: optional_arc, service builders support minimal/test host runtime
     // graphs while production Reborn wiring installs this store, plan #4539
@@ -439,9 +436,8 @@ where
             authorizer,
             process_services,
             surface_version,
-            run_state: None,
+            invocation_state: None,
             approval_requests: None,
-            run_state_approval_store: None,
             capability_leases: None,
             persistent_approval_policies: None,
             event_sink: None,
@@ -479,7 +475,7 @@ where
                 resource_governor: ProductionComponentType::of::<G>(),
                 process_store: ProductionComponentType::of::<S>(),
                 process_result_store: ProductionComponentType::of::<R>(),
-                run_state: None,
+                invocation_state: None,
                 approval_requests: None,
                 capability_leases: None,
                 persistent_approval_policies: None,
@@ -762,12 +758,10 @@ where
         .with_process_cancellation_registry(self.process_services.cancellation_registry())
         .with_runtime_health(runtime_health);
 
-        if let Some(run_state) = &self.run_state {
-            runtime = runtime.with_run_state(Arc::clone(run_state));
+        if let Some(invocation_state) = &self.invocation_state {
+            runtime = runtime.with_invocation_state(Arc::clone(invocation_state));
         }
-        if let Some(run_state_approval_store) = &self.run_state_approval_store {
-            runtime = runtime.with_run_state_approval_store(Arc::clone(run_state_approval_store));
-        } else if let Some(approval_requests) = &self.approval_requests {
+        if let Some(approval_requests) = &self.approval_requests {
             runtime = runtime.with_approval_requests(Arc::clone(approval_requests));
         }
         if let Some(capability_leases) = &self.capability_leases {

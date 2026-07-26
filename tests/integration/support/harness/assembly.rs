@@ -303,7 +303,7 @@ pub(crate) fn local_dev_host_runtime_with_registry_and_egress(
     // The typed auth-gate deny/resume paths (#6520) durably terminalize the
     // parked invocation through the run-state store; without it the decline
     // fails closed as HostUnavailable and kills the run.
-    .with_process_journal_run_state(process_runtime, scoped_filesystem)
+    .with_process_journal_invocation_state(process_runtime, scoped_filesystem)
     .with_secret_store(Arc::new(StaticSecretStore::new(
         SecretHandle::new("github_manual_access")?,
         SecretMaterial::from("ghp_fake_fixture_token"),

@@ -7,6 +7,15 @@
 
 ---
 
+> **2026-07-26 ownership update:** invocation lifecycle is no longer owned by
+> this crate. `ProcessInvocationStatePort`, its records/statuses, and the
+> journal-backed implementation live in `ironclaw_processes`. The former
+> `RunStateStorePort`, `RunStateApprovalStorePort`, `/run-state` persistence,
+> and lifecycle test fake have been deleted. This contract now governs only
+> durable approval-request and gate-record persistence. Historical lifecycle
+> sections below describe the superseded V1 design and must not be used as an
+> ownership guide.
+
 ## 1. Purpose
 
 `ironclaw_run_state` stores the current lifecycle state for host-managed invocations and the pending approval requests that can block them.

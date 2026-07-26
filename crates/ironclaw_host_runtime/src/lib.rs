@@ -7,7 +7,7 @@
 //!   depend on;
 //! - [`DefaultHostRuntime`] — the production composition that wraps
 //!   [`ironclaw_capabilities::CapabilityHost`] (which itself coordinates
-//!   authorization, approvals, run-state lifecycle, and process spawn) behind
+//!   authorization, approvals, process invocation lifecycle, and process spawn) behind
 //!   that contract.
 //!
 //! The service preserves three important boundaries:
@@ -54,7 +54,6 @@ mod post_edit_check;
 mod process_aliases;
 mod process_output;
 mod process_port;
-mod process_run_state;
 mod production;
 mod sandbox_process;
 mod services;

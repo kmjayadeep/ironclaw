@@ -18,6 +18,7 @@
 
 mod cancellation;
 mod host;
+mod invocation_state;
 mod journal;
 mod journal_process_store;
 mod journal_store;
@@ -29,6 +30,10 @@ mod types;
 
 pub use cancellation::{ProcessCancellationRegistry, ProcessCancellationToken};
 pub use host::{ProcessHost, ProcessSubscription};
+pub use invocation_state::{
+    ProcessInvocationError, ProcessInvocationRecord, ProcessInvocationStart,
+    ProcessInvocationStatePort, ProcessInvocationStatus, ProcessInvocationStore,
+};
 pub use journal::{
     CancelProcessRequest, ClaimProcessesRequest, ClaimedProcess, FailProcessRequest,
     GetProcessCheckpointRequest, GetProcessSnapshotRequest, JournaledProcessSnapshot,
@@ -59,6 +64,7 @@ pub use services::{
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use test_support::{
+    ProcessInvocationStateStore, in_memory_backed_process_invocation_state_store,
     in_memory_backed_process_result_store, in_memory_backed_process_services,
     in_memory_backed_process_store, in_memory_backed_processes_filesystem,
 };

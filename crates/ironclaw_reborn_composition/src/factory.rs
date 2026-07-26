@@ -1915,7 +1915,7 @@ macro_rules! with_shared_host_runtime_wiring {
         persistent_approval_policies = $policies:expr,
         secret_store = $secret:expr,
         credential_broker = $broker:expr,
-        process_run_state = $process_runtime:expr,
+        process_runtime = $process_runtime:expr,
         approval_filesystem = $fs:expr,
         turn_state = $turn_state:expr,
         run_profile_resolver = $resolver:expr $(,)?
@@ -1930,7 +1930,7 @@ macro_rules! with_shared_host_runtime_wiring {
             ))
             .with_secret_store($secret)
             .with_credential_broker($broker)
-            .with_process_journal_run_state($process_runtime, $fs)
+            .with_process_journal_invocation_state($process_runtime, $fs)
             .with_turn_state($turn_state)
             .with_run_profile_resolver($resolver)
     };
@@ -4129,7 +4129,7 @@ where
         persistent_approval_policies = persistent_approval_policies,
         secret_store = Arc::clone(&secret_credentials.secret_store),
         credential_broker = secret_credentials.credential_broker,
-        process_run_state = processes.runtime(),
+        process_runtime = processes.runtime(),
         approval_filesystem = Arc::clone(&scoped_filesystem),
         turn_state = turn_state,
         run_profile_resolver = Arc::new(
@@ -4680,7 +4680,7 @@ async fn build_backend_production(
         persistent_approval_policies = Arc::clone(&stores.persistent_approval_policies),
         secret_store = Arc::clone(&stores.secret_credentials.secret_store),
         credential_broker = stores.secret_credentials.credential_broker,
-        process_run_state = processes.runtime(),
+        process_runtime = processes.runtime(),
         approval_filesystem = Arc::clone(&stores.scoped_filesystem),
         turn_state = Arc::clone(&process_turn_state),
         run_profile_resolver = planned_run_profile_resolver()?,

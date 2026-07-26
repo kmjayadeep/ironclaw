@@ -22,17 +22,15 @@ use ironclaw_host_runtime::{
     RuntimeFailureKind,
 };
 use ironclaw_processes::{
-    ProcessExecutionRequest, ProcessExecutionResult, ProcessExecutor, ProcessManager,
-    ProcessResultStore, ProcessServices, ProcessStart, ProcessStatus, ProcessStore,
-    ProcessStorePort,
+    ProcessExecutionRequest, ProcessExecutionResult, ProcessExecutor, ProcessInvocationStatePort,
+    ProcessInvocationStateStore, ProcessInvocationStatus, ProcessManager, ProcessResultStore,
+    ProcessServices, ProcessStart, ProcessStatus, ProcessStore, ProcessStorePort,
 };
 use ironclaw_reborn_event_store::{
     RebornEventStoreConfig, RebornEventStores, RebornProfile, build_reborn_event_stores,
 };
 use ironclaw_resources::InMemoryResourceGovernor;
-use ironclaw_run_state::{
-    ApprovalRequestStore, ApprovalRequestStorePort, RunStateStore, RunStateStorePort, RunStatus,
-};
+use ironclaw_run_state::{ApprovalRequestStore, ApprovalRequestStorePort};
 use ironclaw_scripts::{
     ScriptBackend, ScriptBackendOutput, ScriptBackendRequest, ScriptRuntime, ScriptRuntimeConfig,
 };
@@ -129,7 +127,7 @@ async fn approval_resume_survives_filesystem_service_restart_and_consumes_lease_
         .await
         .unwrap()
         .expect("run state must survive restart");
-    assert_eq!(completed_run.status, RunStatus::Completed);
+    assert_eq!(completed_run.status, ProcessInvocationStatus::Completed);
     assert_eq!(
         third
             .capability_leases
@@ -277,7 +275,7 @@ async fn approval_resume_survives_durable_libsql_reopen_and_consumes_lease_once(
         .await
         .unwrap()
         .expect("run state must survive durable libsql reopen");
-    assert_eq!(completed_run.status, RunStatus::Completed);
+    assert_eq!(completed_run.status, ProcessInvocationStatus::Completed);
     assert_eq!(
         third
             .capability_leases
@@ -484,7 +482,7 @@ where
     F: RootFilesystem,
 {
     services: DurableHostRuntimeServices,
-    run_state: Arc<RunStateStore<F>>,
+    run_state: Arc<ProcessInvocationStateStore<F>>,
     approval_requests: Arc<ApprovalRequestStore<F>>,
     capability_leases: Arc<CapabilityLeaseStore<DiskFilesystem>>,
     events: RebornEventStores,
@@ -527,7 +525,7 @@ async fn durable_services(
     let event_stores = jsonl_event_stores(event_root).await;
     let scoped_fs = scoped_engine_filesystem(engine_root);
     let run_state_fs = scoped_run_state_filesystem(shared_run_state_backend);
-    let run_state = Arc::new(RunStateStore::new(Arc::clone(&run_state_fs)));
+    let run_state = Arc::new(ProcessInvocationStateStore::new(Arc::clone(&run_state_fs)));
     let approval_requests = Arc::new(ApprovalRequestStore::new(Arc::clone(&run_state_fs)));
     let capability_leases = Arc::new(CapabilityLeaseStore::new(Arc::clone(&scoped_fs)));
     let services = base_services(
@@ -535,7 +533,7 @@ async fn durable_services(
         event_stores.clone(),
         Arc::new(ApprovalThenGrantAuthorizer),
     )
-    .with_run_state(Arc::clone(&run_state))
+    .with_invocation_state(Arc::clone(&run_state))
     .with_approval_requests(Arc::clone(&approval_requests))
     .with_capability_leases(Arc::clone(&capability_leases));
 
@@ -563,7 +561,7 @@ async fn durable_services_with_libsql_run_state(
     let event_stores = jsonl_event_stores(event_root).await;
     let scoped_fs = scoped_engine_filesystem(engine_root);
     let run_state_fs = scoped_libsql_run_state_filesystem(db_path).await;
-    let run_state = Arc::new(RunStateStore::new(Arc::clone(&run_state_fs)));
+    let run_state = Arc::new(ProcessInvocationStateStore::new(Arc::clone(&run_state_fs)));
     let approval_requests = Arc::new(ApprovalRequestStore::new(Arc::clone(&run_state_fs)));
     let capability_leases = Arc::new(CapabilityLeaseStore::new(Arc::clone(&scoped_fs)));
     let services = base_services(
@@ -571,7 +569,7 @@ async fn durable_services_with_libsql_run_state(
         event_stores.clone(),
         Arc::new(ApprovalThenGrantAuthorizer),
     )
-    .with_run_state(Arc::clone(&run_state))
+    .with_invocation_state(Arc::clone(&run_state))
     .with_approval_requests(Arc::clone(&approval_requests))
     .with_capability_leases(Arc::clone(&capability_leases));
 
@@ -759,7 +757,7 @@ async fn approve_dispatch_for_services(
 }
 
 async fn assert_blocked_run(
-    run_state: &dyn RunStateStorePort,
+    run_state: &dyn ProcessInvocationStatePort,
     scope: &ResourceScope,
     invocation_id: InvocationId,
     approval_request_id: ApprovalRequestId,
@@ -769,7 +767,7 @@ async fn assert_blocked_run(
         .await
         .unwrap()
         .expect("run state should exist");
-    assert_eq!(run.status, RunStatus::BlockedApproval);
+    assert_eq!(run.status, ProcessInvocationStatus::BlockedApproval);
     assert_eq!(run.approval_request_id, Some(approval_request_id));
 }
 

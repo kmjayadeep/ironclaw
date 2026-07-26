@@ -48,8 +48,8 @@ where
         }
         self.push_missing(
             &mut issues,
-            ProductionWiringComponent::RunState,
-            self.run_state.is_some(),
+            ProductionWiringComponent::InvocationState,
+            self.invocation_state.is_some(),
         );
         self.push_missing(
             &mut issues,
@@ -258,8 +258,8 @@ where
         );
         self.push_local_only(
             &mut issues,
-            ProductionWiringComponent::RunState,
-            self.component_types.run_state,
+            ProductionWiringComponent::InvocationState,
+            self.component_types.invocation_state,
         );
         self.push_local_only(
             &mut issues,
