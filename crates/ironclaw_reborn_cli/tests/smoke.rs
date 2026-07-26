@@ -814,7 +814,7 @@ fn docker_reborn_entrypoint_rejects_stale_standalone_config_for_production() {
         stderr.contains("IRONCLAW_REBORN_PROFILE=production requires"),
         "stderr: {stderr}"
     );
-    assert!(stderr.contains("stale standalone seed"), "stderr: {stderr}");
+    assert!(stderr.contains("stale local-dev seed"), "stderr: {stderr}");
 }
 
 /// The exact `[llm.default]` bytes every shipped Docker profile config used
@@ -1132,7 +1132,7 @@ fn profile_list_shows_supported_profiles_without_reborn_home() {
         stdout.contains("IronClaw Reborn profiles"),
         "stdout: {stdout}"
     );
-    assert!(stdout.contains("standalone (default)"), "stdout: {stdout}");
+    assert!(stdout.contains("local-dev (default)"), "stdout: {stdout}");
     assert!(stdout.contains("local-dev-yolo"), "stdout: {stdout}");
     assert!(stdout.contains("hosted-single-tenant"), "stdout: {stdout}");
     assert!(
@@ -1712,7 +1712,7 @@ fn config_path_reports_default_reborn_home_without_creating_directories() {
         "stdout: {stdout}"
     );
     assert!(stdout.contains("home_source: default"), "stdout: {stdout}");
-    assert!(stdout.contains("profile: standalone"), "stdout: {stdout}");
+    assert!(stdout.contains("profile: local-dev"), "stdout: {stdout}");
     assert!(
         !temp.path().join(".ironclaw").exists(),
         "config path should not create default Reborn or v1 state directories"
@@ -2085,7 +2085,7 @@ fn serve_crash_loops_with_skill_root_overlap_when_cwd_is_reborn_home_itself() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("standalone workspace root must not overlap default skill root"),
+        stderr.contains("workspace root must not overlap default skill root"),
         "expected the exact composition overlap error this fix eliminates for \
          <reborn_home>/workspace: stderr={stderr}"
     );
@@ -2246,7 +2246,7 @@ fn serve_with_env_auth_seeds_reborn_config_before_binding() {
         "seeded config should stamp api_version: {config}"
     );
     assert!(
-        config.contains("profile = \"standalone\""),
+        config.contains("profile = \"local-dev\""),
         "seeded config should preserve the safe default profile: {config}"
     );
     assert!(
@@ -3028,7 +3028,7 @@ fn run_reports_runtime_readiness_snapshot_without_touching_v1_state() {
         stdout.contains(reborn_home.to_str().expect("utf8 path")),
         "stdout: {stdout}"
     );
-    assert!(stdout.contains("profile: standalone"), "stdout: {stdout}");
+    assert!(stdout.contains("profile: local-dev"), "stdout: {stdout}");
     assert!(stdout.contains("v1_state: not-used"), "stdout: {stdout}");
     assert!(
         stdout.contains("runtime_driver: planned-agent-loop"),
@@ -3196,7 +3196,7 @@ fn repl_exit_command_seeds_reborn_config() {
         "seeded config should stamp api_version: {config}"
     );
     assert!(
-        config.contains("profile = \"standalone\""),
+        config.contains("profile = \"local-dev\""),
         "seeded config should record default profile: {config}"
     );
     assert!(
@@ -3467,7 +3467,7 @@ fn repl_piped_message_exits_nonzero_when_runtime_does_not_produce_reply() {
         "seeded config should stamp api_version: {config}"
     );
     assert!(
-        config.contains("profile = \"standalone\""),
+        config.contains("profile = \"local-dev\""),
         "seeded config should record default profile: {config}"
     );
     assert!(
@@ -3514,7 +3514,7 @@ fn run_message_exits_nonzero_when_runtime_does_not_produce_reply() {
         "seeded config should stamp api_version: {config}"
     );
     assert!(
-        config.contains("profile = \"standalone\""),
+        config.contains("profile = \"local-dev\""),
         "seeded config should record default profile: {config}"
     );
     assert!(
@@ -6238,7 +6238,7 @@ fn run_warns_when_falling_back_to_stub_gateway() {
     );
     assert!(
         reborn_home
-            .join("standalone/system/skills/code-review/SKILL.md")
+            .join("local-dev/system/skills/code-review/SKILL.md")
             .is_file(),
         "runtime bootstrap should install bundled Reborn skills"
     );
@@ -6274,7 +6274,7 @@ fn run_confirm_host_access_flag_gates_standalone_yolo() {
     let config = std::fs::read_to_string(reborn_home.join("config.toml"))
         .expect("confirmed first runtime start should seed config");
     assert!(
-        config.contains("profile = \"standalone\""),
+        config.contains("profile = \"local-dev\""),
         "env-selected standalone-unrestricted must not become the persistent default: {config}"
     );
 }
