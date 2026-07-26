@@ -12,7 +12,7 @@
 ## What This Crate Owns
 
 - Process lifecycle, journal, dependencies, invocation projections,
-  cancellation, and the background process manager.
+  cancellation, and generic process supervision.
 - Journal-native capability invocation state: `ProcessInvocationRecord`,
   `ProcessInvocationStatus`, `ProcessInvocationStatePort`, and
   `ProcessInvocationStore`.
@@ -22,7 +22,9 @@
 - Process dependencies: atomic child submission/open, settle, consume/abandon,
   scoped group queries, and unresolved recovery enumeration.
 - Cancellation (`cancellation`): `ProcessCancellationRegistry`, `ProcessCancellationToken`.
-- Host + background management: `ProcessHost`/`ProcessSubscription` (`host`); `BackgroundProcessManager`, `ProcessServices`, and `BackgroundErrorHandler`/`BackgroundFailure`/`BackgroundFailureStage` (`services`).
+- Host + background management: `ProcessHost`/`ProcessSubscription` (`host`);
+  the compatibility `BackgroundProcessManager` registers
+  `ProcessKind::CapabilityInvocation` with `ProcessSupervisor`.
 - Crate-local public API, tests, and fixtures needed to prove that ownership.
 
 ## Do Not Move In Here

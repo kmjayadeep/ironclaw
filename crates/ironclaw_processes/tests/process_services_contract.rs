@@ -50,6 +50,31 @@ async fn process_services_wire_background_results_to_host() {
 }
 
 #[tokio::test]
+async fn background_manager_recovers_queued_processes_present_at_startup() {
+    let services = in_mem_process_services();
+    let invocation_id = InvocationId::new();
+    let process_id = ProcessId::new();
+    let scope = sample_scope(invocation_id, "tenant1", "user1");
+    services
+        .process_store()
+        .start(process_start(process_id, invocation_id, scope.clone()))
+        .await
+        .unwrap();
+
+    let _manager = services.background_manager(Arc::new(SuccessExecutor));
+    let host = services.host().with_poll_interval(Duration::from_millis(5));
+    let result = timeout(
+        Duration::from_secs(1),
+        host.await_result(&scope, process_id),
+    )
+    .await
+    .expect("queued process is recovered")
+    .expect("queued process completes");
+
+    assert_eq!(result.status, ProcessStatus::Completed);
+}
+
+#[tokio::test]
 async fn process_services_share_cancellation_registry_between_host_and_manager() {
     let services = in_mem_process_services();
     let executor = Arc::new(CancellationAwareExecutor::default());
@@ -63,6 +88,9 @@ async fn process_services_share_cancellation_registry_between_host_and_manager()
         .await
         .unwrap();
 
+    timeout(Duration::from_millis(200), executor.wait_for_start())
+        .await
+        .unwrap();
     let host = services.host().with_poll_interval(Duration::from_millis(5));
     host.kill(&scope, process_id).await.unwrap();
 
@@ -176,6 +204,7 @@ impl ProcessExecutor for SuccessExecutor {
 #[derive(Default)]
 struct CancellationAwareExecutor {
     cancellations: AtomicUsize,
+    started: Notify,
     notified: Notify,
 }
 
@@ -212,6 +241,10 @@ impl ProcessExecutor for RecordingHandoffExecutor {
 }
 
 impl CancellationAwareExecutor {
+    async fn wait_for_start(&self) {
+        self.started.notified().await;
+    }
+
     async fn wait_for_cancellation(&self) {
         loop {
             let notified = self.notified.notified();
@@ -229,6 +262,7 @@ impl ProcessExecutor for CancellationAwareExecutor {
         &self,
         request: ProcessExecutionRequest,
     ) -> Result<ProcessExecutionResult, ProcessExecutionError> {
+        self.started.notify_one();
         request.cancellation.cancelled().await;
         self.cancellations.fetch_add(1, Ordering::SeqCst);
         self.notified.notify_waiters();

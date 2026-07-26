@@ -3,16 +3,15 @@
 //! - [`ProcessServices`] bundles a process store, a result store, and a
 //!   shared [`ProcessCancellationRegistry`] so the host and background manager
 //!   stay coordinated through a single graph.
-//! - [`BackgroundProcessManager`] is the production [`ProcessManager`] that
-//!   spawns a detached tokio task per `spawn` and writes terminal status +
-//!   result records when the executor finishes (or panics).
+//! - [`BackgroundProcessManager`] is the compatibility [`ProcessManager`] that
+//!   journals capability work and registers its executor with the generic
+//!   [`ProcessSupervisor`].
 //!
-//! Background-task failures (store/result-store errors during the spawned
-//! task) can be observed by attaching a
+//! Executor persistence failures can be observed by attaching a
 //! [`with_error_handler`](BackgroundProcessManager::with_error_handler)
 //! callback. Without a handler, those errors are silently dropped.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use futures::FutureExt;
@@ -27,6 +26,11 @@ use crate::result_store::ProcessResultStore;
 use crate::types::{
     ProcessError, ProcessExecutionRequest, ProcessExecutor, ProcessManager, ProcessRecord,
     ProcessResultStorePort, ProcessStart, ProcessStatus, ProcessStorePort,
+};
+use crate::{
+    ClaimedProcess, GetProcessInputRequest, JournalProcessExecutor, ProcessExecutorFailure,
+    ProcessKind, ProcessRuntimePort, ProcessSupervisor, ProcessSupervisorConfig,
+    ProcessSupervisorHandle,
 };
 
 /// Stage at which a background task failed to persist state.
@@ -135,6 +139,7 @@ where
         BackgroundProcessManager::new(Arc::clone(&self.process_store), executor)
             .with_cancellation_registry(Arc::clone(&self.cancellation_registry))
             .with_result_store(Arc::clone(&self.result_store))
+            .start_supervisor()
     }
 }
 
@@ -173,6 +178,7 @@ pub struct BackgroundProcessManager {
     cancellation_registry: Option<Arc<ProcessCancellationRegistry>>,
     result_store: Option<Arc<dyn ProcessResultStorePort>>,
     error_handler: Option<Arc<BackgroundErrorHandler>>,
+    supervisor: Mutex<Option<ProcessSupervisorHandle>>,
 }
 
 impl BackgroundProcessManager {
@@ -187,6 +193,7 @@ impl BackgroundProcessManager {
             cancellation_registry: None,
             result_store: None,
             error_handler: None,
+            supervisor: Mutex::new(None),
         }
     }
 
@@ -206,10 +213,7 @@ impl BackgroundProcessManager {
         self
     }
 
-    /// Attach a callback for store/result-store failures that occur inside
-    /// the spawned task. Without a handler, those failures are silently
-    /// dropped — they cannot be propagated to the original `spawn` caller
-    /// because the task is detached.
+    /// Attach a callback for executor-side store/result-store failures.
     pub fn with_error_handler<F>(mut self, handler: F) -> Self
     where
         F: Fn(BackgroundFailure) + Send + Sync + 'static,
@@ -217,39 +221,133 @@ impl BackgroundProcessManager {
         self.error_handler = Some(Arc::new(handler));
         self
     }
+
+    /// Starts polling immediately so queued work resumes after restart.
+    pub fn start_supervisor(self) -> Self {
+        if let Err(error) = self.wake_notifier() {
+            tracing::error!(%error, "capability process supervisor failed to start");
+        }
+        self
+    }
+
+    fn wake_notifier(&self) -> Result<Arc<crate::ProcessWakeNotifier>, ProcessError> {
+        let mut supervisor =
+            self.supervisor
+                .lock()
+                .map_err(|_| ProcessError::InvalidStoredRecord {
+                    reason: "process supervisor mutex poisoned".to_string(),
+                })?;
+        if supervisor.is_none() {
+            let runtime = self.store.process_runtime();
+            let executor = Arc::new(BackgroundJournalExecutor {
+                runtime: Arc::clone(&runtime),
+                store: Arc::clone(&self.store),
+                executor: Arc::clone(&self.executor),
+                cancellation_registry: self.cancellation_registry.clone(),
+                result_store: self.result_store.clone(),
+                error_handler: self.error_handler.clone(),
+            });
+            *supervisor = Some(
+                ProcessSupervisor::new(
+                    runtime,
+                    executor,
+                    ProcessKind::CapabilityInvocation,
+                    ProcessSupervisorConfig::default(),
+                )
+                .start(),
+            );
+        }
+        supervisor
+            .as_ref()
+            .map(ProcessSupervisorHandle::wake_notifier)
+            .ok_or_else(|| ProcessError::InvalidStoredRecord {
+                reason: "process supervisor failed to start".to_string(),
+            })
+    }
 }
 
 #[async_trait]
 impl ProcessManager for BackgroundProcessManager {
-    /// Persist `Running`, then spawn a detached tokio task that drives the
-    /// executor and writes the terminal record(s).
-    ///
-    /// Write order on success/failure is **result store first, status store
-    /// second**: result records are persisted before the lifecycle status
-    /// flips to a terminal value. This makes the contract "if a process is
-    /// observed at a terminal status, its result record is already on disk"
-    /// — `ProcessHost::await_result` relies on this ordering for its
-    /// notification path.
-    ///
-    /// The spawned task is detached: if the tokio runtime is shut down or
-    /// the process exits before the executor finishes, the in-flight work
-    /// is orphaned and the record will remain stuck at `Running`. Callers
-    /// that need crash-safety should perform startup reconciliation by
-    /// listing `Running` records on launch and deciding policy (mark
-    /// failed, retry, etc.). TODO: provide a built-in reconciler.
+    /// Journal the request, then wake the shared process supervisor.
     async fn spawn(&self, start: ProcessStart) -> Result<ProcessRecord, ProcessError> {
-        let input = start.input.clone();
         let record = self.store.start(start).await?;
-        let store = Arc::clone(&self.store);
-        let executor = Arc::clone(&self.executor);
-        let scope = record.scope.clone();
-        let process_id = record.process_id;
-        let cancellation_registry = self.cancellation_registry.clone();
-        let result_store = self.result_store.clone();
-        let error_handler = self.error_handler.clone();
-        let cancellation = cancellation_registry
+        if let Some(registry) = &self.cancellation_registry {
+            registry.register(&record.scope, record.process_id);
+        }
+        let wake_result = self.wake_notifier().and_then(|notifier| {
+            notifier
+                .notify_scope(record.scope.clone())
+                .map_err(|error| ProcessError::InvalidStoredRecord {
+                    reason: error.to_string(),
+                })
+        });
+        if wake_result.is_err()
+            && let Some(registry) = &self.cancellation_registry
+        {
+            registry.unregister(&record.scope, record.process_id);
+        }
+        wake_result?;
+        Ok(record)
+    }
+}
+
+struct BackgroundJournalExecutor {
+    runtime: Arc<dyn ProcessRuntimePort>,
+    store: Arc<dyn ProcessStorePort>,
+    executor: Arc<dyn ProcessExecutor>,
+    cancellation_registry: Option<Arc<ProcessCancellationRegistry>>,
+    result_store: Option<Arc<dyn ProcessResultStorePort>>,
+    error_handler: Option<Arc<BackgroundErrorHandler>>,
+}
+
+impl BackgroundJournalExecutor {
+    fn report(
+        &self,
+        scope: &ResourceScope,
+        process_id: ProcessId,
+        stage: BackgroundFailureStage,
+        error: ProcessError,
+    ) {
+        if let Some(handler) = &self.error_handler {
+            handler(BackgroundFailure {
+                scope: scope.clone(),
+                process_id,
+                stage,
+                error,
+            });
+        }
+    }
+
+    async fn execution_request(
+        &self,
+        claimed: &ClaimedProcess,
+    ) -> Result<ProcessExecutionRequest, ProcessError> {
+        let process_id = claimed.state.process_id;
+        let scope = &claimed.state.scope;
+        let record = self
+            .store
+            .get(scope, process_id)
+            .await?
+            .ok_or(ProcessError::UnknownProcess { process_id })?;
+        let input = self
+            .runtime
+            .get_process_input(GetProcessInputRequest {
+                process_id,
+                scope: scope.clone(),
+            })
+            .await
+            .map_err(crate::journal_process_store::map_journal_error)?
+            .ok_or_else(|| ProcessError::InvalidStoredRecord {
+                reason: format!("process {process_id} has no durable input"),
+            })
+            .and_then(|record| {
+                serde_json::from_slice(record.payload.as_bytes())
+                    .map_err(|error| ProcessError::Deserialization(error.to_string()))
+            })?;
+        let cancellation = self
+            .cancellation_registry
             .as_ref()
-            .map(|registry| registry.register(&record.scope, record.process_id))
+            .map(|registry| registry.register(scope, process_id))
             .unwrap_or_default();
         let resource_reservation = record
             .resource_reservation_id
@@ -258,122 +356,139 @@ impl ProcessManager for BackgroundProcessManager {
                 scope: record.scope.clone(),
                 estimate: record.estimated_resources.clone(),
             });
-        let request = ProcessExecutionRequest {
-            process_id: record.process_id,
+        Ok(ProcessExecutionRequest {
+            process_id,
             invocation_id: record.invocation_id,
-            scope: record.scope.clone(),
-            authenticated_actor_user_id: record.authenticated_actor_user_id.clone(),
-            extension_id: record.extension_id.clone(),
-            capability_id: record.capability_id.clone(),
+            scope: record.scope,
+            authenticated_actor_user_id: record.authenticated_actor_user_id,
+            extension_id: record.extension_id,
+            capability_id: record.capability_id,
             runtime: record.runtime,
-            estimate: record.estimated_resources.clone(),
-            mounts: record.mounts.clone(),
+            estimate: record.estimated_resources,
+            mounts: record.mounts,
             resource_reservation,
-            authorized_continuation: record.authorized_continuation.clone(),
+            authorized_continuation: record.authorized_continuation,
             input,
             cancellation,
-        };
-        tokio::spawn(async move {
-            let report = |stage: BackgroundFailureStage, error: ProcessError| {
-                if let Some(handler) = &error_handler {
-                    handler(BackgroundFailure {
-                        scope: scope.clone(),
-                        process_id,
-                        stage,
-                        error,
-                    });
-                }
-            };
-            let outcome = std::panic::AssertUnwindSafe(executor.execute(request))
-                .catch_unwind()
-                .await;
+        })
+    }
 
-            // Skip writes if the process was already terminalized externally
-            // (typically by `ProcessHost::kill`). Without this guard, the
-            // result-store-first ordering below would overwrite a kill
-            // record with the executor's late-arriving result.
-            let still_running = match store.get(&scope, process_id).await {
-                Ok(Some(record)) => record.status == ProcessStatus::Running,
-                Ok(None) => false,
+    async fn persist_outcome(
+        &self,
+        scope: &ResourceScope,
+        process_id: ProcessId,
+        outcome: Result<
+            Result<crate::ProcessExecutionResult, crate::ProcessExecutionError>,
+            Box<dyn std::any::Any + Send>,
+        >,
+    ) {
+        let still_running = match self.store.get(scope, process_id).await {
+            Ok(Some(record)) => record.status == ProcessStatus::Running,
+            Ok(None) => false,
+            Err(error) => {
+                self.report(
+                    scope,
+                    process_id,
+                    BackgroundFailureStage::StoreLookup,
+                    error,
+                );
+                false
+            }
+        };
+        if !still_running {
+            return;
+        }
+        match outcome {
+            Ok(Ok(result)) => {
+                let persisted = if let Some(result_store) = &self.result_store {
+                    match result_store
+                        .complete(scope, process_id, result.output)
+                        .await
+                    {
+                        Ok(_) => true,
+                        Err(error) => {
+                            self.report(
+                                scope,
+                                process_id,
+                                BackgroundFailureStage::ResultStoreComplete,
+                                error,
+                            );
+                            false
+                        }
+                    }
+                } else {
+                    true
+                };
+                if persisted && let Err(error) = self.store.complete(scope, process_id).await {
+                    self.report(
+                        scope,
+                        process_id,
+                        BackgroundFailureStage::StoreComplete,
+                        error,
+                    );
+                }
+            }
+            Ok(Err(error)) => {
+                self.persist_failure(scope, process_id, sanitize_error_kind(error.kind))
+                    .await;
+            }
+            Err(_) => {
+                self.persist_failure(scope, process_id, "runtime_panic".to_string())
+                    .await;
+            }
+        }
+    }
+
+    async fn persist_failure(
+        &self,
+        scope: &ResourceScope,
+        process_id: ProcessId,
+        error_kind: String,
+    ) {
+        let persisted = if let Some(result_store) = &self.result_store {
+            match result_store
+                .fail(scope, process_id, error_kind.clone())
+                .await
+            {
+                Ok(_) => true,
                 Err(error) => {
-                    report(BackgroundFailureStage::StoreLookup, error);
+                    self.report(
+                        scope,
+                        process_id,
+                        BackgroundFailureStage::ResultStoreFail,
+                        error,
+                    );
                     false
                 }
-            };
+            }
+        } else {
+            true
+        };
+        if persisted && let Err(error) = self.store.fail(scope, process_id, error_kind).await {
+            self.report(scope, process_id, BackgroundFailureStage::StoreFail, error);
+        }
+    }
+}
 
-            if still_running {
-                match outcome {
-                    Ok(Ok(result)) => {
-                        let result_persisted = if let Some(result_store) = &result_store {
-                            match result_store
-                                .complete(&scope, process_id, result.output)
-                                .await
-                            {
-                                Ok(_) => true,
-                                Err(error) => {
-                                    report(BackgroundFailureStage::ResultStoreComplete, error);
-                                    false
-                                }
-                            }
-                        } else {
-                            true
-                        };
-                        if result_persisted
-                            && let Err(error) = store.complete(&scope, process_id).await
-                        {
-                            report(BackgroundFailureStage::StoreComplete, error);
-                        }
-                    }
-                    Ok(Err(error)) => {
-                        let error_kind = sanitize_error_kind(error.kind);
-                        let result_persisted = if let Some(result_store) = &result_store {
-                            match result_store
-                                .fail(&scope, process_id, error_kind.clone())
-                                .await
-                            {
-                                Ok(_) => true,
-                                Err(error) => {
-                                    report(BackgroundFailureStage::ResultStoreFail, error);
-                                    false
-                                }
-                            }
-                        } else {
-                            true
-                        };
-                        if result_persisted
-                            && let Err(error) = store.fail(&scope, process_id, error_kind).await
-                        {
-                            report(BackgroundFailureStage::StoreFail, error);
-                        }
-                    }
-                    Err(_) => {
-                        let panic_kind = "runtime_panic".to_string();
-                        let result_persisted = if let Some(result_store) = &result_store {
-                            match result_store
-                                .fail(&scope, process_id, panic_kind.clone())
-                                .await
-                            {
-                                Ok(_) => true,
-                                Err(error) => {
-                                    report(BackgroundFailureStage::ResultStoreFail, error);
-                                    false
-                                }
-                            }
-                        } else {
-                            true
-                        };
-                        if result_persisted
-                            && let Err(error) = store.fail(&scope, process_id, panic_kind).await
-                        {
-                            report(BackgroundFailureStage::StoreFail, error);
-                        }
-                    }
-                }
-            }
-            if let Some(registry) = cancellation_registry {
-                registry.unregister(&scope, process_id);
-            }
-        });
-        Ok(record)
+#[async_trait]
+impl JournalProcessExecutor for BackgroundJournalExecutor {
+    async fn execute_claimed_process(
+        &self,
+        claimed: ClaimedProcess,
+    ) -> Result<(), ProcessExecutorFailure> {
+        let scope = claimed.state.scope.clone();
+        let process_id = claimed.state.process_id;
+        let request = self
+            .execution_request(&claimed)
+            .await
+            .map_err(|_| ProcessExecutorFailure::new("process_request_invalid"))?;
+        let outcome = std::panic::AssertUnwindSafe(self.executor.execute(request))
+            .catch_unwind()
+            .await;
+        self.persist_outcome(&scope, process_id, outcome).await;
+        if let Some(registry) = &self.cancellation_registry {
+            registry.unregister(&scope, process_id);
+        }
+        Ok(())
     }
 }

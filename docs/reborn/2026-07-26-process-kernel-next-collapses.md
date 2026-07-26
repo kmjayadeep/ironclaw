@@ -211,11 +211,17 @@ The runner registers the executor for `ProcessKind::AgentTurn`; extension and
 host runtimes register their own executors. Scheduling policy, model turns, and
 agent-loop behavior stay outside the kernel.
 
-The remaining work is to replace `ProcessServices`' detached
-`BackgroundProcessManager` and its compatibility `ProcessStorePort` lifecycle
-with a `ProcessKind::CapabilityInvocation` executor registered on this
-supervisor. Cancellation registration must move with that executor before the
-old manager and store surface are deleted.
+`ProcessServices` no longer spawns a detached lifecycle task. Its compatibility
+`BackgroundProcessManager` journals bounded durable input, wakes a
+`ProcessKind::CapabilityInvocation` supervisor, and registers cancellation when
+the process is submitted. The same supervisor now owns claiming, bounded
+concurrency, heartbeats, recovery, panic containment, and shutdown for turns and
+capability work.
+
+The remaining deletion is the compatibility `ProcessStorePort`/`ProcessRecord`
+projection used by capability and host-runtime callers. It no longer schedules
+or owns lifecycle state; callers can move incrementally to journal-native
+snapshots and ports before the adapter is removed.
 
 ## Recommended order
 

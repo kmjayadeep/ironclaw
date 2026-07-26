@@ -16,30 +16,32 @@ use serde::{Deserialize, Serialize};
 use crate::types::{ProcessError, ProcessRecord, ProcessStart, ProcessStatus, ProcessStorePort};
 use crate::{
     ClaimProcessesRequest, FailProcessRequest, GetProcessSnapshotRequest, KillProcessRequest,
-    ProcessControlPort, ProcessJournalSource, ProcessJournalStore, ProcessJournalStoreError,
-    ProcessKind, ProcessLeaseRequest, ProcessLifecycleStatus, ProcessSnapshotSource,
+    ProcessControlPort, ProcessInputPayload, ProcessInputRef, ProcessInputSubmission,
+    ProcessJournalSource, ProcessJournalStore, ProcessJournalStoreError, ProcessKind,
+    ProcessLeaseRequest, ProcessLifecycleStatus, ProcessRuntimePort, ProcessSnapshotSource,
     ProcessStateTransitionRequest, ProcessSubmissionPort, ProcessTransitionPort, ProcessWorkerId,
     SubmitProcessRequest,
 };
 
-const BACKGROUND_WORKER_ID: &str = "capability-background";
+const CAPABILITY_INPUT_REF: &str = "capability-invocation:v1";
+const COMPATIBILITY_WORKER_ID: &str = "capability-compatibility";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct CapabilityProcessMetadata {
-    invocation_id: InvocationId,
+pub(crate) struct CapabilityProcessMetadata {
+    pub(crate) invocation_id: InvocationId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    authenticated_actor_user_id: Option<UserId>,
-    extension_id: ExtensionId,
-    capability_id: CapabilityId,
+    pub(crate) authenticated_actor_user_id: Option<UserId>,
+    pub(crate) extension_id: ExtensionId,
+    pub(crate) capability_id: CapabilityId,
     #[serde(deserialize_with = "ironclaw_host_api::deserialize_trusted_runtime_kind")]
-    runtime: RuntimeKind,
-    grants: CapabilitySet,
-    mounts: MountView,
-    estimated_resources: ResourceEstimate,
+    pub(crate) runtime: RuntimeKind,
+    pub(crate) grants: CapabilitySet,
+    pub(crate) mounts: MountView,
+    pub(crate) estimated_resources: ResourceEstimate,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    resource_reservation_id: Option<ResourceReservationId>,
+    pub(crate) resource_reservation_id: Option<ResourceReservationId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    authorized_continuation: Option<ProcessAuthorizedContinuation>,
+    pub(crate) authorized_continuation: Option<ProcessAuthorizedContinuation>,
 }
 
 /// Temporary compatibility surface while capability callers move to
@@ -124,6 +126,32 @@ where
             lease_token: lease.lease_token.clone(),
         })
     }
+
+    async fn claim_if_queued(
+        &self,
+        snapshot: crate::JournaledProcessSnapshot,
+    ) -> Result<crate::JournaledProcessSnapshot, ProcessError> {
+        if snapshot.status != ProcessLifecycleStatus::Queued {
+            return Ok(snapshot);
+        }
+        let process_id = snapshot.process_id;
+        self.journal
+            .claim_next_processes(ClaimProcessesRequest {
+                worker_id: ProcessWorkerId::from_trusted(COMPATIBILITY_WORKER_ID),
+                scope_filter: Some(snapshot.scope),
+                process_id_filter: Some(process_id),
+                process_kind_filter: Some(ProcessKind::CapabilityInvocation),
+                max_processes: 1,
+            })
+            .await
+            .map_err(map_journal_error)?
+            .into_iter()
+            .next()
+            .map(|claimed| claimed.state)
+            .ok_or_else(|| ProcessError::InvalidStoredRecord {
+                reason: format!("submitted process {process_id} was not claimable"),
+            })
+    }
 }
 
 #[async_trait]
@@ -131,9 +159,19 @@ impl<F> ProcessStorePort for JournalProcessStore<F>
 where
     F: RootFilesystem + Send + Sync + 'static,
 {
+    fn process_runtime(&self) -> Arc<dyn ProcessRuntimePort> {
+        self.journal.clone()
+    }
+
     async fn start(&self, start: ProcessStart) -> Result<ProcessRecord, ProcessError> {
         let process_id = start.process_id;
         let scope = start.scope.clone();
+        let input = serde_json::to_vec(&start.input)
+            .map_err(|error| ProcessError::Serialization(error.to_string()))
+            .and_then(|payload| {
+                ProcessInputPayload::new(payload)
+                    .map_err(|error| ProcessError::Serialization(error.to_string()))
+            })?;
         let metadata = serde_json::to_value(CapabilityProcessMetadata {
             invocation_id: start.invocation_id,
             authenticated_actor_user_id: start.authenticated_actor_user_id,
@@ -161,29 +199,16 @@ where
                 spawn_tree_descendant_cap: None,
                 dependency: None,
                 checkpoint_ref: None,
-                input: None,
+                input: Some(ProcessInputSubmission {
+                    input_ref: ProcessInputRef::from_trusted(CAPABILITY_INPUT_REF),
+                    payload: input,
+                }),
                 created_at: chrono::Utc::now(),
                 metadata,
             })
             .await
             .map_err(map_journal_error)?;
-        let snapshot = self
-            .journal
-            .claim_next_processes(ClaimProcessesRequest {
-                worker_id: ProcessWorkerId::from_trusted(BACKGROUND_WORKER_ID),
-                scope_filter: Some(scope),
-                process_id_filter: Some(process_id),
-                process_kind_filter: Some(ProcessKind::CapabilityInvocation),
-                max_processes: 1,
-            })
-            .await
-            .map_err(map_journal_error)?
-            .into_iter()
-            .next()
-            .ok_or_else(|| ProcessError::InvalidStoredRecord {
-                reason: format!("submitted process {process_id} was not claimable"),
-            })?
-            .state;
+        let snapshot = self.snapshot(&scope, process_id).await?;
         Self::record_from_snapshot(snapshot)
     }
 
@@ -192,7 +217,9 @@ where
         scope: &ResourceScope,
         process_id: ProcessId,
     ) -> Result<ProcessRecord, ProcessError> {
-        let snapshot = self.snapshot(scope, process_id).await?;
+        let snapshot = self
+            .claim_if_queued(self.snapshot(scope, process_id).await?)
+            .await?;
         if snapshot.status != ProcessLifecycleStatus::Running {
             return Err(ProcessError::InvalidTransition {
                 process_id,
@@ -217,7 +244,9 @@ where
         process_id: ProcessId,
         error_kind: String,
     ) -> Result<ProcessRecord, ProcessError> {
-        let snapshot = self.snapshot(scope, process_id).await?;
+        let snapshot = self
+            .claim_if_queued(self.snapshot(scope, process_id).await?)
+            .await?;
         if snapshot.status != ProcessLifecycleStatus::Running {
             return Err(ProcessError::InvalidTransition {
                 process_id,
@@ -305,7 +334,7 @@ fn process_status(status: ProcessLifecycleStatus) -> ProcessStatus {
     }
 }
 
-fn map_journal_error(error: ProcessJournalStoreError) -> ProcessError {
+pub(crate) fn map_journal_error(error: ProcessJournalStoreError) -> ProcessError {
     match error {
         ProcessJournalStoreError::UnknownProcess { process_id } => {
             ProcessError::UnknownProcess { process_id }

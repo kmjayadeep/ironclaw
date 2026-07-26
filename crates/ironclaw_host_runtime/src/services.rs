@@ -728,7 +728,8 @@ where
                         );
                     }
                 });
-            }),
+            })
+            .start_supervisor(),
         );
         let process_result_store: Arc<dyn ProcessResultStorePort> =
             self.process_services.result_store();

@@ -976,6 +976,10 @@ impl ProcessObligationProcessKey {
 
 #[async_trait]
 impl ProcessStorePort for ProcessObligationLifecycleStore {
+    fn process_runtime(&self) -> Arc<dyn ironclaw_processes::ProcessRuntimePort> {
+        self.inner.process_runtime()
+    }
+
     async fn start(&self, start: ProcessStart) -> Result<ProcessRecord, ProcessError> {
         let claimed = self.claim_active_process_handoff(&start)?;
         let process_id = start.process_id;

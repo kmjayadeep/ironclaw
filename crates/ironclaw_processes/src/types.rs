@@ -297,7 +297,10 @@ pub trait ProcessResultStorePort: Send + Sync {
 
 #[async_trait]
 pub trait ProcessStorePort: Send + Sync {
-    /// Persists a running process record without storing raw input.
+    /// Returns the authoritative runtime behind this compatibility projection.
+    fn process_runtime(&self) -> std::sync::Arc<dyn crate::ProcessRuntimePort>;
+
+    /// Submits a process for supervised execution.
     async fn start(&self, start: ProcessStart) -> Result<ProcessRecord, ProcessError>;
 
     /// Transitions a scoped running process to completed.

@@ -1254,10 +1254,11 @@ pub(crate) fn result_store_failing_writes() -> (
 
 /// Real `ProcessStore` over a [`FaultInjecting`] backend armed to
 /// fail the terminal status transition's journal append, replacing the whole-trait
-/// `FailingTerminalProcessStore` fake. `start` appends `Submitted` and `Claimed`;
-/// the terminal transition (`complete` or `fail`,
-/// whichever the manager issues for the executor outcome) is the 3rd append and
-/// is faulted, surfacing as `ProcessError::Filesystem`. `get` /
+/// `FailingTerminalProcessStore` fake. Submission appends `Submitted` with its
+/// private input, then the supervisor appends `Claimed`. Projection refresh
+/// reads share the recorder, and the terminal transition (`complete` or `fail`,
+/// whichever the executor outcome selects) is the 7th
+/// process-journal append and is faulted, surfacing as `ProcessError::Filesystem`. `get` /
 /// `records_for_scope` still read the live `Running` record.
 pub(crate) fn terminal_failing_process_store() -> (
     Arc<ProcessStore<FaultInjecting<InMemoryBackend>>>,
@@ -1266,7 +1267,8 @@ pub(crate) fn terminal_failing_process_store() -> (
     let backend = Arc::new(
         FaultInjecting::new(InMemoryBackend::new()).with_fault(
             Fault::on(FilesystemOperation::Append)
-                .nth(3)
+                .path("processes/journal/records")
+                .nth(7)
                 .backend("injected terminal transition write failure"),
         ),
     );
@@ -1467,10 +1469,15 @@ pub(crate) async fn wait_for_result_store_write(backend: &FaultInjecting<InMemor
 }
 
 pub(crate) async fn wait_for_terminal_transition_write(backend: &FaultInjecting<InMemoryBackend>) {
-    // `start` appends `Submitted` and `Claimed`; the faulted terminal status
-    // transition is the 3rd append.
+    // Fixture invocation lifecycle, submission/input, and claim precede the
+    // faulted terminal append.
     for _ in 0..100 {
-        if backend.count(FilesystemOperation::Append) >= 3 {
+        let journal_appends = backend
+            .recorded_paths(FilesystemOperation::Append)
+            .into_iter()
+            .filter(|path| path.as_str().contains("processes/journal/records"))
+            .count();
+        if journal_appends >= 7 {
             return;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
