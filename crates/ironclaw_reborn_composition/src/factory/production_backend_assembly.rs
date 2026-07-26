@@ -39,7 +39,7 @@ fn ensure_libsql_resource_governor_authority(
     })
 }
 
-fn ensure_libsql_resource_governor_authority_for_build(
+pub(super) fn ensure_libsql_resource_governor_authority_for_build(
     process_local_singleton: bool,
 ) -> Result<(), RebornBuildError> {
     if process_local_singleton {

@@ -207,6 +207,8 @@ mod runtime_lane_assembly;
 use runtime_lane_assembly::TestNetworkHttpEgress;
 mod production_backend_assembly;
 mod production_build_assembly;
+#[cfg(test)]
+use production_backend_assembly::ensure_libsql_resource_governor_authority_for_build;
 use production_backend_assembly::{
     build_backend_production, build_libsql_production, build_postgres_production,
     ensure_postgres_resource_governor_authority_for_build,
