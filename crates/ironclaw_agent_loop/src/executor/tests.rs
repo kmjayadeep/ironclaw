@@ -2,20 +2,19 @@
 use std::{collections::VecDeque, sync::Arc};
 
 use ironclaw_host_api::{
-    ApprovalRequestId, CorrelationId, DispatchInputIssueCode, ProviderToolName,
+    ApprovalRequestId, CorrelationId, DispatchInputIssueCode, FailureKind, ProviderToolName,
 };
 use ironclaw_turns::{
     CapabilityActivityId, GateResumeDisposition, LoopCancelledReasonKind, LoopCompletionKind,
     LoopDiagnosticRef, LoopExit, LoopFailureKind, LoopGateRef, LoopResultRef, TurnRunId,
     run_profile::{
         AgentLoopHostError, AgentLoopHostErrorKind, CapabilityApprovalResume, CapabilityAuthResume,
-        CapabilityCallCandidate, CapabilityFailureDetail, CapabilityFailureKind,
-        CapabilityInputIssue, CapabilityInputRef, CapabilityInputRepair, CapabilityRecoveryHint,
-        CapabilityResumeToken, LoopCancelReasonKind, LoopCancellationSignal, LoopCheckpointKind,
-        LoopCompactionError, LoopCompactionOutcome, LoopCompactionResponse,
-        LoopContextCompactionKind, LoopInput, LoopInputAckToken, LoopInputBatch, LoopInputCursor,
-        LoopInterruptKind, LoopModelCapabilityView, LoopProcessRef, LoopProgressEvent,
-        LoopRunInfoPort, LoopSafeSummary, LoopSummaryArtifactId,
+        CapabilityCallCandidate, CapabilityFailureDetail, CapabilityInputIssue, CapabilityInputRef,
+        CapabilityInputRepair, CapabilityRecoveryHint, CapabilityResumeToken, LoopCancelReasonKind,
+        LoopCancellationSignal, LoopCheckpointKind, LoopCompactionError, LoopCompactionOutcome,
+        LoopCompactionResponse, LoopContextCompactionKind, LoopInput, LoopInputAckToken,
+        LoopInputBatch, LoopInputCursor, LoopInterruptKind, LoopModelCapabilityView,
+        LoopProcessRef, LoopProgressEvent, LoopRunInfoPort, LoopSafeSummary, LoopSummaryArtifactId,
         MODEL_VISIBLE_TOOL_OBSERVATION_SCHEMA_VERSION, ModelVisibleToolObservation,
         ObservationTrust, ParentLoopOutput, PromptMode, ProviderToolCallReplay,
         SameCallRetryConstraint, ToolObservationDetail, ToolObservationStatus,
@@ -4035,15 +4034,21 @@ async fn model_unrecoverable_host_error_carries_detail_to_executor_error() {
 }
 
 #[tokio::test]
-async fn capability_abort_finalizes_explanation_and_failed_exit_refs_partial_first() {
+async fn failed_exit_finalizes_explanation_and_failed_exit_refs_partial_first() {
+    // Vehicle: iteration-limit abort. The retired capability `Permanent` kind
+    // merged into model-visible `OperationFailed` under the unified
+    // FailureKind, so a scripted capability failure can no longer end the run;
+    // the explanation flow under test is failure-kind-agnostic.
     let script = ScenarioScript {
         model_responses: VecDeque::from([
             ScriptedModelResponse::Calls(vec![ScriptedCapabilityCall::new("demo.echo")]),
             ScriptedModelResponse::Reply {
-                text: "The run stopped after a capability failure.".to_string(),
+                text: "The run stopped after hitting the iteration limit.".to_string(),
             },
         ]),
-        capability_outcomes: VecDeque::from([vec![ScriptedCapabilityOutcome::failed("permanent")]]),
+        capability_outcomes: VecDeque::from([vec![ScriptedCapabilityOutcome::completed(
+            "result:limit-1",
+        )]]),
         single_call_retry_outcomes: VecDeque::new(),
         pending_inputs: VecDeque::new(),
     };
@@ -4054,13 +4059,13 @@ async fn capability_abort_finalizes_explanation_and_failed_exit_refs_partial_fir
     state.assistant_refs.push(partial_ref.clone());
 
     let exit = executor
-        .execute_family(&crate::families::default(), &host, state)
+        .execute_family(&family_with_iteration_limit(1), &host, state)
         .await
         .expect("execute");
 
     match exit {
         LoopExit::Failed(failed) => {
-            assert_eq!(failed.reason_kind, LoopFailureKind::CapabilityProtocolError);
+            assert_eq!(failed.reason_kind, LoopFailureKind::IterationLimit);
             assert_eq!(
                 failed.explanation_message_refs,
                 vec![partial_ref, message_ref("msg:assistant")]
@@ -4071,7 +4076,7 @@ async fn capability_abort_finalizes_explanation_and_failed_exit_refs_partial_fir
     assert_eq!(host.model_call_count(), 2);
     assert_eq!(
         host.finalized_assistant_messages(),
-        vec!["The run stopped after a capability failure.".to_string()]
+        vec!["The run stopped after hitting the iteration limit.".to_string()]
     );
     let requests = host.model_requests();
     assert_eq!(requests.len(), 2);
@@ -4090,14 +4095,18 @@ async fn capability_abort_finalizes_explanation_and_failed_exit_refs_partial_fir
 
 #[tokio::test]
 async fn failure_explanation_prompt_is_inline_only_and_context_free() {
+    // Vehicle: iteration-limit abort (see
+    // `failed_exit_finalizes_explanation_and_failed_exit_refs_partial_first`).
     let script = ScenarioScript {
         model_responses: VecDeque::from([
             ScriptedModelResponse::Calls(vec![ScriptedCapabilityCall::new("demo.echo")]),
             ScriptedModelResponse::Reply {
-                text: "The run stopped after a capability failure.".to_string(),
+                text: "The run stopped after hitting the iteration limit.".to_string(),
             },
         ]),
-        capability_outcomes: VecDeque::from([vec![ScriptedCapabilityOutcome::failed("permanent")]]),
+        capability_outcomes: VecDeque::from([vec![ScriptedCapabilityOutcome::completed(
+            "result:limit-2",
+        )]]),
         single_call_retry_outcomes: VecDeque::new(),
         pending_inputs: VecDeque::new(),
     };
@@ -4107,7 +4116,7 @@ async fn failure_explanation_prompt_is_inline_only_and_context_free() {
     state.assistant_refs.push(message_ref("msg:partial-work"));
 
     let exit = executor
-        .execute_family(&crate::families::default(), &host, state)
+        .execute_family(&family_with_iteration_limit(1), &host, state)
         .await
         .expect("execute");
 
@@ -4126,6 +4135,8 @@ async fn failure_explanation_prompt_is_inline_only_and_context_free() {
 
 #[tokio::test]
 async fn explanation_model_error_degrades_to_original_failed_exit() {
+    // Vehicle: iteration-limit abort (see
+    // `failed_exit_finalizes_explanation_and_failed_exit_refs_partial_first`).
     let script = ScenarioScript {
         model_responses: VecDeque::from([
             ScriptedModelResponse::Calls(vec![ScriptedCapabilityCall::new("demo.echo")]),
@@ -4133,7 +4144,9 @@ async fn explanation_model_error_degrades_to_original_failed_exit() {
                 kind: AgentLoopHostErrorKind::Internal,
             },
         ]),
-        capability_outcomes: VecDeque::from([vec![ScriptedCapabilityOutcome::failed("permanent")]]),
+        capability_outcomes: VecDeque::from([vec![ScriptedCapabilityOutcome::completed(
+            "result:limit-3",
+        )]]),
         single_call_retry_outcomes: VecDeque::new(),
         pending_inputs: VecDeque::new(),
     };
@@ -4144,13 +4157,13 @@ async fn explanation_model_error_degrades_to_original_failed_exit() {
     state.assistant_refs.push(partial_ref.clone());
 
     let exit = executor
-        .execute_family(&crate::families::default(), &host, state)
+        .execute_family(&family_with_iteration_limit(1), &host, state)
         .await
         .expect("execute");
 
     match exit {
         LoopExit::Failed(failed) => {
-            assert_eq!(failed.reason_kind, LoopFailureKind::CapabilityProtocolError);
+            assert_eq!(failed.reason_kind, LoopFailureKind::IterationLimit);
             assert_eq!(failed.explanation_message_refs, vec![partial_ref]);
         }
         other => panic!("expected failed exit, got {other:?}"),
@@ -4265,6 +4278,8 @@ async fn availability_budget_above_old_executor_guard_reaches_strategy_abort() {
 
 #[tokio::test]
 async fn cancellation_before_explanation_skips_explanation_model_call() {
+    // Vehicle: iteration-limit abort (the retired capability `Permanent`
+    // abort no longer exists under the unified FailureKind).
     let script = ScenarioScript {
         model_responses: VecDeque::from([
             ScriptedModelResponse::Calls(vec![ScriptedCapabilityCall::new("demo.echo")]),
@@ -4272,7 +4287,9 @@ async fn cancellation_before_explanation_skips_explanation_model_call() {
                 text: "This explanation should not be requested.".to_string(),
             },
         ]),
-        capability_outcomes: VecDeque::from([vec![ScriptedCapabilityOutcome::failed("permanent")]]),
+        capability_outcomes: VecDeque::from([vec![ScriptedCapabilityOutcome::completed(
+            "result:cancel-before-explanation",
+        )]]),
         single_call_retry_outcomes: VecDeque::new(),
         pending_inputs: VecDeque::new(),
     };
@@ -4287,7 +4304,7 @@ async fn cancellation_before_explanation_skips_explanation_model_call() {
     let state = LoopExecutionState::initial_for_run(host.run_context());
 
     let exit = executor
-        .execute_family(&crate::families::default(), &host, state)
+        .execute_family(&family_with_iteration_limit(1), &host, state)
         .await
         .expect("execute");
 
@@ -4334,6 +4351,9 @@ async fn exit_stage_aborted_cancellation_skips_explanation_and_returns_cancelled
 
 #[tokio::test]
 async fn cancellation_during_explanation_model_call_propagates_cancelled() {
+    // Vehicle: iteration-limit abort (the retired capability `Permanent`
+    // abort no longer exists under the unified FailureKind); the scripted
+    // Cancelled error hits the explanation model call.
     let script = ScenarioScript {
         model_responses: VecDeque::from([
             ScriptedModelResponse::Calls(vec![ScriptedCapabilityCall::new("demo.echo")]),
@@ -4341,7 +4361,9 @@ async fn cancellation_during_explanation_model_call_propagates_cancelled() {
                 kind: AgentLoopHostErrorKind::Cancelled,
             },
         ]),
-        capability_outcomes: VecDeque::from([vec![ScriptedCapabilityOutcome::failed("permanent")]]),
+        capability_outcomes: VecDeque::from([vec![ScriptedCapabilityOutcome::completed(
+            "result:cancel-during-explanation",
+        )]]),
         single_call_retry_outcomes: VecDeque::new(),
         pending_inputs: VecDeque::new(),
     };
@@ -4350,7 +4372,7 @@ async fn cancellation_during_explanation_model_call_propagates_cancelled() {
     let state = LoopExecutionState::initial_for_run(host.run_context());
 
     let result = executor
-        .execute_family(&crate::families::default(), &host, state)
+        .execute_family(&family_with_iteration_limit(1), &host, state)
         .await;
 
     assert!(
@@ -4474,10 +4496,7 @@ async fn checkpoint_payload_rehydrates_with_written_marker() {
 
 #[tokio::test]
 async fn retry_uses_single_call_invocation() {
-    for error_kind in [
-        CapabilityFailureKind::Transient,
-        CapabilityFailureKind::Network,
-    ] {
+    for error_kind in [FailureKind::Transient, FailureKind::Network] {
         let host = MockHost::new(vec![calls_response()])
             .with_batch_outcomes(vec![ironclaw_host_api::ResolutionBatch {
                 resolutions: vec![resolution::failed(
@@ -4813,7 +4832,7 @@ async fn invalid_provider_tool_failure_appends_structured_model_observation() {
     let host = MockHost::new(vec![provider_calls_response(), reply_response()])
         .with_batch_outcomes(vec![ironclaw_host_api::ResolutionBatch {
             resolutions: vec![resolution::failed(
-                CapabilityFailureKind::InvalidInput,
+                FailureKind::InputEncode,
                 "provider arguments failed schema validation".to_string(),
                 Some(CapabilityFailureDetail::InvalidInput {
                     issues: vec![CapabilityInputIssue {
@@ -4886,7 +4905,7 @@ async fn repeated_capability_failures_do_not_trip_no_progress_and_run_can_recove
         (0..3)
             .map(|_| ironclaw_host_api::ResolutionBatch {
                 resolutions: vec![resolution::failed(
-                    CapabilityFailureKind::OperationFailed,
+                    FailureKind::OperationFailed,
                     "filesystem discovery failed".to_string(),
                     None,
                 )],
@@ -4943,12 +4962,12 @@ async fn repeated_multi_call_failures_do_not_trip_no_progress_and_run_can_recove
             .map(|_| ironclaw_host_api::ResolutionBatch {
                 resolutions: vec![
                     resolution::failed(
-                        CapabilityFailureKind::OperationFailed,
+                        FailureKind::OperationFailed,
                         "first discovery failed".to_string(),
                         None,
                     ),
                     resolution::failed(
-                        CapabilityFailureKind::OperationFailed,
+                        FailureKind::OperationFailed,
                         "second discovery failed".to_string(),
                         None,
                     ),
@@ -5044,7 +5063,7 @@ async fn repeated_non_provider_replayable_failures_do_not_trigger_no_progress_st
             (0..3)
                 .map(|_| ironclaw_host_api::ResolutionBatch {
                     resolutions: vec![resolution::failed(
-                        CapabilityFailureKind::OperationFailed,
+                        FailureKind::OperationFailed,
                         "non-replayable capability failed".to_string(),
                         None,
                     )],
@@ -5084,27 +5103,27 @@ async fn repeated_non_provider_replayable_failures_do_not_trigger_no_progress_st
 async fn model_visible_provider_tool_failures_append_failure_tool_result_for_replay() {
     for (error_kind, safe_summary, expected_summary) in [
         (
-            CapabilityFailureKind::InvalidInput,
+            FailureKind::InputEncode,
             "invalid input",
-            "capability failed with invalid_input: invalid input",
+            "capability failed with input_encode: invalid input",
         ),
         (
-            CapabilityFailureKind::InvalidInput,
+            FailureKind::InputEncode,
             "provider arguments failed schema validation at instance path root against schema path required",
-            "capability failed with invalid_input: provider arguments failed schema validation at instance path root against schema path required",
+            "capability failed with input_encode: provider arguments failed schema validation at instance path root against schema path required",
         ),
         (
-            CapabilityFailureKind::MissingRuntime,
+            FailureKind::MissingRuntime,
             "runtime missing",
             "capability failed with missing_runtime: runtime missing",
         ),
         (
-            CapabilityFailureKind::OperationFailed,
+            FailureKind::OperationFailed,
             "operation failed",
             "capability failed with operation_failed: operation failed",
         ),
         (
-            CapabilityFailureKind::OutputTooLarge,
+            FailureKind::OutputTooLarge,
             "response body exceeded limit 10000000",
             "capability failed with output_too_large: response body exceeded limit 10000000",
         ),
@@ -5161,7 +5180,7 @@ async fn model_visible_provider_tool_failures_append_failure_tool_result_for_rep
     let host = MockHost::new(vec![provider_calls_response(), reply_response()])
         .with_batch_outcomes(vec![ironclaw_host_api::ResolutionBatch {
             resolutions: vec![resolution::failed(
-                CapabilityFailureKind::OutputTooLarge,
+                FailureKind::OutputTooLarge,
                 long_summary,
                 None,
             )],
@@ -7756,7 +7775,7 @@ async fn resume_origin_backend_failure_does_not_die_as_scope_mismatch() {
         // [1] cap1 approval-resume → Backend failure.
         ironclaw_host_api::ResolutionBatch {
             resolutions: vec![resolution::failed(
-                CapabilityFailureKind::Backend,
+                FailureKind::Backend,
                 "transient backend error during cap1 resume".to_string(),
                 None,
             )],
@@ -7926,7 +7945,7 @@ async fn auth_resume_origin_backend_failure_does_not_die_as_scope_mismatch() {
         // [1] Phase 2: cap1 auth-resume → Backend failure.
         ironclaw_host_api::ResolutionBatch {
             resolutions: vec![resolution::failed(
-                CapabilityFailureKind::Backend,
+                FailureKind::Backend,
                 "transient backend error during cap1 auth-resume".to_string(),
                 None,
             )],
@@ -8105,7 +8124,7 @@ async fn capability_stage_denied_approval_resume_surfaces_gate_declined_failure_
             LoopProgressEvent::CapabilityActivityFailed {
                 activity_id,
                 capability_id: emitted_capability_id,
-                reason_kind: CapabilityFailureKind::GateDeclined,
+                reason_kind: FailureKind::GateDeclined,
                 ..
             } if *activity_id == denied_activity_id && *emitted_capability_id == capability_id()
         )),
@@ -8141,7 +8160,7 @@ async fn capability_stage_denied_auth_resume_surfaces_gate_declined_failure_and_
     let host =
         MockHost::new(Vec::new()).with_batch_outcomes(vec![ironclaw_host_api::ResolutionBatch {
             resolutions: vec![resolution::failed(
-                CapabilityFailureKind::GateDeclined,
+                FailureKind::GateDeclined,
                 "auth gate denied by user".to_string(),
                 None,
             )],
@@ -8290,7 +8309,7 @@ async fn auth_gate_without_resume_token_records_activity_id_for_denial_failure()
         // auth resume; the host terminalizes it as a gate-declined failure.
         ironclaw_host_api::ResolutionBatch {
             resolutions: vec![resolution::failed(
-                CapabilityFailureKind::GateDeclined,
+                FailureKind::GateDeclined,
                 "auth gate denied by user".to_string(),
                 None,
             )],
@@ -8431,7 +8450,7 @@ async fn capability_stage_denied_auth_resume_only_fails_matching_call_remaining_
             // first, then Y's normal dispatch completes.
             resolutions: vec![
                 resolution::failed(
-                    CapabilityFailureKind::GateDeclined,
+                    FailureKind::GateDeclined,
                     "auth gate denied by user".to_string(),
                     None,
                 ),
@@ -8654,7 +8673,7 @@ async fn capability_stage_denied_auth_resume_only_fails_matching_activity_when_c
             // terminalization first, then the surviving call's completion.
             resolutions: vec![
                 resolution::failed(
-                    CapabilityFailureKind::GateDeclined,
+                    FailureKind::GateDeclined,
                     "auth gate denied by user".to_string(),
                     None,
                 ),
@@ -8842,7 +8861,7 @@ async fn capability_stage_denied_auth_resume_one_denied_two_remaining_all_dispat
             // first, then Y and Z complete.
             resolutions: vec![
                 resolution::failed(
-                    CapabilityFailureKind::GateDeclined,
+                    FailureKind::GateDeclined,
                     "auth gate denied by user".to_string(),
                     None,
                 ),

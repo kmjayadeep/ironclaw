@@ -1,6 +1,6 @@
 use super::{
     AgentLoopExecutor, AgentLoopExecutorError, AgentLoopHostError, AgentLoopHostErrorKind,
-    CanonicalAgentLoopExecutor, CapabilityFailureKind, CheckpointKind, DefaultCompactionStrategy,
+    CanonicalAgentLoopExecutor, CheckpointKind, DefaultCompactionStrategy, FailureKind,
     FixedReplyAdmissionPolicy, GateOutcome, HostStage, LoopCheckpointKind, LoopCompactionError,
     LoopExecutionState, LoopExit, LoopFailureKind, LoopGateRef, LoopResultRef, LoopSafeSummary,
     MockHost, active_task_preserving_compaction_index, calls_response, empty_gate_state,
@@ -13,7 +13,7 @@ use ironclaw_turns::run_profile::{
     ToolObservationStatus,
 };
 
-const PERMANENT_CAPABILITY_DETAIL: &str = "permanent dispatch failure code 47";
+const OPERATION_FAILED_CAPABILITY_DETAIL: &str = "permanent dispatch failure code 47";
 const INVALID_OUTPUT_CAPABILITY_SUMMARY: &str = "MCP dispatch failed at /tmp/{socket}";
 const INVALID_OUTPUT_CAPABILITY_DETAIL: &str = "MCP dispatch failed with transport error";
 
@@ -28,7 +28,7 @@ struct MatrixRow {
 #[derive(Debug, Clone, Copy)]
 enum FailureSetup {
     ModelError,
-    CapabilityProtocolError,
+    CapabilityOperationFailedRecoverable,
     CapabilityInvalidInputRecoverable,
     CapabilityInvalidOutputRecoverable,
     IterationLimit,
@@ -89,13 +89,17 @@ const ROWS: &[MatrixRow] = &[
         expects_explanation: false,
     },
     MatrixRow {
-        label: "CapabilityProtocolError <- batch outcome Failed(Permanent)",
-        setup: FailureSetup::CapabilityProtocolError,
-        expected_kind: ExpectedTerminal::Failed {
-            kind: LoopFailureKind::CapabilityProtocolError,
-            safe_summary: Some("capability_permanent"),
+        label: "CapabilityProtocolError <- batch outcome Failed(OperationFailed)",
+        setup: FailureSetup::CapabilityOperationFailedRecoverable,
+        // Unified-FailureKind migration: the retired `Permanent` kind merged
+        // into `OperationFailed`, whose fate is ModelVisible — the failure
+        // surfaces as a tool error and the run recovers instead of aborting.
+        // The terminal set for capability failure kinds is exactly
+        // `{Cancelled}` now.
+        expected_kind: ExpectedTerminal::CompletedDivergence {
+            planned_kind: LoopFailureKind::CapabilityProtocolError,
         },
-        expects_explanation: true,
+        expects_explanation: false,
     },
     MatrixRow {
         label: "ModelError <- capability Failed(InvalidInput)",
@@ -259,7 +263,7 @@ macro_rules! matrix_row_test {
 }
 
 matrix_row_test!(matrix_model_error_exhausting_retries, 0);
-matrix_row_test!(matrix_capability_protocol_error_permanent, 1);
+matrix_row_test!(matrix_capability_operation_failed_recovers, 1);
 matrix_row_test!(matrix_capability_invalid_input_recovers, 2);
 matrix_row_test!(matrix_capability_invalid_output_recovers, 3);
 matrix_row_test!(matrix_iteration_limit, 4);
@@ -299,16 +303,16 @@ async fn run_setup(setup: FailureSetup) -> ObservedTerminal {
             );
             run_local(crate::families::default(), host, None).await
         }
-        FailureSetup::CapabilityProtocolError => {
+        FailureSetup::CapabilityOperationFailedRecoverable => {
             let host = MockHost::new(vec![
                 calls_response(),
                 reply_response_with_text("explanation"),
             ])
             .with_batch_outcomes(vec![batch_outcome(resolution::failed(
-                CapabilityFailureKind::Permanent,
+                FailureKind::OperationFailed,
                 "permanent protocol failure".to_string(),
                 Some(CapabilityFailureDetail::Diagnostic {
-                    text: PERMANENT_CAPABILITY_DETAIL.to_string(),
+                    text: OPERATION_FAILED_CAPABILITY_DETAIL.to_string(),
                 }),
             ))]);
             run_local(crate::families::default(), host, None).await
@@ -319,7 +323,7 @@ async fn run_setup(setup: FailureSetup) -> ObservedTerminal {
                 reply_response_with_text("completed after invalid input"),
             ])
             .with_batch_outcomes(vec![batch_outcome(failed_capability(
-                CapabilityFailureKind::InvalidInput,
+                FailureKind::InputEncode,
                 "invalid input supplied by model",
             ))]);
             run_local(crate::families::default(), host, None).await
@@ -330,7 +334,7 @@ async fn run_setup(setup: FailureSetup) -> ObservedTerminal {
                 reply_response_with_text("completed after invalid output"),
             ])
             .with_batch_outcomes(vec![batch_outcome(resolution::failed(
-                CapabilityFailureKind::InvalidOutput,
+                FailureKind::OutputDecode,
                 INVALID_OUTPUT_CAPABILITY_SUMMARY.to_string(),
                 Some(CapabilityFailureDetail::Diagnostic {
                     text: INVALID_OUTPUT_CAPABILITY_DETAIL.to_string(),
@@ -415,7 +419,7 @@ async fn run_setup(setup: FailureSetup) -> ObservedTerminal {
                 reply_response_with_text("completed after policy denial"),
             ])
             .with_batch_outcomes(vec![batch_outcome(failed_capability(
-                CapabilityFailureKind::PolicyDenied,
+                FailureKind::PolicyDenied,
                 "capability policy denied",
             ))]);
             run_local(crate::families::default(), host, None).await
@@ -426,7 +430,7 @@ async fn run_setup(setup: FailureSetup) -> ObservedTerminal {
                 reply_response_with_text("completed after authorization failure"),
             ])
             .with_batch_outcomes(vec![batch_outcome(failed_capability(
-                CapabilityFailureKind::Authorization,
+                FailureKind::Authorization,
                 "the provider token has expired",
             ))]);
             run_local(crate::families::default(), host, None).await
@@ -516,17 +520,6 @@ fn assert_expected_terminal(row: &MatrixRow, observed: &ObservedTerminal) {
                 row.label
             );
             assert_explanation_refs(row, &failed.explanation_message_refs);
-            if matches!(row.setup, FailureSetup::CapabilityProtocolError) {
-                assert_eq!(
-                    failed
-                        .safe_summary
-                        .as_ref()
-                        .and_then(|failure| failure.detail()),
-                    Some(PERMANENT_CAPABILITY_DETAIL),
-                    "{}: terminal capability cause should survive on detail",
-                    row.label
-                );
-            }
             let final_refs = observed
                 .final_assistant_refs
                 .as_ref()
@@ -590,6 +583,26 @@ fn assert_expected_terminal(row: &MatrixRow, observed: &ObservedTerminal) {
                 "{}: completed divergence row should still checkpoint final state",
                 row.label
             );
+            if matches!(
+                row.setup,
+                FailureSetup::CapabilityOperationFailedRecoverable
+            ) {
+                // The capability cause survives on the model-visible
+                // observation detail even though the run recovers.
+                let observation = observed
+                    .appended_result_refs
+                    .iter()
+                    .find_map(|result| result.model_observation.as_ref());
+                if let Some(observation) = observation {
+                    assert!(matches!(
+                        &observation.detail,
+                        ToolObservationDetail::GenericFailure {
+                            failure_kind: FailureKind::OperationFailed,
+                            detail: Some(detail),
+                        } if detail == OPERATION_FAILED_CAPABILITY_DETAIL
+                    ));
+                }
+            }
             if matches!(row.setup, FailureSetup::CapabilityInvalidOutputRecoverable) {
                 // Phase 1: the capability failure's safe_summary carries `/`
                 // and `{` and fails strict validation. The run must NOT bork —
@@ -609,7 +622,7 @@ fn assert_expected_terminal(row: &MatrixRow, observed: &ObservedTerminal) {
                 assert!(matches!(
                     &observation.detail,
                     ToolObservationDetail::GenericFailure {
-                        failure_kind: CapabilityFailureKind::InvalidOutput,
+                        failure_kind: FailureKind::OutputDecode,
                         detail: Some(detail),
                     } if detail == INVALID_OUTPUT_CAPABILITY_DETAIL
                 ));
@@ -670,10 +683,7 @@ fn batch_outcome(outcome: ironclaw_host_api::Resolution) -> ironclaw_host_api::R
     }
 }
 
-fn failed_capability(
-    error_kind: CapabilityFailureKind,
-    safe_summary: &str,
-) -> ironclaw_host_api::Resolution {
+fn failed_capability(error_kind: FailureKind, safe_summary: &str) -> ironclaw_host_api::Resolution {
     resolution::failed(error_kind, safe_summary.to_string(), None)
 }
 
