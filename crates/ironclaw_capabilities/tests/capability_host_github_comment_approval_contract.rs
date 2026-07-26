@@ -5,7 +5,6 @@ use ironclaw_capabilities::*;
 use ironclaw_filesystem::InMemoryBackend;
 use ironclaw_host_api::*;
 use ironclaw_processes::*;
-use ironclaw_run_state::*;
 use serde_json::json;
 
 mod support;
@@ -153,7 +152,7 @@ struct GitHubCommentApprovalFixture {
     run_state:
         ironclaw_processes::ProcessInvocationStateStore<ironclaw_filesystem::InMemoryBackend>,
     approval_requests:
-        ironclaw_run_state::ApprovalRequestStore<ironclaw_filesystem::InMemoryBackend>,
+        ironclaw_approvals::ApprovalRequestStore<ironclaw_filesystem::InMemoryBackend>,
     leases: CapabilityLeaseStore<InMemoryBackend>,
     context: ExecutionContext,
     scope: ResourceScope,
@@ -168,7 +167,7 @@ async fn blocked_github_comment_fixture() -> GitHubCommentApprovalFixture {
     let registry = registry_with_github_comment_capability();
     let dispatcher = recording_dispatcher();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
     let block_host = capability_host(&registry, &dispatcher, &ApprovalAuthorizer)
         .with_invocation_state(&run_state)

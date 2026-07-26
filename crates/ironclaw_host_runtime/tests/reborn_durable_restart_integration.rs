@@ -6,6 +6,7 @@ use std::{path::Path, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use ironclaw_approvals::LeaseApproval;
+use ironclaw_approvals::{ApprovalRequestStore, ApprovalRequestStorePort};
 use ironclaw_authorization::{
     CapabilityLeaseStatus, CapabilityLeaseStore, CapabilityLeaseStorePort, GrantAuthorizer,
     TrustAwareCapabilityDispatchAuthorizer,
@@ -30,7 +31,6 @@ use ironclaw_reborn_event_store::{
     RebornEventStoreConfig, RebornEventStores, RebornProfile, build_reborn_event_stores,
 };
 use ironclaw_resources::InMemoryResourceGovernor;
-use ironclaw_run_state::{ApprovalRequestStore, ApprovalRequestStorePort};
 use ironclaw_scripts::{
     ScriptBackend, ScriptBackendOutput, ScriptBackendRequest, ScriptRuntime, ScriptRuntimeConfig,
 };

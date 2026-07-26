@@ -6,12 +6,12 @@ use std::{
 };
 
 use async_trait::async_trait;
+use ironclaw_approvals::*;
 use ironclaw_filesystem::{
     DirEntry, DiskFilesystem, FileStat, FilesystemError, FilesystemOperation, InMemoryBackend,
     RootFilesystem, ScopedFilesystem,
 };
 use ironclaw_host_api::*;
-use ironclaw_run_state::*;
 
 #[tokio::test]
 async fn filesystem_approval_request_store_persists_pending_requests_under_approvals_alias() {
@@ -64,7 +64,7 @@ async fn filesystem_approval_request_duplicate_save_is_serialized_across_store_i
     assert_eq!(
         [&first, &second]
             .into_iter()
-            .filter(|result| matches!(result, Err(RunStateError::ApprovalRequestAlreadyExists { request_id }) if *request_id == approval.id))
+            .filter(|result| matches!(result, Err(ApprovalStoreError::ApprovalRequestAlreadyExists { request_id }) if *request_id == approval.id))
             .count(),
         1,
         "the losing approval store instance should observe the winner's pending request"
@@ -146,7 +146,7 @@ async fn in_memory_discard_tombstone_prevents_request_id_reuse() {
     assert!(
         matches!(
             approve_err,
-            RunStateError::ApprovalNotPending { request_id: id, status }
+            ApprovalStoreError::ApprovalNotPending { request_id: id, status }
                 if id == request_id && status == ApprovalStatus::Discarded
         ),
         "expected ApprovalNotPending(Discarded) but got {approve_err:?}",
@@ -155,7 +155,7 @@ async fn in_memory_discard_tombstone_prevents_request_id_reuse() {
     assert!(
         matches!(
             deny_err,
-            RunStateError::ApprovalNotPending { request_id: id, status }
+            ApprovalStoreError::ApprovalNotPending { request_id: id, status }
                 if id == request_id && status == ApprovalStatus::Discarded
         ),
         "expected ApprovalNotPending(Discarded) but got {deny_err:?}",
@@ -168,7 +168,7 @@ async fn in_memory_discard_tombstone_prevents_request_id_reuse() {
     assert!(
         matches!(
             err,
-            RunStateError::ApprovalRequestAlreadyExists { request_id: id } if id == request_id
+            ApprovalStoreError::ApprovalRequestAlreadyExists { request_id: id } if id == request_id
         ),
         "expected ApprovalRequestAlreadyExists but got {err:?}",
     );
@@ -200,7 +200,7 @@ async fn filesystem_discard_tombstone_prevents_request_id_reuse() {
     assert!(
         matches!(
             deny_err,
-            RunStateError::ApprovalNotPending { request_id: id, status }
+            ApprovalStoreError::ApprovalNotPending { request_id: id, status }
                 if id == request_id && status == ApprovalStatus::Discarded
         ),
         "expected ApprovalNotPending(Discarded) but got {deny_err:?}",
@@ -209,7 +209,7 @@ async fn filesystem_discard_tombstone_prevents_request_id_reuse() {
     assert!(
         matches!(
             approve_err,
-            RunStateError::ApprovalNotPending { request_id: id, status }
+            ApprovalStoreError::ApprovalNotPending { request_id: id, status }
                 if id == request_id && status == ApprovalStatus::Discarded
         ),
         "expected ApprovalNotPending(Discarded) but got {approve_err:?}",
@@ -222,7 +222,7 @@ async fn filesystem_discard_tombstone_prevents_request_id_reuse() {
     assert!(
         matches!(
             err,
-            RunStateError::ApprovalRequestAlreadyExists { request_id: id } if id == request_id
+            ApprovalStoreError::ApprovalRequestAlreadyExists { request_id: id } if id == request_id
         ),
         "expected ApprovalRequestAlreadyExists but got {err:?}",
     );
@@ -254,7 +254,7 @@ async fn filesystem_discard_does_not_clobber_resolved_approval() {
     // discard_pending must refuse because the record is no longer Pending.
     let err = store.discard_pending(&scope, request_id).await.unwrap_err();
     assert!(
-        matches!(err, RunStateError::ApprovalNotPending { .. }),
+        matches!(err, ApprovalStoreError::ApprovalNotPending { .. }),
         "expected ApprovalNotPending but got {err:?}",
     );
 
@@ -332,7 +332,7 @@ async fn filesystem_discard_toctou_race_loses_to_concurrent_approve() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, RunStateError::ApprovalNotPending { .. }),
+        matches!(err, ApprovalStoreError::ApprovalNotPending { .. }),
         "expected ApprovalNotPending from TOCTOU-raced discard, got {err:?}",
     );
 
@@ -536,7 +536,7 @@ async fn filesystem_approval_store_fails_closed_on_byte_only_backend() {
 
     let err = store.save_pending(scope, approval).await.unwrap_err();
     assert!(
-        matches!(&err, RunStateError::Backend(msg) if msg.contains("compare-and-swap")),
+        matches!(&err, ApprovalStoreError::Backend(msg) if msg.contains("compare-and-swap")),
         "expected Backend(CasUnsupported) from byte-only DiskFilesystem but got {err:?}",
     );
 }

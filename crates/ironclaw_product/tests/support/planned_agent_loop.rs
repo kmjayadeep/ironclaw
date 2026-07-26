@@ -306,7 +306,7 @@ impl ProductLiveAgentLoopHarness {
         // requirements / fails the exit (#6287 IronLoop). `None` for the
         // non-ProductLive fakes (which do not persist gate records), preserving
         // the executor's tolerant "no store wired" path.
-        let mut turn_executor_gate_store: Option<Arc<dyn ironclaw_run_state::GateRecordStorePort>> =
+        let mut turn_executor_gate_store: Option<Arc<dyn ironclaw_approvals::GateRecordStorePort>> =
             None;
         let capability_factory: Arc<dyn LoopCapabilityPortFactory> = if let Some(capability) =
             config.host_runtime_capability
@@ -317,8 +317,8 @@ impl ProductLiveAgentLoopHarness {
             // same records.
             let capability_store_filesystem =
                 ironclaw_reborn_composition::wrap_scoped(Arc::new(InMemoryBackend::new()));
-            let gate_record_store: Arc<dyn ironclaw_run_state::GateRecordStorePort> = Arc::new(
-                ironclaw_run_state::GateRecordStore::new(Arc::clone(&capability_store_filesystem)),
+            let gate_record_store: Arc<dyn ironclaw_approvals::GateRecordStorePort> = Arc::new(
+                ironclaw_approvals::GateRecordStore::new(Arc::clone(&capability_store_filesystem)),
             );
             turn_executor_gate_store = Some(Arc::clone(&gate_record_store));
             let replay_payload_store: Arc<dyn ironclaw_capabilities::ReplayPayloadStorePort> =
@@ -735,7 +735,7 @@ struct ProductLiveHostRuntimeCapabilityFactory {
     // capability port, so a raise and its later resume round-trip through the
     // SAME store (both built over one in-memory filesystem below). Modeling the
     // production wiring the local-dev path already has (#6287).
-    gate_record_store: Arc<dyn ironclaw_run_state::GateRecordStorePort>,
+    gate_record_store: Arc<dyn ironclaw_approvals::GateRecordStorePort>,
     replay_payload_store: Arc<dyn ironclaw_capabilities::ReplayPayloadStorePort>,
 }
 

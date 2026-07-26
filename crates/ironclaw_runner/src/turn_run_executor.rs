@@ -10,10 +10,10 @@ use std::{
 };
 
 use async_trait::async_trait;
+use ironclaw_approvals::GateRecordStorePort;
 use ironclaw_host_api::{GateRecord, GateRef, ResourceScope};
 use ironclaw_observability::live_latency_started_at;
 use ironclaw_processes::ProcessTransitionPort;
-use ironclaw_run_state::GateRecordStorePort;
 use ironclaw_turns::{
     AgentLoopDriverError, AgentLoopDriverResumeRequest, AgentLoopDriverRunRequest, LoopBlocked,
     LoopBlockedKind, LoopExit, TurnError, TurnStatus, runner::ClaimedTurnRun,

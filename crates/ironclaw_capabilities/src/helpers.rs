@@ -1,3 +1,4 @@
+use ironclaw_approvals::ApprovalStatus;
 use ironclaw_authorization::{
     CapabilityLease, CapabilityLeaseError, CapabilityLeaseStatus, CapabilityLeaseStorePort,
 };
@@ -6,7 +7,6 @@ use ironclaw_host_api::{
     Principal, ResourceEstimate, ResourceScope,
 };
 use ironclaw_processes::{ProcessInvocationError, ProcessInvocationStatePort};
-use ironclaw_run_state::ApprovalStatus;
 use tracing::warn;
 
 use crate::{CapabilityInvocationError, ResumeContextMismatchKind};

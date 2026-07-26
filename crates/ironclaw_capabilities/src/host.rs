@@ -1,5 +1,6 @@
 // arch-exempt: large_file, Slice-C `authorize()` extraction is a behavior-preserving step in the capability-path collapse (doc §9); net additions are transitional and shrink as later slices route dispatch through the sealed `Authorized` witness and retire the mirror request DTOs, plan #6175
 use chrono::Utc;
+use ironclaw_approvals::{ApprovalRequestStorePort, ApprovalStatus, ApprovalStoreError};
 use ironclaw_authorization::{
     CapabilityLease, CapabilityLeaseStorePort, TrustAwareCapabilityDispatchAuthorizer,
 };
@@ -16,7 +17,6 @@ use ironclaw_processes::{
     ProcessInvocationError, ProcessInvocationStart, ProcessInvocationStatePort,
     ProcessInvocationStatus, ProcessManager, ProcessStart,
 };
-use ironclaw_run_state::{ApprovalRequestStorePort, ApprovalStatus, RunStateError};
 use ironclaw_runtime_policy::{PlannerError, plan_capability};
 use ironclaw_safety::shell_command_display_text;
 use ironclaw_trust::{TrustDecision, TrustPolicy};
@@ -1212,7 +1212,7 @@ where
         let approval = approval_requests
             .get(&scope, request.approval_request_id)
             .await?
-            .ok_or(RunStateError::UnknownApprovalRequest {
+            .ok_or(ApprovalStoreError::UnknownApprovalRequest {
                 request_id: request.approval_request_id,
             })?;
         if approval.status != ApprovalStatus::Approved {
@@ -1467,7 +1467,7 @@ where
             let approval = approval_requests
                 .get(&scope, approval_request_id)
                 .await?
-                .ok_or(RunStateError::UnknownApprovalRequest {
+                .ok_or(ApprovalStoreError::UnknownApprovalRequest {
                     request_id: approval_request_id,
                 })?;
             if approval.status != ApprovalStatus::Approved {
@@ -1851,7 +1851,7 @@ where
         let approval = approval_requests
             .get(&scope, request.approval_request_id)
             .await?
-            .ok_or(RunStateError::UnknownApprovalRequest {
+            .ok_or(ApprovalStoreError::UnknownApprovalRequest {
                 request_id: request.approval_request_id,
             })?;
         if approval.status != ApprovalStatus::Approved {

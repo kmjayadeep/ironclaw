@@ -16,6 +16,7 @@
 use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
+use ironclaw_approvals::{ApprovalRequestStorePort, ApprovalStoreError};
 use ironclaw_approvals::{
     PersistentApprovalAction, PersistentApprovalPolicyKey, PersistentApprovalPolicyStorePort,
     PersistentApprovalScope,
@@ -42,7 +43,6 @@ use ironclaw_processes::{
     ProcessInvocationStatePort, ProcessInvocationStatus, ProcessManager, ProcessResultStorePort,
     ProcessStart, ProcessStatus, ProcessStorePort,
 };
-use ironclaw_run_state::{ApprovalRequestStorePort, RunStateError};
 use ironclaw_secrets::SecretStorePort;
 use ironclaw_trust::{HostTrustPolicy, TrustPolicy};
 use ironclaw_turns::run_profile::LoopSafeSummary;
@@ -1276,21 +1276,23 @@ fn unavailable_from_invocation_state(error: ProcessInvocationError) -> HostRunti
 
 /// Maps an approval-store error to a sanitized [`HostRuntimeError::Unavailable`].
 ///
-/// `RunStateError::InvalidPath` and `Filesystem` carry raw filesystem
+/// `ApprovalStoreError::InvalidPath` and `Filesystem` carry raw filesystem
 /// strings; `Serialization`/`Deserialization` carry serde internals. Forward
 /// the redacted variant discriminator instead of `error.to_string()` so the
 /// boundary stays infrastructure-opaque to upper services.
-fn unavailable_from_approval_store(error: RunStateError) -> HostRuntimeError {
+fn unavailable_from_approval_store(error: ApprovalStoreError) -> HostRuntimeError {
     let reason = match error {
-        RunStateError::UnknownApprovalRequest { .. } => "approval request not found",
-        RunStateError::ApprovalRequestAlreadyExists { .. } => "approval request already exists",
-        RunStateError::GateRecordAlreadyExists { .. } => "gate record already exists",
-        RunStateError::ApprovalNotPending { .. } => "approval request not pending",
-        RunStateError::InvalidPath(_) => "approval storage path invalid",
-        RunStateError::Filesystem(_) => "approval filesystem unavailable",
-        RunStateError::Serialization(_) => "run-state serialization failed",
-        RunStateError::Deserialization(_) => "run-state deserialization failed",
-        RunStateError::Backend(_) => "run-state backend unavailable",
+        ApprovalStoreError::UnknownApprovalRequest { .. } => "approval request not found",
+        ApprovalStoreError::ApprovalRequestAlreadyExists { .. } => {
+            "approval request already exists"
+        }
+        ApprovalStoreError::GateRecordAlreadyExists { .. } => "gate record already exists",
+        ApprovalStoreError::ApprovalNotPending { .. } => "approval request not pending",
+        ApprovalStoreError::InvalidPath(_) => "approval storage path invalid",
+        ApprovalStoreError::Filesystem(_) => "approval filesystem unavailable",
+        ApprovalStoreError::Serialization(_) => "run-state serialization failed",
+        ApprovalStoreError::Deserialization(_) => "run-state deserialization failed",
+        ApprovalStoreError::Backend(_) => "run-state backend unavailable",
     };
     HostRuntimeError::unavailable(reason)
 }
@@ -2869,7 +2871,8 @@ required = true
 
     #[test]
     fn unavailable_from_approval_store_uses_redacted_reasons() {
-        let error = RunStateError::InvalidPath("/private/users/secret/database.sqlite".to_string());
+        let error =
+            ApprovalStoreError::InvalidPath("/private/users/secret/database.sqlite".to_string());
         let host_error = unavailable_from_approval_store(error);
         match host_error {
             HostRuntimeError::Unavailable { reason } => {
@@ -2877,12 +2880,13 @@ required = true
                     !reason.contains("/private/"),
                     "sanitized reason must not leak filesystem paths, got {reason:?}"
                 );
-                assert_eq!(reason, "run-state storage path invalid");
+                assert_eq!(reason, "approval storage path invalid");
             }
             other => panic!("expected Unavailable, got {other:?}"),
         }
 
-        let error = RunStateError::Filesystem("connection refused at /tmp/runstate.db".to_string());
+        let error =
+            ApprovalStoreError::Filesystem("connection refused at /tmp/approvals.db".to_string());
         let host_error = unavailable_from_approval_store(error);
         match host_error {
             HostRuntimeError::Unavailable { reason } => {
@@ -2890,7 +2894,7 @@ required = true
                     !reason.contains("/tmp"),
                     "sanitized reason must not leak filesystem paths, got {reason:?}"
                 );
-                assert_eq!(reason, "run-state filesystem unavailable");
+                assert_eq!(reason, "approval filesystem unavailable");
             }
             other => panic!("expected Unavailable, got {other:?}"),
         }

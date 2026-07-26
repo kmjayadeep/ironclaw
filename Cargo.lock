@@ -3356,7 +3356,6 @@ dependencies = [
  "ironclaw_events",
  "ironclaw_filesystem",
  "ironclaw_host_api",
- "ironclaw_run_state",
  "serde",
  "serde_json",
  "tempfile",
@@ -3452,7 +3451,6 @@ dependencies = [
  "ironclaw_host_api",
  "ironclaw_processes",
  "ironclaw_resources",
- "ironclaw_run_state",
  "ironclaw_runtime_policy",
  "ironclaw_safety",
  "ironclaw_trust",
@@ -3627,7 +3625,6 @@ dependencies = [
  "ironclaw_product",
  "ironclaw_reborn_config",
  "ironclaw_resources",
- "ironclaw_run_state",
  "ironclaw_safety",
  "ironclaw_secrets",
  "ironclaw_skills",
@@ -3846,7 +3843,6 @@ dependencies = [
  "ironclaw_reborn_event_store",
  "ironclaw_reborn_traces",
  "ironclaw_resources",
- "ironclaw_run_state",
  "ironclaw_runtime_policy",
  "ironclaw_safety",
  "ironclaw_scripts",
@@ -3931,6 +3927,7 @@ dependencies = [
  "dashmap",
  "futures",
  "hex",
+ "ironclaw_approvals",
  "ironclaw_capabilities",
  "ironclaw_filesystem",
  "ironclaw_host_api",
@@ -3939,7 +3936,6 @@ dependencies = [
  "ironclaw_observability",
  "ironclaw_process_sandbox",
  "ironclaw_resources",
- "ironclaw_run_state",
  "ironclaw_safety",
  "ironclaw_skills",
  "ironclaw_threads",
@@ -4175,7 +4171,6 @@ dependencies = [
  "ironclaw_product",
  "ironclaw_reborn_composition",
  "ironclaw_reborn_traces",
- "ironclaw_run_state",
  "ironclaw_runner",
  "ironclaw_safety",
  "ironclaw_telegram_extension",
@@ -4276,7 +4271,6 @@ dependencies = [
  "ironclaw_reborn_openai_compat",
  "ironclaw_reborn_traces",
  "ironclaw_resources",
- "ironclaw_run_state",
  "ironclaw_runner",
  "ironclaw_runtime_policy",
  "ironclaw_safety",
@@ -4416,7 +4410,6 @@ dependencies = [
  "ironclaw_reborn_openai_compat",
  "ironclaw_reborn_traces",
  "ironclaw_resources",
- "ironclaw_run_state",
  "ironclaw_runner",
  "ironclaw_runtime_policy",
  "ironclaw_safety",
@@ -4541,21 +4534,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ironclaw_run_state"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "ironclaw_filesystem",
- "ironclaw_host_api",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "ironclaw_runner"
 version = "0.1.0"
 dependencies = [
@@ -4565,6 +4543,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "ironclaw_agent_loop",
+ "ironclaw_approvals",
  "ironclaw_authorization",
  "ironclaw_common",
  "ironclaw_event_projections",
@@ -4582,7 +4561,6 @@ dependencies = [
  "ironclaw_processes",
  "ironclaw_reborn_event_store",
  "ironclaw_resources",
- "ironclaw_run_state",
  "ironclaw_runner",
  "ironclaw_safety",
  "ironclaw_scripts",

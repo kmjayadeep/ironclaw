@@ -11,7 +11,6 @@ use ironclaw_capabilities::*;
 use ironclaw_filesystem::InMemoryBackend;
 use ironclaw_host_api::*;
 use ironclaw_processes::*;
-use ironclaw_run_state::*;
 use serde_json::json;
 
 mod support;
@@ -170,7 +169,7 @@ async fn auth_resume_json_rejects_run_in_blocked_approval_status() {
     let registry = registry_with_echo_capability();
     let dispatcher = recording_dispatcher();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
 
     // Block the invocation at an approval gate (not auth).
     let block_host = capability_host(&registry, &dispatcher, &ApprovalAuthorizer)
@@ -286,7 +285,7 @@ async fn auth_resume_json_rejects_fingerprint_mismatch_on_approval_request() {
     let registry = registry_with_echo_capability();
     let dispatcher = recording_dispatcher();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
 
     // Phase 1: invoke (needs approval).
@@ -380,7 +379,7 @@ async fn auth_resume_json_with_approval_request_id_claims_active_lease_and_dispa
     let registry = registry_with_echo_capability();
     let dispatcher = recording_dispatcher();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
 
     // Phase 1: first invocation triggers approval.
@@ -557,7 +556,7 @@ async fn auth_resume_json_rejects_approval_not_yet_approved() {
     let authorizer = GrantAuthorizer::new();
     let dispatcher = recording_dispatcher();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
 
     // Start and block at auth.
@@ -797,7 +796,7 @@ async fn auth_resume_after_real_approval_bounce_reuses_claimed_lease() {
         }
     });
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
 
     // ── Phase 1: invoke_json → BlockedApproval ──────────────────────────────
@@ -1002,7 +1001,7 @@ async fn auth_resume_json_terminal_dispatch_failure_revokes_claimed_lease() {
         }),
     ]);
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
 
     // Phase 1: invoke → BlockedApproval.
@@ -1122,7 +1121,7 @@ async fn auth_resume_json_non_terminal_auth_bounce_leaves_lease_claimed() {
     let registry = registry_with_echo_capability();
     let dispatcher = TestDispatcher::auth_required();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
 
     // Phase 1: invoke → BlockedApproval.
@@ -1356,7 +1355,7 @@ async fn concurrent_auth_resume_claim_loser_returns_lease_error_without_failing_
     let registry = registry_with_echo_capability();
     let dispatcher = recording_dispatcher();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = ClaimFailingLeaseStore::new();
 
     // Phase 1: invoke → BlockedApproval.
@@ -1465,7 +1464,7 @@ async fn auth_resume_json_returns_store_missing_when_capability_leases_absent() 
     let authorizer = GrantAuthorizer::new();
     let dispatcher = recording_dispatcher();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
 
     // Start and block at auth.
     let context = execution_context(CapabilitySet {
@@ -1549,7 +1548,7 @@ async fn auth_resume_json_rejected_prior_approval_fails_blocked_auth_run() {
     let authorizer = GrantAuthorizer::new();
     let dispatcher = recording_dispatcher();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
 
     // Start and block at auth.
@@ -1857,7 +1856,7 @@ async fn concurrent_auth_resume_reuse_loser_does_not_double_dispatch() {
     let run_state =
         StdArc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
     let approval_requests =
-        StdArc::new(ironclaw_run_state::in_memory_backed_approval_request_store());
+        StdArc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
     let leases = StdArc::new(BarrierLeaseStore::new(StdArc::clone(&scan_barrier)));
 
     // ── Phase 1: invoke → BlockedApproval ──────────────────────────────────
@@ -2105,7 +2104,7 @@ async fn auth_resume_json_authorization_deny_revokes_dispatching_lease() {
     // `auth_required()` returns AuthRequired on every call, which covers this.
     let registry = registry_with_echo_capability();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
 
     // ── Phase 1: invoke → BlockedApproval ──────────────────────────────────
@@ -2240,7 +2239,7 @@ async fn auth_resume_json_authorization_require_approval_revokes_dispatching_lea
 
     let registry = registry_with_echo_capability();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
 
     // ── Phase 1: invoke → BlockedApproval ──────────────────────────────────
@@ -2482,7 +2481,7 @@ async fn setup_blocked_auth_run_with_stores(
     run_state: &ironclaw_processes::ProcessInvocationStateStore<
         ironclaw_filesystem::InMemoryBackend,
     >,
-    approval_requests: &ironclaw_run_state::ApprovalRequestStore<
+    approval_requests: &ironclaw_approvals::ApprovalRequestStore<
         ironclaw_filesystem::InMemoryBackend,
     >,
     leases: &CapabilityLeaseStore<InMemoryBackend>,
@@ -2514,7 +2513,7 @@ async fn auth_resume_json_approval_request_mismatch_action() {
     let authorizer = GrantAuthorizer::new();
     let dispatcher = recording_dispatcher();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
 
     let context = execution_context(CapabilitySet {
@@ -2597,7 +2596,7 @@ async fn auth_resume_json_approval_request_mismatch_correlation_id() {
     let authorizer = GrantAuthorizer::new();
     let dispatcher = recording_dispatcher();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
 
     let context = execution_context(CapabilitySet {
@@ -2686,7 +2685,7 @@ async fn auth_resume_json_approval_request_mismatch_requested_by() {
     let authorizer = GrantAuthorizer::new();
     let dispatcher = recording_dispatcher();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
 
     let context = execution_context(CapabilitySet {
@@ -2932,7 +2931,7 @@ async fn concurrent_auth_resume_fresh_active_lease_loser_does_not_double_dispatc
     let run_state =
         StdArc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
     let approval_requests =
-        StdArc::new(ironclaw_run_state::in_memory_backed_approval_request_store());
+        StdArc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
     let leases = StdArc::new(GatedLeaseStore::new(
         StdArc::clone(&claim_entered),
         StdArc::clone(&claim_release),
@@ -3136,7 +3135,7 @@ async fn auth_resume_json_unknown_capability_does_not_strand_active_approval_lea
     let authorizer = GrantAuthorizer::new();
     let dispatcher = recording_dispatcher();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
 
     // Seed the run in BlockedAuth state (as it would be after a prior auth gate).
@@ -3263,7 +3262,7 @@ async fn auth_resume_json_unknown_capability_does_not_strand_claimed_approval_le
     let authorizer = GrantAuthorizer::new();
     let dispatcher = recording_dispatcher();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
 
     let context = execution_context(CapabilitySet {

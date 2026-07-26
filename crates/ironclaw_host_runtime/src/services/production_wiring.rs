@@ -2,11 +2,11 @@ use std::any::{TypeId, type_name};
 
 use thiserror::Error;
 
+use ironclaw_approvals::ApprovalRequestStore;
 use ironclaw_approvals::PersistentApprovalPolicyStore;
 use ironclaw_authorization::CapabilityLeaseStore;
 use ironclaw_filesystem::InMemoryBackend;
 use ironclaw_processes::{ProcessResultStore, ProcessStore};
-use ironclaw_run_state::ApprovalRequestStore;
 
 use super::{
     DiskFilesystem, DurableAuditSink, DurableEventSink, EmptyWasmRuntimeCredentials,
@@ -313,11 +313,10 @@ fn classify_component_type<T: ?Sized + 'static>() -> ProductionImplementationRea
             // still local-only; libSQL/Postgres monomorphizations are distinct.
             || type_id == TypeId::of::<ProcessStore<InMemoryBackend>>()
             || type_id == TypeId::of::<ProcessResultStore<InMemoryBackend>>()
-            // The run-state and approval-request stores no longer have bespoke
-            // in-memory implementations; "in-memory" is the `InMemoryBackend`
-            // behind the one production `Filesystem*Store<F>` (arch-simplification
-            // §4.3). A store backed by `InMemoryBackend` is still local-only;
-            // libSQL/Postgres monomorphizations are distinct.
+            || is_local_only_test_component::<T>()
+            // Approval requests use one filesystem-backed store. The process
+            // invocation fake exists only behind test support. Both are
+            // local-only when backed by `InMemoryBackend`.
             || type_id == TypeId::of::<ApprovalRequestStore<InMemoryBackend>>()
             // The persistent-approval and capability-lease stores no longer have
             // bespoke in-memory implementations; "in-memory" is now the
@@ -352,4 +351,15 @@ fn classify_component_type<T: ?Sized + 'static>() -> ProductionImplementationRea
         }
         () => ProductionImplementationReadiness::ProductionCandidate,
     }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn is_local_only_test_component<T: ?Sized + 'static>() -> bool {
+    TypeId::of::<T>()
+        == TypeId::of::<ironclaw_processes::ProcessInvocationStateStore<InMemoryBackend>>()
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+fn is_local_only_test_component<T: ?Sized + 'static>() -> bool {
+    false
 }

@@ -89,9 +89,8 @@ The filesystem-backed `RunStateStore` and `/run-state` record path are deleted.
 The compatibility lifecycle DTOs/ports, lifecycle fake, combined
 run-state/approval port, and host-runtime combined-store wiring are deleted.
 `CapabilityHost` and `DefaultHostRuntime` consume
-`ProcessInvocationStatePort` directly. `ironclaw_run_state` now contains only
-approval and gate persistence; its remaining dissolution is a package/ownership
-move into `ironclaw_approvals`.
+`ProcessInvocationStatePort` directly. Approval and gate persistence moved into
+`ironclaw_approvals`, and the `ironclaw_run_state` crate was deleted.
 
 `ironclaw_run_state/src/lib.rs` is 1,019 lines of invocation lifecycle:
 `start`, approval/auth blocking, `complete`, `fail`, scoped lookup, and listing.

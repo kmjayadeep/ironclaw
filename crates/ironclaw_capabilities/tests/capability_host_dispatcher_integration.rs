@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::{Duration as ChronoDuration, Utc};
+use ironclaw_approvals::*;
 use ironclaw_approvals::{ApprovalResolver, LeaseApproval};
 use ironclaw_authorization::*;
 use ironclaw_capabilities::*;
@@ -14,7 +15,6 @@ use ironclaw_filesystem::InMemoryBackend;
 use ironclaw_host_api::*;
 use ironclaw_processes::*;
 use ironclaw_resources::*;
-use ironclaw_run_state::*;
 use serde_json::{Value, json};
 
 mod support;
@@ -83,7 +83,7 @@ async fn capability_host_blocks_then_resumes_approved_dispatch_through_runtime_d
     let (registry, dispatcher, _governor, events, adapter) =
         runtime_dispatcher_stack(json!({"approved":true}));
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
     let block_host = capability_host(registry.as_ref(), &dispatcher, &ApprovalAuthorizer)
         .with_invocation_state(&run_state)
@@ -185,7 +185,7 @@ async fn capability_host_rejects_resume_from_wrong_user_scope_without_dispatch_o
     let (registry, dispatcher, _governor, _events, adapter) =
         runtime_dispatcher_stack(json!({"must_not":"dispatch"}));
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
     let block_host = capability_host(registry.as_ref(), &dispatcher, &ApprovalAuthorizer)
         .with_invocation_state(&run_state)
@@ -272,7 +272,7 @@ async fn capability_host_rejects_expired_approval_lease_before_dispatch() {
     let (registry, dispatcher, _governor, _events, adapter) =
         runtime_dispatcher_stack(json!({"must_not":"dispatch"}));
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
     let block_host = capability_host(registry.as_ref(), &dispatcher, &ApprovalAuthorizer)
         .with_invocation_state(&run_state)
@@ -450,7 +450,7 @@ fn runtime_dispatcher_stack(
 }
 
 async fn approve_dispatch(
-    approval_requests: &ironclaw_run_state::ApprovalRequestStore<
+    approval_requests: &ironclaw_approvals::ApprovalRequestStore<
         ironclaw_filesystem::InMemoryBackend,
     >,
     leases: &CapabilityLeaseStore<InMemoryBackend>,

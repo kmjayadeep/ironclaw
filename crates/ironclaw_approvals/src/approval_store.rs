@@ -1,4 +1,4 @@
-//! Durable approval and gate records for IronClaw Reborn.
+//! Durable approval and gate records.
 //!
 //! Process and capability-invocation lifecycle state belongs to
 //! `ironclaw_processes`; this crate owns only approval persistence and gates.
@@ -24,14 +24,6 @@ use ironclaw_host_api::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[cfg(any(test, feature = "test-support"))]
-mod test_support;
-#[cfg(any(test, feature = "test-support"))]
-pub use test_support::{
-    in_memory_backed_approval_filesystem, in_memory_backed_approval_request_store,
-    in_memory_backed_gate_record_store,
-};
-
 /// Approval request lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -51,9 +43,9 @@ pub struct ApprovalRecord {
     pub status: ApprovalStatus,
 }
 
-/// Run-state and approval persistence errors.
+/// Approval and gate persistence errors.
 #[derive(Debug, Error)]
-pub enum RunStateError {
+pub enum ApprovalStoreError {
     #[error("unknown approval request {request_id}")]
     UnknownApprovalRequest { request_id: ApprovalRequestId },
     #[error("approval request {request_id} already exists")]
@@ -73,11 +65,11 @@ pub enum RunStateError {
     Serialization(String),
     #[error("deserialization error: {0}")]
     Deserialization(String),
-    #[error("run-state backend error: {0}")]
+    #[error("approval backend error: {0}")]
     Backend(String),
 }
 
-impl From<FilesystemError> for RunStateError {
+impl From<FilesystemError> for ApprovalStoreError {
     fn from(error: FilesystemError) -> Self {
         Self::Filesystem(error.to_string())
     }
@@ -91,28 +83,28 @@ pub trait ApprovalRequestStorePort: Send + Sync {
         &self,
         scope: ResourceScope,
         request: ApprovalRequest,
-    ) -> Result<ApprovalRecord, RunStateError>;
+    ) -> Result<ApprovalRecord, ApprovalStoreError>;
 
     /// Loads one scoped approval record; wrong-scope lookups must look unknown.
     async fn get(
         &self,
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
-    ) -> Result<Option<ApprovalRecord>, RunStateError>;
+    ) -> Result<Option<ApprovalRecord>, ApprovalStoreError>;
 
     /// Marks a pending approval request approved only within the matching scope.
     async fn approve(
         &self,
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
-    ) -> Result<ApprovalRecord, RunStateError>;
+    ) -> Result<ApprovalRecord, ApprovalStoreError>;
 
     /// Marks a pending approval request denied only within the matching scope.
     async fn deny(
         &self,
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
-    ) -> Result<ApprovalRecord, RunStateError>;
+    ) -> Result<ApprovalRecord, ApprovalStoreError>;
 
     /// Discards a still-pending approval request during rollback before it becomes user-actionable.
     ///
@@ -123,7 +115,7 @@ pub trait ApprovalRequestStorePort: Send + Sync {
         &self,
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
-    ) -> Result<ApprovalRecord, RunStateError> {
+    ) -> Result<ApprovalRecord, ApprovalStoreError> {
         self.deny(scope, request_id).await
     }
 
@@ -131,7 +123,7 @@ pub trait ApprovalRequestStorePort: Send + Sync {
     async fn records_for_scope(
         &self,
         scope: &ResourceScope,
-    ) -> Result<Vec<ApprovalRecord>, RunStateError>;
+    ) -> Result<Vec<ApprovalRecord>, ApprovalStoreError>;
 }
 
 /// Durable store for the model-visible [`GateRecord`] a pending gate renders
@@ -157,7 +149,7 @@ pub trait GateRecordStorePort: Send + Sync {
     /// Persists the gate record for `gate_ref` in the exact resource-owner scope.
     ///
     /// Write-once: a `gate_ref` that already has a record is a
-    /// [`RunStateError::GateRecordAlreadyExists`], mirroring
+    /// [`ApprovalStoreError::GateRecordAlreadyExists`], mirroring
     /// [`ApprovalRequestStorePort::save_pending`]. `GateRef`s are freshly minted per
     /// gate, so a collision is a caller invariant violation, not an update path.
     async fn save(
@@ -165,7 +157,7 @@ pub trait GateRecordStorePort: Send + Sync {
         scope: ResourceScope,
         gate_ref: GateRef,
         record: GateRecord,
-    ) -> Result<(), RunStateError>;
+    ) -> Result<(), ApprovalStoreError>;
 
     /// Loads the gate record for `gate_ref`; a wrong-scope lookup must look
     /// unknown (`Ok(None)`), never leak another owner's record.
@@ -173,7 +165,7 @@ pub trait GateRecordStorePort: Send + Sync {
         &self,
         scope: &ResourceScope,
         gate_ref: GateRef,
-    ) -> Result<Option<GateRecord>, RunStateError>;
+    ) -> Result<Option<GateRecord>, ApprovalStoreError>;
 }
 
 /// `RecordKind` tag written on every approval-request entry for the same
@@ -203,10 +195,10 @@ where
         Self { filesystem }
     }
 
-    fn record_entry(record: &ApprovalRecord) -> Result<Entry, RunStateError> {
+    fn record_entry(record: &ApprovalRecord) -> Result<Entry, ApprovalStoreError> {
         let body = serialize_pretty(record)?;
         let kind = RecordKind::new(APPROVAL_RECORD_KIND)
-            .map_err(|e| RunStateError::Backend(e.to_string()))?;
+            .map_err(|e| ApprovalStoreError::Backend(e.to_string()))?;
         let mut entry = Entry::bytes(body).with_content_type(ContentType::json());
         entry.kind = Some(kind);
         Ok(entry)
@@ -216,7 +208,8 @@ where
         &self,
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
-    ) -> Result<Option<(ApprovalRecord, ironclaw_filesystem::RecordVersion)>, RunStateError> {
+    ) -> Result<Option<(ApprovalRecord, ironclaw_filesystem::RecordVersion)>, ApprovalStoreError>
+    {
         let path = approval_record_path(scope, request_id)?;
         let Some(versioned) = self.filesystem.get(scope, &path).await? else {
             return Ok(None);
@@ -237,7 +230,7 @@ where
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
         status: ApprovalStatus,
-    ) -> Result<ApprovalRecord, RunStateError> {
+    ) -> Result<ApprovalRecord, ApprovalStoreError> {
         let path = approval_record_path(scope, request_id)?;
         let scope_clone = scope.clone();
         cas_update(
@@ -251,13 +244,13 @@ where
                 // captures an already-resolved `Result` (mirrors cas_snapshot.rs).
                 let outcome = (|| {
                     let mut record =
-                        current.ok_or(RunStateError::UnknownApprovalRequest { request_id })?;
+                        current.ok_or(ApprovalStoreError::UnknownApprovalRequest { request_id })?;
                     // Enforce scope ownership on each retry against a freshly read record.
                     if !same_scope_owner(&record.scope, &scope_clone) {
-                        return Err(RunStateError::UnknownApprovalRequest { request_id });
+                        return Err(ApprovalStoreError::UnknownApprovalRequest { request_id });
                     }
                     if record.status != ApprovalStatus::Pending {
-                        return Err(RunStateError::ApprovalNotPending {
+                        return Err(ApprovalStoreError::ApprovalNotPending {
                             request_id,
                             status: record.status,
                         });
@@ -282,7 +275,7 @@ where
         &self,
         scope: ResourceScope,
         request: ApprovalRequest,
-    ) -> Result<ApprovalRecord, RunStateError> {
+    ) -> Result<ApprovalRecord, ApprovalStoreError> {
         let path = approval_record_path(&scope, request.id)?;
         let request_id = request.id;
         let record = ApprovalRecord {
@@ -299,7 +292,7 @@ where
             |current: Option<ApprovalRecord>| {
                 let fresh = record.clone();
                 let outcome = if current.is_some() {
-                    Err(RunStateError::ApprovalRequestAlreadyExists { request_id })
+                    Err(ApprovalStoreError::ApprovalRequestAlreadyExists { request_id })
                 } else {
                     Ok(CasApply::new(fresh.clone(), fresh))
                 };
@@ -314,7 +307,7 @@ where
         &self,
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
-    ) -> Result<Option<ApprovalRecord>, RunStateError> {
+    ) -> Result<Option<ApprovalRecord>, ApprovalStoreError> {
         Ok(self
             .read_versioned(scope, request_id)
             .await?
@@ -326,7 +319,7 @@ where
         &self,
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
-    ) -> Result<ApprovalRecord, RunStateError> {
+    ) -> Result<ApprovalRecord, ApprovalStoreError> {
         self.update_status(scope, request_id, ApprovalStatus::Approved)
             .await
     }
@@ -335,7 +328,7 @@ where
         &self,
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
-    ) -> Result<ApprovalRecord, RunStateError> {
+    ) -> Result<ApprovalRecord, ApprovalStoreError> {
         self.update_status(scope, request_id, ApprovalStatus::Denied)
             .await
     }
@@ -344,7 +337,7 @@ where
         &self,
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
-    ) -> Result<ApprovalRecord, RunStateError> {
+    ) -> Result<ApprovalRecord, ApprovalStoreError> {
         let path = approval_record_path(scope, request_id)?;
         let scope_clone = scope.clone();
         cas_update(
@@ -358,13 +351,13 @@ where
                 // captures an already-resolved `Result` (mirrors cas_snapshot.rs).
                 let outcome = (|| {
                     let record =
-                        current.ok_or(RunStateError::UnknownApprovalRequest { request_id })?;
+                        current.ok_or(ApprovalStoreError::UnknownApprovalRequest { request_id })?;
                     // Enforce scope ownership on each retry against a freshly read record.
                     if !same_scope_owner(&record.scope, &scope_clone) {
-                        return Err(RunStateError::UnknownApprovalRequest { request_id });
+                        return Err(ApprovalStoreError::UnknownApprovalRequest { request_id });
                     }
                     if record.status != ApprovalStatus::Pending {
-                        return Err(RunStateError::ApprovalNotPending {
+                        return Err(ApprovalStoreError::ApprovalNotPending {
                             request_id,
                             status: record.status,
                         });
@@ -390,7 +383,7 @@ where
     async fn records_for_scope(
         &self,
         scope: &ResourceScope,
-    ) -> Result<Vec<ApprovalRecord>, RunStateError> {
+    ) -> Result<Vec<ApprovalRecord>, ApprovalStoreError> {
         let root = approval_records_root(scope)?;
         let entries = match self.filesystem.list_dir(scope, &root).await {
             Ok(entries) => entries,
@@ -451,10 +444,10 @@ where
         Self { filesystem }
     }
 
-    fn record_entry(record: &StoredGateRecord) -> Result<Entry, RunStateError> {
+    fn record_entry(record: &StoredGateRecord) -> Result<Entry, ApprovalStoreError> {
         let body = serialize_pretty(record)?;
-        let kind =
-            RecordKind::new(GATE_RECORD_KIND).map_err(|e| RunStateError::Backend(e.to_string()))?;
+        let kind = RecordKind::new(GATE_RECORD_KIND)
+            .map_err(|e| ApprovalStoreError::Backend(e.to_string()))?;
         let mut entry = Entry::bytes(body).with_content_type(ContentType::json());
         entry.kind = Some(kind);
         Ok(entry)
@@ -471,7 +464,7 @@ where
         scope: ResourceScope,
         gate_ref: GateRef,
         record: GateRecord,
-    ) -> Result<(), RunStateError> {
+    ) -> Result<(), ApprovalStoreError> {
         let path = gate_record_path(&scope, gate_ref)?;
         let stored = StoredGateRecord {
             scope: scope.clone(),
@@ -488,7 +481,7 @@ where
                 // Write-once: reject a duplicate ref rather than clobbering the
                 // host-owned record a later resume turn still needs.
                 let outcome = if current.is_some() {
-                    Err(RunStateError::GateRecordAlreadyExists { gate_ref })
+                    Err(ApprovalStoreError::GateRecordAlreadyExists { gate_ref })
                 } else {
                     Ok(CasApply::new(fresh, ()))
                 };
@@ -503,7 +496,7 @@ where
         &self,
         scope: &ResourceScope,
         gate_ref: GateRef,
-    ) -> Result<Option<GateRecord>, RunStateError> {
+    ) -> Result<Option<GateRecord>, ApprovalStoreError> {
         let path = gate_record_path(scope, gate_ref)?;
         let Some(versioned) = self.filesystem.get(scope, &path).await? else {
             return Ok(None);
@@ -535,14 +528,14 @@ const GATE_RECORDS_PREFIX: &str = "/gate-records";
 fn approval_record_path(
     scope: &ResourceScope,
     request_id: ApprovalRequestId,
-) -> Result<ScopedPath, RunStateError> {
+) -> Result<ScopedPath, ApprovalStoreError> {
     scoped_path(&format!(
         "{}/{request_id}.json",
         approval_records_root_string(scope)
     ))
 }
 
-fn approval_records_root(scope: &ResourceScope) -> Result<ScopedPath, RunStateError> {
+fn approval_records_root(scope: &ResourceScope) -> Result<ScopedPath, ApprovalStoreError> {
     scoped_path(&approval_records_root_string(scope))
 }
 
@@ -550,7 +543,10 @@ fn approval_records_root_string(scope: &ResourceScope) -> String {
     scope_owner_alias_string(APPROVALS_PREFIX, scope)
 }
 
-fn gate_record_path(scope: &ResourceScope, gate_ref: GateRef) -> Result<ScopedPath, RunStateError> {
+fn gate_record_path(
+    scope: &ResourceScope,
+    gate_ref: GateRef,
+) -> Result<ScopedPath, ApprovalStoreError> {
     scoped_path(&format!(
         "{}/{gate_ref}.json",
         scope_owner_alias_string(GATE_RECORDS_PREFIX, scope)
@@ -583,7 +579,7 @@ fn scope_owner_alias_string(prefix: &'static str, scope: &ResourceScope) -> Stri
     base
 }
 
-fn scoped_path(raw: &str) -> Result<ScopedPath, RunStateError> {
+fn scoped_path(raw: &str) -> Result<ScopedPath, ApprovalStoreError> {
     ScopedPath::new(raw).map_err(invalid_path)
 }
 
@@ -593,7 +589,7 @@ fn scoped_path(raw: &str) -> Result<ScopedPath, RunStateError> {
 /// but the follow-up `get` must run through the `ScopedFilesystem` so the
 /// per-op ACL is enforced — so callers strip the leaf name and rejoin it
 /// onto the original `ScopedPath` prefix.
-fn join_scoped(prefix: &ScopedPath, leaf: &str) -> Result<ScopedPath, RunStateError> {
+fn join_scoped(prefix: &ScopedPath, leaf: &str) -> Result<ScopedPath, ApprovalStoreError> {
     scoped_path(&format!(
         "{}/{}",
         prefix.as_str().trim_end_matches('/'),
@@ -601,8 +597,8 @@ fn join_scoped(prefix: &ScopedPath, leaf: &str) -> Result<ScopedPath, RunStateEr
     ))
 }
 
-fn invalid_path(error: HostApiError) -> RunStateError {
-    RunStateError::InvalidPath(error.to_string())
+fn invalid_path(error: HostApiError) -> ApprovalStoreError {
+    ApprovalStoreError::InvalidPath(error.to_string())
 }
 
 fn same_scope_owner(left: &ResourceScope, right: &ResourceScope) -> bool {
@@ -614,40 +610,41 @@ fn same_scope_owner(left: &ResourceScope, right: &ResourceScope) -> bool {
         && left.thread_id == right.thread_id
 }
 
-fn serialize_pretty<T>(value: &T) -> Result<Vec<u8>, RunStateError>
+fn serialize_pretty<T>(value: &T) -> Result<Vec<u8>, ApprovalStoreError>
 where
     T: Serialize,
 {
     serde_json::to_vec_pretty(value)
-        .map_err(|error| RunStateError::Serialization(error.to_string()))
+        .map_err(|error| ApprovalStoreError::Serialization(error.to_string()))
 }
 
-fn deserialize<T>(bytes: &[u8]) -> Result<T, RunStateError>
+fn deserialize<T>(bytes: &[u8]) -> Result<T, ApprovalStoreError>
 where
     T: for<'de> Deserialize<'de>,
 {
-    serde_json::from_slice(bytes).map_err(|error| RunStateError::Deserialization(error.to_string()))
+    serde_json::from_slice(bytes)
+        .map_err(|error| ApprovalStoreError::Deserialization(error.to_string()))
 }
 
 fn is_not_found(error: &FilesystemError) -> bool {
     matches!(error, FilesystemError::NotFound { .. })
 }
 
-/// Map the shared CAS helper's [`CasUpdateError`] into a [`RunStateError`].
+/// Map the shared CAS helper's [`CasUpdateError`] into a [`ApprovalStoreError`].
 ///
 /// [`CasUpdateError::Apply`] carries the caller's own error straight through;
 /// all other variants are storage-layer failures. Fail-closed: a backend that
-/// cannot honor versioned CAS surfaces as a [`RunStateError::Backend`] rather
+/// cannot honor versioned CAS surfaces as a [`ApprovalStoreError::Backend`] rather
 /// than a silent blind overwrite.
-fn map_cas_error(error: CasUpdateError<RunStateError>) -> RunStateError {
+fn map_cas_error(error: CasUpdateError<ApprovalStoreError>) -> ApprovalStoreError {
     match error {
         CasUpdateError::Apply(inner) => inner,
         CasUpdateError::Timeout | CasUpdateError::RetriesExhausted => {
-            RunStateError::Backend("filesystem CAS retries exhausted".to_string())
+            ApprovalStoreError::Backend("filesystem CAS retries exhausted".to_string())
         }
-        CasUpdateError::CasUnsupported => RunStateError::Backend(
+        CasUpdateError::CasUnsupported => ApprovalStoreError::Backend(
             "backend does not support versioned compare-and-swap".to_string(),
         ),
-        CasUpdateError::Backend(fs_err) => RunStateError::Filesystem(fs_err.to_string()),
+        CasUpdateError::Backend(fs_err) => ApprovalStoreError::Filesystem(fs_err.to_string()),
     }
 }

@@ -660,7 +660,7 @@ struct ApprovalFixture {
 
 fn approval_resume_fixture() -> ApprovalFixture {
     let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
-    let approval_requests = Arc::new(ironclaw_run_state::in_memory_backed_approval_request_store());
+    let approval_requests = Arc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
     let capability_leases = Arc::new(in_memory_backed_capability_lease_store());
     let events = InMemoryEventSink::new();
     let services = HostRuntimeServices::new(

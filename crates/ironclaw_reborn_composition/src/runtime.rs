@@ -1204,7 +1204,7 @@ impl ProcessGateApprovalTurnRunLocator {
 }
 
 struct ApprovalRequestGateEvidence {
-    approval_requests: Arc<dyn ironclaw_run_state::ApprovalRequestStorePort>,
+    approval_requests: Arc<dyn ironclaw_approvals::ApprovalRequestStorePort>,
 }
 
 /// Test-only constructor for [`ApprovalRequestGateEvidence`].
@@ -1217,7 +1217,7 @@ struct ApprovalRequestGateEvidence {
 /// in production binaries.
 #[cfg(feature = "test-support")]
 pub(crate) fn build_approval_gate_evidence_for_test(
-    approval_requests: std::sync::Arc<dyn ironclaw_run_state::ApprovalRequestStorePort>,
+    approval_requests: std::sync::Arc<dyn ironclaw_approvals::ApprovalRequestStorePort>,
 ) -> std::sync::Arc<dyn ironclaw_runner::loop_exit_applier::ApprovalGateEvidenceStore> {
     std::sync::Arc::new(ApprovalRequestGateEvidence { approval_requests })
 }
@@ -1316,7 +1316,7 @@ impl ApprovalGateEvidenceStore for ApprovalRequestGateEvidence {
                 reason: format!("approval request evidence lookup failed: {error}"),
             })?;
         Ok(record
-            .map(|record| record.status == ironclaw_run_state::ApprovalStatus::Pending)
+            .map(|record| record.status == ironclaw_approvals::ApprovalStatus::Pending)
             .unwrap_or(false))
     }
 }
@@ -1479,15 +1479,15 @@ impl RebornRuntime {
     pub fn local_dev_approval_test_parts(&self) -> Option<crate::RebornApprovalTestParts> {
         let capability_store_filesystem =
             crate::wrap_scoped(Arc::clone(&self.extension_filesystem));
-        let approval_requests: Arc<dyn ironclaw_run_state::ApprovalRequestStorePort> = Arc::new(
-            ironclaw_run_state::ApprovalRequestStore::new(Arc::clone(&capability_store_filesystem)),
+        let approval_requests: Arc<dyn ironclaw_approvals::ApprovalRequestStorePort> = Arc::new(
+            ironclaw_approvals::ApprovalRequestStore::new(Arc::clone(&capability_store_filesystem)),
         );
         let capability_leases: Arc<dyn ironclaw_authorization::CapabilityLeaseStorePort> =
             Arc::new(ironclaw_authorization::CapabilityLeaseStore::new(
                 Arc::clone(&capability_store_filesystem),
             ));
-        let gate_record_store: Arc<dyn ironclaw_run_state::GateRecordStorePort> = Arc::new(
-            ironclaw_run_state::GateRecordStore::new(Arc::clone(&capability_store_filesystem)),
+        let gate_record_store: Arc<dyn ironclaw_approvals::GateRecordStorePort> = Arc::new(
+            ironclaw_approvals::GateRecordStore::new(Arc::clone(&capability_store_filesystem)),
         );
         let replay_payload_store: Arc<dyn ironclaw_capabilities::ReplayPayloadStorePort> = Arc::new(
             ironclaw_capabilities::ReplayPayloadStore::new(capability_store_filesystem),
@@ -3736,7 +3736,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         loop_exit_evidence =
             loop_exit_evidence.with_approval_gate_evidence(Arc::new(ApprovalRequestGateEvidence {
                 approval_requests: Arc::clone(approval_requests)
-                    as Arc<dyn ironclaw_run_state::ApprovalRequestStorePort>,
+                    as Arc<dyn ironclaw_approvals::ApprovalRequestStorePort>,
             }));
         loop_exit_evidence = loop_exit_evidence.with_resource_gate_evidence(
             crate::observability::budget_evidence::budget_gate_evidence(Arc::clone(
@@ -3767,7 +3767,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         let approval_requests = &local_runtime.approval_requests;
         projection_services = projection_services
             .with_approval_requests(Arc::clone(approval_requests)
-                as Arc<dyn ironclaw_run_state::ApprovalRequestStorePort>);
+                as Arc<dyn ironclaw_approvals::ApprovalRequestStorePort>);
     }
     let live_projection_publisher =
         projection_services.live_projection_publisher(actor_user_id.clone());
@@ -4072,10 +4072,10 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         // reads back exactly the record the capability port saved under the
         // matching owner scope. The two constructions MUST stay over the same
         // filesystem/scope.
-        gate_record_store: Some(Arc::new(ironclaw_run_state::GateRecordStore::new(
+        gate_record_store: Some(Arc::new(ironclaw_approvals::GateRecordStore::new(
             crate::wrap_scoped(Arc::clone(&services.extension_filesystem)),
         ))
-            as Arc<dyn ironclaw_run_state::GateRecordStorePort>),
+            as Arc<dyn ironclaw_approvals::GateRecordStorePort>),
         model_gateway: Arc::clone(&model_gateway),
         checkpoint_state_store: Arc::clone(&checkpoint_state_store)
             as Arc<dyn ironclaw_turns::CheckpointStateStorePort>,
@@ -4302,7 +4302,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         let approval_context = Some(Arc::new(
             ironclaw_extension_host::run_delivery_ports::ProjectionApprovalPromptContextSource::new(
                 Arc::clone(&services.approval_requests)
-                    as Arc<dyn ironclaw_run_state::ApprovalRequestStorePort>,
+                    as Arc<dyn ironclaw_approvals::ApprovalRequestStorePort>,
             ),
         )
             as Arc<dyn ironclaw_product::ApprovalPromptContextSource>);

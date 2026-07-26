@@ -11,9 +11,9 @@
 
 use std::sync::Arc;
 
+use ironclaw_approvals::*;
 use ironclaw_filesystem::{RootFilesystem, ScopedFilesystem};
 use ironclaw_host_api::*;
-use ironclaw_run_state::*;
 
 #[tokio::test]
 async fn gate_record_store_round_trips_every_variant() {
@@ -129,7 +129,7 @@ async fn gate_record_save_is_write_once() {
 
     assert!(matches!(
         err,
-        RunStateError::GateRecordAlreadyExists { gate_ref: g } if g == gate_ref
+        ApprovalStoreError::GateRecordAlreadyExists { gate_ref: g } if g == gate_ref
     ));
     // The original write-once record is intact — the rejected save did not clobber it.
     assert_eq!(

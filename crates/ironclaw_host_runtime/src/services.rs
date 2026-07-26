@@ -11,6 +11,7 @@ mod process_executor;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use ironclaw_approvals::{ApprovalRequestStore, ApprovalRequestStorePort};
 use ironclaw_approvals::{ApprovalResolver, PersistentApprovalPolicyStorePort};
 use ironclaw_authorization::{CapabilityLeaseStorePort, TrustAwareCapabilityDispatchAuthorizer};
 use ironclaw_capabilities::{
@@ -45,7 +46,6 @@ use ironclaw_reborn_event_store::{
     RebornEventStores, RebornProfile, build_reborn_event_stores,
 };
 use ironclaw_resources::{FilesystemResourceGovernor, InMemoryResourceGovernor, ResourceGovernor};
-use ironclaw_run_state::{ApprovalRequestStore, ApprovalRequestStorePort};
 use ironclaw_scripts::{ScriptError, ScriptExecutionRequest, ScriptExecutor, ScriptInvocation};
 use ironclaw_secrets::{
     CredentialAccountStore, CredentialSessionStore, InMemoryCredentialBroker, SecretStore,

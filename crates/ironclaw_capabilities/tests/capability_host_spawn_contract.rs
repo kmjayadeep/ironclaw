@@ -7,7 +7,6 @@ use ironclaw_capabilities::*;
 use ironclaw_extensions::{ExtensionManifest, ExtensionPackage, ExtensionRegistry, ManifestSource};
 use ironclaw_host_api::*;
 use ironclaw_processes::*;
-use ironclaw_run_state::*;
 use serde_json::json;
 
 mod support;
@@ -19,7 +18,7 @@ async fn capability_host_blocks_spawn_for_approval_without_starting_process() {
     let dispatcher = recording_dispatcher();
     let process_manager = RecordingProcessManager::default();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let host = capability_host(&registry, &dispatcher, &SpawnApprovalAuthorizer)
         .with_process_manager(&process_manager)
         .with_invocation_state(&run_state)
@@ -109,7 +108,7 @@ output_schema_ref = "schemas/shell.output.v1.json"
     let dispatcher = recording_dispatcher();
     let process_manager = RecordingProcessManager::default();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let host = capability_host(&registry, &dispatcher, &ShellSpawnApprovalAuthorizer)
         .with_process_manager(&process_manager)
         .with_invocation_state(&run_state)
@@ -171,7 +170,7 @@ async fn capability_host_resumes_approved_spawn_and_consumes_matching_lease() {
     let dispatcher = recording_dispatcher();
     let process_manager = RecordingProcessManager::default();
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let leases = in_memory_backed_capability_lease_store();
     let block_host = capability_host(&registry, &dispatcher, &SpawnApprovalAuthorizer)
         .with_process_manager(&process_manager)

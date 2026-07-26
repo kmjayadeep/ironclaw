@@ -3,7 +3,7 @@
 //! Gated behind `#[cfg(any(test, feature = "test-support"))]`: disabled by
 //! default; downstream crates enable it only from `[dev-dependencies]`
 //! (`ironclaw_loop_host = { …, features = ["test-support"] }`), mirroring the
-//! `ironclaw_run_state` test-support pattern. Centralizes the
+//! `ironclaw_approvals` test-support pattern. Centralizes the
 //! `CheckpointStateStore<InMemoryBackend>` seam that was previously
 //! copy-pasted across a dozen test modules (§4.3: exercise the one production
 //! store over a volatile backend — never a hand-written `InMemory*Store`).

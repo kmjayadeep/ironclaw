@@ -36,6 +36,7 @@ use crate::{
     RebornBuildError, RebornCompositionProfile, RebornHostBindings, RebornReadiness,
     RebornServiceReadiness, RebornWorkerReadiness,
 };
+use ironclaw_approvals::ApprovalRequestStore;
 use ironclaw_approvals::{
     AutoApproveSettingStore, PersistentApprovalPolicyStore, ToolPermissionOverrideStore,
 };
@@ -152,7 +153,6 @@ use ironclaw_resources::{
     BroadcastBudgetEventSink, BudgetGateStore, BudgetGateStorePort, FilesystemResourceGovernor,
     ResourceGovernor,
 };
-use ironclaw_run_state::ApprovalRequestStore;
 use ironclaw_runner::runtime::ProcessRuntimeSystem;
 use ironclaw_secrets::CredentialBroker;
 use ironclaw_secrets::{SecretStore, SecretStorePort};

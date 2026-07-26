@@ -29,7 +29,7 @@ mod reborn_support;
 #[path = "../../support/mod.rs"]
 mod support;
 
-use ironclaw_run_state::ApprovalStatus;
+use ironclaw_approvals::ApprovalStatus;
 use ironclaw_turns::TurnStatus;
 use reborn_support::builder::StorageMode;
 use reborn_support::group::RebornIntegrationGroup;

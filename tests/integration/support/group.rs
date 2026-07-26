@@ -340,7 +340,7 @@ impl GroupCapability {
     /// a store (`HostRuntimeCapabilityHarness::gate_record_store` returns `Some`).
     pub(crate) fn gate_record_store(
         &self,
-    ) -> Option<Arc<dyn ironclaw_run_state::GateRecordStorePort>> {
+    ) -> Option<Arc<dyn ironclaw_approvals::GateRecordStorePort>> {
         match self {
             Self::HostRuntime(harness) => harness.gate_record_store(),
             Self::Recording => None,

@@ -35,7 +35,7 @@ async fn default_runtime_uses_persistent_policy_as_dispatch_authority() {
     let dispatcher = Arc::new(TestDispatcher::ok(dispatch_result()));
     let authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer> = Arc::new(GrantAuthorizer);
     let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
-    let approval_requests = Arc::new(ironclaw_run_state::in_memory_backed_approval_request_store());
+    let approval_requests = Arc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
     let policies = Arc::new(in_memory_backed_persistent_approval_policy_store());
     let context = execution_context_without_grants();
     policies
@@ -108,7 +108,7 @@ async fn default_runtime_uses_persistent_policy_as_auth_resume_authority() {
     let dispatcher = Arc::new(TestDispatcher::ok(dispatch_result()));
     let authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer> = Arc::new(GrantAuthorizer);
     let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
-    let approval_requests = Arc::new(ironclaw_run_state::in_memory_backed_approval_request_store());
+    let approval_requests = Arc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
     let policies = Arc::new(in_memory_backed_persistent_approval_policy_store());
     let context = execution_context_without_grants();
     let scope = context.resource_scope.clone();
@@ -202,7 +202,7 @@ async fn default_runtime_uses_user_grantee_persistent_policy_as_dispatch_authori
     let dispatcher = Arc::new(TestDispatcher::ok(dispatch_result()));
     let authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer> = Arc::new(GrantAuthorizer);
     let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
-    let approval_requests = Arc::new(ironclaw_run_state::in_memory_backed_approval_request_store());
+    let approval_requests = Arc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
     let policies = Arc::new(in_memory_backed_persistent_approval_policy_store());
     let context = execution_context_without_grants();
     policies
@@ -265,7 +265,7 @@ async fn default_runtime_uses_threadless_filesystem_policy_after_thread_change()
     let dispatcher = Arc::new(TestDispatcher::ok(dispatch_result()));
     let authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer> = Arc::new(GrantAuthorizer);
     let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
-    let approval_requests = Arc::new(ironclaw_run_state::in_memory_backed_approval_request_store());
+    let approval_requests = Arc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
     let scoped = scoped_approval_fs();
     let policies = Arc::new(PersistentApprovalPolicyStore::new(Arc::clone(&scoped)));
     let mut context = execution_context_without_grants();
@@ -338,7 +338,7 @@ async fn default_runtime_does_not_replay_tenant_grantee_persistent_policy() {
     let dispatcher = Arc::new(TestDispatcher::ok(dispatch_result()));
     let authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer> = Arc::new(GrantAuthorizer);
     let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
-    let approval_requests = Arc::new(ironclaw_run_state::in_memory_backed_approval_request_store());
+    let approval_requests = Arc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
     let policies = Arc::new(in_memory_backed_persistent_approval_policy_store());
     let context = execution_context_without_grants();
     policies
@@ -401,7 +401,7 @@ async fn default_runtime_skips_unusable_persistent_policy_for_later_match() {
     let dispatcher = Arc::new(TestDispatcher::ok(dispatch_result()));
     let authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer> = Arc::new(GrantAuthorizer);
     let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
-    let approval_requests = Arc::new(ironclaw_run_state::in_memory_backed_approval_request_store());
+    let approval_requests = Arc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
     let policies = Arc::new(in_memory_backed_persistent_approval_policy_store());
     let context = execution_context_without_grants();
     policies
@@ -484,7 +484,7 @@ async fn default_runtime_falls_back_when_persistent_policy_lookup_fails() {
     let dispatcher = Arc::new(TestDispatcher::ok(dispatch_result()));
     let authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer> = Arc::new(GrantAuthorizer);
     let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
-    let approval_requests = Arc::new(ironclaw_run_state::in_memory_backed_approval_request_store());
+    let approval_requests = Arc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
     let policies: Arc<dyn PersistentApprovalPolicyStorePort> =
         Arc::new(FailingLookupPersistentApprovalPolicyStore);
     let context = execution_context_without_grants();
@@ -527,7 +527,7 @@ async fn default_runtime_reuses_persistent_policy_for_manifest_ask() {
     let dispatcher = Arc::new(TestDispatcher::ok(dispatch_result()));
     let authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer> = Arc::new(GrantAuthorizer);
     let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
-    let approval_requests = Arc::new(ironclaw_run_state::in_memory_backed_approval_request_store());
+    let approval_requests = Arc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
     let policies = Arc::new(in_memory_backed_persistent_approval_policy_store());
     let context = execution_context_without_grants();
     policies
@@ -590,7 +590,7 @@ async fn default_runtime_skips_expired_persistent_policy() {
     let dispatcher = Arc::new(TestDispatcher::ok(dispatch_result()));
     let authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer> = Arc::new(GrantAuthorizer);
     let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
-    let approval_requests = Arc::new(ironclaw_run_state::in_memory_backed_approval_request_store());
+    let approval_requests = Arc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
     let policies = Arc::new(in_memory_backed_persistent_approval_policy_store());
     let context = execution_context_without_grants();
     policies
@@ -656,7 +656,7 @@ async fn default_runtime_uses_persistent_policy_for_no_project_no_thread_scope()
     let dispatcher = Arc::new(TestDispatcher::ok(dispatch_result()));
     let authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer> = Arc::new(GrantAuthorizer);
     let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
-    let approval_requests = Arc::new(ironclaw_run_state::in_memory_backed_approval_request_store());
+    let approval_requests = Arc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
     let policies = Arc::new(in_memory_backed_persistent_approval_policy_store());
     let mut context = execution_context_without_grants();
     context.project_id = None;
@@ -724,7 +724,7 @@ async fn default_runtime_uses_persistent_policy_as_spawn_capability_authority() 
     let dispatcher = Arc::new(TestDispatcher::ok(dispatch_result()));
     let authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer> = Arc::new(GrantAuthorizer);
     let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
-    let approval_requests = Arc::new(ironclaw_run_state::in_memory_backed_approval_request_store());
+    let approval_requests = Arc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
     let process_manager = Arc::new(RecordingProcessManager);
     let policies = Arc::new(in_memory_backed_persistent_approval_policy_store());
     let context = execution_context_without_grants();

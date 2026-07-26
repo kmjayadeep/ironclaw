@@ -312,7 +312,7 @@ where
     /// record. `None` only for helper/test compositions with no run-state
     /// filesystem (they never raise a durable auth gate); a production `None` is
     /// a bug — the same "genuinely optional" shape as `attachment_read_port`.
-    pub gate_record_store: Option<Arc<dyn ironclaw_run_state::GateRecordStorePort>>,
+    pub gate_record_store: Option<Arc<dyn ironclaw_approvals::GateRecordStorePort>>,
     pub input_queue: Option<Arc<dyn HostInputQueue>>,
     /// Required by live planned-runtime composition. Helper-level tests may use
     /// a no-op implementation, but the type signature always requires a valid

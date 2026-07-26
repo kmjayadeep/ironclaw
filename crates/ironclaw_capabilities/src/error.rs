@@ -6,7 +6,7 @@ use ironclaw_host_api::{
 use ironclaw_processes::{ProcessError, ProcessInvocationError, ProcessInvocationStatus};
 
 use crate::CapabilityObligationFailureKind;
-use ironclaw_run_state::{ApprovalStatus, RunStateError};
+use ironclaw_approvals::{ApprovalStatus, ApprovalStoreError};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,7 +95,7 @@ pub enum CapabilityInvocationError {
     #[error("lease update failed: {0}")]
     Lease(Box<CapabilityLeaseError>),
     #[error("approval store update failed: {0}")]
-    ApprovalStore(Box<RunStateError>),
+    ApprovalStore(Box<ApprovalStoreError>),
     #[error("process invocation update failed: {0}")]
     InvocationState(Box<ProcessInvocationError>),
     #[error("process update failed: {0}")]
@@ -113,8 +113,8 @@ pub enum CapabilityInvocationError {
     },
 }
 
-impl From<RunStateError> for CapabilityInvocationError {
-    fn from(error: RunStateError) -> Self {
+impl From<ApprovalStoreError> for CapabilityInvocationError {
+    fn from(error: ApprovalStoreError) -> Self {
         Self::ApprovalStore(Box::new(error))
     }
 }

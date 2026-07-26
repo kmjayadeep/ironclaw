@@ -13,6 +13,7 @@ use std::{
 
 use async_trait::async_trait;
 use chrono::Utc;
+use ironclaw_approvals::{ApprovalRecord, ApprovalRequestStorePort, ApprovalStoreError};
 use ironclaw_authorization::{
     GrantAuthorizer, TrustAwareCapabilityDispatchAuthorizer,
     in_memory_backed_capability_lease_store,
@@ -35,7 +36,6 @@ use ironclaw_processes::{
     ProcessInvocationStart, ProcessInvocationStatePort, ProcessResultStore, ProcessResultStorePort,
     ProcessStart, ProcessStatus, ProcessStore, ProcessStorePort,
 };
-use ironclaw_run_state::{ApprovalRecord, ApprovalRequestStorePort, RunStateError};
 use ironclaw_trust::{
     AdminConfig, AdminEntry, AuthorityCeiling, EffectiveTrustClass, HostTrustAssignment,
     HostTrustPolicy, TrustDecision, TrustProvenance,
@@ -75,7 +75,7 @@ async fn default_runtime_returns_completed_outcome_for_authorized_dispatch() {
     let dispatcher = Arc::new(TestDispatcher::ok(dispatch_result()));
     let authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer> = Arc::new(GrantAuthorizer);
     let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
-    let approval_requests = Arc::new(ironclaw_run_state::in_memory_backed_approval_request_store());
+    let approval_requests = Arc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
 
     let runtime = DefaultHostRuntime::new(
         registry.clone(),
@@ -114,7 +114,7 @@ async fn default_runtime_surfaces_approval_required_with_persisted_request_id() 
     let dispatcher = Arc::new(TestDispatcher::ok(dispatch_result()));
     let authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer> = Arc::new(ApprovalAuthorizer);
     let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
-    let approval_requests = Arc::new(ironclaw_run_state::in_memory_backed_approval_request_store());
+    let approval_requests = Arc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
     let leases: Arc<dyn ironclaw_authorization::CapabilityLeaseStorePort> =
         Arc::new(in_memory_backed_capability_lease_store());
 
@@ -213,7 +213,7 @@ async fn default_runtime_persists_approval_and_blocks_invocation() {
 
 #[tokio::test]
 async fn default_runtime_propagates_unavailable_when_run_state_lookup_fails_during_approval() {
-    // Regression: an earlier implementation swallowed `RunStateError` from
+    // Regression: an earlier implementation swallowed `ApprovalStoreError` from
     // the approval-request lookup via `.ok().flatten()`, which masked storage
     // outages as a misleading "approval not persisted" Failed outcome. The
     // host runtime must instead surface persistence outages as
@@ -227,7 +227,7 @@ async fn default_runtime_propagates_unavailable_when_run_state_lookup_fails_duri
     let run_state: Arc<dyn ProcessInvocationStatePort> = Arc::new(FailingGetRunStateStore {
         inner: inner_run_state.clone(),
     });
-    let approval_requests = Arc::new(ironclaw_run_state::in_memory_backed_approval_request_store());
+    let approval_requests = Arc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
     let leases: Arc<dyn ironclaw_authorization::CapabilityLeaseStorePort> =
         Arc::new(in_memory_backed_capability_lease_store());
 
@@ -1221,7 +1221,7 @@ impl ProcessInvocationStatePort for FailingGetRunStateStore {
 
 struct RecordingInvocationApprovalStores {
     runs: ironclaw_processes::ProcessInvocationStateStore<ironclaw_filesystem::InMemoryBackend>,
-    approvals: ironclaw_run_state::ApprovalRequestStore<ironclaw_filesystem::InMemoryBackend>,
+    approvals: ironclaw_approvals::ApprovalRequestStore<ironclaw_filesystem::InMemoryBackend>,
     save_calls: AtomicUsize,
 }
 
@@ -1229,7 +1229,7 @@ impl RecordingInvocationApprovalStores {
     fn new() -> Self {
         Self {
             runs: ironclaw_processes::in_memory_backed_process_invocation_state_store(),
-            approvals: ironclaw_run_state::in_memory_backed_approval_request_store(),
+            approvals: ironclaw_approvals::in_memory_backed_approval_request_store(),
             save_calls: AtomicUsize::new(0),
         }
     }
@@ -1307,7 +1307,7 @@ impl ApprovalRequestStorePort for RecordingInvocationApprovalStores {
         &self,
         scope: ResourceScope,
         request: ApprovalRequest,
-    ) -> Result<ApprovalRecord, RunStateError> {
+    ) -> Result<ApprovalRecord, ApprovalStoreError> {
         self.save_calls.fetch_add(1, Ordering::SeqCst);
         self.approvals.save_pending(scope, request).await
     }
@@ -1316,7 +1316,7 @@ impl ApprovalRequestStorePort for RecordingInvocationApprovalStores {
         &self,
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
-    ) -> Result<Option<ApprovalRecord>, RunStateError> {
+    ) -> Result<Option<ApprovalRecord>, ApprovalStoreError> {
         self.approvals.get(scope, request_id).await
     }
 
@@ -1324,7 +1324,7 @@ impl ApprovalRequestStorePort for RecordingInvocationApprovalStores {
         &self,
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
-    ) -> Result<ApprovalRecord, RunStateError> {
+    ) -> Result<ApprovalRecord, ApprovalStoreError> {
         self.approvals.approve(scope, request_id).await
     }
 
@@ -1332,7 +1332,7 @@ impl ApprovalRequestStorePort for RecordingInvocationApprovalStores {
         &self,
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
-    ) -> Result<ApprovalRecord, RunStateError> {
+    ) -> Result<ApprovalRecord, ApprovalStoreError> {
         self.approvals.deny(scope, request_id).await
     }
 
@@ -1340,14 +1340,14 @@ impl ApprovalRequestStorePort for RecordingInvocationApprovalStores {
         &self,
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
-    ) -> Result<ApprovalRecord, RunStateError> {
+    ) -> Result<ApprovalRecord, ApprovalStoreError> {
         self.approvals.discard_pending(scope, request_id).await
     }
 
     async fn records_for_scope(
         &self,
         scope: &ResourceScope,
-    ) -> Result<Vec<ApprovalRecord>, RunStateError> {
+    ) -> Result<Vec<ApprovalRecord>, ApprovalStoreError> {
         self.approvals.records_for_scope(scope).await
     }
 }

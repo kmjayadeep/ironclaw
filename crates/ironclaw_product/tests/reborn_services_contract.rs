@@ -12992,7 +12992,7 @@ fn service_source_avoids_forbidden_runtime_dependencies() {
         "ironclaw_capabilities",
         "ironclaw_dispatcher",
         "ironclaw_host_runtime",
-        "ironclaw_run_state",
+        "ironclaw_approvals",
         "ironclaw_storage",
         "RuntimeLane",
         "pub fn thread_service",

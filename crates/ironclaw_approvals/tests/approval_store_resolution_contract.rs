@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use ironclaw_approvals::*;
 use ironclaw_filesystem::{RootFilesystem, ScopedFilesystem};
 use ironclaw_host_api::*;
-use ironclaw_run_state::*;
 
 #[tokio::test]
 async fn approval_store_marks_pending_request_approved_or_denied_with_scope() {
@@ -47,7 +47,7 @@ async fn approval_resolution_is_scoped_to_tenant_and_user() {
 
     assert!(matches!(
         err,
-        RunStateError::UnknownApprovalRequest { request_id: id } if id == request_id
+        ApprovalStoreError::UnknownApprovalRequest { request_id: id } if id == request_id
     ));
 }
 
@@ -66,7 +66,7 @@ async fn approval_store_rejects_second_resolution_attempt() {
 
     assert!(matches!(
         err,
-        RunStateError::ApprovalNotPending {
+        ApprovalStoreError::ApprovalNotPending {
             request_id: id,
             status: ApprovalStatus::Approved,
         } if id == request_id
@@ -94,7 +94,7 @@ async fn approval_store_rejects_duplicate_pending_save() {
 
     assert!(matches!(
         err,
-        RunStateError::ApprovalRequestAlreadyExists { request_id: id } if id == request_id
+        ApprovalStoreError::ApprovalRequestAlreadyExists { request_id: id } if id == request_id
     ));
     assert_eq!(
         store.get(&scope, request_id).await.unwrap().unwrap().status,
@@ -118,7 +118,7 @@ async fn filesystem_approval_store_rejects_second_resolution_attempt() {
 
     assert!(matches!(
         err,
-        RunStateError::ApprovalNotPending {
+        ApprovalStoreError::ApprovalNotPending {
             request_id: id,
             status: ApprovalStatus::Approved,
         } if id == request_id
@@ -147,7 +147,7 @@ async fn filesystem_approval_store_rejects_duplicate_pending_save() {
 
     assert!(matches!(
         err,
-        RunStateError::ApprovalRequestAlreadyExists { request_id: id } if id == request_id
+        ApprovalStoreError::ApprovalRequestAlreadyExists { request_id: id } if id == request_id
     ));
     assert_eq!(
         store.get(&scope, request_id).await.unwrap().unwrap().status,
@@ -162,8 +162,8 @@ fn engine_filesystem() -> ironclaw_filesystem::InMemoryBackend {
 /// The production approval-request store over a fresh in-memory backend — the
 /// drop-in for the deleted `InMemoryApprovalRequestStore` (arch-simplification §4.3).
 fn in_mem_approval_request_store()
--> ironclaw_run_state::ApprovalRequestStore<ironclaw_filesystem::InMemoryBackend> {
-    ironclaw_run_state::ApprovalRequestStore::new(scoped_approval_fs(std::sync::Arc::new(
+-> ironclaw_approvals::ApprovalRequestStore<ironclaw_filesystem::InMemoryBackend> {
+    ironclaw_approvals::ApprovalRequestStore::new(scoped_approval_fs(std::sync::Arc::new(
         engine_filesystem(),
     )))
 }

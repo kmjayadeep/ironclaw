@@ -1519,8 +1519,8 @@ async fn model_route_settings_respect_selection_mode_override() {
     );
 }
 
-fn test_gate_record_store() -> Arc<dyn ironclaw_run_state::GateRecordStorePort> {
-    Arc::new(ironclaw_run_state::GateRecordStore::new(
+fn test_gate_record_store() -> Arc<dyn ironclaw_approvals::GateRecordStorePort> {
+    Arc::new(ironclaw_approvals::GateRecordStore::new(
         ironclaw_reborn_composition::wrap_scoped(Arc::new(InMemoryBackend::new())),
     ))
 }

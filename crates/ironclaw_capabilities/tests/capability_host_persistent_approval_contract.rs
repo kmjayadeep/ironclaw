@@ -123,7 +123,7 @@ async fn non_flipping_persistent_grant_still_raises_approval_gate() {
     // `RequireApproval` and the candidate is never adopted.
     let policy_facts = PersistentGrantPolicyFacts::new(capability_grant_with_effects(Vec::new()));
     let run_state = ironclaw_processes::in_memory_backed_process_invocation_state_store();
-    let approval_requests = ironclaw_run_state::in_memory_backed_approval_request_store();
+    let approval_requests = ironclaw_approvals::in_memory_backed_approval_request_store();
     let host =
         capability_host_with_policy_facts(&registry, &dispatcher, &authorizer, &policy_facts)
             .with_invocation_state(&run_state)

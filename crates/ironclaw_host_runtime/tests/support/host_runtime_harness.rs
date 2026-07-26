@@ -13,6 +13,7 @@ use std::{
 use async_trait::async_trait;
 use chrono::Utc;
 use ironclaw_approvals::LeaseApproval;
+use ironclaw_approvals::{ApprovalRecord, ApprovalRequestStorePort, ApprovalStoreError};
 use ironclaw_authorization::{
     CapabilityLeaseStore, GrantAuthorizer, TrustAwareCapabilityDispatchAuthorizer,
     in_memory_backed_capability_lease_store,
@@ -56,7 +57,6 @@ use ironclaw_processes::{
 use ironclaw_resources::{
     InMemoryResourceGovernor, ResourceAccount, ResourceError, ResourceGovernor, ResourceLimits,
 };
-use ironclaw_run_state::{ApprovalRecord, ApprovalRequestStorePort, RunStateError};
 use ironclaw_scripts::{
     ScriptBackend, ScriptBackendOutput, ScriptBackendRequest, ScriptExecutionRequest,
     ScriptExecutionResult, ScriptExecutor, ScriptRuntime, ScriptRuntimeConfig,
@@ -242,7 +242,7 @@ pub(crate) struct RecordingInvocationApprovalStores {
     pub(crate) runs:
         ironclaw_processes::ProcessInvocationStateStore<ironclaw_filesystem::InMemoryBackend>,
     pub(crate) approvals:
-        ironclaw_run_state::ApprovalRequestStore<ironclaw_filesystem::InMemoryBackend>,
+        ironclaw_approvals::ApprovalRequestStore<ironclaw_filesystem::InMemoryBackend>,
     pub(crate) save_calls: AtomicUsize,
 }
 
@@ -250,7 +250,7 @@ impl RecordingInvocationApprovalStores {
     pub(crate) fn new() -> Self {
         Self {
             runs: ironclaw_processes::in_memory_backed_process_invocation_state_store(),
-            approvals: ironclaw_run_state::in_memory_backed_approval_request_store(),
+            approvals: ironclaw_approvals::in_memory_backed_approval_request_store(),
             save_calls: AtomicUsize::new(0),
         }
     }
@@ -328,7 +328,7 @@ impl ApprovalRequestStorePort for RecordingInvocationApprovalStores {
         &self,
         scope: ResourceScope,
         request: ApprovalRequest,
-    ) -> Result<ApprovalRecord, RunStateError> {
+    ) -> Result<ApprovalRecord, ApprovalStoreError> {
         self.save_calls.fetch_add(1, Ordering::SeqCst);
         self.approvals.save_pending(scope, request).await
     }
@@ -337,7 +337,7 @@ impl ApprovalRequestStorePort for RecordingInvocationApprovalStores {
         &self,
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
-    ) -> Result<Option<ApprovalRecord>, RunStateError> {
+    ) -> Result<Option<ApprovalRecord>, ApprovalStoreError> {
         self.approvals.get(scope, request_id).await
     }
 
@@ -345,7 +345,7 @@ impl ApprovalRequestStorePort for RecordingInvocationApprovalStores {
         &self,
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
-    ) -> Result<ApprovalRecord, RunStateError> {
+    ) -> Result<ApprovalRecord, ApprovalStoreError> {
         self.approvals.approve(scope, request_id).await
     }
 
@@ -353,7 +353,7 @@ impl ApprovalRequestStorePort for RecordingInvocationApprovalStores {
         &self,
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
-    ) -> Result<ApprovalRecord, RunStateError> {
+    ) -> Result<ApprovalRecord, ApprovalStoreError> {
         self.approvals.deny(scope, request_id).await
     }
 
@@ -361,14 +361,14 @@ impl ApprovalRequestStorePort for RecordingInvocationApprovalStores {
         &self,
         scope: &ResourceScope,
         request_id: ApprovalRequestId,
-    ) -> Result<ApprovalRecord, RunStateError> {
+    ) -> Result<ApprovalRecord, ApprovalStoreError> {
         self.approvals.discard_pending(scope, request_id).await
     }
 
     async fn records_for_scope(
         &self,
         scope: &ResourceScope,
-    ) -> Result<Vec<ApprovalRecord>, RunStateError> {
+    ) -> Result<Vec<ApprovalRecord>, ApprovalStoreError> {
         self.approvals.records_for_scope(scope).await
     }
 }
@@ -378,7 +378,7 @@ pub(crate) struct ApprovalResumeFixture {
     pub(crate) run_state:
         Arc<ironclaw_processes::ProcessInvocationStateStore<ironclaw_filesystem::InMemoryBackend>>,
     pub(crate) approval_requests:
-        Arc<ironclaw_run_state::ApprovalRequestStore<ironclaw_filesystem::InMemoryBackend>>,
+        Arc<ironclaw_approvals::ApprovalRequestStore<ironclaw_filesystem::InMemoryBackend>>,
     pub(crate) capability_leases: Arc<CapabilityLeaseStore<InMemoryBackend>>,
     pub(crate) events: InMemoryEventSink,
 }
@@ -392,7 +392,7 @@ pub(crate) fn approval_resume_fixture_with_manifest(
     trust_effects: Vec<EffectKind>,
 ) -> ApprovalResumeFixture {
     let run_state = Arc::new(ironclaw_processes::in_memory_backed_process_invocation_state_store());
-    let approval_requests = Arc::new(ironclaw_run_state::in_memory_backed_approval_request_store());
+    let approval_requests = Arc::new(ironclaw_approvals::in_memory_backed_approval_request_store());
     let capability_leases = Arc::new(in_memory_backed_capability_lease_store());
     let events = InMemoryEventSink::new();
     let services = HostRuntimeServices::new(
@@ -1253,10 +1253,10 @@ pub(crate) fn result_store_failing_writes() -> (
 }
 
 /// Real `ProcessStore` over a [`FaultInjecting`] backend armed to
-/// fail the terminal status transition's write, replacing the whole-trait
-/// `FailingTerminalProcessStore` fake. `start`'s record write is the 1st
-/// backend write and succeeds; the terminal transition (`complete` or `fail`,
-/// whichever the manager issues for the executor outcome) is the 2nd write and
+/// fail the terminal status transition's journal append, replacing the whole-trait
+/// `FailingTerminalProcessStore` fake. `start` appends `Submitted` and `Claimed`;
+/// the terminal transition (`complete` or `fail`,
+/// whichever the manager issues for the executor outcome) is the 3rd append and
 /// is faulted, surfacing as `ProcessError::Filesystem`. `get` /
 /// `records_for_scope` still read the live `Running` record.
 pub(crate) fn terminal_failing_process_store() -> (
@@ -1265,8 +1265,8 @@ pub(crate) fn terminal_failing_process_store() -> (
 ) {
     let backend = Arc::new(
         FaultInjecting::new(InMemoryBackend::new()).with_fault(
-            Fault::on(FilesystemOperation::WriteFile)
-                .nth(2)
+            Fault::on(FilesystemOperation::Append)
+                .nth(3)
                 .backend("injected terminal transition write failure"),
         ),
     );
@@ -1467,10 +1467,10 @@ pub(crate) async fn wait_for_result_store_write(backend: &FaultInjecting<InMemor
 }
 
 pub(crate) async fn wait_for_terminal_transition_write(backend: &FaultInjecting<InMemoryBackend>) {
-    // `start`'s record write is the 1st backend write; the faulted terminal
-    // status transition is the 2nd.
+    // `start` appends `Submitted` and `Claimed`; the faulted terminal status
+    // transition is the 3rd append.
     for _ in 0..100 {
-        if backend.count(FilesystemOperation::WriteFile) >= 2 {
+        if backend.count(FilesystemOperation::Append) >= 3 {
             return;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;

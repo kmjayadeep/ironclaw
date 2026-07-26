@@ -347,6 +347,7 @@ pub fn reborn_runtime_readiness_snapshot() -> RebornRuntimeReadinessSnapshot {
     }
 }
 
+use ironclaw_approvals::ApprovalStoreError;
 use ironclaw_authorization::CapabilityLeaseError;
 use ironclaw_filesystem::LibSqlRootFilesystem;
 use ironclaw_filesystem::PostgresRootFilesystem;
@@ -361,7 +362,6 @@ use ironclaw_reborn_event_store::RebornEventStoreConfig;
 use ironclaw_reborn_event_store::RebornEventStoreError;
 use ironclaw_resources::FilesystemResourceGovernor;
 use ironclaw_resources::ResourceError;
-use ironclaw_run_state::RunStateError;
 use ironclaw_secrets::SecretError;
 use ironclaw_secrets::SecretMaterial;
 use ironclaw_trust::TrustPolicy;
@@ -559,8 +559,8 @@ pub enum RebornCompositionError {
     Filesystem(#[from] ironclaw_filesystem::FilesystemError),
     #[error("reborn resource governor substrate failed: {0}")]
     Resource(#[from] ResourceError),
-    #[error("reborn run-state substrate failed: {0}")]
-    RunState(#[from] RunStateError),
+    #[error("reborn approval store substrate failed: {0}")]
+    ApprovalStore(#[from] ApprovalStoreError),
     #[error("reborn capability lease substrate failed: {0}")]
     CapabilityLease(#[from] CapabilityLeaseError),
     #[error("reborn secret substrate failed: {0}")]
@@ -935,11 +935,11 @@ mod gate_record_production_mount_tests {
     //! per-tenant path rewriting keeps identically-shaped refs from colliding
     //! across tenants.
     use super::*;
+    use ironclaw_approvals::{GateRecordStore, GateRecordStorePort};
     use ironclaw_filesystem::InMemoryBackend;
     use ironclaw_host_api::{
         GateRecord, GateRef, InvocationId, ProjectId, SafeSummary, TenantId, UserId,
     };
-    use ironclaw_run_state::{GateRecordStore, GateRecordStorePort};
 
     fn scope(tenant: &str, user: &str) -> ResourceScope {
         ResourceScope {

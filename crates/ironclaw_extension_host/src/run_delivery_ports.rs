@@ -20,11 +20,11 @@ use ironclaw_product::auth_prompt_view_for_blocked_auth;
 /// Approval-gate context over the shared projection read model — the same
 /// source the WebUI gate projection renders from.
 pub struct ProjectionApprovalPromptContextSource {
-    approval_requests: Arc<dyn ironclaw_run_state::ApprovalRequestStorePort>,
+    approval_requests: Arc<dyn ironclaw_approvals::ApprovalRequestStorePort>,
 }
 
 impl ProjectionApprovalPromptContextSource {
-    pub fn new(approval_requests: Arc<dyn ironclaw_run_state::ApprovalRequestStorePort>) -> Self {
+    pub fn new(approval_requests: Arc<dyn ironclaw_approvals::ApprovalRequestStorePort>) -> Self {
         Self { approval_requests }
     }
 }
