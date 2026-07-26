@@ -82,14 +82,25 @@ impl AgentLoopHostErrorKind {
             Self::InvalidOutput => FailureKind::OutputDecode,
             Self::ContentFiltered => FailureKind::OperationFailed,
             Self::PolicyDenied => FailureKind::PolicyDenied,
-            Self::BudgetExceeded | Self::BudgetApprovalRequired | Self::BudgetAccountingFailed => {
-                FailureKind::Resource
-            }
+            // A budget limit the model could work around (smaller call, fewer
+            // tools) — the honest resource-quota kind.
+            Self::BudgetExceeded => FailureKind::Resource,
+            // "Callers surface an approval gate and retry after the user
+            // resolves it" (variant doc) — a PARK semantic, so the projection
+            // must carry the Park-fated kind, not a model-visible tool error.
+            Self::BudgetApprovalRequired => FailureKind::AuthRequired,
+            // The budget governor itself failed — "callers must fail closed"
+            // (variant doc). Not a budget outcome and not classifiable as one:
+            // the non-retryable unclassified sink keeps it from being retried
+            // or mistaken for a quota the model can route around.
+            Self::BudgetAccountingFailed => FailureKind::Unclassified,
             Self::Unavailable => FailureKind::Unavailable,
             Self::Cancelled => FailureKind::Cancelled,
-            Self::CheckpointRejected | Self::TranscriptWriteFailed | Self::Internal => {
-                FailureKind::Internal
-            }
+            // A rejected checkpoint (schema id/version mismatch) is
+            // deterministic — it cannot succeed on re-attempt, so it must not
+            // ride the retryable `Internal` bucket and burn retry budget.
+            Self::CheckpointRejected => FailureKind::OperationFailed,
+            Self::TranscriptWriteFailed | Self::Internal => FailureKind::Internal,
         }
     }
 }
@@ -184,5 +195,51 @@ mod tests {
 
         let plain = AgentLoopHostError::new(AgentLoopHostErrorKind::Internal, "boom");
         assert_eq!(plain.detail, None);
+    }
+
+    /// Regression (#6684 review): the budget/checkpoint port kinds must not
+    /// collapse into one model-visible `Resource`/retryable `Internal` bucket —
+    /// each projects the fate its variant doc prescribes.
+    #[test]
+    fn budget_and_checkpoint_port_errors_project_honest_fates() {
+        use ironclaw_host_api::{FailureFate, FailureKind};
+        // Park semantic: "callers surface an approval gate ... and retry
+        // after the user resolves it" — not a tool error to route around.
+        assert_eq!(
+            AgentLoopHostErrorKind::BudgetApprovalRequired.failure_kind(),
+            FailureKind::AuthRequired
+        );
+        assert_eq!(
+            AgentLoopHostErrorKind::BudgetApprovalRequired
+                .failure_kind()
+                .fate(),
+            FailureFate::Park
+        );
+        // Fail closed: a governor fault is neither a quota outcome nor
+        // retryable.
+        assert_eq!(
+            AgentLoopHostErrorKind::BudgetAccountingFailed.failure_kind(),
+            FailureKind::Unclassified
+        );
+        assert!(
+            !AgentLoopHostErrorKind::BudgetAccountingFailed
+                .failure_kind()
+                .is_retryable()
+        );
+        // A schema id/version rejection is deterministic — never retryable.
+        assert_eq!(
+            AgentLoopHostErrorKind::CheckpointRejected.failure_kind(),
+            FailureKind::OperationFailed
+        );
+        assert!(
+            !AgentLoopHostErrorKind::CheckpointRejected
+                .failure_kind()
+                .is_retryable()
+        );
+        // The genuine budget outcome keeps the resource-quota kind.
+        assert_eq!(
+            AgentLoopHostErrorKind::BudgetExceeded.failure_kind(),
+            FailureKind::Resource
+        );
     }
 }
