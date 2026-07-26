@@ -1,4 +1,4 @@
-//! Reborn integration-test framework local-dev boot accessors.
+//! Reborn integration-test framework standalone boot accessors.
 //!
 //! `build_approval_gate_evidence_for_test`,
 //! `build_default_local_dev_database_roots_for_test`,

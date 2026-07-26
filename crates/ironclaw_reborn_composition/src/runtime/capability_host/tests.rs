@@ -1,3 +1,5 @@
+//! Capability-host assembly tests.
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::module_inception)]
@@ -60,7 +62,7 @@ mod tests {
         OutboundDeliveryTargetEntry, OutboundDeliveryTargetOwner, OutboundDeliveryTargetProvider,
         OutboundDeliveryTargetRegistry, RebornOutboundPreferencesService,
     };
-    use crate::runtime::local_dev_filesystem_skill_context_source;
+    use crate::runtime::filesystem_skill_context_source;
     use ironclaw_extension_host::extension_lifecycle_capabilities::{
         EXTENSION_INSTALL_CAPABILITY_ID, EXTENSION_REMOVE_CAPABILITY_ID,
         EXTENSION_SEARCH_CAPABILITY_ID,
@@ -118,8 +120,8 @@ mod tests {
         run_context: &LoopRunContext,
         fallback_user_id: &UserId,
     ) {
-        let scope = local_dev_thread_scope_for_run(run_context, fallback_user_id)
-            .expect("run scope has an agent");
+        let scope =
+            thread_scope_for_run(run_context, fallback_user_id).expect("run scope has an agent");
         thread_service
             .ensure_thread(EnsureThreadRequest {
                 scope,
@@ -236,7 +238,7 @@ mod tests {
         ));
         let fallback_user_id = UserId::new("durable-fallback-owner").expect("fallback user id");
 
-        let scope = local_dev_thread_scope_for_run(&explicit_context, &fallback_user_id)
+        let scope = thread_scope_for_run(&explicit_context, &fallback_user_id)
             .expect("agent-scoped run produces a thread scope");
 
         assert_eq!(scope.owner_user_id, Some(explicit_owner));
@@ -245,12 +247,12 @@ mod tests {
         let actor_context = run_context("durable-actor-scope")
             .await
             .with_actor(TurnActor::new(actor_owner.clone()));
-        let actor_scope = local_dev_thread_scope_for_run(&actor_context, &fallback_user_id)
+        let actor_scope = thread_scope_for_run(&actor_context, &fallback_user_id)
             .expect("agent-scoped run produces a thread scope");
         assert_eq!(actor_scope.owner_user_id, Some(actor_owner));
 
         let fallback_context = run_context("durable-fallback-scope").await;
-        let fallback_scope = local_dev_thread_scope_for_run(&fallback_context, &fallback_user_id)
+        let fallback_scope = thread_scope_for_run(&fallback_context, &fallback_user_id)
             .expect("agent-scoped run produces a thread scope");
         assert_eq!(fallback_scope.owner_user_id, Some(fallback_user_id));
     }
@@ -776,10 +778,8 @@ mod tests {
         // dispatch-time injection keys on the secret, letting the gmail
         // auth-gate test drive an OAuth gate on a visible tool.
         if matches!(extension_state, GsuiteExtensionState::Activated) {
-            let seed_scope = crate::runtime::local_dev::local_dev_resource_scope_for_run(
-                run_context,
-                surface_user,
-            );
+            let seed_scope =
+                crate::runtime::capability_host::resource_scope_for_run(run_context, surface_user);
             seed_configured_account_without_secret_with_scopes(
                 services,
                 &seed_scope,
@@ -878,8 +878,8 @@ mod tests {
         // The durable preview sink derives the thread scope from the run context
         // (matching where the run's thread was registered), not a fixed
         // composition-time scope. Register the thread under that derived scope.
-        let thread_scope = local_dev_thread_scope_for_run(&run_context, &fallback_user_id)
-            .expect("run scope has an agent");
+        let thread_scope =
+            thread_scope_for_run(&run_context, &fallback_user_id).expect("run scope has an agent");
         let thread_service = Arc::new(InMemorySessionThreadService::default());
         thread_service
             .ensure_thread(EnsureThreadRequest {
@@ -970,7 +970,7 @@ mod tests {
         .await;
         // Register the thread under the RUN's scope (owner = the run owner).
         let thread_scope =
-            local_dev_thread_scope_for_run(&run_context, &owner).expect("run scope has an agent");
+            thread_scope_for_run(&run_context, &owner).expect("run scope has an agent");
         assert_eq!(thread_scope.owner_user_id.as_ref(), Some(&owner));
         let thread_service = Arc::new(InMemorySessionThreadService::default());
         thread_service
@@ -1167,8 +1167,8 @@ mod tests {
     async fn capability_io_rejects_result_larger_than_durable_storage_limit() {
         let run_context = run_context("durable-result-limit").await;
         let fallback_user_id = UserId::new("durable-result-owner").expect("fallback user id");
-        let thread_scope = local_dev_thread_scope_for_run(&run_context, &fallback_user_id)
-            .expect("run scope has an agent");
+        let thread_scope =
+            thread_scope_for_run(&run_context, &fallback_user_id).expect("run scope has an agent");
         let thread_service = Arc::new(InMemorySessionThreadService::default());
         thread_service
             .ensure_thread(EnsureThreadRequest {
@@ -1202,9 +1202,7 @@ mod tests {
                 input_ref: &input_ref,
                 invocation_id,
                 capability_id: &capability_id,
-                output: serde_json::Value::String(
-                    "x".repeat(LOCAL_DEV_DURABLE_TOOL_RESULT_MAX_BYTES),
-                ),
+                output: serde_json::Value::String("x".repeat(DURABLE_TOOL_RESULT_MAX_BYTES)),
                 display_preview: None,
                 durable_persistence: DurablePersistence::Persist,
             })
@@ -1249,8 +1247,8 @@ mod tests {
     async fn update_and_delete_capability_result_preserve_durable_record() {
         let run_context = run_context("durable-update-delete").await;
         let fallback_user_id = UserId::new("durable-update-delete-owner").expect("user id");
-        let thread_scope = local_dev_thread_scope_for_run(&run_context, &fallback_user_id)
-            .expect("run scope has an agent");
+        let thread_scope =
+            thread_scope_for_run(&run_context, &fallback_user_id).expect("run scope has an agent");
         let thread_service = Arc::new(InMemorySessionThreadService::default());
         thread_service
             .ensure_thread(EnsureThreadRequest {
@@ -1351,8 +1349,8 @@ mod tests {
         let run_context = run_context("first-look-preview-full").await;
         let fallback_user_id =
             UserId::new("first-look-preview-full-owner").expect("fallback user id");
-        let thread_scope = local_dev_thread_scope_for_run(&run_context, &fallback_user_id)
-            .expect("run scope has an agent");
+        let thread_scope =
+            thread_scope_for_run(&run_context, &fallback_user_id).expect("run scope has an agent");
         let thread_service = Arc::new(InMemorySessionThreadService::default());
         thread_service
             .ensure_thread(EnsureThreadRequest {
@@ -1441,8 +1439,8 @@ mod tests {
         let fallback_user_id =
             UserId::new("result-read-continuation-owner").expect("fallback user id");
         let run_context = run_context("result-read-continuation").await;
-        let thread_scope = local_dev_thread_scope_for_run(&run_context, &fallback_user_id)
-            .expect("agent-scoped thread");
+        let thread_scope =
+            thread_scope_for_run(&run_context, &fallback_user_id).expect("agent-scoped thread");
         let backend = Arc::new(InMemoryBackend::new());
         let filesystem = scoped_thread_filesystem(Arc::clone(&backend));
         let thread_service: Arc<dyn SessionThreadService> =
@@ -1642,8 +1640,8 @@ mod tests {
         let run_context = run_context("first-look-preview-array").await;
         let fallback_user_id =
             UserId::new("first-look-preview-array-owner").expect("fallback user id");
-        let thread_scope = local_dev_thread_scope_for_run(&run_context, &fallback_user_id)
-            .expect("run scope has an agent");
+        let thread_scope =
+            thread_scope_for_run(&run_context, &fallback_user_id).expect("run scope has an agent");
         let thread_service = Arc::new(InMemorySessionThreadService::default());
         thread_service
             .ensure_thread(EnsureThreadRequest {
@@ -1784,8 +1782,8 @@ mod tests {
         let fallback_user_id =
             UserId::new("result-read-no-amplification-owner").expect("fallback user id");
         let run_context = run_context("result-read-no-amplification").await;
-        let thread_scope = local_dev_thread_scope_for_run(&run_context, &fallback_user_id)
-            .expect("agent-scoped thread");
+        let thread_scope =
+            thread_scope_for_run(&run_context, &fallback_user_id).expect("agent-scoped thread");
         let backend = Arc::new(InMemoryBackend::new());
         let filesystem = scoped_thread_filesystem(Arc::clone(&backend));
         let thread_service: Arc<dyn SessionThreadService> =
@@ -2032,7 +2030,7 @@ mod tests {
 
         assert!(store.get("result:first").is_none());
         assert!(store.get("result:second").is_some());
-        assert!(store.total_bytes <= LOCAL_DEV_CAPABILITY_IO_MAX_STAGED_BYTES);
+        assert!(store.total_bytes <= CAPABILITY_IO_MAX_STAGED_BYTES);
     }
 
     #[test]
@@ -2089,15 +2087,15 @@ mod tests {
         );
 
         let workspace_mounts =
-            crate::local_dev_mounts::workspace_mount_view(MountPermissions::read_write(), &[])
+            crate::runtime_mounts::workspace_mount_view(MountPermissions::read_write(), &[])
                 .expect("workspace mounts build");
         let skill_mounts =
-            crate::local_dev_mounts::skill_management_mount_view().expect("skill mounts build");
+            crate::runtime_mounts::skill_management_mount_view().expect("skill mounts build");
         let memory_mounts =
-            crate::local_dev_mounts::memory_mount_view(MountPermissions::read_write_list_delete())
+            crate::runtime_mounts::memory_mount_view(MountPermissions::read_write_list_delete())
                 .expect("memory mounts build");
         let system_extensions_lifecycle_mounts =
-            crate::local_dev_mounts::system_extensions_lifecycle_mount_view()
+            crate::runtime_mounts::system_extensions_lifecycle_mount_view()
                 .expect("system extensions lifecycle mounts build");
         assert!(workspace_mounts.mounts.iter().all(|mount| {
             mount.alias.as_str() != "/skills" && mount.alias.as_str() != "/system/skills"
@@ -2330,7 +2328,7 @@ mod tests {
                 .grants
                 .iter()
                 .any(|grant| { grant.capability.as_str() == SKILL_ACTIVATE_CAPABILITY_ID }),
-            "skill activation is a local-dev synthetic capability, not a host-runtime grant"
+            "skill activation is a capability-host synthetic capability, not a host-runtime grant"
         );
     }
 
@@ -2370,12 +2368,9 @@ mod tests {
             .with_actor(TurnActor::new(
                 UserId::new("skill-activate-user").expect("user id"),
             ));
-        let skill_context = local_dev_filesystem_skill_context_source(
-            runtime_surfaces,
-            &run_context.scope.tenant_id,
-            false,
-        )
-        .expect("skill context source");
+        let skill_context =
+            filesystem_skill_context_source(runtime_surfaces, &run_context.scope.tenant_id, false)
+                .expect("skill context source");
         let activation_source = skill_context.activation_source;
         let capability_io = Arc::new(StagedCapabilityIo::default());
         let input_resolver: Arc<dyn LoopCapabilityInputResolver> = capability_io.clone();
@@ -2554,12 +2549,9 @@ mod tests {
             .local_runtime_for_test()
             .expect("local runtime substrate");
         let run_context = run_context("skill-activate-wiring").await;
-        let skill_context = local_dev_filesystem_skill_context_source(
-            runtime_surfaces,
-            &run_context.scope.tenant_id,
-            false,
-        )
-        .expect("skill context source");
+        let skill_context =
+            filesystem_skill_context_source(runtime_surfaces, &run_context.scope.tenant_id, false)
+                .expect("skill context source");
         let policy = Arc::new(
             crate::builtin_capability_policy::builtin_capability_policy().expect("policy parses"),
         );
@@ -2865,8 +2857,8 @@ mod tests {
             .expect("local runtime substrate");
         let fallback_user_id = UserId::new("result-read-owner").expect("user id");
         let run_context = run_context("result-read").await;
-        let thread_scope = local_dev_thread_scope_for_run(&run_context, &fallback_user_id)
-            .expect("agent-scoped thread");
+        let thread_scope =
+            thread_scope_for_run(&run_context, &fallback_user_id).expect("agent-scoped thread");
         let backend = Arc::new(InMemoryBackend::new());
         let filesystem = scoped_thread_filesystem(Arc::clone(&backend));
         let thread_service = Arc::new(FilesystemSessionThreadService::new(filesystem));
@@ -3622,8 +3614,8 @@ mod tests {
         ))
         .await;
 
-        let thread_scope = local_dev_thread_scope_for_run(&run_context_a, &fallback_user_id)
-            .expect("agent-scoped thread");
+        let thread_scope =
+            thread_scope_for_run(&run_context_a, &fallback_user_id).expect("agent-scoped thread");
         let backend = Arc::new(InMemoryBackend::new());
         let filesystem = scoped_thread_filesystem(Arc::clone(&backend));
         let thread_service = Arc::new(FilesystemSessionThreadService::new(filesystem));
@@ -3826,7 +3818,7 @@ mod tests {
         let auto_approve_settings: Arc<dyn ironclaw_approvals::AutoApproveSettingStorePort> =
             runtime_surfaces.auto_approve_settings_for_test().clone();
         let approval_settings = Arc::new(
-            crate::local_dev_authorization::StoreApprovalSettingsProvider::new(
+            crate::capability_authorization::StoreApprovalSettingsProvider::new(
                 tool_permission_overrides,
                 auto_approve_settings,
                 runtime_surfaces
@@ -4258,7 +4250,7 @@ mod tests {
                 input_ref: set_candidate.input_ref.clone(),
             }
         };
-        // Fix 2 (§5.3 Stage 0): the local-dev synthetic approval producer persists
+        // Fix 2 (§5.3 Stage 0): the capability-host synthetic approval producer persists
         // a durable `GateRecord` at the gate raise. Fix 3: it is keyed by the
         // canonical `GateRef::for_approval_request`, which the product read model
         // re-derives from the routing `gate:approval-{id}` ref — so a
@@ -4280,7 +4272,7 @@ mod tests {
             // (a host_api::GateRef), the canonical key the read model derives from
             // the recovered id — proving both encodings agree.
             let record_key = ironclaw_host_api::GateRef::for_approval_request(recovered_id);
-            let record_scope = crate::runtime::local_dev::local_dev_resource_scope_for_run(
+            let record_scope = crate::runtime::capability_host::resource_scope_for_run(
                 &run_context,
                 &fallback_user_id,
             );
@@ -4917,8 +4909,8 @@ mod tests {
             shell_descriptor.safe_description.contains("local host")
                 && shell_descriptor
                     .safe_description
-                    .contains("shell process and network access"),
-            "shell should disclose local-dev host shell authority: {}",
+                    .contains("configured host process and network access"),
+            "shell should disclose configured local-host authority: {}",
             shell_descriptor.safe_description
         );
         let tool_definitions = port.tool_definitions().expect("tool definitions");
@@ -4969,8 +4961,8 @@ mod tests {
             shell_tool.description.contains("local host")
                 && shell_tool
                     .description
-                    .contains("shell process and network access"),
-            "provider tool shell description should disclose local-dev host shell authority: {}",
+                    .contains("configured host process and network access"),
+            "provider tool shell description should disclose configured local-host authority: {}",
             shell_tool.description
         );
         let input_ref = capability_io
@@ -5041,7 +5033,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_capability_port_skill_install_writes_user_skill_root() {
+    async fn capability_port_skill_install_writes_user_skill_root() {
         let dir = tempfile::tempdir().expect("tempdir"); // safety: test-only setup in #[cfg(test)] module.
         let storage_root = dir.path().join("local-dev");
         let services = crate::factory::build_runtime_substrate(
@@ -5155,7 +5147,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_capability_port_omits_host_disclosure_without_confirmed_host_mount() {
+    async fn capability_port_omits_host_disclosure_without_confirmed_host_mount() {
         let dir = tempfile::tempdir().expect("tempdir"); // safety: test-only setup in #[cfg(test)] module.
         let storage_root = dir.path().join("local-dev");
         let workspace_root = dir.path().join("workspace");
@@ -5316,7 +5308,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_capability_port_restores_activated_github_extension_surface() {
+    async fn capability_port_restores_activated_github_extension_surface() {
         let dir = tempfile::tempdir().expect("tempdir");
         let storage_root = dir.path().join("local-dev");
         let owner_id = "local-dev-github-surface-owner";
@@ -5357,7 +5349,7 @@ mod tests {
         .await
         .expect("local-dev services rebuild");
         let run_context = run_context("github-surface").await;
-        let restore_seed_scope = crate::runtime::local_dev::local_dev_resource_scope_for_run(
+        let restore_seed_scope = crate::runtime::capability_host::resource_scope_for_run(
             &run_context,
             &UserId::new("local-dev-github-user").expect("user id"),
         );
@@ -5381,7 +5373,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_capability_port_refreshes_extensions_after_activation() {
+    async fn capability_port_refreshes_extensions_after_activation() {
         let dir = tempfile::tempdir().expect("tempdir");
         let storage_root = dir.path().join("local-dev");
         let services =
@@ -5434,10 +5426,8 @@ mod tests {
         // AS the surface user whose capability port is asserted; there is no
         // separate Activate action — prechecked activation publishes directly.
         let surface_user = UserId::new("local-dev-live-github-user").expect("user id");
-        let seed_scope = crate::runtime::local_dev::local_dev_resource_scope_for_run(
-            &run_context,
-            &surface_user,
-        );
+        let seed_scope =
+            crate::runtime::capability_host::resource_scope_for_run(&run_context, &surface_user);
         seed_configured_account_and_secret(&services, &seed_scope, "github").await;
         let package_ref = LifecyclePackageRef::new(LifecyclePackageKind::Extension, "github")
             .expect("valid github ref");
@@ -5599,7 +5589,7 @@ mod tests {
         .await
         .expect("local-dev services build");
         let run_context = run_context("mid-response").await;
-        let mid_response_seed_scope = crate::runtime::local_dev::local_dev_resource_scope_for_run(
+        let mid_response_seed_scope = crate::runtime::capability_host::resource_scope_for_run(
             &run_context,
             &UserId::new("local-dev-mid-response-user").expect("user id"),
         );
@@ -5696,7 +5686,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_capability_port_exposes_activated_gsuite_extensions_to_model() {
+    async fn capability_port_exposes_activated_gsuite_extensions_to_model() {
         let harness = gsuite_surface_harness(
             "local-dev-gsuite-surface-owner",
             "gsuite-surface",

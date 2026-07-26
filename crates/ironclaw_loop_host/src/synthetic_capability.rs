@@ -1,11 +1,15 @@
+//! Generic adapters for host-provided synthetic capabilities.
+
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex as StdMutex},
 };
 
+use crate::{
+    CapabilityTrajectoryObserver, LoopCapabilityInputResolver, LoopCapabilityResultWriter,
+};
 use async_trait::async_trait;
 use ironclaw_host_api::{CapabilityId, ProviderToolName, Resolution, ResolutionBatch, RuntimeKind};
-use ironclaw_loop_host::{LoopCapabilityInputResolver, LoopCapabilityResultWriter};
 use ironclaw_turns::{
     CapabilityActivityId,
     run_profile::{
@@ -17,18 +21,32 @@ use ironclaw_turns::{
     },
 };
 
+fn resource_scope_for_run(
+    run_context: &LoopRunContext,
+    fallback_user_id: &ironclaw_host_api::UserId,
+) -> ironclaw_host_api::ResourceScope {
+    let mut scope = run_context.scope.to_resource_scope();
+    scope.user_id = run_context
+        .scope
+        .explicit_owner_user_id()
+        .cloned()
+        .or_else(|| run_context.actor().map(|actor| actor.user_id.clone()))
+        .unwrap_or_else(|| fallback_user_id.clone());
+    scope
+}
+
 // Synthetic decorator now also carries the host-private replay-payload store it
 // reconstitutes a synthetic approval-gate resume's input from.
 // arch-exempt: too_many_args, synthetic decorator carries the replay-payload store (§5.3 Stage 2a-i), plan #6175
 #[allow(clippy::too_many_arguments)]
-pub(super) fn wrap_synthetic_capabilities(
+pub fn wrap_synthetic_capabilities(
     inner: Arc<dyn LoopCapabilityPort>,
     capabilities: Vec<SyntheticCapability>,
     run_context: LoopRunContext,
     fallback_user_id: ironclaw_host_api::UserId,
     input_resolver: Arc<dyn LoopCapabilityInputResolver>,
     result_writer: Arc<dyn LoopCapabilityResultWriter>,
-    trajectory_observer: Option<Arc<dyn crate::RebornTrajectoryObserver>>,
+    trajectory_observer: Option<Arc<dyn CapabilityTrajectoryObserver>>,
     replay_payload_store: Arc<dyn ironclaw_capabilities::ReplayPayloadStorePort>,
 ) -> Result<Arc<dyn LoopCapabilityPort>, AgentLoopHostError> {
     if capabilities.is_empty() {
@@ -71,13 +89,13 @@ fn replay_payload_store_error(
     )
 }
 
-pub(super) struct SyntheticCapability {
+pub struct SyntheticCapability {
     descriptor: SyntheticCapabilityDescriptor,
     handler: Arc<dyn SyntheticCapabilityHandler>,
 }
 
 impl SyntheticCapability {
-    pub(super) fn new(
+    pub fn new(
         descriptor: SyntheticCapabilityDescriptor,
         handler: Arc<dyn SyntheticCapabilityHandler>,
     ) -> Self {
@@ -88,7 +106,7 @@ impl SyntheticCapability {
     }
 }
 
-pub(super) struct SyntheticCapabilityDescriptor {
+pub struct SyntheticCapabilityDescriptor {
     capability_id: CapabilityId,
     provider_tool_name: ProviderToolName,
     description: String,
@@ -97,7 +115,7 @@ pub(super) struct SyntheticCapabilityDescriptor {
 }
 
 impl SyntheticCapabilityDescriptor {
-    pub(super) fn new(
+    pub fn new(
         capability_id: &str,
         provider_tool_name: &str,
         description: &str,
@@ -145,15 +163,15 @@ impl SyntheticCapabilityDescriptor {
     }
 }
 
-pub(super) struct SyntheticCapabilityInvocation {
-    pub(super) run_context: LoopRunContext,
-    pub(super) request: LoopRequest,
-    pub(super) input: serde_json::Value,
-    pub(super) result_writer: Arc<dyn LoopCapabilityResultWriter>,
+pub struct SyntheticCapabilityInvocation {
+    pub run_context: LoopRunContext,
+    pub request: LoopRequest,
+    pub input: serde_json::Value,
+    pub result_writer: Arc<dyn LoopCapabilityResultWriter>,
 }
 
 #[async_trait]
-pub(super) trait SyntheticCapabilityHandler: Send + Sync {
+pub trait SyntheticCapabilityHandler: Send + Sync {
     fn validate_provider_arguments(
         &self,
         arguments: &serde_json::Value,
@@ -180,7 +198,7 @@ struct SyntheticCapabilityPort {
     /// inner `HostRuntimeLoopCapabilityPort` input hook. Hold the observer so we
     /// can emit `on_capability_input` ourselves — otherwise consumers see the
     /// result event (from `StagedCapabilityIo`) with no matching input.
-    trajectory_observer: Option<Arc<dyn crate::RebornTrajectoryObserver>>,
+    trajectory_observer: Option<Arc<dyn CapabilityTrajectoryObserver>>,
     /// Host-private replay-payload store: a synthetic capability that raised its
     /// own approval gate reconstitutes {input} from here on resume, keyed by the
     /// invocation id in the resume token (§5.3 Stage 2a-i), instead of reading raw
@@ -205,7 +223,7 @@ impl SyntheticCapabilityPort {
         fallback_user_id: ironclaw_host_api::UserId,
         input_resolver: Arc<dyn LoopCapabilityInputResolver>,
         result_writer: Arc<dyn LoopCapabilityResultWriter>,
-        trajectory_observer: Option<Arc<dyn crate::RebornTrajectoryObserver>>,
+        trajectory_observer: Option<Arc<dyn CapabilityTrajectoryObserver>>,
         replay_payload_store: Arc<dyn ironclaw_capabilities::ReplayPayloadStorePort>,
     ) -> Result<Self, AgentLoopHostError> {
         let mut capabilities_by_id = HashMap::new();
@@ -524,10 +542,8 @@ impl LoopCapabilityPort for SyntheticCapabilityPort {
             // never dispatch a resume with empty/re-resolved input.
             Some(resume) => {
                 let invocation_id = invocation_id_from_resume_token(&resume.resume_token)?;
-                let replay_scope = super::local_dev_resource_scope_for_run(
-                    &self.run_context,
-                    &self.fallback_user_id,
-                );
+                let replay_scope =
+                    resource_scope_for_run(&self.run_context, &self.fallback_user_id);
                 self.replay_payload_store
                     .load(&replay_scope, invocation_id)
                     .await
@@ -605,10 +621,8 @@ impl LoopCapabilityPort for SyntheticCapabilityPort {
 mod tests {
     use super::*;
 
+    use crate::{CapabilityResultWrite, CapabilityWriteResult, EmptyLoopCapabilityPort};
     use ironclaw_host_api::{AgentId, ProjectId, TenantId, ThreadId};
-    use ironclaw_loop_host::{
-        CapabilityResultWrite, CapabilityWriteResult, EmptyLoopCapabilityPort,
-    };
     use ironclaw_turns::run_profile::resolution;
     use ironclaw_turns::{
         LoopResultRef, RunProfileResolutionRequest, RunProfileResolver, TurnId, TurnRunId,
@@ -779,7 +793,7 @@ mod tests {
             result_writer,
             None,
             Arc::new(ironclaw_capabilities::ReplayPayloadStore::new(
-                crate::wrap_scoped(Arc::new(ironclaw_filesystem::InMemoryBackend::new())),
+                replay_payload_filesystem(),
             )),
         )
         .expect("synthetic port");
@@ -787,6 +801,23 @@ mod tests {
             .await
             .expect("visible surface");
         port
+    }
+
+    fn replay_payload_filesystem()
+    -> Arc<ironclaw_filesystem::ScopedFilesystem<ironclaw_filesystem::InMemoryBackend>> {
+        use ironclaw_host_api::{MountAlias, MountGrant, MountPermissions, MountView, VirtualPath};
+
+        let mounts = MountView::new(vec![MountGrant::new(
+            MountAlias::new("/replay-payloads").expect("static valid mount alias"),
+            VirtualPath::new("/tenants/test/users/test/replay-payloads")
+                .expect("static valid virtual path"),
+            MountPermissions::read_write_list_delete(),
+        )])
+        .expect("static valid replay-payload mount view");
+        Arc::new(ironclaw_filesystem::ScopedFilesystem::with_fixed_view(
+            Arc::new(ironclaw_filesystem::InMemoryBackend::new()),
+            mounts,
+        ))
     }
 
     fn provider_tool_call() -> ProviderToolCall {

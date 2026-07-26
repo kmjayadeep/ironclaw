@@ -1,3 +1,5 @@
+//! Loop-facing outbound-delivery capabilities.
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -9,7 +11,10 @@ use ironclaw_host_api::{
     ProductSurfaceError, ProductSurfaceErrorCode, Resolution, ResourceEstimate, ResourceScope,
     SafeSummary, UserId,
 };
-use ironclaw_loop_host::{CapabilityResultWrite, DurablePersistence};
+use ironclaw_loop_host::{
+    CapabilityResultWrite, DurablePersistence, SyntheticCapability, SyntheticCapabilityDescriptor,
+    SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
+};
 use ironclaw_product::{OutboundPreferencesProductService, RebornOutboundDeliveryTargetId};
 use ironclaw_run_state::{ApprovalStatus, RunStateError};
 use ironclaw_turns::{
@@ -31,11 +36,6 @@ use crate::outbound::{
     parse_outbound_delivery_targets_list_input, set_outbound_delivery_target_for_model,
 };
 use crate::profile_approval_authorization::ApprovalSettingsProvider;
-use crate::runtime::local_dev::synthetic_capability::{
-    SyntheticCapability, SyntheticCapabilityDescriptor, SyntheticCapabilityHandler,
-    SyntheticCapabilityInvocation,
-};
-
 // Synthetic outbound handler now also carries the host-private replay-payload
 // store it persists at its approval-gate raise and reconstitutes from on resume.
 // arch-exempt: too_many_args, outbound handler carries the replay-payload store (§5.3 Stage 2a-i), plan #6175
@@ -362,10 +362,7 @@ impl OutboundDeliveryTargetSetHandler {
         // agree regardless of run.
         self.replay_payload_store
             .save(
-                super::local_dev_resource_scope_for_run(
-                    &invocation.run_context,
-                    &self.fallback_user_id,
-                ),
+                super::resource_scope_for_run(&invocation.run_context, &self.fallback_user_id),
                 invocation_id,
                 ironclaw_capabilities::ReplayPayload {
                     input: input.clone(),
@@ -408,7 +405,7 @@ impl OutboundDeliveryTargetSetHandler {
         // (the same owner axes the replay payload uses, so raise and read agree).
         let gate_summary = SafeSummary::new(APPROVAL_GATE_SUMMARY).map_err(|error| {
             ironclaw_loop_host::raw_agent_loop_host_error(
-                "local_dev_outbound_delivery",
+                "outbound_delivery",
                 "gate_record_summary",
                 AgentLoopHostErrorKind::Internal,
                 "outbound delivery gate summary is not renderable",
@@ -417,10 +414,7 @@ impl OutboundDeliveryTargetSetHandler {
         })?;
         self.gate_record_store
             .save(
-                super::local_dev_resource_scope_for_run(
-                    &invocation.run_context,
-                    &self.fallback_user_id,
-                ),
+                super::resource_scope_for_run(&invocation.run_context, &self.fallback_user_id),
                 GateRef::for_approval_request(approval_request_id),
                 GateRecord::Approval {
                     summary: gate_summary,
@@ -456,10 +450,8 @@ impl OutboundDeliveryTargetSetHandler {
         // fingerprint that MUST match the one saved at raise; the input the
         // decorator already reconstituted (`invocation.input`) is cross-checked
         // against the persisted payload here as anti-tamper.
-        let replay_scope = super::local_dev_resource_scope_for_run(
-            &invocation.run_context,
-            &self.fallback_user_id,
-        );
+        let replay_scope =
+            super::resource_scope_for_run(&invocation.run_context, &self.fallback_user_id);
         let replay = self
             .replay_payload_store
             .load(&replay_scope, invocation_id)
@@ -827,7 +819,7 @@ fn approval_denied(safe_summary: &str) -> Result<Resolution, AgentLoopHostError>
 
 fn approval_store_error(operation: &'static str, error: RunStateError) -> AgentLoopHostError {
     ironclaw_loop_host::raw_agent_loop_host_error(
-        "local_dev_outbound_delivery",
+        "outbound_delivery",
         operation,
         AgentLoopHostErrorKind::Unavailable,
         "outbound delivery approval state operation failed",
@@ -859,7 +851,7 @@ fn approval_lease_outcome(
         CapabilityLeaseError::Persistence { .. }
         | CapabilityLeaseError::VersionMismatch
         | CapabilityLeaseError::CasExhausted => Err(ironclaw_loop_host::raw_agent_loop_host_error(
-            "local_dev_outbound_delivery",
+            "outbound_delivery",
             operation,
             AgentLoopHostErrorKind::Unavailable,
             "outbound delivery approval lease operation failed",
@@ -871,7 +863,7 @@ fn approval_lease_outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::local_dev::assert_recoverable_failure;
+    use crate::runtime::capability_host::assert_recoverable_failure;
     use ironclaw_host_api::ProductSurfaceErrorKind;
     use ironclaw_turns::run_profile::LoopSafeSummary;
 

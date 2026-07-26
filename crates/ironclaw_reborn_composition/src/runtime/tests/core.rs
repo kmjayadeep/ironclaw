@@ -254,10 +254,10 @@ async fn runtime_channel_identity_bind_uses_deployment_channel_before_user_activ
 /// `..SkillActivationSelectorConfig::default()` spread or by the
 /// helper accidentally taking `Default::default()`. Covers the
 /// composition-level path that
-/// [`local_dev_filesystem_skill_context_source`] depends on.
+/// [`filesystem_skill_context_source`] depends on.
 #[test]
 fn local_dev_selector_config_propagates_regex_activation_disabled() {
-    let cfg = super::local_dev_selector_config(
+    let cfg = super::skill_activation_selector_config(
         false,
         ironclaw_first_party_extension_ports::SkillInjectionMode::Listing,
     );
@@ -277,7 +277,7 @@ fn local_dev_selector_config_propagates_regex_activation_disabled() {
 
 #[test]
 fn local_dev_selector_config_propagates_regex_activation_enabled() {
-    let cfg = super::local_dev_selector_config(
+    let cfg = super::skill_activation_selector_config(
         true,
         ironclaw_first_party_extension_ports::SkillInjectionMode::Listing,
     );
@@ -289,7 +289,7 @@ fn local_dev_selector_config_propagates_regex_activation_enabled() {
 
 #[test]
 fn local_dev_selector_config_uses_large_skill_context_budget() {
-    let cfg = super::local_dev_selector_config(
+    let cfg = super::skill_activation_selector_config(
         true,
         ironclaw_first_party_extension_ports::SkillInjectionMode::Listing,
     );
@@ -310,7 +310,7 @@ fn local_dev_selector_config_propagates_injection_mode() {
         ironclaw_first_party_extension_ports::SkillInjectionMode::Listing,
         ironclaw_first_party_extension_ports::SkillInjectionMode::Full,
     ] {
-        let cfg = super::local_dev_selector_config(true, mode);
+        let cfg = super::skill_activation_selector_config(true, mode);
         assert_eq!(cfg.injection_mode, mode);
     }
 }

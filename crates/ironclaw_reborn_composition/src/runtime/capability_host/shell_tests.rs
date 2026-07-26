@@ -1,3 +1,5 @@
+//! Capability-host shell integration tests.
+
 use std::sync::Arc;
 
 use ironclaw_host_api::{

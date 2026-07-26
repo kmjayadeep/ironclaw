@@ -1,3 +1,5 @@
+//! Runtime mount views selected from the resolved filesystem configuration.
+
 use std::{collections::HashSet, path::Path};
 
 use ironclaw_host_api::{
@@ -19,11 +21,11 @@ pub(crate) fn workspace_mount_view(
     ambient_workspace_mount_view(permissions, &[], host_home_aliases)
 }
 
-/// Build the workspace mount view used by local-dev capability grants.
+/// Build the workspace mount view used by capability grants.
 ///
-/// `workspace_aliases` is load-bearing for local-dev-yolo ambient coding tools:
-/// callers must pass it only under a yolo runtime policy. Non-yolo local-dev
-/// must pass an empty slice so raw host workspace paths stay denied.
+/// `workspace_aliases` is load-bearing for ambient host coding tools:
+/// callers must pass it only under a policy that grants ambient host access. Other
+/// profiles must pass an empty slice so raw host workspace paths stay denied.
 pub(crate) fn ambient_workspace_mount_view(
     permissions: MountPermissions,
     workspace_aliases: &[&Path],

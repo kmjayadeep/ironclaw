@@ -1,66 +1,60 @@
+//! Projection of active extensions onto the loop capability surface.
+
 use std::{collections::BTreeMap, sync::Arc};
 
+use crate::ActiveExtensionCapability;
 use chrono::Utc;
-use ironclaw_extension_host::ActiveExtensionCapability;
 use ironclaw_host_api::{
     CapabilityGrant, CapabilityGrantId, CapabilityId, EffectKind, ExtensionId, GrantConstraints,
     MountView, NetworkPolicy, Principal,
 };
 use ironclaw_trust::{AuthorityCeiling, EffectiveTrustClass, TrustDecision, TrustProvenance};
 
-use ironclaw_extension_host::extension_lifecycle::RebornLocalExtensionManagementPort;
+use crate::extension_lifecycle::RebornLocalExtensionManagementPort;
 use ironclaw_product::ProductSurfaceFailure;
 
 #[derive(Clone, Default)]
-pub(in crate::runtime) struct ExtensionCapabilitySurfaceSource {
-    extension_management: Option<Arc<RebornLocalExtensionManagementPort>>,
-    #[cfg(test)]
-    static_surface: Option<ExtensionCapabilitySurface>,
+pub enum ExtensionCapabilitySurfaceSource {
+    #[default]
+    Empty,
+    Management(Arc<RebornLocalExtensionManagementPort>),
+    #[cfg(any(test, feature = "test-support"))]
+    Static(ExtensionCapabilitySurface),
 }
 
 impl ExtensionCapabilitySurfaceSource {
-    pub(in crate::runtime) fn new(
-        extension_management: Option<Arc<RebornLocalExtensionManagementPort>>,
-    ) -> Self {
-        Self {
-            extension_management,
-            #[cfg(test)]
-            static_surface: None,
+    pub fn new(extension_management: Option<Arc<RebornLocalExtensionManagementPort>>) -> Self {
+        match extension_management {
+            Some(extension_management) => Self::Management(extension_management),
+            None => Self::Empty,
         }
     }
 
-    #[cfg(test)]
-    pub(in crate::runtime) fn from_surface(surface: ExtensionCapabilitySurface) -> Self {
-        Self {
-            extension_management: None,
-            static_surface: Some(surface),
-        }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_surface(surface: ExtensionCapabilitySurface) -> Self {
+        Self::Static(surface)
     }
 
-    pub(in crate::runtime) async fn snapshot(
-        &self,
-    ) -> Result<ExtensionCapabilitySurface, ProductSurfaceFailure> {
-        #[cfg(test)]
-        if let Some(surface) = &self.static_surface {
-            return Ok(surface.clone());
+    pub async fn snapshot(&self) -> Result<ExtensionCapabilitySurface, ProductSurfaceFailure> {
+        match self {
+            Self::Empty => Ok(ExtensionCapabilitySurface::default()),
+            Self::Management(extension_management) => {
+                ExtensionCapabilitySurface::from_extension_management(extension_management).await
+            }
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Static(surface) => Ok(surface.clone()),
         }
-        let Some(extension_management) = self.extension_management.as_deref() else {
-            return Ok(ExtensionCapabilitySurface::default());
-        };
-        ExtensionCapabilitySurface::from_extension_management(extension_management).await
     }
 }
 
 #[derive(Debug, Clone, Default)]
-pub(in crate::runtime) struct ExtensionCapabilitySurface {
+pub struct ExtensionCapabilitySurface {
     active_capabilities: Vec<ActiveExtensionCapability>,
 }
 
 impl ExtensionCapabilitySurface {
-    #[cfg(test)]
-    pub(in crate::runtime) fn from_active_capabilities(
-        active_capabilities: Vec<ActiveExtensionCapability>,
-    ) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_active_capabilities(active_capabilities: Vec<ActiveExtensionCapability>) -> Self {
         Self {
             active_capabilities,
         }
@@ -82,7 +76,7 @@ impl ExtensionCapabilitySurface {
     /// authorization reuses the grants minted here, so a capability filtered
     /// out is both invisible in the surface AND denied at dispatch — grant
     /// absence fails closed with no separate preflight.
-    pub(in crate::runtime) fn grants(
+    pub fn grants(
         &self,
         grantee: &ExtensionId,
         caller: &ironclaw_host_api::UserId,
@@ -100,10 +94,7 @@ impl ExtensionCapabilitySurface {
             .collect()
     }
 
-    pub(in crate::runtime) fn capability(
-        &self,
-        capability_id: &CapabilityId,
-    ) -> Option<&ActiveExtensionCapability> {
+    pub fn capability(&self, capability_id: &CapabilityId) -> Option<&ActiveExtensionCapability> {
         self.active_capabilities
             .iter()
             .find(|capability| capability.id == *capability_id)
@@ -112,7 +103,7 @@ impl ExtensionCapabilitySurface {
     /// Provider trust for the same request; filtered by the same owner rule as
     /// [`Self::grants`] so a user-private extension's provider is not even
     /// advertised to other users' surfaces.
-    pub(super) fn provider_trust(
+    pub fn provider_trust(
         &self,
         caller: &ironclaw_host_api::UserId,
     ) -> BTreeMap<ExtensionId, TrustDecision> {
@@ -171,7 +162,7 @@ impl ExtensionCapabilitySurface {
     }
 }
 
-pub(crate) fn extension_network_policy(capability: &ActiveExtensionCapability) -> NetworkPolicy {
+pub fn extension_network_policy(capability: &ActiveExtensionCapability) -> NetworkPolicy {
     let mut targets = Vec::new();
     // Manifest-declared egress allowlist — the keyless-but-networked path. A
     // capability declares its egress hosts directly, without a credential

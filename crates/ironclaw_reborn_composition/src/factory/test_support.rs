@@ -351,17 +351,19 @@ impl RebornRuntimeStores {
         &self,
         wiring: ChannelHostAssemblyTestWiring,
     ) -> Option<Arc<ironclaw_extension_host::channel_host::GenericChannelHostAssembly>> {
-        self.start_channel_host_assembly(ChannelHostAssemblyWiring {
-            thread_service: wiring.thread_service,
-            turn_coordinator: wiring.turn_coordinator,
-            approval_interaction: None,
-            auth_interaction: None,
-            identity: wiring.identity,
-            approval_context: None,
-            blocked_auth_prompts: None,
-            auth_flow_cancel: None,
-            run_delivery_settings: wiring.run_delivery_settings,
-        })
+        crate::extension_host_assembly::ExtensionHostAssemblyBuilder::new(self)?.start_channel_host(
+            crate::extension_host_assembly::ChannelHostAssemblyWiring {
+                thread_service: wiring.thread_service,
+                turn_coordinator: wiring.turn_coordinator,
+                approval_interaction: None,
+                auth_interaction: None,
+                identity: wiring.identity,
+                approval_context: None,
+                blocked_auth_prompts: None,
+                auth_flow_cancel: None,
+                run_delivery_settings: wiring.run_delivery_settings,
+            },
+        )
     }
 
     /// Test-support access to the shared scoped secret store backing the
@@ -777,7 +779,7 @@ fn active_extension_network_policy_for_test(
     // Delegate to the production manifest-egress policy builder (gsuite +
     // web-access declare their egress in their manifests now — no per-provider
     // special-case, and no first-party dependency in this test-support seam).
-    crate::runtime::local_dev::extension_surface::extension_network_policy(capability)
+    ironclaw_extension_host::capability_surface::extension_network_policy(capability)
 }
 
 /// Bundle returned by [`RebornRuntimeStores::local_dev_attachment_test_support_for_test`]

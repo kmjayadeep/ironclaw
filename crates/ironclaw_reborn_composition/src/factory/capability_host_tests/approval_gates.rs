@@ -1,3 +1,5 @@
+//! Capability-host approval-gate tests.
+
 use std::{
     sync::{Arc, Mutex},
     time::Duration,

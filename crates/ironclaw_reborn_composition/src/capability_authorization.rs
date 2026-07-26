@@ -1,3 +1,5 @@
+//! Capability authorization policy adapters shared by all runtime profiles.
+
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     future::Future,
@@ -28,12 +30,12 @@ use crate::{
     runtime_profile_approval_policy::RuntimeProfileApprovalGatePolicy,
 };
 
-pub(crate) fn local_dev_authorizer(
+pub(crate) fn capability_authorizer(
     runtime_policy: Option<&EffectiveRuntimePolicy>,
     capability_policy: Arc<BuiltinCapabilityPolicy>,
     settings: Arc<dyn ApprovalSettingsProvider>,
 ) -> Arc<dyn TrustAwareCapabilityDispatchAuthorizer> {
-    let (approval_policy, minimal_bypass) = local_dev_approval_policy(runtime_policy);
+    let (approval_policy, minimal_bypass) = resolved_approval_policy(runtime_policy);
     let gate_effects = capability_policy.approval_gate_effects();
     let exempt_capabilities = capability_policy.approval_gate_exempt_capabilities();
     let gate_policy: Arc<dyn ProfileApprovalGatePolicy> = Arc::new(
@@ -566,12 +568,12 @@ fn operator_tool_permission_scope(scope: &ResourceScope) -> ResourceScope {
     }
 }
 
-pub(crate) fn local_dev_effects_require_approval(
+pub(crate) fn effects_require_approval(
     runtime_policy: Option<&EffectiveRuntimePolicy>,
     capability_policy: &BuiltinCapabilityPolicy,
     effects: &[EffectKind],
 ) -> bool {
-    let (approval_policy, minimal_bypass) = local_dev_approval_policy(runtime_policy);
+    let (approval_policy, minimal_bypass) = resolved_approval_policy(runtime_policy);
     RuntimeProfileApprovalGatePolicy::new(minimal_bypass, capability_policy.approval_gate_effects())
         .effects_require_approval(approval_policy, effects)
 }
@@ -580,13 +582,13 @@ pub(crate) fn local_dev_effects_require_approval(
 /// policy.
 ///
 /// The absent-policy case fails closed: `AskAlways` with the bypass denied.
-/// This deliberately replaces the previous `unwrap_or(RuntimeProfile::LocalDev)`
+/// This deliberately replaces the previous implicit permissive-profile fallback
 /// fallback, which silently invented a *deployment profile* when none was
 /// resolved — the mode-as-type leak §4.4 removes, and a silent default on an
 /// authority decision that `.claude/rules/error-handling.md` forbids. Every
 /// production path resolves a policy (`build_reborn_runtime` rejects the input
 /// otherwise), so this arm is reachable only from callers that never had one.
-fn local_dev_approval_policy(
+fn resolved_approval_policy(
     runtime_policy: Option<&EffectiveRuntimePolicy>,
 ) -> (ApprovalPolicy, MinimalApprovalBypass) {
     match runtime_policy {

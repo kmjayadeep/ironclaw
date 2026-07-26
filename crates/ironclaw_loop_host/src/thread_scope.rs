@@ -3,8 +3,7 @@
 //! Multi-user WebChat pins each run to its authenticated caller, and the
 //! loop host writes that run's thread under `owners/<caller>`. Every
 //! subsequent read/write for the run must resolve the SAME owner — the
-//! loop host's thread ports ([`crate::loop_driver_host`]), the loop-exit
-//! completion-evidence read ([`crate::loop_exit_applier`]), and any
+//! loop host's thread ports, runner completion-evidence reads, and any
 //! composition-side durable thread append that is keyed by a
 //! [`LoopRunContext`](ironclaw_turns::run_profile::LoopRunContext).
 //!

@@ -2709,7 +2709,7 @@ fn skill_mounts() -> MountView {
         ironclaw_host_api::InvocationId::new(),
     )
     .expect("valid resource scope");
-    crate::local_dev_mounts::scoped_skill_management_mount_view(&scope).expect("valid skill mounts")
+    crate::runtime_mounts::scoped_skill_management_mount_view(&scope).expect("valid skill mounts")
 }
 
 fn workspace_mounts() -> MountView {

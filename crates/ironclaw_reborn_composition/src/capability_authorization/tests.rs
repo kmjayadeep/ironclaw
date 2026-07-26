@@ -1,3 +1,5 @@
+//! Capability authorization adapter tests.
+
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -443,7 +445,7 @@ async fn trace_commons_authorize_decision(
     // skips-gate vs requires-gate distinction is driven by the exemption
     // list, not by a non-gating default policy.
     assert!(
-        local_dev_effects_require_approval(None, policy.as_ref(), &effects),
+        effects_require_approval(None, policy.as_ref(), &effects),
         "test must use effects that require approval without the capability exemption"
     );
     let trust_decision = TrustDecision {
@@ -455,7 +457,7 @@ async fn trace_commons_authorize_decision(
         provenance: TrustProvenance::AdminConfig,
         evaluated_at: chrono::Utc::now(),
     };
-    let authorizer = local_dev_authorizer(
+    let authorizer = capability_authorizer(
         None,
         policy,
         Arc::new(crate::profile_approval_authorization::EmptyApprovalSettingsProvider),
@@ -551,7 +553,7 @@ async fn local_dev_authorizer_refreshes_approval_settings_on_next_invocation() {
         Arc::new(in_memory_backed_persistent_approval_policy_store()),
     ));
     let policy = Arc::new(builtin_capability_policy().expect("capability policy"));
-    let authorizer = local_dev_authorizer(None, policy, settings);
+    let authorizer = capability_authorizer(None, policy, settings);
 
     // Global auto-approve now defaults ON, so explicitly disable it first to
     // establish the gating baseline this test reads back across dispatches.
@@ -609,7 +611,7 @@ async fn local_dev_authorizer_observes_global_auto_approve_revocation_on_next_in
         Arc::new(in_memory_backed_persistent_approval_policy_store()),
     ));
     let policy = Arc::new(builtin_capability_policy().expect("capability policy"));
-    let authorizer = local_dev_authorizer(None, policy, settings);
+    let authorizer = capability_authorizer(None, policy, settings);
 
     let before = local_dev_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
     assert!(
@@ -648,7 +650,7 @@ async fn local_dev_authorizer_caches_global_auto_approve_within_one_invocation()
         Arc::new(in_memory_backed_persistent_approval_policy_store()),
     ));
     let policy = Arc::new(builtin_capability_policy().expect("capability policy"));
-    let authorizer = local_dev_authorizer(None, policy, settings);
+    let authorizer = capability_authorizer(None, policy, settings);
     let (descriptor, context, trust_decision) = local_dev_shell_authorization_inputs(&user_id);
 
     for _ in 0..2 {
@@ -725,7 +727,7 @@ async fn local_dev_authorizer_coalesces_concurrent_global_auto_approve_misses() 
         Arc::new(in_memory_backed_persistent_approval_policy_store()),
     ));
     let policy = Arc::new(builtin_capability_policy().expect("capability policy"));
-    let authorizer = local_dev_authorizer(None, policy, settings);
+    let authorizer = capability_authorizer(None, policy, settings);
     let (descriptor, context, trust_decision) = local_dev_shell_authorization_inputs(&user_id);
 
     let mut handles = Vec::new();
@@ -922,7 +924,7 @@ async fn local_dev_authorizer_fails_closed_when_override_lookup_errors() {
         Arc::new(in_memory_backed_persistent_approval_policy_store()),
     ));
     let policy = Arc::new(builtin_capability_policy().expect("capability policy"));
-    let authorizer = local_dev_authorizer(None, policy, settings);
+    let authorizer = capability_authorizer(None, policy, settings);
 
     let decision = local_dev_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
     assert!(
@@ -948,7 +950,7 @@ async fn per_tool_disabled_overrides_global_auto_approve_through_store() {
         Arc::new(in_memory_backed_persistent_approval_policy_store()),
     ));
     let policy = Arc::new(builtin_capability_policy().expect("capability policy"));
-    let authorizer = local_dev_authorizer(None, policy, settings);
+    let authorizer = capability_authorizer(None, policy, settings);
 
     let decision = local_dev_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
     assert!(
@@ -971,7 +973,7 @@ async fn per_tool_ask_each_time_overrides_global_auto_approve_through_store() {
         Arc::new(in_memory_backed_persistent_approval_policy_store()),
     ));
     let policy = Arc::new(builtin_capability_policy().expect("capability policy"));
-    let authorizer = local_dev_authorizer(None, policy, settings);
+    let authorizer = capability_authorizer(None, policy, settings);
 
     let decision = local_dev_shell_decision_with_authorizer(authorizer.as_ref(), &user_id).await;
     assert!(
@@ -995,7 +997,7 @@ async fn global_auto_approve_does_not_bypass_manifest_ineligible_tool_through_st
         Arc::new(in_memory_backed_persistent_approval_policy_store()),
     ));
     let policy = Arc::new(builtin_capability_policy().expect("capability policy"));
-    let authorizer = local_dev_authorizer(None, policy, settings);
+    let authorizer = capability_authorizer(None, policy, settings);
 
     // `Deny` manifest permission is not durable-approval eligible, so the
     // global switch must not bypass the gate (the #f14b04d34 manifest-gate
@@ -1022,7 +1024,7 @@ async fn global_auto_approve_does_not_bypass_manifest_ineligible_tool_through_st
 
 #[test]
 fn absent_runtime_policy_fails_closed_to_ask_always_without_minimal_bypass() {
-    // Regression for the §4.4 mode-as-type leak: `local_dev_approval_policy`
+    // Regression for the §4.4 mode-as-type leak: `resolved_approval_policy`
     // used to answer an absent runtime policy with
     // `unwrap_or(RuntimeProfile::LocalDev)` — inventing a *deployment profile*
     // to derive authority from, and defaulting the approval width to the
@@ -1033,12 +1035,12 @@ fn absent_runtime_policy_fails_closed_to_ask_always_without_minimal_bypass() {
     // `AskDestructive` default it did not require approval. Under the
     // fail-closed `AskAlways` default any non-empty effect set does.
     assert!(
-        local_dev_effects_require_approval(None, &policy, &[EffectKind::ReadFilesystem]),
+        effects_require_approval(None, &policy, &[EffectKind::ReadFilesystem]),
         "an absent runtime policy must fail closed to AskAlways"
     );
     // The empty effect set still needs no approval under AskAlways — the
     // fallback tightens the width, it does not gate effect-free capabilities.
-    assert!(!local_dev_effects_require_approval(None, &policy, &[]));
+    assert!(!effects_require_approval(None, &policy, &[]));
 }
 
 #[test]
@@ -1062,7 +1064,7 @@ fn resolved_yolo_policy_allows_minimal_bypass_but_org_ceiling_removes_it() {
         ironclaw_host_api::runtime_policy::ApprovalPolicy::Minimal
     );
     assert!(
-        !local_dev_effects_require_approval(Some(&yolo), &policy, &effects),
+        !effects_require_approval(Some(&yolo), &policy, &effects),
         "resolved local-yolo must bypass effect gates under Minimal"
     );
 
@@ -1077,7 +1079,7 @@ fn resolved_yolo_policy_allows_minimal_bypass_but_org_ceiling_removes_it() {
     })
     .expect("narrowed local yolo resolves");
     assert!(
-        local_dev_effects_require_approval(Some(&narrowed), &policy, &effects),
+        effects_require_approval(Some(&narrowed), &policy, &effects),
         "an org ceiling that removes yolo must restore effect gates"
     );
 }

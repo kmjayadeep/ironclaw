@@ -10,15 +10,11 @@ use std::{
 #[cfg(any(test, feature = "test-support"))]
 use crate::builtin_capability_policy::BuiltinCapabilityPolicy;
 use crate::builtin_capability_policy::builtin_capability_policy;
+use crate::capability_authorization::{StoreApprovalSettingsProvider, capability_authorizer};
 use crate::deployment::TrafficPolicy;
 use crate::input::{
     LibsqlConnectionConfig, OAuthDcrCallbackConfig, OAuthProviderBackendConfig, PostgresPoolSource,
     RebornLocalRuntimeIdentity, RebornRuntimeProcessBinding, RebornStorageInput,
-};
-use crate::local_dev_authorization::{StoreApprovalSettingsProvider, local_dev_authorizer};
-use crate::local_dev_mounts::{
-    ambient_workspace_mount_view, memory_mount_view, scoped_skill_context_mount_view,
-    skill_management_mount_view, workspace_mount_view,
 };
 use crate::operator_tool_catalog::ActiveRegistryOperatorToolCatalog;
 use crate::outbound::outbound_preferences_capability::{
@@ -30,6 +26,10 @@ use crate::outbound::{
 };
 use crate::root::default_system_prompt::seed_default_system_prompt;
 use crate::runtime_input::RebornRuntimeIdentity;
+use crate::runtime_mounts::{
+    ambient_workspace_mount_view, memory_mount_view, scoped_skill_context_mount_view,
+    skill_management_mount_view, workspace_mount_view,
+};
 use crate::storage_catalog::validate_reborn_runtime_storage;
 use crate::support::fs::RebornProjectService;
 use crate::{
@@ -1181,96 +1181,6 @@ pub(crate) enum CredentialRefreshWorkerReady {
     /// enumeration), or a caller-supplied `product_auth_ports` override/test
     /// path. The sweep never starts.
     Absent,
-}
-
-/// Production wiring for [`RebornRuntimeStores::start_channel_host_assembly`]:
-/// the run-world services and identity the per-extension channel workflows
-/// bind under, plus the prompt-enrichment ports for the run-delivery
-/// observer half.
-pub(crate) struct ChannelHostAssemblyWiring {
-    pub(crate) thread_service: Arc<dyn SessionThreadService>,
-    pub(crate) turn_coordinator: Arc<dyn ironclaw_turns::TurnCoordinator>,
-    pub(crate) approval_interaction: Option<Arc<dyn ironclaw_product::ApprovalInteractionService>>,
-    pub(crate) auth_interaction: Option<Arc<dyn ironclaw_product::AuthInteractionService>>,
-    pub(crate) identity: ironclaw_extension_host::channel_host::ChannelHostIdentity,
-    pub(crate) approval_context: Option<Arc<dyn ironclaw_product::ApprovalPromptContextSource>>,
-    pub(crate) blocked_auth_prompts: Option<Arc<dyn ironclaw_product::BlockedAuthPromptSource>>,
-    pub(crate) auth_flow_cancel: Option<Arc<dyn ironclaw_product::BlockedAuthFlowCanceller>>,
-    pub(crate) run_delivery_settings: ironclaw_product::RunDeliverySettings,
-}
-
-impl RebornRuntimeStores {
-    /// Start the generic channel host assembly (extension-runtime P6 S2):
-    /// the per-extension inbound-channel reconcile loop over deployment
-    /// bindings and the generic host's active compatibility snapshot. `None`
-    /// when this composition path has no
-    /// generic host, no ingress registry, or no `[channel.config]` service
-    /// — there is nothing to reconcile against. The run-delivery observer
-    /// half follows the delivery coordinator's availability: without a
-    /// coordinator, registrations are ingress-only.
-    pub(crate) fn start_channel_host_assembly(
-        &self,
-        wiring: ChannelHostAssemblyWiring,
-    ) -> Option<Arc<ironclaw_extension_host::channel_host::GenericChannelHostAssembly>> {
-        use ironclaw_extension_host::channel_host::GenericChannelHostDeps;
-
-        let ChannelHostAssemblyWiring {
-            thread_service,
-            turn_coordinator,
-            approval_interaction,
-            auth_interaction,
-            identity,
-            approval_context,
-            blocked_auth_prompts,
-            auth_flow_cancel,
-            run_delivery_settings,
-        } = wiring;
-        let generic_host = self.extension_management.generic_host()?;
-        let ingress = self.extension_ingress.as_ref()?;
-        let workflow_filesystem: Arc<dyn RootFilesystem> = self.extension_filesystem.clone();
-        let workflow_state = Arc::new(
-            ironclaw_extension_host::channel_host::FilesystemChannelWorkflowStateFactory::new(
-                workflow_filesystem,
-            ),
-        );
-        let outbound_state = Arc::clone(&self.outbound_state);
-        let delivered_gate_routes = Arc::clone(&self.delivered_gate_routes);
-        let outbound_preferences = Arc::clone(&self.outbound_preferences);
-        let delivery = self.delivery_coordinator.clone().map(|coordinator| {
-            ironclaw_extension_host::channel_host::ChannelHostDeliveryDeps {
-                coordinator,
-                outbound_store: Arc::clone(&outbound_state),
-                route_store: Arc::clone(&delivered_gate_routes),
-                communication_preferences: Arc::clone(&outbound_preferences),
-                approval_context,
-                blocked_auth_prompts,
-                auth_flow_cancel,
-                settings: run_delivery_settings,
-            }
-        });
-
-        let identity_lookup = Some(Arc::clone(&self.channel_identity_store)
-            as Arc<dyn ironclaw_host_api::RebornUserIdentityLookup>);
-        Some(
-            ironclaw_extension_host::channel_host::GenericChannelHostAssembly::start(
-                GenericChannelHostDeps {
-                    watch: generic_host.snapshot_watch(),
-                    deployment_channels: Arc::clone(&self.deployment_channels),
-                    registry: Arc::clone(&ingress.registry),
-                    channel_config: Arc::clone(&self.channel_config_service),
-                    workflow_state,
-                    thread_service,
-                    turn_coordinator,
-                    approval_interaction,
-                    auth_interaction,
-                    identity,
-                    identity_lookup,
-                    delivery,
-                    channel_pairing: self.channel_pairing.clone(),
-                },
-            ),
-        )
-    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -4599,7 +4509,7 @@ async fn build_backend_production(
     ));
     let runtime_policy = production_wiring.runtime_policy.clone();
     let runtime_policy_for_return = Some(runtime_policy.clone());
-    let authorizer = local_dev_authorizer(
+    let authorizer = capability_authorizer(
         Some(&runtime_policy),
         Arc::clone(&capability_policy),
         approval_settings_provider,
@@ -5756,4 +5666,4 @@ mod tests;
 #[cfg(test)]
 mod auth_tests;
 #[cfg(test)]
-mod local_dev_host_tests;
+mod capability_host_tests;

@@ -31,6 +31,7 @@ mod capability_surface_filter;
 mod checkpoint_state_store;
 mod compaction_task;
 mod context_window_cache;
+mod external_tool_capability;
 mod filesystem_skill_bundle_source;
 pub mod identity_context;
 mod input_port;
@@ -39,12 +40,16 @@ mod memory_context;
 mod model_capability_view;
 mod model_visible_scrub;
 mod prompt_context_budget;
+mod result_read;
 mod skill_bundle_context_source;
 mod skill_bundle_source;
 mod skill_context;
 mod subagent_prompt_port;
 mod subagent_spawn_port;
+mod surface_disclosure;
+mod synthetic_capability;
 mod system_inference;
+mod thread_scope;
 mod token_estimator;
 mod turn_event_publisher;
 pub mod user_profile_context;
@@ -83,6 +88,7 @@ pub use compaction_task::{
     default_host_managed_loop_compaction_port, host_managed_loop_compaction_port_with_prompt_id,
 };
 pub use context_window_cache::ThreadContextWindowCache;
+pub use external_tool_capability::wrap_external_tools;
 pub use filesystem_skill_bundle_source::{FilesystemSkillBundleRoot, FilesystemSkillBundleSource};
 pub use identity_context::{
     HostIdentityContextBuildError, HostIdentityContextCandidate, HostIdentityContextSource,
@@ -95,6 +101,9 @@ pub use input_port::HostQueueLoopInputPort;
 pub use input_queue::{HostInputBatch, HostInputEnvelope, HostInputQueue, HostInputQueueError};
 pub use ironclaw_turns::run_profile::PromptContextTokenBudget;
 pub use model_visible_scrub::scrub_model_visible_detail;
+pub use result_read::{RESULT_READ_CAPABILITY_ID, result_read_capability};
+#[cfg(feature = "test-support")]
+pub use result_read::{RESULT_READ_CAPABILITY_ID_FOR_TEST, wrap_result_read_capability_for_test};
 pub use skill_bundle_context_source::SkillBundleContextSource;
 pub use skill_bundle_source::{
     SkillBundleDescriptor, SkillBundleId, SkillBundleProvenance, SkillBundleSource,
@@ -119,7 +128,13 @@ pub use subagent_spawn_port::{
     SubagentSpawnDeps, SubagentSpawnGoalStore, SubagentSpawnLimits, SubagentThreadKind,
     SubagentThreadMetadata, build_spawn_subagent_parameters_schema,
 };
+pub use surface_disclosure::wrap_surface_disclosure;
+pub use synthetic_capability::{
+    SyntheticCapability, SyntheticCapabilityDescriptor, SyntheticCapabilityHandler,
+    SyntheticCapabilityInvocation, wrap_synthetic_capabilities,
+};
 pub use system_inference::{GuardedSystemInferencePort, ModelGatewayBackedSystemInferencePort};
+pub use thread_scope::ThreadScopeResolver;
 pub use user_profile_context::{EmptyUserProfileSource, HostUserProfileSource};
 pub const COMPACTION_SYSTEM_PROMPT: &str =
     include_str!("../prompts/compaction_summarizer_fresh.md");

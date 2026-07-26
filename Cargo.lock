@@ -3717,6 +3717,7 @@ dependencies = [
  "ironclaw_loop_host",
  "ironclaw_skills",
  "ironclaw_turns",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

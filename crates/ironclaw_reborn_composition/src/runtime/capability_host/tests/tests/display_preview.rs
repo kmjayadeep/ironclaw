@@ -1,3 +1,5 @@
+//! Durable capability display-preview tests.
+
 use std::sync::Arc;
 
 use ironclaw_host_api::{CapabilityDisplayOutputPreview, CapabilityId, InvocationId};
@@ -11,8 +13,8 @@ use ironclaw_threads::{
 };
 
 use super::{
-    CapabilityDisplayPreviewStore, StagedCapabilityIo, UserId, local_dev_thread_scope_for_run,
-    provider_tool_call, run_context,
+    CapabilityDisplayPreviewStore, StagedCapabilityIo, UserId, provider_tool_call, run_context,
+    thread_scope_for_run,
 };
 
 #[tokio::test]
@@ -21,8 +23,8 @@ async fn capability_io_writes_display_preview_to_durable_history() {
     let fallback_user_id = UserId::new("durable-display-preview-owner").expect("fallback user id");
     // The durable preview sink derives the thread scope from the run context;
     // register the thread under that same derived scope.
-    let thread_scope = local_dev_thread_scope_for_run(&run_context, &fallback_user_id)
-        .expect("run scope has an agent");
+    let thread_scope =
+        thread_scope_for_run(&run_context, &fallback_user_id).expect("run scope has an agent");
     let thread_service = Arc::new(InMemorySessionThreadService::default());
     thread_service
         .ensure_thread(EnsureThreadRequest {
@@ -108,8 +110,8 @@ async fn capability_io_writes_display_preview_to_durable_history() {
 async fn capability_io_writes_failure_display_preview_to_durable_history() {
     let run_context = run_context("durable-failure-preview").await;
     let fallback_user_id = UserId::new("durable-failure-preview-owner").expect("fallback user id");
-    let thread_scope = local_dev_thread_scope_for_run(&run_context, &fallback_user_id)
-        .expect("run scope has an agent");
+    let thread_scope =
+        thread_scope_for_run(&run_context, &fallback_user_id).expect("run scope has an agent");
     let thread_service = Arc::new(InMemorySessionThreadService::default());
     thread_service
         .ensure_thread(EnsureThreadRequest {

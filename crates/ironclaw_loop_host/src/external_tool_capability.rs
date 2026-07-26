@@ -1,7 +1,6 @@
 //! Loop capability decorator for client-supplied ("external") tools.
 //!
-//! Mirrors [`super::synthetic_capability::SyntheticCapabilityPort`] but,
-//! instead of executing a synthetic capability, it *parks* the run and returns
+//! Unlike an executing host capability, it *parks* the run and returns
 //! control to the API client. The caller tool definitions come from the
 //! per-run [`ExternalToolCatalog`] (registered by the OpenAI-compatible
 //! Responses surface), so the model is offered the client's tools alongside the
@@ -22,14 +21,14 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 
+use crate::{
+    CapabilityResultWrite, DurablePersistence, LoopCapabilityInputResolver,
+    LoopCapabilityResultWriter,
+};
 use async_trait::async_trait;
 use ironclaw_host_api::{
     CapabilityId, InvocationId, ProviderToolName, Resolution, ResolutionBatch, RuntimeKind,
     Suspension,
-};
-use ironclaw_loop_host::{
-    CapabilityResultWrite, DurablePersistence, LoopCapabilityInputResolver,
-    LoopCapabilityResultWriter,
 };
 use ironclaw_turns::run_profile::{
     AgentLoopHostError, AgentLoopHostErrorKind, CapabilityCallCandidate, CapabilityProgress,
@@ -46,7 +45,7 @@ use ironclaw_turns::{LoopGateRef, TurnRunId};
 /// no external-tool capability could ever apply — the decorator itself is cheap
 /// and fetches specs lazily at surface-resolution time, so it is always safe to
 /// install.
-pub(super) fn wrap_external_tools(
+pub fn wrap_external_tools(
     inner: Arc<dyn LoopCapabilityPort>,
     run_context: LoopRunContext,
     input_resolver: Arc<dyn LoopCapabilityInputResolver>,
@@ -506,8 +505,8 @@ fn catalog_error(error: ironclaw_turns::ExternalToolCatalogError) -> AgentLoopHo
 mod tests {
     use super::*;
 
+    use crate::CapabilityWriteResult;
     use ironclaw_host_api::{TenantId, ThreadId};
-    use ironclaw_loop_host::CapabilityWriteResult;
     use ironclaw_turns::{
         ExternalToolCatalogError, ExternalToolSpec, InMemoryExternalToolCatalog,
         RunProfileResolutionRequest, RunProfileResolver, TurnId, TurnScope,

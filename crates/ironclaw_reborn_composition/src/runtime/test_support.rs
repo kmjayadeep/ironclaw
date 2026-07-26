@@ -37,9 +37,9 @@ fn build_approval_interaction_service_with_parts(
                 parts.skill_mounts.clone(),
                 parts.memory_mounts.clone(),
                 parts.system_extensions_lifecycle_mounts.clone(),
-                local_dev::extension_surface::ExtensionCapabilitySurfaceSource::new(Some(
-                    Arc::clone(&parts.extension_management),
-                )),
+                ironclaw_extension_host::capability_surface::ExtensionCapabilitySurfaceSource::new(
+                    Some(Arc::clone(&parts.extension_management)),
+                ),
             )),
             approval_resolver,
             turn_coordinator,

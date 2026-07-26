@@ -1,3 +1,5 @@
+//! Capability-host adapters and assembly shared by every runtime profile.
+
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     sync::{Arc, Mutex as StdMutex},
@@ -15,12 +17,11 @@ use ironclaw_host_runtime::{
     VisibleCapabilityRequest as HostVisibleCapabilityRequest,
 };
 use ironclaw_loop_host::{
-    CapabilityResultWrite, CapabilityWriteResult, DurablePersistence, HostManagedModelGateway,
-    LoopCapabilityInputResolver, LoopCapabilityPortFactory, LoopCapabilityResultWriter,
-    loop_driver_execution_extension_id,
+    CapabilityResultWrite, CapabilityTrajectoryObserver, CapabilityWriteResult, DurablePersistence,
+    HostManagedModelGateway, LoopCapabilityInputResolver, LoopCapabilityPortFactory,
+    LoopCapabilityResultWriter, ThreadScopeResolver, loop_driver_execution_extension_id,
 };
 use ironclaw_product::{OutboundPreferencesProductService, ProjectService};
-use ironclaw_runner::thread_scope::ThreadScopeResolver;
 
 use ironclaw_threads::{
     AppendCapabilityDisplayPreviewRequest, CapabilityDisplayPreviewEnvelope,
@@ -39,48 +40,41 @@ use ironclaw_turns::{
 };
 
 use crate::builtin_capability_policy::BuiltinCapabilityPolicy;
+use crate::capability_authorization::{StoreApprovalSettingsProvider, effects_require_approval};
 use crate::factory::RebornRuntimeStores;
-use crate::local_dev_authorization::{
-    StoreApprovalSettingsProvider, local_dev_effects_require_approval,
-};
-use crate::local_dev_mounts::scoped_skill_management_mount_view;
 use crate::profile_approval_authorization::ApprovalSettingsProvider;
 use crate::runtime::ComposedSelectableSkillContextSource;
+use crate::runtime_mounts::scoped_skill_management_mount_view;
 use ironclaw_product::projection::{CapabilityDisplayPreviewResult, CapabilityDisplayPreviewStore};
 
-pub(crate) mod extension_surface;
-mod external_tool_capability;
 mod outbound_delivery;
-mod project_create;
 mod refreshing_capability_port;
-mod result_read;
 #[cfg(test)]
 mod shell_tests;
-mod skill_activation;
-mod surface_disclosure;
-mod synthetic_capability;
 
 #[cfg(test)]
 pub(crate) use crate::outbound::{
     OUTBOUND_DELIVERY_TARGET_SET_CAPABILITY_ID, OUTBOUND_DELIVERY_TARGETS_LIST_CAPABILITY_ID,
 };
-use extension_surface::{ExtensionCapabilitySurface, ExtensionCapabilitySurfaceSource};
+use ironclaw_extension_host::capability_surface::{
+    ExtensionCapabilitySurface, ExtensionCapabilitySurfaceSource,
+};
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) use project_create::PROJECT_CREATE_CAPABILITY_ID;
+pub(crate) use ironclaw_first_party_extension_ports::SKILL_ACTIVATE_CAPABILITY_ID;
+#[cfg(feature = "test-support")]
+pub(crate) use ironclaw_loop_host::RESULT_READ_CAPABILITY_ID_FOR_TEST;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use ironclaw_product::PROJECT_CREATE_CAPABILITY_ID;
 use refreshing_capability_port::{
     RefreshingCapabilityPortConfig, create_refreshing_capability_port,
 };
-#[cfg(feature = "test-support")]
-pub(crate) use result_read::RESULT_READ_CAPABILITY_ID_FOR_TEST;
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) use skill_activation::SKILL_ACTIVATE_CAPABILITY_ID;
 
+#[cfg(feature = "test-support")]
+pub(super) use ironclaw_loop_host::wrap_result_read_capability_for_test;
 /// Test-only bridge (result_read seam, issue #5838), co-located with the
 /// capability it wraps and re-exported here for the `runtime` caller.
 #[cfg(feature = "test-support")]
 pub(super) use refreshing_capability_port::create_refreshing_capability_port_for_test;
-#[cfg(feature = "test-support")]
-pub(super) use result_read::wrap_result_read_capability_for_test;
 
 pub(super) struct CapabilityPortWiring {
     pub(super) capability_factory: Arc<dyn LoopCapabilityPortFactory>,
@@ -120,7 +114,7 @@ pub(super) fn capability_wiring(
             auto_approve_settings,
             services.persistent_approval_policies.clone(),
         ));
-    let outbound_delivery_target_set_requires_approval = local_dev_effects_require_approval(
+    let outbound_delivery_target_set_requires_approval = effects_require_approval(
         services.runtime_policy.as_ref(),
         policy.as_ref(),
         &[EffectKind::ExternalWrite],
@@ -133,13 +127,16 @@ pub(super) fn capability_wiring(
     // entity that appears in the Projects list.
     let project_service: Arc<dyn ProjectService> = Arc::clone(&services.project_service);
     let display_previews = Arc::new(CapabilityDisplayPreviewStore::default());
+    let capability_observer = trajectory_observer
+        .clone()
+        .map(crate::observability::trajectory_observer::as_capability_observer);
     let capability_io = Arc::new(
         StagedCapabilityIo::new_with_durable_previews(
             Arc::clone(&display_previews),
             Arc::clone(&thread_service),
             fallback_user_id.clone(),
         )
-        .with_observer(trajectory_observer.clone()),
+        .with_observer(capability_observer),
     );
     let capability_input_resolver: Arc<dyn LoopCapabilityInputResolver> = capability_io.clone();
     let capability_result_writer: Arc<dyn LoopCapabilityResultWriter> = capability_io.clone();
@@ -236,7 +233,7 @@ impl LoopCapabilityPortFactory for RefreshingLoopCapabilityPortFactory {
         &self,
         run_context: &LoopRunContext,
     ) -> Result<Arc<dyn LoopCapabilityPort>, AgentLoopHostError> {
-        let skill_mounts = scoped_skill_management_mount_view(&local_dev_resource_scope_for_run(
+        let skill_mounts = scoped_skill_management_mount_view(&resource_scope_for_run(
             run_context,
             &self.fallback_user_id,
         ))
@@ -281,14 +278,14 @@ impl LoopCapabilityPortFactory for RefreshingLoopCapabilityPortFactory {
     }
 }
 
-const LOCAL_DEV_CAPABILITY_IO_MAX_STAGED_REFS: usize = 1024;
-const LOCAL_DEV_CAPABILITY_IO_MAX_STAGED_BYTES: usize = 4 * 1024 * 1024;
-const LOCAL_DEV_DURABLE_TOOL_RESULT_MAX_BYTES: usize = 4 * 1024 * 1024;
+const CAPABILITY_IO_MAX_STAGED_REFS: usize = 1024;
+const CAPABILITY_IO_MAX_STAGED_BYTES: usize = 4 * 1024 * 1024;
+const DURABLE_TOOL_RESULT_MAX_BYTES: usize = 4 * 1024 * 1024;
 /// First-look preview bound on the initial result-reference observation.
 /// Matches `result_read`'s max chunk size so the preview is exactly the
 /// first chunk `result_read` would itself return at `offset: 0` — a model
 /// that pages past `next_offset` sees no gap or overlap.
-const LOCAL_DEV_RESULT_PREVIEW_MAX_BYTES: usize = TOOL_RESULT_RECORD_READ_MAX_BYTES;
+const RESULT_PREVIEW_MAX_BYTES: usize = TOOL_RESULT_RECORD_READ_MAX_BYTES;
 
 struct StagedCapabilityIo {
     inputs: StdMutex<StagedValueStore>,
@@ -299,7 +296,7 @@ struct StagedCapabilityIo {
     /// trajectory observer (via `write_capability_result`); the resolved
     /// tool-call inputs are emitted upstream by `HostRuntimeLoopCapabilityPort`
     /// (the input resolver bypasses this IO for provider tool-call inputs).
-    observer: Option<Arc<dyn crate::RebornTrajectoryObserver>>,
+    observer: Option<Arc<dyn CapabilityTrajectoryObserver>>,
 }
 
 #[derive(Clone)]
@@ -308,7 +305,7 @@ struct DurableCapabilityDisplayPreviewSink {
     /// Fallback owner used only when a run scope carries no explicit owner.
     /// The durable thread scope is otherwise derived per-append from the
     /// run context so previews write under the SAME scope the run's thread
-    /// was registered under (see `local_dev_thread_scope_for_run`).
+    /// was registered under (see `thread_scope_for_run`).
     fallback_user_id: UserId,
 }
 
@@ -347,7 +344,7 @@ impl StagedCapabilityIo {
     }
 
     /// Attach a trajectory observer (no-op when `None`).
-    fn with_observer(mut self, observer: Option<Arc<dyn crate::RebornTrajectoryObserver>>) -> Self {
+    fn with_observer(mut self, observer: Option<Arc<dyn CapabilityTrajectoryObserver>>) -> Self {
         self.observer = observer;
         self
     }
@@ -411,7 +408,7 @@ impl StagedCapabilityIo {
                 tracing::debug!(
                     thread_id = %thread_id,
                     result_ref = result_ref.as_str(),
-                    "local-dev durable tool result update skipped: thread is unknown"
+                    "capability-host durable tool result update skipped: thread is unknown"
                 );
                 Ok(())
             }
@@ -427,7 +424,7 @@ impl StagedCapabilityIo {
         let Some(durable_previews) = &self.durable_previews else {
             return Ok(None);
         };
-        let scope = local_dev_thread_scope_for_run(run_context, &durable_previews.fallback_user_id)
+        let scope = thread_scope_for_run(run_context, &durable_previews.fallback_user_id)
             .ok_or_else(durable_result_scope_error)?;
         Ok(Some((durable_previews, scope)))
     }
@@ -439,9 +436,7 @@ impl StagedCapabilityIo {
         serialized_bytes: usize,
     ) {
         let Ok(mut results) = self.results.lock() else {
-            tracing::warn!(
-                "local-dev capability result staging lock failed; using durable result only"
-            );
+            tracing::warn!("capability-host result staging lock failed; using durable result only");
             return;
         };
         if let Err(error) = results.insert_with_oldest_eviction(
@@ -508,7 +503,7 @@ impl StagedCapabilityIo {
         // A composition-time constant scope can mismatch the run's actual
         // owner/project and surface as a spurious `UnknownThread` on append.
         let Some(thread_scope) =
-            local_dev_thread_scope_for_run(run_context, &durable_previews.fallback_user_id)
+            thread_scope_for_run(run_context, &durable_previews.fallback_user_id)
         else {
             tracing::debug!(
                 invocation_id = %invocation_id,
@@ -586,7 +581,9 @@ pub(super) fn staged_capability_io_with_observer_for_test(
             thread_service,
             fallback_user_id,
         )
-        .with_observer(observer),
+        .with_observer(
+            observer.map(crate::observability::trajectory_observer::as_capability_observer),
+        ),
     );
     let input_resolver: Arc<dyn LoopCapabilityInputResolver> = io.clone();
     let result_writer: Arc<dyn LoopCapabilityResultWriter> = io;
@@ -618,12 +615,12 @@ impl StagedValueStore {
         value: serde_json::Value,
     ) -> Result<(), AgentLoopHostError> {
         let bytes = staged_value_bytes(&value)?;
-        if self.values.len() >= LOCAL_DEV_CAPABILITY_IO_MAX_STAGED_REFS
-            || self.total_bytes.saturating_add(bytes) > LOCAL_DEV_CAPABILITY_IO_MAX_STAGED_BYTES
+        if self.values.len() >= CAPABILITY_IO_MAX_STAGED_REFS
+            || self.total_bytes.saturating_add(bytes) > CAPABILITY_IO_MAX_STAGED_BYTES
         {
             return Err(AgentLoopHostError::new(
                 AgentLoopHostErrorKind::BudgetExceeded,
-                "local-dev capability staging is full",
+                "capability-host staging is full",
             ));
         }
         self.insert_measured(reference, value, bytes);
@@ -636,14 +633,14 @@ impl StagedValueStore {
         value: serde_json::Value,
         bytes: usize,
     ) -> Result<(), AgentLoopHostError> {
-        if bytes > LOCAL_DEV_CAPABILITY_IO_MAX_STAGED_BYTES {
+        if bytes > CAPABILITY_IO_MAX_STAGED_BYTES {
             return Err(AgentLoopHostError::new(
                 AgentLoopHostErrorKind::BudgetExceeded,
-                "local-dev capability result exceeds staging budget",
+                "capability-host result exceeds staging budget",
             ));
         }
-        while self.values.len() >= LOCAL_DEV_CAPABILITY_IO_MAX_STAGED_REFS
-            || self.total_bytes.saturating_add(bytes) > LOCAL_DEV_CAPABILITY_IO_MAX_STAGED_BYTES
+        while self.values.len() >= CAPABILITY_IO_MAX_STAGED_REFS
+            || self.total_bytes.saturating_add(bytes) > CAPABILITY_IO_MAX_STAGED_BYTES
         {
             self.evict_oldest();
         }
@@ -683,7 +680,7 @@ fn staged_value_bytes(value: &serde_json::Value) -> Result<usize, AgentLoopHostE
         .map(|bytes| bytes.len())
         .map_err(|error| {
             ironclaw_loop_host::raw_agent_loop_host_error(
-                "local_dev_capability_io",
+                "capability_host_io",
                 "measure_payload",
                 AgentLoopHostErrorKind::InvalidInvocation,
                 "capability payload could not be measured",
@@ -699,7 +696,7 @@ impl LoopCapabilityInputResolver for StagedCapabilityIo {
         run_context: &LoopRunContext,
         input_ref: &CapabilityInputRef,
     ) -> Result<serde_json::Value, AgentLoopHostError> {
-        ensure_local_dev_ref_scope("input", input_ref.as_str(), run_context)?;
+        ensure_ref_scope("input", input_ref.as_str(), run_context)?;
         let inputs = self.inputs.lock().map_err(|_| capability_io_error())?;
         inputs.get(input_ref.as_str()).cloned().ok_or_else(|| {
             AgentLoopHostError::new(
@@ -816,7 +813,7 @@ impl LoopCapabilityResultWriter for StagedCapabilityIo {
         if let Some(observer) = &self.observer {
             // Best-effort, inline on the capability hot path: a panicking
             // observer must never unwind capability result staging. (Blocking
-            // is the observer's own contract — see `RebornTrajectoryObserver`.)
+            // is the observer's own contract — see `CapabilityTrajectoryObserver`.)
             let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 observer.on_capability_result(input_ref.as_str(), capability_id.as_str(), &output);
             }));
@@ -841,7 +838,7 @@ impl LoopCapabilityResultWriter for StagedCapabilityIo {
         }
         let mut write_result =
             CapabilityWriteResult::from_output(result_ref, output_bytes, &output);
-        write_result.model_observation = Some(local_dev_result_reference_observation(
+        write_result.model_observation = Some(result_reference_observation(
             &write_result.result_ref,
             write_result.byte_len,
             preview,
@@ -896,7 +893,7 @@ impl LoopCapabilityResultWriter for StagedCapabilityIo {
         result_ref: &LoopResultRef,
         output: serde_json::Value,
     ) -> Result<u64, AgentLoopHostError> {
-        ensure_local_dev_ref_scope("result", result_ref.as_str(), run_context)?;
+        ensure_ref_scope("result", result_ref.as_str(), run_context)?;
         let content = serialized_result_output(&output)?;
         let bytes = content.len();
         self.update_persisted_tool_result(run_context, result_ref, content)
@@ -910,7 +907,7 @@ impl LoopCapabilityResultWriter for StagedCapabilityIo {
         run_context: &LoopRunContext,
         result_ref: &LoopResultRef,
     ) -> Result<(), AgentLoopHostError> {
-        ensure_local_dev_ref_scope("result", result_ref.as_str(), run_context)?;
+        ensure_ref_scope("result", result_ref.as_str(), run_context)?;
         self.results
             .lock()
             .map_err(|_| capability_io_error())?
@@ -922,14 +919,14 @@ impl LoopCapabilityResultWriter for StagedCapabilityIo {
 fn serialized_result_output(output: &serde_json::Value) -> Result<Vec<u8>, AgentLoopHostError> {
     let content = serde_json::to_vec(output).map_err(|error| {
         ironclaw_loop_host::raw_agent_loop_host_error(
-            "local_dev_capability_io",
+            "capability_host_io",
             "serialize_result",
             AgentLoopHostErrorKind::InvalidInvocation,
             "capability result could not be serialized",
             error,
         )
     })?;
-    if content.len() > LOCAL_DEV_DURABLE_TOOL_RESULT_MAX_BYTES {
+    if content.len() > DURABLE_TOOL_RESULT_MAX_BYTES {
         return Err(AgentLoopHostError::new(
             AgentLoopHostErrorKind::BudgetExceeded,
             "capability result exceeds the durable storage limit",
@@ -939,7 +936,7 @@ fn serialized_result_output(output: &serde_json::Value) -> Result<Vec<u8>, Agent
 }
 
 /// A bounded, UTF-8-safe first-look slice of a serialized result payload,
-/// truncated at `LOCAL_DEV_RESULT_PREVIEW_MAX_BYTES`.
+/// truncated at `RESULT_PREVIEW_MAX_BYTES`.
 struct FirstLookResultPreview {
     text: String,
     /// `None` when `text` already covers the entire payload.
@@ -953,13 +950,13 @@ fn first_look_result_preview(serialized: &[u8]) -> Option<FirstLookResultPreview
     let Ok(full_text) = std::str::from_utf8(serialized) else {
         return None;
     };
-    if full_text.len() <= LOCAL_DEV_RESULT_PREVIEW_MAX_BYTES {
+    if full_text.len() <= RESULT_PREVIEW_MAX_BYTES {
         return Some(FirstLookResultPreview {
             text: full_text.to_string(),
             next_offset: None,
         });
     }
-    let end = floor_char_boundary(full_text, LOCAL_DEV_RESULT_PREVIEW_MAX_BYTES);
+    let end = floor_char_boundary(full_text, RESULT_PREVIEW_MAX_BYTES);
     Some(FirstLookResultPreview {
         text: full_text[..end].to_string(),
         next_offset: Some(end as u64),
@@ -991,7 +988,7 @@ fn truncated_preview_summary(next_offset: u64, item_count: Option<u64>) -> Strin
     }
 }
 
-fn local_dev_result_reference_observation(
+fn result_reference_observation(
     result_ref: &LoopResultRef,
     byte_len: u64,
     preview: Option<FirstLookResultPreview>,
@@ -1063,7 +1060,7 @@ fn durable_result_scope_error() -> AgentLoopHostError {
     )
 }
 
-pub(super) fn local_dev_resource_scope_for_run(
+pub(super) fn resource_scope_for_run(
     run_context: &LoopRunContext,
     fallback_user_id: &UserId,
 ) -> ResourceScope {
@@ -1079,12 +1076,12 @@ pub(super) fn local_dev_resource_scope_for_run(
 
 /// Build the per-run [`ThreadScope`] for durable display-preview appends.
 ///
-/// Seeds the LocalDev fallback owner into the run's tenant/agent/project scope,
+/// Seeds the configured fallback owner into the run's tenant/agent/project scope,
 /// then delegates owner selection to the canonical resolver. This keeps durable
 /// operations on the same per-turn scope as the production loop host. Returns
 /// `None` when the run scope carries no agent (durable previews are
 /// agent-scoped), in which case the caller skips the durable append.
-fn local_dev_thread_scope_for_run(
+fn thread_scope_for_run(
     run_context: &LoopRunContext,
     fallback_user_id: &UserId,
 ) -> Option<ThreadScope> {
@@ -1200,7 +1197,7 @@ fn visible_capability_request(
     .with_provider_trust(provider_trust))
 }
 
-fn ensure_local_dev_ref_scope(
+fn ensure_ref_scope(
     prefix: &str,
     reference: &str,
     run_context: &LoopRunContext,
@@ -1234,15 +1231,15 @@ fn host_api_agent_loop_error(
 ) -> AgentLoopHostError {
     let safe_summary = error.to_string();
     ironclaw_loop_host::raw_agent_loop_host_error(
-        "local_dev_host_api",
-        "validate_local_dev_runtime_input",
+        "capability_host_api",
+        "validate_runtime_input",
         AgentLoopHostErrorKind::InvalidInvocation,
         safe_summary,
         format!("{error:?}"),
     )
 }
 
-/// Shared test assertion for the `local_dev` per-capability submodules: the
+/// Shared test assertion for the `capability_host` per-capability submodules: the
 /// §5.3 collapse maps a recoverable service failure onto `Resolution::Done`
 /// carrying a `RecoverableFailure` verdict (the collapse of the old
 /// `CapabilityOutcome::Failed`). Consumed by `outbound_delivery`,

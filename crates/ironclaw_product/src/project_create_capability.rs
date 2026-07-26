@@ -1,22 +1,20 @@
+//! Loop-facing project creation capability.
+
 use std::sync::Arc;
 
+use crate::{ProjectCaller, ProjectService, ProjectServiceError, RebornCreateProjectRequest};
 use async_trait::async_trait;
 use ironclaw_host_api::{InvocationId, Resolution, UserId};
-use ironclaw_loop_host::{CapabilityResultWrite, DurablePersistence};
-use ironclaw_product::{
-    ProjectCaller, ProjectService, ProjectServiceError, RebornCreateProjectRequest,
+use ironclaw_loop_host::{
+    CapabilityResultWrite, DurablePersistence, SyntheticCapability, SyntheticCapabilityDescriptor,
+    SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
 };
 use ironclaw_turns::run_profile::{
     AgentLoopHostError, AgentLoopHostErrorKind, CapabilityFailureKind, CapabilityProgress,
     ConcurrencyHint, LoopRunContext, resolution,
 };
 
-use crate::runtime::local_dev::synthetic_capability::{
-    SyntheticCapability, SyntheticCapabilityDescriptor, SyntheticCapabilityHandler,
-    SyntheticCapabilityInvocation,
-};
-
-pub(crate) const PROJECT_CREATE_CAPABILITY_ID: &str = "builtin.project_create";
+pub const PROJECT_CREATE_CAPABILITY_ID: &str = "builtin.project_create";
 const PROJECT_CREATE_PROVIDER_TOOL_NAME: &str = "builtin__project_create";
 const PROJECT_CREATE_DESCRIPTION: &str = "Create a new first-class project owned by the current \
     user. Use this when the user asks to create, start, or set up a new project. The new project \
@@ -25,7 +23,7 @@ const PROJECT_CREATE_DESCRIPTION: &str = "Create a new first-class project owned
 /// the model self-limits before the service rejects an oversized name.
 const MAX_PROJECT_NAME_BYTES: usize = 200;
 
-pub(super) fn project_create_capability(
+pub fn project_create_capability(
     project_service: Arc<dyn ProjectService>,
     fallback_user_id: UserId,
 ) -> Result<SyntheticCapability, AgentLoopHostError> {
@@ -225,8 +223,8 @@ fn project_service_outcome(error: ProjectServiceError) -> Result<Resolution, Age
 }
 
 /// Resolve the user the run acts on behalf of: the explicit thread owner, else
-/// the run actor, else the local-dev fallback. Mirrors the same resolution used
-/// by the outbound-delivery capabilities so all local-dev synthetic
+/// the run actor, else the configured fallback. Mirrors the same resolution used
+/// by the outbound-delivery capabilities so all capability-host synthetic
 /// capabilities scope to one identity.
 fn effective_user_id(run_context: &LoopRunContext, fallback_user_id: &UserId) -> UserId {
     run_context
@@ -245,7 +243,18 @@ fn effective_user_id(run_context: &LoopRunContext, fallback_user_id: &UserId) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::local_dev::assert_recoverable_failure;
+    fn assert_recoverable_failure(
+        resolution: &Resolution,
+        expected_kind: ironclaw_host_api::FailureKind,
+    ) {
+        match resolution {
+            Resolution::Done(outcome) => assert_eq!(
+                outcome.verdict,
+                ironclaw_host_api::ToolVerdict::recoverable_failure(expected_kind)
+            ),
+            other => panic!("expected recoverable failure, got {other:?}"),
+        }
+    }
 
     #[test]
     fn parse_project_create_input_rejects_missing_name() {

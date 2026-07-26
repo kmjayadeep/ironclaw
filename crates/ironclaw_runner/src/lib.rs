@@ -43,7 +43,6 @@ pub mod production_readiness;
 pub mod runtime;
 pub mod subagent;
 pub mod text_loop_driver;
-pub mod thread_scope;
 mod tool_disclosure;
 mod tool_disclosure_port;
 pub mod turn_run_executor;

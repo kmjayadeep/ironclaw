@@ -25,17 +25,17 @@ mod approval_test_support;
 mod automation;
 mod blocked_auth_resume;
 mod builtin_capability_policy;
+mod capability_authorization;
 #[cfg(test)]
 #[path = "extension_lifecycle_capabilities_auth_tests.rs"]
 mod composition_extension_lifecycle_auth_tests;
 pub mod deployment;
 mod error;
+mod extension_host_assembly;
 mod factory;
 mod google_oauth_secret_store;
 mod input;
 mod llm_admin;
-mod local_dev_authorization;
-mod local_dev_mounts;
 mod memory_binding;
 mod memory_provider_factory;
 mod observability;
@@ -49,6 +49,7 @@ mod readiness;
 mod root;
 mod runtime;
 mod runtime_input;
+mod runtime_mounts;
 mod runtime_profile_approval_policy;
 mod storage_catalog;
 mod support;

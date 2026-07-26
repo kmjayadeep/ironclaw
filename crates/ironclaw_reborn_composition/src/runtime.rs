@@ -545,11 +545,11 @@ mod auth_interaction;
 #[cfg(test)]
 #[path = "runtime/tests/auth_interaction.rs"]
 mod auth_interaction_tests;
+pub(crate) mod capability_host;
 #[cfg(test)]
 #[path = "runtime/tests/default_system_prompt.rs"]
 mod default_system_prompt_tests;
 mod latency;
-pub(crate) mod local_dev;
 #[cfg(test)]
 #[path = "runtime/tests/outbound_delivery.rs"]
 mod outbound_delivery_tests;
@@ -561,11 +561,11 @@ mod skills;
 mod test_support;
 
 #[cfg(feature = "test-support")]
-pub(crate) use local_dev::PROJECT_CREATE_CAPABILITY_ID;
+pub(crate) use capability_host::PROJECT_CREATE_CAPABILITY_ID;
 #[cfg(feature = "test-support")]
-pub(crate) use local_dev::RESULT_READ_CAPABILITY_ID_FOR_TEST;
+pub(crate) use capability_host::RESULT_READ_CAPABILITY_ID_FOR_TEST;
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) use local_dev::SKILL_ACTIVATE_CAPABILITY_ID;
+pub(crate) use capability_host::SKILL_ACTIVATE_CAPABILITY_ID;
 
 pub use skills::{
     RebornSkillActivation, RebornSkillActivationMode, RebornSkillAsset, RebornSkillBundle,
@@ -967,9 +967,9 @@ pub(crate) fn build_approval_interaction_service_with_turn_run_source(
                 skill_mounts.clone(),
                 memory_mounts.clone(),
                 system_extensions_lifecycle_mounts.clone(),
-                local_dev::extension_surface::ExtensionCapabilitySurfaceSource::new(Some(
-                    Arc::clone(&runtime.extension_management),
-                )),
+                ironclaw_extension_host::capability_surface::ExtensionCapabilitySurfaceSource::new(
+                    Some(Arc::clone(&runtime.extension_management)),
+                ),
             )),
             approval_resolver,
             turn_coordinator,
@@ -1219,7 +1219,7 @@ pub(crate) fn build_approval_gate_evidence_for_test(
 
 /// Test-support forwarder for the `result_read` synthetic-capability wrap
 /// (durable tool-result projection seam, issue #5838). Bridges the private
-/// `local_dev` module to `test_support.rs`; mirrors the `project_create`
+/// `capability_host` module to `test_support.rs`; mirrors the `project_create`
 /// forwarder above.
 #[cfg(feature = "test-support")]
 pub(crate) fn wrap_result_read_capability_for_test(
@@ -1233,7 +1233,7 @@ pub(crate) fn wrap_result_read_capability_for_test(
     std::sync::Arc<dyn ironclaw_turns::run_profile::LoopCapabilityPort>,
     ironclaw_turns::run_profile::AgentLoopHostError,
 > {
-    local_dev::wrap_result_read_capability_for_test(
+    capability_host::wrap_result_read_capability_for_test(
         inner,
         thread_service,
         fallback_user_id,
@@ -1246,7 +1246,7 @@ pub(crate) fn wrap_result_read_capability_for_test(
 /// Test-support forwarder (harness-port-seam P1 seam) for
 /// `create_refreshing_capability_port`
 /// (`refreshing_capability_port.rs:75`), production's sole capability-port
-/// factory. Bridges the private `local_dev` module to `test_support`; mirrors
+/// factory. Bridges the private `capability_host` module to `test_support`; mirrors
 /// the `outbound_delivery` forwarder above. For tests only -- gated behind
 /// `test-support`, ships zero bytes in production builds.
 #[cfg(feature = "test-support")]
@@ -1256,13 +1256,13 @@ pub(crate) async fn create_refreshing_capability_port_for_test(
     std::sync::Arc<dyn ironclaw_turns::run_profile::LoopCapabilityPort>,
     ironclaw_turns::run_profile::AgentLoopHostError,
 > {
-    local_dev::create_refreshing_capability_port_for_test(parts).await
+    capability_host::create_refreshing_capability_port_for_test(parts).await
 }
 
 /// Test-support forwarder exposing production's real `StagedCapabilityIo`
-/// wiring (`local_dev.rs`'s `staged_capability_io_for_test`, which mirrors
+/// wiring (`capability_host.rs`'s `staged_capability_io_for_test`, which mirrors
 /// `capability_wiring`'s `new_with_durable_previews` call). Bridges the
-/// private `local_dev` module to `test_support`; mirrors the
+/// private `capability_host` module to `test_support`; mirrors the
 /// `create_refreshing_capability_port_for_test` forwarder above.
 /// For tests only -- gated behind `test-support`, ships zero bytes in
 /// production builds.
@@ -1274,7 +1274,7 @@ pub(crate) fn staged_capability_io_for_test(
     std::sync::Arc<dyn ironclaw_loop_host::LoopCapabilityInputResolver>,
     std::sync::Arc<dyn ironclaw_loop_host::LoopCapabilityResultWriter>,
 ) {
-    local_dev::staged_capability_io_for_test(thread_service, fallback_user_id)
+    capability_host::staged_capability_io_for_test(thread_service, fallback_user_id)
 }
 
 #[cfg(feature = "test-support")]
@@ -1286,7 +1286,7 @@ pub(crate) fn staged_capability_io_with_observer_for_test(
     std::sync::Arc<dyn ironclaw_loop_host::LoopCapabilityInputResolver>,
     std::sync::Arc<dyn ironclaw_loop_host::LoopCapabilityResultWriter>,
 ) {
-    local_dev::staged_capability_io_with_observer_for_test(
+    capability_host::staged_capability_io_with_observer_for_test(
         thread_service,
         fallback_user_id,
         observer,
@@ -1653,55 +1653,39 @@ impl RebornRuntime {
         &self,
         wiring: crate::ChannelHostAssemblyTestWiring,
     ) -> Option<Arc<ironclaw_extension_host::channel_host::GenericChannelHostAssembly>> {
-        use ironclaw_extension_host::channel_host::GenericChannelHostDeps;
-
         let crate::ChannelHostAssemblyTestWiring {
             thread_service,
             turn_coordinator,
             identity,
             run_delivery_settings,
         } = wiring;
-        let generic_host = self.extension_management.generic_host()?;
-        let ingress = self.extension_ingress.as_ref()?;
-        let workflow_filesystem: Arc<dyn RootFilesystem> = self.extension_filesystem.clone();
-        let workflow_state = Arc::new(
-            ironclaw_extension_host::channel_host::FilesystemChannelWorkflowStateFactory::new(
-                workflow_filesystem,
-            ),
-        );
-        let delivery = self.delivery_coordinator.clone().map(|coordinator| {
-            ironclaw_extension_host::channel_host::ChannelHostDeliveryDeps {
-                coordinator,
-                outbound_store: Arc::clone(&self.outbound_state),
-                route_store: Arc::clone(&self.delivered_gate_routes),
-                communication_preferences: Arc::clone(&self.outbound_preferences),
-                approval_context: None,
-                blocked_auth_prompts: None,
-                auth_flow_cancel: None,
-                settings: run_delivery_settings,
-            }
-        });
-        let identity_lookup = Some(Arc::clone(&self.channel_identity_store)
-            as Arc<dyn ironclaw_host_api::RebornUserIdentityLookup>);
-        Some(
-            ironclaw_extension_host::channel_host::GenericChannelHostAssembly::start(
-                GenericChannelHostDeps {
-                    watch: generic_host.snapshot_watch(),
-                    deployment_channels: Arc::clone(&self.deployment_channels),
-                    registry: Arc::clone(&ingress.registry),
-                    channel_config: Arc::clone(&self.channel_config_service),
-                    workflow_state,
-                    thread_service,
-                    turn_coordinator,
-                    approval_interaction: None,
-                    auth_interaction: None,
-                    identity,
-                    identity_lookup,
-                    delivery,
-                    channel_pairing: self.channel_pairing.clone(),
-                },
-            ),
+        crate::extension_host_assembly::ExtensionHostAssemblyBuilder::from_source(
+            crate::extension_host_assembly::ChannelHostAssemblySource {
+                generic_host: self.extension_management.generic_host()?,
+                ingress_registry: Arc::clone(&self.extension_ingress.as_ref()?.registry),
+                workflow_filesystem: self.extension_filesystem.clone(),
+                delivery_coordinator: self.delivery_coordinator.clone(),
+                outbound_state: Arc::clone(&self.outbound_state),
+                delivered_gate_routes: Arc::clone(&self.delivered_gate_routes),
+                outbound_preferences: Arc::clone(&self.outbound_preferences),
+                identity_lookup: Arc::clone(&self.channel_identity_store)
+                    as Arc<dyn ironclaw_host_api::RebornUserIdentityLookup>,
+                deployment_channels: Arc::clone(&self.deployment_channels),
+                channel_config: Arc::clone(&self.channel_config_service),
+                channel_pairing: self.channel_pairing.clone(),
+            },
         )
+        .start_channel_host(crate::extension_host_assembly::ChannelHostAssemblyWiring {
+            thread_service,
+            turn_coordinator,
+            approval_interaction: None,
+            auth_interaction: None,
+            identity,
+            approval_context: None,
+            blocked_auth_prompts: None,
+            auth_flow_cancel: None,
+            run_delivery_settings,
+        })
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -2426,7 +2410,7 @@ impl RebornRuntime {
         let extension_filesystem = &self.extension_filesystem;
         Some(Arc::new(ironclaw_filesystem::ScopedFilesystem::new(
             Arc::clone(extension_filesystem),
-            crate::local_dev_mounts::scoped_browse_mount_view,
+            crate::runtime_mounts::scoped_browse_mount_view,
         )))
     }
 
@@ -3639,7 +3623,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     ) {
         (Some(source), _) => (Some(source), None, None),
         (None, Some(runtime)) => {
-            let local_dev_skills = local_dev_filesystem_skill_context_source(
+            let filesystem_skills = filesystem_skill_context_source(
                 runtime,
                 &validated_identity.tenant_id,
                 regex_skill_activation_enabled,
@@ -3653,7 +3637,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
                 thread_id: None,
                 invocation_id: InvocationId::new(),
             };
-            local_dev_skills
+            filesystem_skills
                 .bundle_source
                 .warm_system_root_descriptor_cache(&skill_warm_scope)
                 .await
@@ -3661,9 +3645,9 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
                     reason: format!("first-party skills warmup: {error}"),
                 })?;
             (
-                Some(local_dev_skills.source),
-                Some(local_dev_skills.activation_source),
-                Some(local_dev_skills.execution_adapter),
+                Some(filesystem_skills.source),
+                Some(filesystem_skills.activation_source),
+                Some(filesystem_skills.execution_adapter),
             )
         }
         (None, None) => (None, None, None),
@@ -3895,12 +3879,12 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         display_previews,
     ) = if local_runtime.is_some() {
         let builtin_capability_policy = Arc::new(builtin_capability_policy().map_err(|error| {
-            tracing::error!(%error, "local-dev capability policy is invalid");
+            tracing::error!(%error, "capability policy is invalid");
             RebornRuntimeError::InvalidArgument {
-                reason: format!("local-dev capability policy is invalid: {error}"),
+                reason: format!("capability policy is invalid: {error}"),
             }
         })?);
-        let local_dev_capabilities = local_dev::capability_wiring(
+        let capability_host = capability_host::capability_wiring(
             &services,
             Arc::clone(&thread_service) as Arc<dyn SessionThreadService>,
             actor_user_id.clone(),
@@ -3913,25 +3897,25 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         )
         .ok_or(RebornRuntimeError::HostRuntimeUnavailable)?;
         (
-            local_dev_capabilities.capability_factory,
-            local_dev_capabilities.capability_input_resolver,
-            local_dev_capabilities.capability_result_writer,
+            capability_host.capability_factory,
+            capability_host.capability_input_resolver,
+            capability_host.capability_result_writer,
             Arc::new(AllowAllCapabilitySurfaceResolver)
                 as Arc<dyn CapabilitySurfaceProfileResolver>,
-            local_dev_capabilities.model_gateway,
+            capability_host.model_gateway,
             Some(builtin_capability_policy),
-            Some(local_dev_capabilities.display_previews),
+            Some(capability_host.display_previews),
         )
     } else {
-        // The trajectory observer is wired only through the local-dev capability
-        // path; non-local-dev runtimes have no capability/result hook to forward
+        // The trajectory observer is wired only through the capability-host capability
+        // path; runtimes without a capability host have no capability/result hook to forward
         // to. Accepting one here would silently produce an empty trajectory, so
-        // fail fast — the seam is local-dev/bench-only (see
+        // fail fast — the seam is capability-host/bench-only (see
         // `RebornRuntimeInput::with_trajectory_observer`).
         if trajectory_observer.is_some() {
             return Err(RebornRuntimeError::InvalidArgument {
                 reason: "a trajectory observer was supplied, but it is only supported on \
-                         local-dev runtimes; this profile has no local runtime to observe"
+                         runtimes with a capability host; this profile has no local runtime to observe"
                     .to_string(),
             });
         }
@@ -4146,7 +4130,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         // §5.2.9 render-from-record: a `GateRecordStore` over the SAME
         // shared `extension_filesystem` + per-user mount view the local-dev
         // capability port persists `GateRecord::Auth` into (see
-        // `runtime/local_dev.rs`'s `wire_local_dev_capability_port`, which builds
+        // `runtime/capability_host.rs`'s capability wiring, which builds
         // its store the same way and passes it via `with_gate_record_store`).
         // Both are stateless views over one durable Arc, so the turn executor
         // reads back exactly the record the capability port saved under the
@@ -4370,89 +4354,27 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         projection_services
     };
 
-    // Generic channel host assembly (extension-runtime P6 S2): reconcile
-    // per-extension inbound-channel registrations from the generic host's
-    // active snapshot for EVERY composed runtime with a generic host. The
-    // run-delivery observer half follows the delivery coordinator's
-    // availability (no coordinator -> ingress-only registrations).
-    let channel_host_assembly = {
-        let approval_context = Some(Arc::new(
-            ironclaw_extension_host::run_delivery_ports::ProjectionApprovalPromptContextSource::new(
-                Arc::clone(&services.approval_requests)
-                    as Arc<dyn ironclaw_run_state::ApprovalRequestStorePort>,
-            ),
-        )
-            as Arc<dyn ironclaw_product::ApprovalPromptContextSource>);
-        let blocked_auth_prompts = Some(Arc::new(
-            ironclaw_extension_host::run_delivery_ports::ProductAuthBlockedAuthPromptSource::new(
-                auth_challenges.clone(),
-            ),
-        )
-            as Arc<dyn ironclaw_product::BlockedAuthPromptSource>);
-        let auth_flow_cancel = blocked_auth_flow_canceller(&services.product_auth);
-        services.start_channel_host_assembly(crate::factory::ChannelHostAssemblyWiring {
-            thread_service: Arc::clone(&thread_service),
-            turn_coordinator: Arc::clone(&planned_turn_coordinator),
-            approval_interaction: Some(Arc::clone(&approval_interaction_service)),
-            auth_interaction: Some(Arc::clone(&auth_interaction_service)),
-            identity: ironclaw_extension_host::channel_host::ChannelHostIdentity {
-                tenant_id: thread_scope.tenant_id.clone(),
-                agent_id: thread_scope.agent_id.clone(),
-                project_id: thread_scope.project_id.clone(),
-                operator_user_id: actor_user_id.clone(),
-            },
-            approval_context,
-            blocked_auth_prompts,
-            auth_flow_cancel,
-            run_delivery_settings: ironclaw_product::triggered_run_delivery_settings(),
-        })
-    };
-
-    // The binary-assembled channel-extension extras (extension-runtime
-    // DEL-7): gate-reply classifiers + preference-target codecs registered
-    // on the assembly for every supplied channel binding.
-    if let Some(assembly) = channel_host_assembly.as_ref() {
-        for binding in &services.channel_extension_bindings {
-            assembly
-                .register_extras(
-                    &binding.extension_id,
-                    ironclaw_extension_host::channel_host::ChannelExtras {
-                        classifier: None,
-                        preference_target_codec: binding.preference_target_codec.clone(),
-                        subject_route_resolver: None,
-                        storage_roots: None,
-                    },
-                )
-                .await;
-        }
-    }
-
-    // Generic outbound-delivery targets (extension-runtime P6): one provider
-    // over the assembly's vendor codecs, the `[channel.config]` routing
-    // values, and the generic DM-target store serves every active channel
-    // extension.
-    if let (Some(registry), Some(assembly), Some(local_runtime)) = (
-        outbound_delivery_target_registry.as_ref(),
-        channel_host_assembly.as_ref(),
-        local_runtime,
-    ) {
-        let dm_targets = local_runtime.channel_dm_target_store.clone();
-        ironclaw_extension_host::channel_outbound_targets::register_generic_channel_outbound_targets(
-            registry,
-            ironclaw_extension_host::channel_outbound_targets::GenericChannelOutboundTargetDeps {
-                watch: assembly.snapshot_watch(),
-                assembly: Arc::clone(assembly),
-                channel_config: Arc::clone(&local_runtime.channel_config_service),
-                dm_targets,
-                identity:
-                    ironclaw_extension_host::channel_outbound_targets::ChannelOutboundTargetIdentity {
-                        tenant_id: thread_scope.tenant_id.clone(),
-                        agent_id: thread_scope.agent_id.clone(),
-                        project_id: thread_scope.project_id.clone(),
-                    },
-            },
-        );
-    }
+    let channel_host_assembly =
+        match crate::extension_host_assembly::ExtensionHostAssemblyBuilder::new(&services) {
+            Some(builder) => {
+                builder
+                    .build_runtime(
+                        crate::extension_host_assembly::RuntimeExtensionHostAssemblyWiring {
+                            thread_service: Arc::clone(&thread_service),
+                            turn_coordinator: Arc::clone(&planned_turn_coordinator),
+                            approval_interaction: Arc::clone(&approval_interaction_service),
+                            auth_interaction: Arc::clone(&auth_interaction_service),
+                            thread_scope: &thread_scope,
+                            actor_user_id: actor_user_id.clone(),
+                            auth_challenges,
+                            outbound_delivery_targets: outbound_delivery_target_registry.as_ref(),
+                            local_runtime,
+                        },
+                    )
+                    .await
+            }
+            None => None,
+        };
 
     // `trigger_poller_handle`, `post_submit_hook_slot`, and the test-support
     // `trigger_conversation_pairing_value` are produced atomically inside
@@ -4913,7 +4835,7 @@ struct ComposedSkillContextSource {
     execution_adapter: Arc<ComposedSkillExecutionAdapter>,
 }
 
-const LOCAL_DEV_MAX_SKILL_CONTEXT_TOKENS: usize = 6000;
+const MAX_SKILL_CONTEXT_TOKENS: usize = 6000;
 
 fn optional_nonzero_u32_env(
     key: &'static str,
@@ -4946,19 +4868,19 @@ fn optional_nonzero_u32_env(
 
 /// Build the [`SkillActivationSelectorConfig`] used by the local-dev
 /// filesystem skill context source. Extracted from
-/// [`local_dev_filesystem_skill_context_source`] so the wiring of the
+/// [`filesystem_skill_context_source`] so the wiring of the
 /// `regex_skill_activation_enabled` flag from [`RebornRuntimeInput`] is
 /// covered by a unit test (see `tests::local_dev_selector_config_*`).
 /// Without this seam the propagation was tested only indirectly through
 /// the full [`build_reborn_runtime`] path, where an accidental
 /// `..SkillActivationSelectorConfig::default()` regression would slip
 /// through silently.
-fn local_dev_selector_config(
+fn skill_activation_selector_config(
     regex_skill_activation_enabled: bool,
     injection_mode: SkillInjectionMode,
 ) -> SkillActivationSelectorConfig {
     SkillActivationSelectorConfig {
-        max_context_tokens: LOCAL_DEV_MAX_SKILL_CONTEXT_TOKENS,
+        max_context_tokens: MAX_SKILL_CONTEXT_TOKENS,
         // `ExplicitAndCriteria` (the upstream default) lets a learned skill
         // auto-activate when a later request matches its keywords/patterns —
         // not only when the user types `$name`/`/name`. This is what closes
@@ -5008,7 +4930,7 @@ fn filesystem_skill_context_runtime(runtime: &RebornRuntimeStores) -> Option<&Re
     Some(runtime)
 }
 
-fn local_dev_filesystem_skill_context_source(
+fn filesystem_skill_context_source(
     runtime: &RebornRuntimeStores,
     tenant_id: &TenantId,
     regex_skill_activation_enabled: bool,
@@ -5028,8 +4950,10 @@ fn local_dev_filesystem_skill_context_source(
     .map_err(|reason| RebornRuntimeError::InvalidArgument {
         reason: format!("first-party skills extension source: {reason}"),
     })?;
-    let selector_config =
-        local_dev_selector_config(regex_skill_activation_enabled, skill_injection_mode_env()?);
+    let selector_config = skill_activation_selector_config(
+        regex_skill_activation_enabled,
+        skill_injection_mode_env()?,
+    );
     let selectable_skills = extension.selectable_skill_runtime_with_setup_markers(
         selector_config,
         Arc::clone(workspace_filesystem),

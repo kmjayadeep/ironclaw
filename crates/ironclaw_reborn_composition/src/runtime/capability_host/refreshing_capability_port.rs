@@ -1,3 +1,5 @@
+//! Assembly of the per-run refreshing capability port.
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex};
 
@@ -7,6 +9,7 @@ use ironclaw_host_api::{
 use ironclaw_host_runtime::HostRuntime;
 use ironclaw_loop_host::{
     HostRuntimeLoopCapabilityPortFactory, LoopCapabilityInputResolver, LoopCapabilityResultWriter,
+    wrap_external_tools, wrap_surface_disclosure,
 };
 use ironclaw_product::{OutboundPreferencesProductService, ProjectService};
 use ironclaw_threads::SessionThreadService;
@@ -23,14 +26,12 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::builtin_capability_policy::BuiltinCapabilityPolicy;
 use crate::profile_approval_authorization::ApprovalSettingsProvider;
 use crate::runtime::ComposedSelectableSkillContextSource;
-use crate::runtime::local_dev::extension_surface::ExtensionCapabilitySurfaceSource;
-use crate::runtime::local_dev::external_tool_capability::wrap_external_tools;
-use crate::runtime::local_dev::outbound_delivery::outbound_delivery_capabilities;
-use crate::runtime::local_dev::project_create::project_create_capability;
-use crate::runtime::local_dev::result_read::result_read_capability;
-use crate::runtime::local_dev::skill_activation::skill_activation_capability;
-use crate::runtime::local_dev::surface_disclosure::wrap_surface_disclosure;
-use crate::runtime::local_dev::synthetic_capability::wrap_synthetic_capabilities;
+use crate::runtime::capability_host::outbound_delivery::outbound_delivery_capabilities;
+use ironclaw_extension_host::capability_surface::ExtensionCapabilitySurfaceSource;
+use ironclaw_first_party_extension_ports::skill_activation_capability;
+use ironclaw_loop_host::result_read_capability;
+use ironclaw_loop_host::wrap_synthetic_capabilities;
+use ironclaw_product::project_create_capability;
 
 use super::{
     VisibleCapabilityInputs, capability_io_error, host_api_agent_loop_error,
@@ -68,24 +69,24 @@ pub(crate) struct RefreshingCapabilityPortConfig {
     pub(super) replay_payload_store: Arc<dyn ironclaw_capabilities::ReplayPayloadStorePort>,
     pub(super) external_tool_catalog: Arc<dyn ExternalToolCatalog>,
     /// Per-capability mount overrides, merged via `with_capability_execution_mount`.
-    /// Always empty at the sole production call site (`local_dev.rs`'s `create_capability_port`);
+    /// Always empty at the sole production call site (`capability_host.rs`'s `create_capability_port`);
     /// populated only by the `test-support` constructor.
     pub(super) capability_execution_mount_overrides: HashMap<CapabilityId, MountView>,
     /// Extra provider-trust entries merged into the visible request's
     /// provider-trust map. Always empty at the sole production call site
-    /// (`local_dev.rs`'s `create_capability_port`); populated only by the `test-support` constructor.
+    /// (`capability_host.rs`'s `create_capability_port`); populated only by the `test-support` constructor.
     pub(super) additional_provider_trust: BTreeMap<ExtensionId, TrustDecision>,
     /// Narrows the FULL granted-capability set (builtin grants plus any
     /// appended extension grants) to this id set via `retain` in
     /// `build_inner`. `None` = no filtering (production's value at the sole
-    /// call site, `local_dev.rs`'s `create_capability_port`); `Some(set)`
+    /// call site, `capability_host.rs`'s `create_capability_port`); `Some(set)`
     /// keeps exactly `set`, including `Some(empty)` = zero grants.
     pub(super) capability_id_filter: Option<HashSet<CapabilityId>>,
     /// Synthetic grants for capability ids that neither the static builtin
     /// policy nor `extension_surface_source` produces (ad-hoc test-only
     /// `HostRuntime` backends). Applied in `build_inner` before
     /// `capability_id_filter`'s retain, only for ids not already granted.
-    /// Always empty at the sole production call site (`local_dev.rs`'s
+    /// Always empty at the sole production call site (`capability_host.rs`'s
     /// `create_capability_port`); populated only by the `test-support`
     /// constructor.
     pub(super) additional_capability_grants: Vec<ironclaw_host_api::CapabilityGrant>,
@@ -334,7 +335,9 @@ impl RefreshingCapabilityPort {
             Arc::clone(&self.result_writer),
             // Synthetic capabilities bypass the inner port's input hook, so the
             // wrapper needs the observer to emit `on_capability_input` itself.
-            self.trajectory_observer.clone(),
+            self.trajectory_observer
+                .clone()
+                .map(crate::observability::trajectory_observer::as_capability_observer),
             Arc::clone(&self.replay_payload_store),
         )?;
         let port = wrap_surface_disclosure(port, &self.workspace_mounts);
@@ -463,7 +466,7 @@ impl LoopCapabilityPort for RefreshingCapabilityPort {
 /// parts and drives the REAL [`create_refreshing_capability_port`]
 /// above, so the harness exercises every wrap layer `build_inner` applies.
 /// Parts the harness has no opinion on get the same no-op production types
-/// the sole call site (`local_dev.rs`'s `create_capability_port`) passes -- never `capability_wiring`'s
+/// the sole call site (`capability_host.rs`'s `create_capability_port`) passes -- never `capability_wiring`'s
 /// `RebornServices`-entangled defaults. For tests only -- gated behind
 /// `test-support`, ships zero bytes in production builds.
 #[cfg(feature = "test-support")]
@@ -506,7 +509,7 @@ pub(crate) async fn create_refreshing_capability_port_for_test(
             .map_err(host_api_agent_loop_error)?,
     );
     let approval_settings: Arc<dyn ApprovalSettingsProvider> = Arc::new(
-        crate::local_dev_authorization::StoreApprovalSettingsProvider::new(
+        crate::capability_authorization::StoreApprovalSettingsProvider::new(
             tool_permission_overrides,
             auto_approve_settings,
             persistent_approval_policies,
@@ -527,7 +530,7 @@ pub(crate) async fn create_refreshing_capability_port_for_test(
         memory_mounts,
         system_extensions_lifecycle_mounts,
         // Harness-port-seam P1 Change 3: same constructor production's
-        // `capability_wiring` calls (`runtime/local_dev.rs:132-133`), fed the
+        // `capability_wiring` calls (`runtime/capability_host.rs:132-133`), fed the
         // harness's `extension_management` handle recovered from the opaque
         // `ExtensionManagementTestHandle` (see its doc-comment); `None` when
         // the harness never wired one, reproducing the prior always-no-op

@@ -2,7 +2,7 @@
 
 /// Capability id of the local-dev synthetic `skill_activate` capability
 /// (E-SKILL seam). Single owner is the production constant in
-/// `runtime::local_dev::skill_activation`; mirrors `PROJECT_CREATE_CAPABILITY_ID`.
+/// `runtime::capability_host::skill_activation`; mirrors `PROJECT_CREATE_CAPABILITY_ID`.
 #[cfg(feature = "test-support")]
 pub const SKILL_ACTIVATE_CAPABILITY_ID: &str = crate::runtime::SKILL_ACTIVATE_CAPABILITY_ID;
 
@@ -30,7 +30,7 @@ impl SkillActivationTestSource {
     /// Crate-internal accessor for the wrapped activation source. Kept
     /// `pub(crate)` (never `pub`) so the crate-private
     /// `ComposedSelectableSkillContextSource` type never appears in this
-    /// crate's public API; only `runtime::local_dev`'s test-support
+    /// crate's public API; only `runtime::capability_host`'s test-support
     /// constructor (which already names the type) may call this.
     pub(crate) fn activation_source(
         &self,

@@ -657,9 +657,8 @@ mod tests {
             EXTENSION_REMOVE_CAPABILITY_ID,
         ] {
             let descriptor = descriptor_with_id(capability);
-            let lifecycle_mounts =
-                crate::local_dev_mounts::system_extensions_lifecycle_mount_view()
-                    .expect("expected extension lifecycle mounts");
+            let lifecycle_mounts = crate::runtime_mounts::system_extensions_lifecycle_mount_view()
+                .expect("expected extension lifecycle mounts");
             let mounts = product_invocation_mounts(
                 &resource_scope(),
                 Some(&descriptor),
@@ -689,7 +688,7 @@ mod tests {
         let scope = resource_scope();
         let descriptor = descriptor_with_id(SKILL_REMOVE_CAPABILITY_ID);
         let skill_mount_resolver = |scope: &ResourceScope| {
-            crate::local_dev_mounts::scoped_skill_management_mount_view(scope)
+            crate::runtime_mounts::scoped_skill_management_mount_view(scope)
         };
         let lifecycle_mounts = MountView::default();
         let mounts = product_invocation_mounts(
@@ -702,7 +701,7 @@ mod tests {
 
         assert_eq!(
             mounts,
-            crate::local_dev_mounts::scoped_skill_management_mount_view(&scope)
+            crate::runtime_mounts::scoped_skill_management_mount_view(&scope)
                 .expect("expected skill mounts")
         );
     }

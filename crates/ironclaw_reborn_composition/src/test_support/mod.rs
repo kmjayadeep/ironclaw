@@ -64,11 +64,10 @@
 
 mod automation;
 mod budget_gateway;
+mod capability_io;
 #[cfg(feature = "test-support")]
 mod channel_connection;
 mod durable;
-mod local_dev_boot;
-mod local_dev_capability_io;
 mod oauth_product_auth;
 mod outbound_delivery;
 mod project_create;
@@ -76,6 +75,7 @@ mod projection;
 mod refreshing_capability_port;
 mod result_read;
 mod skill_activation;
+mod standalone_boot;
 mod trace_capture;
 mod trigger_materializer;
 mod user_profile;
@@ -89,6 +89,10 @@ pub use budget_gateway::{
     BudgetTestGateway, FailingTestGateway, ScriptedReply, assistant_reply_without_text_for_test,
 };
 #[cfg(feature = "test-support")]
+pub use capability_io::{
+    staged_capability_io_for_test, staged_capability_io_with_observer_for_test,
+};
+#[cfg(feature = "test-support")]
 pub use channel_connection::{
     ChannelConnectionTestBundle, ChannelConnectionTestConfig, build_channel_connection_for_test,
 };
@@ -99,17 +103,6 @@ pub use durable::{
     open_local_dev_approval_request_store_for_test,
     open_local_dev_approval_settings_stores_for_test,
     open_local_dev_outbound_preferences_store_for_test, open_local_dev_trigger_repository_for_test,
-};
-pub use local_dev_boot::LOCAL_DEV_DB_FILENAME;
-pub use local_dev_boot::build_secret_store_for_test;
-#[cfg(feature = "test-support")]
-pub use local_dev_boot::{
-    build_approval_gate_evidence_for_test, build_default_local_dev_database_roots_for_test,
-    mount_local_dev_database_roots_for_test,
-};
-#[cfg(feature = "test-support")]
-pub use local_dev_capability_io::{
-    staged_capability_io_for_test, staged_capability_io_with_observer_for_test,
 };
 pub use oauth_product_auth::build_google_oauth_product_auth_for_test;
 pub use oauth_product_auth::build_oauth_product_auth_for_test_on_libsql;
@@ -137,6 +130,13 @@ pub use result_read::{RESULT_READ_CAPABILITY_ID, wrap_result_read_capability_for
 #[cfg(feature = "test-support")]
 pub use skill_activation::{
     SKILL_ACTIVATE_CAPABILITY_ID, SkillActivationTestSource, build_skill_context_source_for_test,
+};
+pub use standalone_boot::LOCAL_DEV_DB_FILENAME;
+pub use standalone_boot::build_secret_store_for_test;
+#[cfg(feature = "test-support")]
+pub use standalone_boot::{
+    build_approval_gate_evidence_for_test, build_default_local_dev_database_roots_for_test,
+    mount_local_dev_database_roots_for_test,
 };
 #[cfg(feature = "test-support")]
 pub use trace_capture::trace_capture_turn_event_sink_for_test;

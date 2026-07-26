@@ -15,7 +15,7 @@ use crate::builtin_capability_policy::{
 };
 use crate::outbound::OUTBOUND_DELIVERY_TARGET_SET_CAPABILITY_ID;
 
-use super::local_dev::extension_surface::ExtensionCapabilitySurfaceSource;
+use ironclaw_extension_host::capability_surface::ExtensionCapabilitySurfaceSource;
 
 pub(super) struct PolicyApprovalLeaseTermsProvider {
     policy: Arc<BuiltinCapabilityPolicy>,
@@ -231,10 +231,10 @@ mod tests {
     use ironclaw_turns::{GateRef, TurnRunId};
 
     use crate::builtin_capability_policy::builtin_capability_policy;
-    use crate::runtime::local_dev::extension_surface::{
+    use ironclaw_extension_host::ActiveExtensionCapability;
+    use ironclaw_extension_host::capability_surface::{
         ExtensionCapabilitySurface, ExtensionCapabilitySurfaceSource,
     };
-    use ironclaw_extension_host::ActiveExtensionCapability;
 
     use super::*;
 

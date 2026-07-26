@@ -1,11 +1,16 @@
+//! Loop-facing capability result reader.
+
 use std::sync::Arc;
 
+use crate::{
+    CapabilityResultWrite, DurablePersistence, SyntheticCapability, SyntheticCapabilityDescriptor,
+    SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
+};
 use async_trait::async_trait;
 use ironclaw_host_api::{DispatchInputIssueCode, InvocationId, Resolution, UserId};
-use ironclaw_loop_host::{CapabilityResultWrite, DurablePersistence};
 use ironclaw_threads::{
     MessageKind, MessageStatus, ReadToolResultRecordRequest, SessionThreadError,
-    SessionThreadService, TOOL_RESULT_RECORD_READ_MAX_BYTES, ThreadHistoryRequest,
+    SessionThreadService, TOOL_RESULT_RECORD_READ_MAX_BYTES, ThreadHistoryRequest, ThreadScope,
     ToolResultReferenceEnvelope,
 };
 use ironclaw_turns::run_profile::{
@@ -14,14 +19,6 @@ use ironclaw_turns::run_profile::{
     MODEL_VISIBLE_TOOL_OBSERVATION_SCHEMA_VERSION, ModelVisibleArtifact,
     ModelVisibleToolObservation, ObservationTrust, ToolObservationDetail, ToolObservationStatus,
     resolution, sanitize_model_visible_text,
-};
-
-use super::{
-    local_dev_thread_scope_for_run,
-    synthetic_capability::{
-        SyntheticCapability, SyntheticCapabilityDescriptor, SyntheticCapabilityHandler,
-        SyntheticCapabilityInvocation,
-    },
 };
 
 /// Test-support wrap: layers the synthetic `result_read` capability onto
@@ -34,15 +31,15 @@ use super::{
 /// same-object requirement. Tests only -- gated behind `test-support`,
 /// ships zero bytes in production builds.
 #[cfg(feature = "test-support")]
-pub(crate) fn wrap_result_read_capability_for_test(
+pub fn wrap_result_read_capability_for_test(
     inner: Arc<dyn ironclaw_turns::run_profile::LoopCapabilityPort>,
     thread_service: Arc<dyn SessionThreadService>,
     fallback_user_id: UserId,
     run_context: ironclaw_turns::run_profile::LoopRunContext,
-    input_resolver: Arc<dyn ironclaw_loop_host::LoopCapabilityInputResolver>,
-    result_writer: Arc<dyn ironclaw_loop_host::LoopCapabilityResultWriter>,
+    input_resolver: Arc<dyn crate::LoopCapabilityInputResolver>,
+    result_writer: Arc<dyn crate::LoopCapabilityResultWriter>,
 ) -> Result<Arc<dyn ironclaw_turns::run_profile::LoopCapabilityPort>, AgentLoopHostError> {
-    super::synthetic_capability::wrap_synthetic_capabilities(
+    crate::wrap_synthetic_capabilities(
         inner,
         vec![result_read_capability(
             thread_service,
@@ -57,7 +54,7 @@ pub(crate) fn wrap_result_read_capability_for_test(
         // `result_read` never raises an approval gate, so its resume path never
         // loads a replay payload; an in-memory store keeps the seam wired.
         Arc::new(ironclaw_capabilities::ReplayPayloadStore::new(
-            crate::wrap_scoped(Arc::new(ironclaw_filesystem::InMemoryBackend::new())),
+            replay_payload_filesystem(),
         )),
     )
 }
@@ -65,14 +62,51 @@ pub(crate) fn wrap_result_read_capability_for_test(
 /// Test-support export of the capability id, so integration tests can script
 /// a `result_read` tool call without hand-copying the literal.
 #[cfg(feature = "test-support")]
-pub(crate) const RESULT_READ_CAPABILITY_ID_FOR_TEST: &str = RESULT_READ_CAPABILITY_ID;
+pub const RESULT_READ_CAPABILITY_ID_FOR_TEST: &str = RESULT_READ_CAPABILITY_ID;
 
-pub(super) const RESULT_READ_CAPABILITY_ID: &str = "builtin.result_read";
+pub const RESULT_READ_CAPABILITY_ID: &str = "builtin.result_read";
 const RESULT_READ_PROVIDER_TOOL_NAME: &str = "builtin__result_read";
 const RESULT_READ_MIN_BYTES: u64 = 4;
 const RESULT_READ_MAX_BYTES: u64 = TOOL_RESULT_RECORD_READ_MAX_BYTES as u64;
 
-pub(super) fn result_read_capability(
+fn thread_scope_for_run(
+    run_context: &ironclaw_turns::run_profile::LoopRunContext,
+    fallback_user_id: &UserId,
+) -> Option<ThreadScope> {
+    let resource = run_context.scope.to_resource_scope();
+    let base = ThreadScope {
+        tenant_id: resource.tenant_id,
+        agent_id: resource.agent_id?,
+        project_id: resource.project_id,
+        owner_user_id: Some(fallback_user_id.clone()),
+        mission_id: resource.mission_id,
+    };
+    Some(crate::ThreadScopeResolver::resolve_for_turn(
+        &base,
+        &run_context.scope,
+        run_context.actor(),
+    ))
+}
+
+#[cfg(feature = "test-support")]
+fn replay_payload_filesystem()
+-> Arc<ironclaw_filesystem::ScopedFilesystem<ironclaw_filesystem::InMemoryBackend>> {
+    use ironclaw_host_api::{MountAlias, MountGrant, MountPermissions, MountView, VirtualPath};
+
+    let mounts = MountView::new(vec![MountGrant::new(
+        MountAlias::new("/replay-payloads").expect("static valid mount alias"),
+        VirtualPath::new("/tenants/test/users/test/replay-payloads")
+            .expect("static valid virtual path"),
+        MountPermissions::read_write_list_delete(),
+    )])
+    .expect("static valid replay-payload mount view");
+    Arc::new(ironclaw_filesystem::ScopedFilesystem::with_fixed_view(
+        Arc::new(ironclaw_filesystem::InMemoryBackend::new()),
+        mounts,
+    ))
+}
+
+pub fn result_read_capability(
     thread_service: Arc<dyn SessionThreadService>,
     fallback_user_id: UserId,
 ) -> Result<SyntheticCapability, AgentLoopHostError> {
@@ -116,7 +150,7 @@ impl SyntheticCapabilityHandler for ResultReadHandler {
             Ok(input) => input,
             Err(resolution) => return Ok(*resolution),
         };
-        let scope = local_dev_thread_scope_for_run(&invocation.run_context, &self.fallback_user_id)
+        let scope = thread_scope_for_run(&invocation.run_context, &self.fallback_user_id)
             .ok_or_else(|| {
                 AgentLoopHostError::new(
                     AgentLoopHostErrorKind::Unavailable,

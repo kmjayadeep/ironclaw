@@ -3,7 +3,7 @@
 //! Lets the Reborn integration-test harness assemble its capability port
 //! through the REAL production factory
 //! (`create_refreshing_capability_port`,
-//! `runtime::local_dev::refreshing_capability_port.rs:75`) instead of hand-
+//! `runtime::capability_host::refreshing_capability_port.rs:75`) instead of hand-
 //! rebuilding the wrap order, so every current and future production layer
 //! (surface disclosure, external tools, StaleSurface refresh, the shared
 //! `StagedCapabilityIo`) is automatically exercised by the harness too.
@@ -12,7 +12,7 @@
 pub use ironclaw_extension_host::test_support::ExtensionManagementTestHandle;
 
 /// Typed bundle of the parts the harness controls, passed by value through
-/// the `test_support` -> `runtime` -> `runtime::local_dev` forwarding chain
+/// the `test_support` -> `runtime` -> `runtime::capability_host` forwarding chain
 /// so no layer needs `#[allow(clippy::too_many_arguments)]`. Mirrors
 /// `RefreshingCapabilityPortConfig` minus the no-op-by-default parts
 /// (`external_tool_catalog`, `policy`). `extension_surface_source` itself
@@ -21,7 +21,7 @@ pub use ironclaw_extension_host::test_support::ExtensionManagementTestHandle;
 /// follow-up) and `create_refreshing_capability_port_for_test`
 /// wraps it in `ExtensionCapabilitySurfaceSource::new(..)` internally, the SAME
 /// constructor production's `capability_wiring` calls
-/// (`runtime/local_dev.rs:132-133`) — this crate is the only place that can
+/// (`runtime/capability_host.rs:132-133`) — this crate is the only place that can
 /// name the `pub(in crate::runtime)` wrapper type.
 #[cfg(feature = "test-support")]
 pub struct RefreshingCapabilityPortTestParts {
@@ -63,7 +63,7 @@ pub struct RefreshingCapabilityPortTestParts {
     /// get folded into the visible-capability grants on every refresh —
     /// mirrors production `capability_wiring`'s
     /// `ExtensionCapabilitySurfaceSource::new(runtime_surfaces.extension_management.clone())`
-    /// (`runtime/local_dev.rs:132-133`). `None` (the default a harness gets by
+    /// (`runtime/capability_host.rs:132-133`). `None` (the default a harness gets by
     /// simply omitting extension setup) reproduces the no-op surface this
     /// struct always had before this field existed — extension-lane
     /// capabilities are only visible when the harness actually installs and
@@ -110,7 +110,7 @@ pub struct RefreshingCapabilityPortTestParts {
 }
 
 /// Reads the same `runtime_surfaces.extension_management` handle production's
-/// `capability_wiring` reads (`runtime/local_dev.rs:132-133`) off a built
+/// `capability_wiring` reads (`runtime/capability_host.rs:132-133`) off a built
 /// `RebornRuntimeStores`, for wiring
 /// [`RefreshingCapabilityPortTestParts::extension_management`].
 /// `None` when the services were built without a local-dev runtime (mirrors

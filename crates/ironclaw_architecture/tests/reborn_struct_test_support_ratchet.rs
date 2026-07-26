@@ -166,6 +166,12 @@ const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
     FrozenPathCount {
         category: "test-support",
         item_kind: "method",
+        path: "crates/ironclaw_extension_host/src/capability_surface.rs",
+        count: 2,
+    },
+    FrozenPathCount {
+        category: "test-support",
+        item_kind: "method",
         path: "crates/ironclaw_extension_host/src/channel_host.rs",
         count: 2,
     },
@@ -346,14 +352,8 @@ const FROZEN_PATH_COUNTS: &[FrozenPathCount] = &[
     FrozenPathCount {
         category: "test-support",
         item_kind: "method",
-        path: "crates/ironclaw_reborn_composition/src/runtime/local_dev.rs",
+        path: "crates/ironclaw_reborn_composition/src/runtime/capability_host.rs",
         count: 1,
-    },
-    FrozenPathCount {
-        category: "test-support",
-        item_kind: "method",
-        path: "crates/ironclaw_reborn_composition/src/runtime/local_dev/extension_surface.rs",
-        count: 2,
     },
     FrozenPathCount {
         category: "test-support",

@@ -1,28 +1,31 @@
+//! Loop-facing skill activation capability.
+
 use std::{collections::HashSet, sync::Arc};
 
 use async_trait::async_trait;
-use ironclaw_first_party_extension_ports::DEFAULT_MAX_ACTIVE_SKILLS;
 use ironclaw_host_api::{InvocationId, Resolution};
-use ironclaw_loop_host::{CapabilityResultWrite, DurablePersistence};
+use ironclaw_loop_host::{
+    CapabilityResultWrite, DurablePersistence, SkillBundleSource, SyntheticCapability,
+    SyntheticCapabilityDescriptor, SyntheticCapabilityHandler, SyntheticCapabilityInvocation,
+};
 use ironclaw_turns::run_profile::{
     AgentLoopHostError, AgentLoopHostErrorKind, CapabilityFailureKind, ConcurrencyHint, resolution,
 };
 
-use crate::runtime::{
-    ComposedSelectableSkillContextSource,
-    local_dev::synthetic_capability::{
-        SyntheticCapability, SyntheticCapabilityDescriptor, SyntheticCapabilityHandler,
-        SyntheticCapabilityInvocation,
-    },
+use crate::{
+    DEFAULT_MAX_ACTIVE_SKILLS, SelectableSkillContextSource, SkillActivationSelectionError,
 };
 
-pub(crate) const SKILL_ACTIVATE_CAPABILITY_ID: &str = "builtin.skill_activate";
+pub const SKILL_ACTIVATE_CAPABILITY_ID: &str = "builtin.skill_activate";
 const SKILL_ACTIVATE_PROVIDER_TOOL_NAME: &str = "builtin__skill_activate";
 const SKILL_ACTIVATE_DESCRIPTION: &str = "Load full instructions for one or more skills from the available-skills list. Call this before answering when a listed skill could help with any part of the task; use only exact listed names. Choose the smallest relevant set, with at most four active skills total per run; large skills may reduce that number. Ambiguous names fail without loading a skill.";
 
-pub(super) fn skill_activation_capability(
-    skill_activation_source: Arc<ComposedSelectableSkillContextSource>,
-) -> Result<SyntheticCapability, AgentLoopHostError> {
+pub fn skill_activation_capability<S>(
+    skill_activation_source: Arc<SelectableSkillContextSource<S>>,
+) -> Result<SyntheticCapability, AgentLoopHostError>
+where
+    S: SkillBundleSource + ?Sized + 'static,
+{
     Ok(SyntheticCapability::new(
         SyntheticCapabilityDescriptor::new(
             SKILL_ACTIVATE_CAPABILITY_ID,
@@ -37,12 +40,18 @@ pub(super) fn skill_activation_capability(
     ))
 }
 
-struct SkillActivationHandler {
-    skill_activation_source: Arc<ComposedSelectableSkillContextSource>,
+struct SkillActivationHandler<S>
+where
+    S: SkillBundleSource + ?Sized,
+{
+    skill_activation_source: Arc<SelectableSkillContextSource<S>>,
 }
 
 #[async_trait]
-impl SyntheticCapabilityHandler for SkillActivationHandler {
+impl<S> SyntheticCapabilityHandler for SkillActivationHandler<S>
+where
+    S: SkillBundleSource + ?Sized + 'static,
+{
     fn validate_provider_arguments(
         &self,
         arguments: &serde_json::Value,
@@ -178,30 +187,22 @@ fn parse_skill_activate_names(
     Ok(parsed)
 }
 
-fn skill_activation_host_error(
-    error: ironclaw_first_party_extension_ports::SkillActivationSelectionError,
-) -> AgentLoopHostError {
+fn skill_activation_host_error(error: SkillActivationSelectionError) -> AgentLoopHostError {
     let kind = match error {
-        ironclaw_first_party_extension_ports::SkillActivationSelectionError::AmbiguousSkill {
-            ..
-        }
-        | ironclaw_first_party_extension_ports::SkillActivationSelectionError::ParseFailed
-        | ironclaw_first_party_extension_ports::SkillActivationSelectionError::TrustDataMissing
-        | ironclaw_first_party_extension_ports::SkillActivationSelectionError::VisibilityDataMissing => {
+        SkillActivationSelectionError::AmbiguousSkill { .. }
+        | SkillActivationSelectionError::ParseFailed
+        | SkillActivationSelectionError::TrustDataMissing
+        | SkillActivationSelectionError::VisibilityDataMissing => {
             AgentLoopHostErrorKind::InvalidInvocation
         }
-        ironclaw_first_party_extension_ports::SkillActivationSelectionError::ContextBudgetExceeded => {
+        SkillActivationSelectionError::ContextBudgetExceeded => {
             AgentLoopHostErrorKind::BudgetExceeded
         }
-        ironclaw_first_party_extension_ports::SkillActivationSelectionError::SourceUnavailable => {
-            AgentLoopHostErrorKind::Unavailable
-        }
-        ironclaw_first_party_extension_ports::SkillActivationSelectionError::Internal => {
-            AgentLoopHostErrorKind::Internal
-        }
+        SkillActivationSelectionError::SourceUnavailable => AgentLoopHostErrorKind::Unavailable,
+        SkillActivationSelectionError::Internal => AgentLoopHostErrorKind::Internal,
     };
     ironclaw_loop_host::raw_agent_loop_host_error(
-        "local_dev_skill_activate",
+        "skill_activate",
         "activate",
         kind,
         "skill activation failed",
@@ -225,9 +226,9 @@ fn skill_activation_host_error(
 ///   internal bug) stay terminal, because the model cannot recover from them by
 ///   adjusting its request.
 fn skill_activation_selection_outcome(
-    error: ironclaw_first_party_extension_ports::SkillActivationSelectionError,
+    error: SkillActivationSelectionError,
 ) -> Result<Resolution, AgentLoopHostError> {
-    use ironclaw_first_party_extension_ports::SkillActivationSelectionError as SelectionError;
+    use crate::SkillActivationSelectionError as SelectionError;
     match error {
         SelectionError::ContextBudgetExceeded => Ok(resolution::failed(
             CapabilityFailureKind::InvalidInput,
@@ -284,7 +285,7 @@ mod tests {
     #[test]
     fn budget_exceeded_selection_is_a_recoverable_tool_failure_not_terminal() {
         let outcome = skill_activation_selection_outcome(
-            ironclaw_first_party_extension_ports::SkillActivationSelectionError::ContextBudgetExceeded,
+            SkillActivationSelectionError::ContextBudgetExceeded,
         )
         .expect("budget-exceeded must be a model-visible failure, not a terminal host error");
 
@@ -293,13 +294,12 @@ mod tests {
 
     #[test]
     fn ambiguous_skill_selection_is_a_recoverable_tool_failure_not_terminal() {
-        let outcome = skill_activation_selection_outcome(
-            ironclaw_first_party_extension_ports::SkillActivationSelectionError::AmbiguousSkill {
+        let outcome =
+            skill_activation_selection_outcome(SkillActivationSelectionError::AmbiguousSkill {
                 name: "deploy".to_string(),
                 sources: Vec::new(),
-            },
-        )
-        .expect("ambiguous skill must be a model-visible failure, not a terminal host error");
+            })
+            .expect("ambiguous skill must be a model-visible failure, not a terminal host error");
 
         assert_recoverable_invalid_input(&outcome);
     }
@@ -321,20 +321,17 @@ mod tests {
 
     #[test]
     fn source_unavailable_selection_stays_a_terminal_host_error() {
-        let error = skill_activation_selection_outcome(
-            ironclaw_first_party_extension_ports::SkillActivationSelectionError::SourceUnavailable,
-        )
-        .expect_err("genuine host/infra failures must stay terminal");
+        let error =
+            skill_activation_selection_outcome(SkillActivationSelectionError::SourceUnavailable)
+                .expect_err("genuine host/infra failures must stay terminal");
 
         assert_eq!(error.kind, AgentLoopHostErrorKind::Unavailable);
     }
 
     #[test]
     fn internal_selection_stays_a_terminal_host_error() {
-        let error = skill_activation_selection_outcome(
-            ironclaw_first_party_extension_ports::SkillActivationSelectionError::Internal,
-        )
-        .expect_err("internal bugs must stay terminal");
+        let error = skill_activation_selection_outcome(SkillActivationSelectionError::Internal)
+            .expect_err("internal bugs must stay terminal");
 
         assert_eq!(error.kind, AgentLoopHostErrorKind::Internal);
     }

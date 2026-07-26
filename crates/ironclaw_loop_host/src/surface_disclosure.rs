@@ -1,3 +1,5 @@
+//! Capability-surface authority disclosure.
+
 use std::sync::Arc;
 
 use ironclaw_host_api::{CapabilityId, MountView, Resolution, ResolutionBatch};
@@ -12,7 +14,7 @@ use ironclaw_turns::run_profile::{
     VisibleCapabilitySurface,
 };
 
-pub(super) fn wrap_surface_disclosure(
+pub fn wrap_surface_disclosure(
     inner: Arc<dyn LoopCapabilityPort>,
     workspace_mounts: &MountView,
 ) -> Arc<dyn LoopCapabilityPort> {
@@ -124,10 +126,10 @@ impl HostSurfaceDisclosure {
         parameters_schema: &mut serde_json::Value,
     ) {
         if capability_id.as_str() == SHELL_CAPABILITY_ID {
-            append_description_note(description, LOCAL_DEV_LOCAL_HOST_SHELL_NOTE);
+            append_description_note(description, LOCAL_HOST_SHELL_NOTE);
             return;
         }
-        if !local_dev_scoped_path_capability(capability_id.as_str()) {
+        if !scoped_path_capability(capability_id.as_str()) {
             return;
         }
         let Some(note) = self.scoped_roots_note.as_deref() else {
@@ -138,9 +140,9 @@ impl HostSurfaceDisclosure {
     }
 }
 
-const LOCAL_DEV_LOCAL_HOST_SHELL_NOTE: &str = "Runs on the local host with local-dev shell process and network access. Local-host shell command paths may use /workspace and /host aliases when those roots are configured; they are translated to the confirmed local workspace and host-home paths before execution.";
+const LOCAL_HOST_SHELL_NOTE: &str = "Runs on the local host with configured host process and network access. Local-host shell command paths may use /workspace and /host aliases when those roots are configured; they are translated to the confirmed local workspace and host-home paths before execution.";
 
-fn local_dev_scoped_path_capability(capability_id: &str) -> bool {
+fn scoped_path_capability(capability_id: &str) -> bool {
     matches!(
         capability_id,
         READ_FILE_CAPABILITY_ID
@@ -214,15 +216,13 @@ fn append_path_schema_note(schema: &mut serde_json::Value, note: &str) {
 mod tests {
     use std::path::Path;
 
-    use ironclaw_host_api::MountPermissions;
+    use ironclaw_host_api::{MountAlias, MountGrant, MountPermissions, MountView, VirtualPath};
 
     use super::*;
 
     #[test]
     fn disclosure_is_disabled_without_confirmed_host_mount() {
-        let workspace_mounts =
-            crate::local_dev_mounts::workspace_mount_view(MountPermissions::read_write(), &[])
-                .expect("workspace mounts build");
+        let workspace_mounts = workspace_mount_view(&[]).expect("workspace mounts build");
 
         let disclosure = HostSurfaceDisclosure::from_workspace_mounts(&workspace_mounts);
 
@@ -231,11 +231,8 @@ mod tests {
 
     #[test]
     fn disclosure_redacts_raw_host_home_aliases() {
-        let workspace_mounts = crate::local_dev_mounts::workspace_mount_view(
-            MountPermissions::read_write(),
-            &[Path::new("/Users/alice")],
-        )
-        .expect("workspace mounts build");
+        let workspace_mounts =
+            workspace_mount_view(&[Path::new("/Users/alice")]).expect("workspace mounts build");
 
         let disclosure = HostSurfaceDisclosure::from_workspace_mounts(&workspace_mounts);
         let note = disclosure
@@ -244,5 +241,27 @@ mod tests {
 
         assert!(note.contains("/workspace, /host"));
         assert!(!note.contains("/Users/alice"));
+    }
+
+    fn workspace_mount_view(host_home_aliases: &[&Path]) -> Result<MountView, String> {
+        let mut mounts = vec![mount("/workspace", "/projects/workspace")?];
+        if !host_home_aliases.is_empty() {
+            mounts.push(mount("/host", "/projects/host")?);
+            for alias in host_home_aliases {
+                let alias = alias
+                    .to_str()
+                    .ok_or_else(|| "host alias must be UTF-8".to_string())?;
+                mounts.push(mount(alias, "/projects/host")?);
+            }
+        }
+        MountView::new(mounts).map_err(|error| error.to_string())
+    }
+
+    fn mount(alias: &str, target: &str) -> Result<MountGrant, String> {
+        Ok(MountGrant::new(
+            MountAlias::new(alias).map_err(|error| error.to_string())?,
+            VirtualPath::new(target).map_err(|error| error.to_string())?,
+            MountPermissions::read_write(),
+        ))
     }
 }

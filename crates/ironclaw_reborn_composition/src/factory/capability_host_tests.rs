@@ -1,3 +1,5 @@
+//! Capability-host factory tests.
+
 use ironclaw_host_api::MountPermissions;
 
 use super::*;

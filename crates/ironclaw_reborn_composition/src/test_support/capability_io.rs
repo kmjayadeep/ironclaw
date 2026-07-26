@@ -2,7 +2,7 @@
 //! projection seam, issue #5838).
 //!
 //! Drives the REAL constructor production's `capability_wiring`
-//! (`runtime/local_dev.rs`) uses to build the shared input-resolver /
+//! (`runtime/capability_host.rs`) uses to build the shared input-resolver /
 //! result-writer object, so an integration-test harness that opts in
 //! exercises durable tool-result persistence (`put_tool_result_record`) and
 //! `result_read` continuation instead of the ephemeral `ProductLiveCapabilityIo`
