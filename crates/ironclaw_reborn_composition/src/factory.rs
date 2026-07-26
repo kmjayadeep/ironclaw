@@ -614,11 +614,6 @@ fn configured_runtime_owner_scope(
     )
 }
 
-/// Validate a per-trigger delivery target against the runtime's outbound
-/// delivery target registry: the id must resolve for the trigger creator (the
-/// same ownership check the delivery layer applies at fire time). Fails
-/// closed when no provider is registered or the id is unknown/foreign.
-
 struct BudgetSinks {
     budget_event_sink: Arc<dyn ironclaw_resources::BudgetEventSink>,
     #[cfg(any(test, feature = "test-support"))]
