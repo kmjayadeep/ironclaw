@@ -465,7 +465,7 @@ fn http_error(error: RuntimeHttpEgressError, save_mode: HttpSaveMode) -> FirstPa
     let kind = match save_error {
         Some((kind, _summary)) => kind,
         // Host credential injection failures are backend/client integration faults;
-        // production maps RuntimeDispatchErrorKind::Client to RuntimeFailureKind::Backend.
+        // production maps RuntimeDispatchErrorKind::Client to FailureKind::Backend.
         None => match error.reason_code() {
             RuntimeHttpEgressReasonCode::CredentialUnavailable => RuntimeDispatchErrorKind::Client,
             RuntimeHttpEgressReasonCode::RequestDenied => RuntimeDispatchErrorKind::InputEncode,

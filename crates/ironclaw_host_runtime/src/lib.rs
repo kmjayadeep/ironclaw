@@ -27,8 +27,9 @@
 use async_trait::async_trait;
 use ironclaw_host_api::{
     ApprovalRequestId, CapabilityDisplayOutputPreview, CapabilityId, CorrelationId,
-    DispatchFailureDetail, ExecutionContext, ExtensionId, ProcessId, ResourceEstimate,
-    ResourceScope, ResourceUsage, RuntimeCredentialAuthRequirement, RuntimeKind, SecretHandle,
+    DispatchFailureDetail, ExecutionContext, ExtensionId, FailureFate, FailureKind, ProcessId,
+    ResourceEstimate, ResourceScope, ResourceUsage, RuntimeCredentialAuthRequirement, RuntimeKind,
+    SecretHandle,
     runtime_policy::{DeploymentMode, EffectiveRuntimePolicy, RuntimeProfile},
 };
 use ironclaw_trust::TrustDecision;
@@ -444,7 +445,7 @@ pub struct RuntimeProcessHandle {
 #[derive(Clone, Eq)]
 pub struct RuntimeCapabilityFailure {
     pub capability_id: CapabilityId,
-    pub kind: RuntimeFailureKind,
+    pub kind: FailureKind,
     pub message: Option<String>,
     pub detail: Option<DispatchFailureDetail>,
     /// Registry-scrubbed descriptive cause for the model-visible Diagnostic
@@ -598,60 +599,6 @@ mod raw_http_diagnostic_policy_tests {
     }
 }
 
-/// Stable, sanitized failure categories.
-///
-// Deliberately NOT `#[non_exhaustive]`: the `Unknown` variant is the open-set
-// escape hatch for unrecognized runtime failures, so the attribute would only
-// force classifiers to keep a wildcard arm that silently buckets a new named
-// variant. Without it, disposition/classification matches are exhaustive and a
-// new named variant fails to compile until classified. See
-// `docs/plans/2026-06-28-reborn-error-recoverability-audit.md` §6.1.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RuntimeFailureKind {
-    Authorization,
-    Backend,
-    Cancelled,
-    Dispatcher,
-    GateDeclined,
-    Internal,
-    InvalidInput,
-    InvalidOutput,
-    MissingRuntime,
-    Network,
-    OperationFailed,
-    OutputTooLarge,
-    PolicyDenied,
-    Process,
-    Resource,
-    Transient,
-    Unavailable,
-}
-
-impl RuntimeFailureKind {
-    /// Returns a stable, snake_case identifier for use in metrics/tracing.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Authorization => "authorization",
-            Self::Backend => "backend",
-            Self::Cancelled => "cancelled",
-            Self::Dispatcher => "dispatcher",
-            Self::GateDeclined => "gate_declined",
-            Self::Internal => "internal",
-            Self::InvalidInput => "invalid_input",
-            Self::InvalidOutput => "invalid_output",
-            Self::MissingRuntime => "missing_runtime",
-            Self::Network => "network",
-            Self::OperationFailed => "operation_failed",
-            Self::OutputTooLarge => "output_too_large",
-            Self::PolicyDenied => "policy_denied",
-            Self::Process => "process",
-            Self::Resource => "resource",
-            Self::Transient => "transient",
-            Self::Unavailable => "unavailable",
-        }
-    }
-}
-
 /// Agent-loop handling decision for a sanitized runtime capability failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CapabilityFailureDisposition {
@@ -666,11 +613,7 @@ pub enum CapabilityFailureDisposition {
 const MAX_RUNTIME_FAILURE_SUMMARY_CHARS: usize = 512;
 
 impl RuntimeCapabilityFailure {
-    pub fn new(
-        capability_id: CapabilityId,
-        kind: RuntimeFailureKind,
-        message: Option<String>,
-    ) -> Self {
+    pub fn new(capability_id: CapabilityId, kind: FailureKind, message: Option<String>) -> Self {
         Self {
             capability_id,
             kind,
@@ -731,33 +674,30 @@ fn bounded_runtime_failure_summary(summary: &str) -> String {
 
 /// Central disposition policy for runtime capability failures.
 ///
-/// Runtime failures should be surfaced through normal model-visible tool-error
-/// handling whenever they are not retryable infrastructure outages. Security
+/// Delegates the recoverability decision to the unified
+/// [`FailureKind::fate`] projection instead of re-deriving a local retryable
+/// set — re-declared domains drift, and the drift is where recoverability
+/// died (#6284). Only `Retry`-fated kinds are retried before the model sees
+/// anything; `Park` and `Terminal` fates never reach this disposition on the
+/// production paths (gates suspend as `AuthRequired`/`ApprovalRequired`
+/// outcomes, cancellation ends the run), so they conservatively surface as
+/// model-visible tool errors rather than burning retry budget. Security
 /// isolation failures must use a separate quarantine path instead of this
 /// generic failure disposition.
-pub const fn capability_failure_disposition(
-    kind: RuntimeFailureKind,
-) -> CapabilityFailureDisposition {
-    if matches!(kind, RuntimeFailureKind::InvalidInput) {
-        return CapabilityFailureDisposition::ModelVisibleToolError;
-    }
-
-    if runtime_failure_is_retryable(kind) {
+pub fn capability_failure_disposition(kind: FailureKind) -> CapabilityFailureDisposition {
+    // Carry-over of the retired fold's `NetworkDenied` -> `Network` mapping:
+    // egress policy denials keep retrying through the mechanical migration so
+    // this commit changes no dispositions; the dedicated fix removing this
+    // carve-out (denied egress can never succeed on retry) lands next.
+    if matches!(kind, FailureKind::NetworkDenied) {
         return CapabilityFailureDisposition::RetrySameCall;
     }
-
-    CapabilityFailureDisposition::ModelVisibleToolError
-}
-
-const fn runtime_failure_is_retryable(kind: RuntimeFailureKind) -> bool {
-    matches!(
-        kind,
-        RuntimeFailureKind::Internal
-            | RuntimeFailureKind::Backend
-            | RuntimeFailureKind::Network
-            | RuntimeFailureKind::Transient
-            | RuntimeFailureKind::Unavailable
-    )
+    match kind.fate() {
+        FailureFate::Retry => CapabilityFailureDisposition::RetrySameCall,
+        FailureFate::ModelVisible | FailureFate::Park | FailureFate::Terminal => {
+            CapabilityFailureDisposition::ModelVisibleToolError
+        }
+    }
 }
 
 /// Work ids tracked by the host runtime for status/cancellation.
@@ -892,7 +832,7 @@ pub trait HostRuntime: Send + Sync {
         Ok(RuntimeCapabilityOutcome::Failed(
             RuntimeCapabilityFailure::new(
                 capability_id,
-                RuntimeFailureKind::Unavailable,
+                FailureKind::Unavailable,
                 Some("capability spawn is unsupported by this host runtime".to_string()),
             ),
         ))
@@ -923,7 +863,7 @@ pub trait HostRuntime: Send + Sync {
         Ok(RuntimeCapabilityOutcome::Failed(
             RuntimeCapabilityFailure::new(
                 capability_id,
-                RuntimeFailureKind::Unavailable,
+                FailureKind::Unavailable,
                 Some("capability auth-resume is unsupported by this host runtime".to_string()),
             ),
         ))
@@ -950,7 +890,7 @@ pub trait HostRuntime: Send + Sync {
         Ok(RuntimeCapabilityOutcome::Failed(
             RuntimeCapabilityFailure::new(
                 capability_id,
-                RuntimeFailureKind::Unavailable,
+                FailureKind::Unavailable,
                 Some("capability spawn resume is unsupported by this host runtime".to_string()),
             ),
         ))
