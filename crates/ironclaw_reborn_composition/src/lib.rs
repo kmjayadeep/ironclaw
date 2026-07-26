@@ -43,6 +43,7 @@ mod memory_provider_factory;
 mod observability;
 mod operator_tool_catalog;
 mod outbound;
+mod outbound_store_assembly;
 mod product_capability;
 mod product_surface;
 mod production_runtime_policy;

@@ -731,7 +731,7 @@ async fn standalone_default_product_auth_preserves_manual_token_across_rebuilds(
     .filesystem;
     let (rebuilt_secret_store, _rebuilt_secret_crypto) = build_secret_store(
         &standalone_root,
-        scoped_composite_filesystem(rebuilt_filesystem),
+        crate::wrap_scoped(rebuilt_filesystem),
         None,
     )
     .await

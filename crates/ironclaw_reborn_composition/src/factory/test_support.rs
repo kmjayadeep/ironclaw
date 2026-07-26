@@ -913,7 +913,8 @@ pub(crate) async fn open_standalone_approval_request_store_for_test(
 
 /// W6-COLD-SPOTS: fresh `CommunicationPreferenceRepository` reopen, mirrors
 /// [`open_standalone_approval_request_store_for_test`]. Reuses
-/// [`build_outbound_stores`] — the same composition-owned construction the
+/// [`crate::outbound_store_assembly::OutboundStoreAssemblyBuilder`] — the same
+/// composition-owned construction the
 /// production `build_runtime_stores` path uses — so the reopen path
 /// never drifts from production and needs no `disallowed_methods` exception.
 /// Tests only.
@@ -923,7 +924,11 @@ pub(crate) async fn open_standalone_outbound_preferences_store_for_test(
 ) -> Result<Arc<dyn CommunicationPreferenceRepository>, RebornBuildError> {
     let mut composite = CompositeRootFilesystem::new();
     mount_default_database_roots(storage_root, &mut composite).await?;
-    Ok(build_outbound_stores(Arc::new(composite)).outbound_preferences)
+    Ok(
+        crate::outbound_store_assembly::OutboundStoreAssemblyBuilder::new(Arc::new(composite))
+            .build()
+            .outbound_preferences,
+    )
 }
 
 /// Test-only (W5-WEBUI-API-1 seam): open FRESH, independent

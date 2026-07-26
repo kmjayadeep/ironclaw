@@ -39,6 +39,7 @@ use crate::outbound::outbound_preferences_capability::{
 use crate::outbound::{
     outbound_delivery_synthetic_provider, outbound_delivery_target_set_operator_tool_info,
 };
+use crate::outbound_store_assembly::OutboundStoreAssemblyBuilder;
 use crate::runtime_input::RebornRuntimeIdentity;
 use crate::runtime_mounts::{
     ambient_workspace_mount_view, memory_mount_view, scoped_skill_context_mount_view,
@@ -151,7 +152,7 @@ use ironclaw_host_runtime::{
 use ironclaw_loop_host::CheckpointStateStore;
 use ironclaw_outbound::CommunicationPreferenceRepository;
 use ironclaw_outbound::{
-    DeliveredGateRouteStore, OutboundStateStore, OutboundStateStorePort, TriggeredRunDeliveryStore,
+    DeliveredGateRouteStore, OutboundStateStorePort, TriggeredRunDeliveryStore,
 };
 use ironclaw_processes::ProcessServices;
 use ironclaw_product::{
@@ -2267,26 +2268,6 @@ pub async fn provision_standalone_keychain_master_key() -> KeychainMasterKeyOutc
     }
 }
 
-fn scoped_composite_filesystem(
-    filesystem: Arc<CompositeRootFilesystem>,
-) -> Arc<ScopedFilesystem<CompositeRootFilesystem>> {
-    crate::wrap_scoped(filesystem)
-}
-
-/// Unified bundle of outbound store handles returned by [`build_outbound_stores`].
-///
-/// All four trait roles must be satisfied on construction.  Every role is an
-/// `Arc` clone of a single `OutboundStateStore` — which implements all
-/// four outbound-store traits — so the WebUI delivery-defaults facade and the
-/// Slack delivery path share one backing tree.
-/// See docs/plans/2026-05-29-trigger-loop-delivery-resolution-implementation.md.
-pub(crate) struct OutboundStores {
-    pub(crate) outbound_preferences: Arc<dyn CommunicationPreferenceRepository>,
-    pub(crate) outbound_state: Arc<dyn OutboundStateStorePort>,
-    pub(crate) delivered_gate_routes: Arc<dyn DeliveredGateRouteStore>,
-    pub(crate) triggered_run_delivery: Arc<dyn TriggeredRunDeliveryStore>,
-}
-
 /// The host-owned outbound target registry always exposes the WebApp
 /// final-reply destination (#6520 run-scoped delivery): channel extensions add
 /// their targets at activation, but "store the answer in run history" is a
@@ -2329,24 +2310,6 @@ fn host_owned_outbound_delivery_target_registry()
             reason: format!("host-owned WebApp delivery target registration failed: {error}"),
         })?;
     Ok(registry)
-}
-
-fn build_outbound_stores(filesystem: Arc<CompositeRootFilesystem>) -> OutboundStores {
-    // One store instance over the composition-owned per-user scoped filesystem
-    // (`/outbound` → `/tenants/<t>/users/<u>/outbound`). All four outbound
-    // roles — preferences, state, delivered-gate routes, triggered-run delivery
-    // — are Arc-cloned from this single instance so the WebUI delivery-defaults
-    // facade and the Slack delivery path share the same backing tree.
-    #[allow(clippy::disallowed_methods)]
-    let store: Arc<OutboundStateStore<CompositeRootFilesystem>> = Arc::new(
-        OutboundStateStore::new(scoped_composite_filesystem(filesystem)),
-    );
-    OutboundStores {
-        outbound_preferences: Arc::clone(&store) as Arc<dyn CommunicationPreferenceRepository>,
-        outbound_state: Arc::clone(&store) as Arc<dyn OutboundStateStorePort>,
-        delivered_gate_routes: Arc::clone(&store) as Arc<dyn DeliveredGateRouteStore>,
-        triggered_run_delivery: store as Arc<dyn TriggeredRunDeliveryStore>,
-    }
 }
 
 pub(crate) fn builtin_extension_registry() -> Result<ExtensionRegistry, RebornBuildError> {
@@ -3832,7 +3795,7 @@ async fn build_backend_production(
         Arc::clone(&capability_policy),
         approval_settings_provider,
     );
-    let outbound_stores = build_outbound_stores(Arc::clone(&stores.filesystem));
+    let outbound_stores = OutboundStoreAssemblyBuilder::new(Arc::clone(&stores.filesystem)).build();
     let outbound_delivery_targets = host_owned_outbound_delivery_target_registry()?;
     let skill_auto_activate_learned = Arc::new(AtomicBool::new(true));
     let process_backend = production_wiring.runtime_policy.process_backend;
