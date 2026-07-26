@@ -460,7 +460,7 @@ pub struct PutToolResultRecordRequest {
 
 /// Maximum byte window returned by one durable tool-result read, and the
 /// inline first-look preview size (`standalone.rs`'s
-/// `LOCAL_DEV_RESULT_PREVIEW_MAX_BYTES` mirrors this so a model paging past
+/// The standalone result-preview limit mirrors this so a model paging past
 /// `next_offset` sees no gap or overlap). PR #5902 (fixing #5838's
 /// context-compaction crash) originally set this to 2,048 bytes -- a 49x cut
 /// from the pre-fix 100,000-byte inline cap that left most tool results

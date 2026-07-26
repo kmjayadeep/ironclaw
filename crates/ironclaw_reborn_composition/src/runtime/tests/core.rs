@@ -265,7 +265,7 @@ fn standalone_selector_config_propagates_regex_activation_disabled() {
         !cfg.regex_activation_enabled,
         "regex_skill_activation_enabled=false must propagate into SkillActivationSelectorConfig"
     );
-    // Local-dev uses criteria selection so a learned skill auto-activates on
+    // Standalone uses criteria selection so a learned skill auto-activates on
     // a keyword/pattern match (the learn→reuse loop), not only on an
     // explicit `$name` mention. A revert to `ExplicitOnly` would silently
     // break auto-reuse, so lock it here.
@@ -506,7 +506,7 @@ fn production_scheduler_wake_guard_rejects_migration_dry_run_with_absent_wiring(
 
 #[test]
 fn production_scheduler_wake_guard_passes_standalone_with_absent_wiring() {
-    // Local-dev never mints scheduler wake wiring; the guard must not
+    // Standalone never mints scheduler wake wiring; the guard must not
     // reject it (the scheduler loop mints its own channel on that path).
     super::check_production_scheduler_wake_wiring(RebornCompositionProfile::Standalone, &None)
         .expect("standalone is exempt from the scheduler wake wiring requirement");
@@ -628,9 +628,9 @@ struct WorkspaceListingGateway {
     requests: StdMutex<Vec<HostManagedModelRequest>>,
 }
 
-// Local-dev model replay is a bounded reference observation: for a
+// Standalone model replay is a bounded reference observation: for a
 // result under the inline first-look preview cap (issue #5838,
-// `LOCAL_DEV_RESULT_PREVIEW_MAX_BYTES`), the raw content legitimately
+// the standalone result-preview limit), the raw content legitimately
 // appears inline in `detail.preview` so the model does not need a
 // follow-up `result_read` call; only content beyond the cap requires one.
 // Both fixtures below are well under the cap.

@@ -673,7 +673,7 @@ where
     /// so one bad subtree never aborts the sweep.
     pub(crate) async fn sweep_all_accounts(&self) -> Vec<CredentialAccount> {
         let Some(root) = &self.root else {
-            // Local-dev / test path: no root wired, nothing to enumerate.
+            // Standalone/test path: no root wired, nothing to enumerate.
             return Vec::new();
         };
 

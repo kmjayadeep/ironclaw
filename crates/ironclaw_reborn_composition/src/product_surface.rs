@@ -44,7 +44,7 @@ use ironclaw_extension_host::webui_extension_credentials::ProductAuthExtensionCr
 use ironclaw_skills::{ScopedSkillManagementError, ScopedSkillManagementPort};
 
 /// A trigger repository paired with the turn-run snapshot source from the
-/// SAME runtime. Local-dev and production graphs both carry these two
+/// SAME runtime. Standalone and production graphs both carry these two
 /// separately; mixing runtimes would let active-hold projections read run
 /// state the poller of the *other* runtime writes, silently desyncing the
 /// automations panel (#5886).

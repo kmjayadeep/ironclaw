@@ -524,7 +524,7 @@ impl RebornRuntimeInput {
     /// redaction/access control) must opt in via
     /// [`Self::with_raw_trajectory_observer`].
     ///
-    /// **Local-dev / bench only.** The observer is wired through the standalone
+    /// **Standalone/bench only.** The observer is wired through the standalone
     /// capability path; it has no effect on production-profile runtimes, which
     /// have no capability/result hook to forward to. `build_reborn_runtime`
     /// fails fast with `InvalidArgument` if an observer is supplied for a
@@ -551,7 +551,7 @@ impl RebornRuntimeInput {
     /// benchmark harness rendering exact tool I/O) and owns its own redaction
     /// and access control for whatever sink it projects to.
     ///
-    /// **Local-dev / bench only**, with the same fail-fast contract as
+    /// **Standalone/bench only**, with the same fail-fast contract as
     /// [`Self::with_trajectory_observer`].
     pub fn with_raw_trajectory_observer(
         mut self,

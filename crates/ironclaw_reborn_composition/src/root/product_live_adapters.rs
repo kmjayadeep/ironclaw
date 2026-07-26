@@ -55,7 +55,7 @@ pub enum ProductLivePlannedRuntimeAdapterError {
 
 /// In-memory capability I/O staging used by the product-live planned runtime adapters.
 ///
-/// Also records bounded display previews for product composition. Local-dev WebUI wires
+/// Also records bounded display previews for product composition. Standalone WebUI wires
 /// this preview store into projection today; production durable/live fanout still needs
 /// an entrypoint-level hook to pass the same store into its projection services.
 ///

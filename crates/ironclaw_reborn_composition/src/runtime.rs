@@ -42,8 +42,8 @@ use ironclaw_first_party_extension_ports::{
 use ironclaw_host_api::{
     ActionResultSummary, ActionSummary, AgentId, ApprovalRequestId, AuditEnvelope, AuditEventId,
     AuditStage, CapabilityId, CorrelationId, DecisionSummary, EffectKind, ExtensionId,
-    InvocationId, MountView, Principal, ProductSurface, ResourceScope,
-    RuntimeHttpEgress, TenantId, ThreadId, UserId,
+    InvocationId, MountView, Principal, ProductSurface, ResourceScope, RuntimeHttpEgress, TenantId,
+    ThreadId, UserId,
 };
 use ironclaw_loop_host::{
     AwaitEdgeSettler, AwaitEdgeWriter, CapabilityAllowSet, CapabilityResolveError,
@@ -3874,7 +3874,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         ) {
             (Some(standalone_storage_root), Some(default_system_prompt_path)) => {
                 Arc::new(
-                    // Local-dev seeding validates the prompt path first, so non-file prompt paths fail
+                    // Standalone seeding validates the prompt path first, so non-file prompt paths fail
                     // as build errors before this runtime-level identity-source guard is reached.
                     DefaultSystemPromptIdentitySource::try_new(
                         standalone_storage_root,
@@ -4237,7 +4237,7 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     // Spawn the engine-owned credential keepalive sweep (B4;
     // `ironclaw_auth::keepalive`). The factory reports whether the durable
     // candidate source, recipe data, leader lock, and refresh port are ready
-    // together. Local-dev and override paths report `Absent`; the `enabled`
+    // together. Standalone and override paths report `Absent`; the `enabled`
     // policy flag still gates the actual spawn inside `spawn_keepalive_sweep`.
     let credential_refresh_worker_handle = match std::mem::replace(
         &mut services.credential_refresh_worker,
@@ -4435,7 +4435,7 @@ fn build_webui_auth_interaction_service_with_turn_run_source(
 ) -> Arc<dyn AuthInteractionService> {
     // `AuthFlowRecordSource` is optional on the product-auth bundle because
     // production may supply a durable read projection that is not the flow
-    // manager itself. Local-dev can render pending WebUI auth interactions only
+    // manager itself. Standalone can render pending WebUI auth interactions only
     // when the bundle explicitly exposes this scoped projection; otherwise the
     // WebUI surface fails closed with a stable unavailable error.
     let Some(flow_records) = product_auth.flow_record_source() else {

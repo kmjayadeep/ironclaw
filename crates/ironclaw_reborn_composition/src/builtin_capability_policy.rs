@@ -201,7 +201,7 @@ pub(crate) fn builtin_one_shot_lease_approval(constraints: GrantConstraints) -> 
     LeaseApproval {
         issued_by: Principal::HostRuntime,
         constraints: GrantConstraints {
-            // Local-dev leases are single-use (max_invocations = 1).
+            // Standalone leases are single-use (max_invocations = 1).
             // Wall-clock expiry is intentionally None: the policy file does
             // not configure an expires_at ceiling, and a short hard-coded
             // timeout would race against slow human approval flows. The
@@ -464,7 +464,7 @@ pub(crate) fn dev_wildcard_network_policy() -> NetworkPolicy {
             host_pattern: "*".to_string(),
             port: None,
         }],
-        // Local-dev shell is intentionally broad for developer CLI workflows,
+        // Standalone shell is intentionally broad for developer CLI workflows,
         // but it still uses the coarse host-local guard so cloud metadata,
         // link-local, multicast, loopback, and private IP targets remain
         // blocked by the shared network policy enforcer.

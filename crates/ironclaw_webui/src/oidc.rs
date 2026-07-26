@@ -770,7 +770,7 @@ mod tests {
 
     #[test]
     fn require_secure_jwks_url_accepts_loopback_http() {
-        // Local-dev / contract tests run JWKS over loopback HTTP. All
+        // Standalone/contract tests run JWKS over loopback HTTP. All
         // of these must parse cleanly with `url::Url` and pass the
         // `IpAddr::is_loopback()` check (or be the literal
         // `localhost`).

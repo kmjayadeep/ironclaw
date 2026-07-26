@@ -110,7 +110,7 @@ pub(crate) struct ServeCommand {
     #[arg(long)]
     port: Option<u16>,
 
-    /// Confirm trusted-laptop host filesystem access for local-dev-yolo.
+    /// Confirm trusted-laptop host filesystem access for the unrestricted standalone profile.
     #[arg(long = "confirm-host-access")]
     confirm_host_access: bool,
 }
@@ -120,7 +120,7 @@ impl ServeCommand {
         crate::runtime::init_tracing();
 
         // Build the runtime config from the operator's TOML. Built first so
-        // the local-dev-yolo host-access disclosure gate fires before any
+        // the unrestricted standalone host-access disclosure gate fires before any
         // WebUI env-var resolution below; the owner is aligned to the
         // authenticated WebUI user once it is resolved (see `with_owner_id`).
         let built = crate::runtime::build_runtime_input_with_options(
