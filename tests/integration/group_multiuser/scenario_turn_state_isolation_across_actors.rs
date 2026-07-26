@@ -48,15 +48,17 @@ pub async fn run(g: &RebornIntegrationGroup) -> HarnessResult<()> {
 
     // Positive pins: each actor reads back its OWN run under its OWN scope,
     // and gets genuinely ITS record back (not just any `Ok(_)`).
-    assert_own_run_state_readable(a.turn_store.as_ref(), a.turn_scope.clone(), run_a, "A").await?;
-    assert_own_run_state_readable(b.turn_store.as_ref(), b.turn_scope.clone(), run_b, "B").await?;
+    assert_own_run_state_readable(a.turn_runtime.as_ref(), a.turn_scope.clone(), run_a, "A")
+        .await?;
+    assert_own_run_state_readable(b.turn_runtime.as_ref(), b.turn_scope.clone(), run_b, "B")
+        .await?;
 
     // Negative pins, SYMMETRIC both ways: the store's scope-equality gate must
     // reject a request for the OTHER actor's run_id under the reader's OWN
     // scope — the one mechanism actually enforcing isolation given the shared
     // physical snapshot file (see module doc).
     assert_cannot_read_other_run_state(
-        a.turn_store.as_ref(),
+        a.turn_runtime.as_ref(),
         a.turn_scope.clone(),
         run_b,
         "A",
@@ -64,7 +66,7 @@ pub async fn run(g: &RebornIntegrationGroup) -> HarnessResult<()> {
     )
     .await?;
     assert_cannot_read_other_run_state(
-        b.turn_store.as_ref(),
+        b.turn_runtime.as_ref(),
         b.turn_scope.clone(),
         run_a,
         "B",

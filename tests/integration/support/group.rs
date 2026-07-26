@@ -85,7 +85,7 @@ use ironclaw_runner::loop_exit_applier::{
 use ironclaw_runner::model_gateway::{LlmModelProfilePolicy, LlmProviderModelGateway};
 use ironclaw_runner::runtime::{
     DefaultPlannedRuntimeConfig, DefaultPlannedRuntimeParts, ProcessRuntimeSystem,
-    RuntimeTurnStateStore, ToolDisclosureMode, build_default_planned_runtime,
+    ToolDisclosureMode, build_default_planned_runtime,
 };
 use ironclaw_runner::subagent::{
     await_edge::{
@@ -101,19 +101,19 @@ use ironclaw_turns::run_profile::{
     ModelProfileId,
 };
 use ironclaw_turns::{
-    InMemoryTurnEventSink, LoopCheckpointStore, TurnCoordinator, TurnEventSink, TurnScope,
-    TurnStateRowStore, TurnStateStore, TurnStateStoreLimits,
+    AgentTurnProcessRuntime, InMemoryTurnEventSink, LoopCheckpointStore,
+    ProcessLoopCheckpointStore, TurnCoordinator, TurnEventSink, TurnScope, TurnStateStore,
 };
 
 use super::builder::{
     HARNESS_ACTOR_ID, INTERACTIVE_MODEL_PROFILE, RebornIntegrationHarness, StorageMode,
-    apply_hermetic_env, binding_request, build_storage_composite, scoped_turns_fs_composite,
+    apply_hermetic_env, binding_request, build_storage_composite, scoped_processes_fs_composite,
     thread_scope_from_binding,
 };
 use super::doubles::RecordingSecurityAuditSink;
 use super::harness::{
     EmptyIdentityContextSource, HarnessCapabilityMode, HarnessCapabilityRecorder,
-    HarnessTurnBackend, HostRuntimeCapabilityHarness, RecordingTestCapabilityPort,
+    HostRuntimeCapabilityHarness, RecordingTestCapabilityPort,
     StaticCapabilitySurfaceProfileResolver, test_product_scope,
 };
 use super::planned_runtime_parts_shape::{
@@ -203,12 +203,12 @@ pub(crate) struct GroupSharedStorage {
     /// construction (`HostManagedModelGateway::resolve_for_scope`), off the
     /// model hot path.
     pub(crate) scope_gateway: Arc<ScopeRegistryGateway>,
-    /// The group's single shared turn-state store. All threads share one
-    /// `TurnStateRowStore` (isolation is by `run_id`, not by path —
-    /// see `turns_scope_path`, which has no `thread_id` component).
-    pub(crate) turn_store: Arc<TurnStateRowStore<HarnessTurnBackend>>,
-    /// S2 seam: the SAME canonical binding `turn_store`'s `/turns` mount is
-    /// scoped to (`scoped_turns_fs_composite`). Retained so a reopen can
+    /// The group's single authoritative process runtime.
+    pub(crate) process_system: ProcessRuntimeSystem,
+    /// Agent-turn query/projection facade over `process_system`.
+    pub(crate) turn_runtime: Arc<AgentTurnProcessRuntime>,
+    /// S2 seam: the SAME canonical binding process journal is scoped to.
+    /// Retained so a reopen can
     /// rebuild the identical scoped path independently, instead of
     /// re-deriving it from a second binding resolution.
     pub(crate) canonical_binding: ResolvedBinding,
@@ -807,22 +807,22 @@ impl RebornIntegrationGroupBuilder {
     ) -> HarnessResult<RebornIntegrationGroup> {
         let scope_gateway = Arc::new(ScopeRegistryGateway::new());
 
-        // Issue #5476 lease-wedge coverage: `.with_limits` is the store's own
-        // public builder method (`ironclaw_turns::turn_state_row_store`); this only
-        // calls it a second time with a shortened `runner_lease_ttl` when a test
-        // opts in via `with_runner_lease_ttl_for_test`. `None` (default) leaves
-        // `TurnStateStoreLimits::default()` untouched, byte-identical to
-        // today's behavior.
-        let mut turn_state_limits = TurnStateStoreLimits::default();
+        let processes_scoped_fs =
+            scoped_processes_fs_composite(Arc::clone(&base.composite), &base.canonical_binding)?;
+        let mut process_store =
+            ironclaw_processes::ProcessJournalStore::new(Arc::clone(&processes_scoped_fs));
         if let Some(ttl) = self.runner_lease_ttl_override {
-            turn_state_limits.runner_lease_ttl = ttl;
+            process_store = process_store.with_lease_duration(
+                ttl.to_std()
+                    .map_err(|error| format!("invalid runner lease TTL: {error}"))?,
+            );
         }
-        let turns_scoped_fs =
-            scoped_turns_fs_composite(Arc::clone(&base.composite), &base.canonical_binding)?;
-        let turn_store: Arc<TurnStateRowStore<HarnessTurnBackend>> = Arc::new(
-            TurnStateRowStore::new(Arc::clone(&turns_scoped_fs)).with_limits(turn_state_limits),
+        let process_system =
+            ProcessRuntimeSystem::from_process_journal_store(Arc::new(process_store));
+        let turn_runtime = Arc::new(process_system.agent_turn_runtime());
+        let loop_checkpoint_store: Arc<dyn LoopCheckpointStore> = Arc::new(
+            ProcessLoopCheckpointStore::new(process_system.checkpoints()),
         );
-        let loop_checkpoint_store: Arc<dyn LoopCheckpointStore> = turn_store.clone();
         let checkpoint_state_store = in_memory_checkpoint_state_store();
 
         let group_thread_scope = thread_scope_from_binding(&base.canonical_binding)?;
@@ -843,7 +843,7 @@ impl RebornIntegrationGroupBuilder {
         ) = capability.mode().into_parts(
             milestone_sink.clone(),
             group_thread_harness.service.clone() as Arc<dyn SessionThreadService>,
-            Arc::clone(&turn_store),
+            process_system.clone(),
             self.trajectory_observer.clone(),
         )?;
 
@@ -869,16 +869,16 @@ impl RebornIntegrationGroupBuilder {
         // `.with_checkpoint_state_store` is the de-mask fix: without it a
         // genuinely-`Failed` run is reported as the masking
         // `driver_protocol_violation` instead of its true failure category.
-        // Same shared `ScopedFilesystem` handle the turn store uses (`/turns`
+        // Same shared `ScopedFilesystem` handle the process journal uses
         // mount) — the await-edge tree lives at
         // `/turns/subagent-await-edges/...`, a sibling prefix, per §4.5a's
         // "one shared handle, never a per-store fixed view" rule.
-        let await_edge_store = Arc::new(AwaitEdgeStore::new(Arc::clone(&turns_scoped_fs)));
+        let await_edge_store = Arc::new(AwaitEdgeStore::new(Arc::clone(&processes_scoped_fs)));
         let await_edge_goal_store = Arc::new(in_memory_backed_subagent_goal_store());
         let await_edge_resolver = Arc::new(AwaitEdgeResolver::new_unbound(
             Arc::clone(&await_edge_store),
             await_edge_goal_store.clone() as Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
-            turn_store.clone() as Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore>,
+            turn_runtime.clone() as Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore>,
             capability_result_writer.clone(),
             group_thread_harness.service.clone(),
         ));
@@ -886,7 +886,7 @@ impl RebornIntegrationGroupBuilder {
             Arc::clone(&await_edge_resolver),
             Arc::clone(&await_edge_store),
         ));
-        let turn_state_for_evidence: Arc<dyn TurnStateStore> = turn_store.clone();
+        let turn_state_for_evidence: Arc<dyn TurnStateStore> = turn_runtime.clone();
         let mut evidence = ThreadCheckpointLoopExitEvidencePort::new_with_thread_scope(
             group_thread_harness.service.clone(),
             turn_state_for_evidence,
@@ -943,7 +943,6 @@ impl RebornIntegrationGroupBuilder {
         };
 
         // --- the group's ONE planned runtime -------------------------------
-        let turn_state_for_runtime: Arc<dyn RuntimeTurnStateStore> = turn_store.clone();
         let model_gateway: Arc<dyn HostManagedModelGateway> =
             Arc::clone(&scope_gateway) as Arc<dyn HostManagedModelGateway>;
         let user_profile_source: Arc<dyn HostUserProfileSource> =
@@ -990,8 +989,7 @@ impl RebornIntegrationGroupBuilder {
         // by value.
         let milestone_sink_for_assertions = Arc::clone(&milestone_sink);
         let parts = DefaultPlannedRuntimeParts {
-            turn_state: turn_state_for_runtime,
-            process_system: ProcessRuntimeSystem::in_memory_ephemeral().expect("process system"),
+            process_system: process_system.clone(),
             thread_service: group_thread_harness.service.clone() as Arc<dyn SessionThreadService>,
             thread_scope: group_thread_scope,
             model_gateway,
@@ -1106,7 +1104,8 @@ impl RebornIntegrationGroupBuilder {
                 coordinator: composition.coordinator,
                 scheduler_handle: composition.scheduler_handle,
                 scope_gateway,
-                turn_store,
+                process_system,
+                turn_runtime,
                 canonical_binding: base.canonical_binding,
                 capability_recorder,
                 user_profile_source,
@@ -1423,17 +1422,17 @@ impl<'g> RebornThreadBuilder<'g> {
                 "with_real_gate_dispatch_services requires a harness built via new_with_options",
             )?;
             let approval_interaction_service = reborn_services
-                .local_dev_approval_interaction_service_with_turn_state_for_test(
+                .local_dev_approval_interaction_service_with_process_gates_for_test(
                     Arc::clone(&shared.coordinator),
-                    Arc::clone(&shared.turn_store),
+                    shared.process_system.gates(),
                 )?
                 .ok_or(
                     "local-dev approval interaction service unavailable (harness has no local runtime)",
                 )?;
             let auth_interaction_service = reborn_services
-                .local_dev_auth_interaction_service_with_turn_state_for_test(
+                .local_dev_auth_interaction_service_with_process_gates_for_test(
                     Arc::clone(&shared.coordinator),
-                    Arc::clone(&shared.turn_store),
+                    shared.process_system.gates(),
                 )
                 .ok_or(
                     "local-dev auth interaction service unavailable (harness has no local runtime)",
@@ -1458,7 +1457,7 @@ impl<'g> RebornThreadBuilder<'g> {
             actor_id: actor_id.to_owned(),
             binding,
             turn_scope,
-            turn_store: Arc::clone(&shared.turn_store),
+            turn_runtime: Arc::clone(&shared.turn_runtime),
             thread_harness,
             coordinator: Arc::clone(&shared.coordinator),
             event_seq: AtomicU64::new(1),

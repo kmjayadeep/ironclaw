@@ -55,7 +55,6 @@ where
     G: HostManagedModelGateway + ?Sized + Send + Sync + 'static,
 {
     let DefaultPlannedRuntimeParts {
-        turn_state: _,
         process_system: _,
         thread_service: _,
         thread_scope: _,

@@ -18,8 +18,13 @@
 use std::sync::Arc;
 
 use ironclaw_filesystem::InMemoryBackend;
-use ironclaw_host_api::{AgentId, ProjectId, TenantId, ThreadId, UserId};
+use ironclaw_host_api::{AgentId, ProcessId, ProjectId, TenantId, ThreadId, TurnGateRef, UserId};
 use ironclaw_loop_host::AwaitEdgeWriter;
+use ironclaw_processes::{
+    ClaimProcessesRequest, ProcessCheckpointRef, ProcessLeaseRequest,
+    ProcessStateTransitionRequest, ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort,
+    ProcessWorkerId, SuspendProcessRequest,
+};
 use ironclaw_reborn_composition::wrap_scoped;
 use ironclaw_runner::subagent::await_edge::{
     boot_recovery::ScopeRecoveryDriver,
@@ -28,10 +33,9 @@ use ironclaw_runner::subagent::await_edge::{
     store::AwaitEdgeStore,
 };
 use ironclaw_threads::{InMemorySessionThreadService, SessionThreadService, ThreadScope};
-use ironclaw_turns::test_support::in_memory_turn_state_store;
+use ironclaw_turns::test_support::in_memory_agent_turn_process_system;
 use ironclaw_turns::{
     DefaultTurnCoordinator, TurnCoordinator, TurnRunId, TurnScope, TurnSpawnTreePort,
-    runner::TurnRunTransitionPort,
 };
 
 fn scope(tenant: &str, user: &str, agent: Option<&str>, project: Option<&str>) -> TurnScope {
@@ -45,6 +49,59 @@ fn scope(tenant: &str, user: &str, agent: Option<&str>, project: Option<&str>) -
         owner_user_id: UserId::new(user).unwrap(),
     };
     turn_scope
+}
+
+async fn claim_process(
+    transitions: &Arc<dyn ProcessTransitionPort<Error = ironclaw_turns::TurnError>>,
+    run_id: TurnRunId,
+) -> ProcessLeaseRequest {
+    let worker_id =
+        ProcessWorkerId::from_trusted(ironclaw_turns::TurnRunnerId::new().as_uuid().to_string());
+    let claimed = transitions
+        .claim_next_processes(ClaimProcessesRequest {
+            worker_id,
+            scope_filter: None,
+            max_processes: 1,
+        })
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("submitted process must be claimable");
+    assert_eq!(
+        claimed.state.process_id,
+        ProcessId::from_uuid(run_id.as_uuid())
+    );
+    ProcessLeaseRequest {
+        process_id: claimed.state.process_id,
+        worker_id: claimed.worker_id,
+        lease_token: claimed.lease_token,
+    }
+}
+
+async fn suspend_awaiting_child(
+    transitions: &Arc<dyn ProcessTransitionPort<Error = ironclaw_turns::TurnError>>,
+    lease: ProcessLeaseRequest,
+    gate_ref: &ironclaw_turns::GateRef,
+    checkpoint_ref: &str,
+) {
+    transitions
+        .suspend_process(SuspendProcessRequest {
+            process_id: lease.process_id,
+            worker_id: lease.worker_id,
+            lease_token: lease.lease_token,
+            checkpoint_ref: ProcessCheckpointRef::new(checkpoint_ref).unwrap(),
+            suspension: ProcessSuspension {
+                kind: ProcessSuspensionKind::AwaitingChildProcess,
+                gate_ref: Some(TurnGateRef::new(gate_ref.as_str()).unwrap()),
+                activity_id: None,
+                credential_requirements: Vec::new(),
+                detail: None,
+            },
+            metadata: None,
+        })
+        .await
+        .unwrap();
 }
 
 /// Shared production-shaped store: one `Arc<InMemoryBackend>` behind the
@@ -305,7 +362,7 @@ async fn scope_with_unclosed_edge_is_recovered_before_new_spawns_are_admitted() 
     let goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore> =
         Arc::new(ironclaw_runner::subagent::goal_store::in_memory_backed_subagent_goal_store());
     let turn_state_store: Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore> =
-        Arc::new(in_memory_turn_state_store());
+        Arc::new(in_memory_agent_turn_process_system().runtime());
     let thread_service = Arc::new(InMemorySessionThreadService::default());
     let resolver = Arc::new(AwaitEdgeResolver::new_unbound_deferred_result_writer(
         Arc::clone(&store),
@@ -350,7 +407,7 @@ async fn brand_new_scope_with_no_unclosed_edges_is_admitted_immediately() {
     let goal_store: Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore> =
         Arc::new(ironclaw_runner::subagent::goal_store::in_memory_backed_subagent_goal_store());
     let turn_state_store: Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore> =
-        Arc::new(in_memory_turn_state_store());
+        Arc::new(in_memory_agent_turn_process_system().runtime());
     let thread_service = Arc::new(InMemorySessionThreadService::default());
     let resolver = Arc::new(AwaitEdgeResolver::new_unbound_deferred_result_writer(
         Arc::clone(&store),
@@ -390,7 +447,9 @@ async fn brand_new_scope_with_no_unclosed_edges_is_admitted_immediately() {
 #[tokio::test]
 async fn rollback_deleted_edge_is_reconstructed_so_the_parent_still_gets_the_result() {
     let store = real_store();
-    let state_store = Arc::new(in_memory_turn_state_store());
+    let process_system = in_memory_agent_turn_process_system();
+    let state_store = Arc::new(process_system.runtime());
+    let transitions = process_system.transitions();
     let coordinator = Arc::new(DefaultTurnCoordinator::new(Arc::clone(&state_store)));
     let thread_service = Arc::new(InMemorySessionThreadService::default());
 
@@ -437,34 +496,15 @@ async fn rollback_deleted_edge_is_reconstructed_so_the_parent_still_gets_the_res
         run_id: parent_run_id,
         ..
     } = submitted;
-    let runner_id = ironclaw_turns::TurnRunnerId::new();
-    let lease_token = ironclaw_turns::TurnLeaseToken::new();
-    state_store
-        .claim_next_run(ironclaw_turns::runner::ClaimRunRequest {
-            runner_id,
-            lease_token,
-            scope_filter: None,
-        })
-        .await
-        .unwrap()
-        .expect("parent run claimable");
+    let parent_lease = claim_process(&transitions, parent_run_id).await;
     let gate_ref = ironclaw_turns::GateRef::new("gate:subagent-rollback-test").unwrap();
-    state_store
-        .block_run(ironclaw_turns::runner::BlockRunRequest {
-            run_id: parent_run_id,
-            runner_id,
-            lease_token,
-            checkpoint_id: ironclaw_turns::TurnCheckpointId::new(),
-            state_ref: ironclaw_turns::run_profile::LoopCheckpointStateRef::new(
-                "checkpoint:rollback-test",
-            )
-            .unwrap(),
-            reason: ironclaw_turns::BlockedReason::AwaitDependentRun {
-                gate_ref: gate_ref.clone(),
-            },
-        })
-        .await
-        .unwrap();
+    suspend_awaiting_child(
+        &transitions,
+        parent_lease,
+        &gate_ref,
+        "checkpoint:rollback-test",
+    )
+    .await;
 
     // 2. Submit the child as a real lineage child of the parent.
     let child_thread_id = ThreadId::new("child-thread-rollback").unwrap();
@@ -603,22 +643,11 @@ async fn rollback_deleted_edge_is_reconstructed_so_the_parent_still_gets_the_res
 
     // 5. The child, unaware its edge was deleted, keeps running to a real
     // terminal state.
-    let child_runner_id = ironclaw_turns::TurnRunnerId::new();
-    let child_lease = ironclaw_turns::TurnLeaseToken::new();
-    state_store
-        .claim_next_run(ironclaw_turns::runner::ClaimRunRequest {
-            runner_id: child_runner_id,
-            lease_token: child_lease,
-            scope_filter: None,
-        })
-        .await
-        .unwrap()
-        .expect("child run claimable");
-    state_store
-        .complete_run(ironclaw_turns::runner::CompleteRunRequest {
-            run_id: child_run_id,
-            runner_id: child_runner_id,
-            lease_token: child_lease,
+    let child_lease = claim_process(&transitions, child_run_id).await;
+    transitions
+        .complete_process(ProcessStateTransitionRequest {
+            lease: child_lease,
+            metadata: None,
         })
         .await
         .unwrap();
@@ -687,7 +716,9 @@ async fn rollback_deleted_edge_is_reconstructed_so_the_parent_still_gets_the_res
 #[tokio::test]
 async fn mixed_status_batch_group_reports_each_members_own_status_and_reason() {
     let store = real_store();
-    let state_store = Arc::new(in_memory_turn_state_store());
+    let process_system = in_memory_agent_turn_process_system();
+    let state_store = Arc::new(process_system.runtime());
+    let transitions = process_system.transitions();
     let coordinator = Arc::new(DefaultTurnCoordinator::new(Arc::clone(&state_store)));
     let thread_service = Arc::new(InMemorySessionThreadService::default());
 
@@ -734,34 +765,15 @@ async fn mixed_status_batch_group_reports_each_members_own_status_and_reason() {
         run_id: parent_run_id,
         ..
     } = submitted;
-    let runner_id = ironclaw_turns::TurnRunnerId::new();
-    let lease_token = ironclaw_turns::TurnLeaseToken::new();
-    state_store
-        .claim_next_run(ironclaw_turns::runner::ClaimRunRequest {
-            runner_id,
-            lease_token,
-            scope_filter: None,
-        })
-        .await
-        .unwrap()
-        .expect("parent run claimable");
+    let parent_lease = claim_process(&transitions, parent_run_id).await;
     let gate_ref = ironclaw_turns::GateRef::new("gate:subagent-mixed-batch-test").unwrap();
-    state_store
-        .block_run(ironclaw_turns::runner::BlockRunRequest {
-            run_id: parent_run_id,
-            runner_id,
-            lease_token,
-            checkpoint_id: ironclaw_turns::TurnCheckpointId::new(),
-            state_ref: ironclaw_turns::run_profile::LoopCheckpointStateRef::new(
-                "checkpoint:mixed-batch-test",
-            )
-            .unwrap(),
-            reason: ironclaw_turns::BlockedReason::AwaitDependentRun {
-                gate_ref: gate_ref.clone(),
-            },
-        })
-        .await
-        .unwrap();
+    suspend_awaiting_child(
+        &transitions,
+        parent_lease,
+        &gate_ref,
+        "checkpoint:mixed-batch-test",
+    )
+    .await;
 
     // 2. Submit both children as real lineage children of the parent --
     // their own run status never advances past Queued; the resolver drives

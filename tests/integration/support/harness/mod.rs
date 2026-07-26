@@ -134,7 +134,7 @@ impl HarnessCapabilityMode {
         self,
         milestone_sink: Arc<ironclaw_turns::run_profile::InMemoryLoopHostMilestoneSink>,
         turn_thread_service: Arc<dyn ironclaw_threads::SessionThreadService>,
-        turn_store: Arc<ironclaw_turns::TurnStateRowStore<HarnessTurnBackend>>,
+        process_system: ironclaw_runner::runtime::ProcessRuntimeSystem,
         trajectory_observer: Option<Arc<dyn ironclaw_reborn_composition::RebornTrajectoryObserver>>,
     ) -> HarnessResult<HarnessCapabilityParts> {
         match self {
@@ -166,10 +166,10 @@ impl HarnessCapabilityMode {
                     .any(|id| id.as_str() == ironclaw_host_runtime::TRIGGER_CREATE_CAPABILITY_ID)
                     && harness.reborn_services_for_test().is_some()
                 {
-                    harness.install_trigger_source_turn_state_for_test(Arc::clone(&turn_store))?;
+                    harness.install_trigger_source_processes_for_test(&process_system)?;
                 }
                 if harness.trigger_active_run_lookup_requested {
-                    harness.install_trigger_active_run_lookup_for_test(turn_store)?;
+                    harness.install_trigger_active_run_lookup_for_test(&process_system)?;
                 }
                 Ok((
                     harness.capability_factory(milestone_sink, trajectory_observer),
@@ -1025,14 +1025,14 @@ impl HostRuntimeCapabilityHarness {
     /// gated on `trigger_active_run_lookup_requested`.
     fn install_trigger_active_run_lookup_for_test(
         &self,
-        turn_store: Arc<ironclaw_turns::TurnStateRowStore<HarnessTurnBackend>>,
+        process_system: &ironclaw_runner::runtime::ProcessRuntimeSystem,
     ) -> HarnessResult<()> {
         let repo = self
             .trigger_repository_for_test()
             .ok_or("trigger_active_run_lookup wiring requires a captured trigger repository")?;
         let active_run_lookup =
             ironclaw_reborn_composition::test_support::local_dev_trigger_active_run_lookup_for_test(
-                turn_store,
+                process_system.lifecycle(),
             );
         let trigger_lookup_storage_root = self.root.path().join("trigger-active-run-lookup");
         std::fs::create_dir_all(&trigger_lookup_storage_root)?;
@@ -1055,16 +1055,17 @@ impl HostRuntimeCapabilityHarness {
     /// for both paths; only the integration group composes its coordinator
     /// after the capability harness exists, so it must fill this late-bound
     /// test seam before the first run.
-    fn install_trigger_source_turn_state_for_test(
+    fn install_trigger_source_processes_for_test(
         &self,
-        turn_store: Arc<ironclaw_turns::TurnStateRowStore<HarnessTurnBackend>>,
+        process_system: &ironclaw_runner::runtime::ProcessRuntimeSystem,
     ) -> HarnessResult<()> {
         let runtime = self
             .reborn_services_for_test()
             .ok_or("trigger source turn-state wiring requires composed Reborn runtime")?;
-        ironclaw_reborn_composition::test_support::rebind_local_dev_trigger_source_turn_state_for_test(
+        ironclaw_reborn_composition::test_support::rebind_local_dev_trigger_source_processes_for_test(
             runtime,
-            turn_store,
+            process_system.lifecycle(),
+            Arc::new(process_system.agent_turn_runtime()),
         )
         .map_err(Into::into)
     }
@@ -2145,11 +2146,19 @@ pub(crate) fn scoped_turns_fs(
     // integration tier reuses it with a different prefix via
     // `scoped_turns_fs_composite` in builder.rs.
     let target = super::filesystem::turns_scope_path("/engine", binding);
-    let mounts = MountView::new(vec![MountGrant::new(
-        MountAlias::new("/turns").expect("valid turns alias"),
-        VirtualPath::new(target).expect("valid turns target"),
-        MountPermissions::read_write_list_delete(),
-    )])?;
+    let target = VirtualPath::new(target).expect("valid process target");
+    let mounts = MountView::new(vec![
+        MountGrant::new(
+            MountAlias::new("/processes").expect("valid processes alias"),
+            target.clone(),
+            MountPermissions::read_write_list_delete(),
+        ),
+        MountGrant::new(
+            MountAlias::new("/turns").expect("valid turns alias"),
+            target,
+            MountPermissions::read_write_list_delete(),
+        ),
+    ])?;
     Ok(Arc::new(ScopedFilesystem::with_fixed_view(
         turn_state_root_filesystem(backend)?,
         mounts,

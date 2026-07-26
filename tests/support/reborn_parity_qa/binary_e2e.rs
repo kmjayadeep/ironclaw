@@ -50,7 +50,7 @@ use ironclaw_runner::{
     },
     runtime::{
         DefaultPlannedRuntimeConfig, DefaultPlannedRuntimeParts, ProcessRuntimeSystem,
-        RebornRuntimeLoopComposition, RuntimeTurnStateStore, build_default_planned_runtime,
+        RebornRuntimeLoopComposition, build_default_planned_runtime,
     },
 };
 use ironclaw_threads::{
@@ -58,12 +58,11 @@ use ironclaw_threads::{
     ThreadMessageRecord, ThreadScope,
 };
 use ironclaw_turns::{
-    CancelRunRequest, CheckpointStateStorePort, GateRef, GetLoopCheckpointRequest,
-    GetRunStateRequest, IdempotencyKey, LoopBlockedKind, LoopCheckpointKind, LoopCheckpointStore,
+    CancelRunRequest, CheckpointStateStorePort, GateRef, GetLoopCheckpointRequest, IdempotencyKey,
+    LoopBlockedKind, LoopCheckpointKind, LoopCheckpointStore, ProcessLoopCheckpointStore,
     ReplyTargetBindingRef, ResumeTurnRequest, RetryTurnRequest, RetryTurnResponse,
     SanitizedCancelReason, SourceBindingRef, TurnActor, TurnCoordinator, TurnError, TurnRunId,
-    TurnRunRecord, TurnRunState, TurnScope, TurnSpawnTreeStateStore, TurnStateRowStore,
-    TurnStateStore, TurnStatus,
+    TurnRunRecord, TurnRunState, TurnScope, TurnSpawnTreeStateStore, TurnStateStore, TurnStatus,
     run_profile::{
         CapabilityCallCandidate, CapabilityInputRef, CapabilitySurfaceVersion, LoopHostMilestone,
         LoopHostMilestoneKind, LoopRequest, ParentLoopOutput, ProviderToolCallReplay,
@@ -80,8 +79,8 @@ use crate::reborn_support::doubles::{
 use crate::reborn_support::filesystem::{BlockingTurnStatePutFilesystem, local_filesystem};
 use crate::reborn_support::harness::profiles::core_builtin::{self, CoreBuiltinOptions};
 use crate::reborn_support::harness::{
-    HarnessCapabilityMode, HarnessCapabilityRecorder, HarnessResult, HarnessTurnBackend,
-    HarnessTurnStorageBackend, RecordedCapabilityResult, product_scope, scoped_turns_fs,
+    HarnessCapabilityMode, HarnessCapabilityRecorder, HarnessResult, HarnessTurnStorageBackend,
+    RecordedCapabilityResult, product_scope, scoped_turns_fs,
 };
 use crate::reborn_support::product_surface::RebornProductSurfaceHarness;
 use crate::reborn_support::session_thread::RebornThreadHarness;
@@ -98,7 +97,7 @@ pub struct RebornBinaryE2EHarness {
     binding: ResolvedBinding,
     thread_scope: ThreadScope,
     turn_scope: TurnScope,
-    turn_store: Arc<TurnStateRowStore<HarnessTurnBackend>>,
+    turn_runtime: Arc<ironclaw_turns::AgentTurnProcessRuntime>,
     coordinator: Arc<dyn TurnCoordinator>,
     _product_harness: RebornProductSurfaceHarness,
     thread_harness: RebornThreadHarness,
@@ -774,10 +773,17 @@ impl RebornBinaryE2EHarness {
             )
         };
         let turns_scoped_fs = scoped_turns_fs(turn_backend, &binding)?;
-        let turn_store = Arc::new(TurnStateRowStore::new(Arc::clone(&turns_scoped_fs)));
+        let process_store = Arc::new(ironclaw_processes::ProcessJournalStore::new(Arc::clone(
+            &turns_scoped_fs,
+        )));
+        let process_system =
+            ProcessRuntimeSystem::from_process_journal_store(Arc::clone(&process_store));
+        let turn_runtime = Arc::new(process_system.agent_turn_runtime());
         let checkpoint_state_store: Arc<dyn CheckpointStateStorePort> =
             in_memory_checkpoint_state_store();
-        let loop_checkpoint_store: Arc<dyn LoopCheckpointStore> = turn_store.clone();
+        let loop_checkpoint_store: Arc<dyn LoopCheckpointStore> = Arc::new(
+            ProcessLoopCheckpointStore::new(process_system.checkpoints()),
+        );
         let milestone_sink =
             Arc::new(ironclaw_turns::run_profile::InMemoryLoopHostMilestoneSink::default());
         let exposes_spawn_subagent = capability_mode.exposes_spawn_subagent();
@@ -790,7 +796,7 @@ impl RebornBinaryE2EHarness {
         ) = capability_mode.into_parts(
             milestone_sink.clone(),
             thread_harness.service.clone() as Arc<dyn SessionThreadService>,
-            Arc::clone(&turn_store),
+            process_system.clone(),
             None,
         )?;
         // Same shared `ScopedFilesystem` handle the turn store uses (`/turns`
@@ -802,7 +808,7 @@ impl RebornBinaryE2EHarness {
         let await_edge_resolver = Arc::new(AwaitEdgeResolver::new_unbound(
             Arc::clone(&await_edge_store),
             await_edge_goal_store.clone() as Arc<dyn ironclaw_loop_host::SubagentSpawnGoalStore>,
-            turn_store.clone() as Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore>,
+            turn_runtime.clone() as Arc<dyn ironclaw_turns::TurnSpawnTreeStateStore>,
             capability_result_writer.clone(),
             thread_harness.service.clone(),
         ));
@@ -831,7 +837,7 @@ impl RebornBinaryE2EHarness {
             // production currently disables model-facing spawn by default.
             runtime_config.disabled_capability_ids = Vec::new();
         }
-        let turn_state_for_evidence: Arc<dyn TurnStateStore> = turn_store.clone();
+        let turn_state_for_evidence: Arc<dyn TurnStateStore> = turn_runtime.clone();
         let evidence = Arc::new(HarnessLoopExitEvidencePort {
             inner: ThreadCheckpointLoopExitEvidencePort::new_with_thread_scope(
                 thread_harness.service.clone(),
@@ -845,10 +851,8 @@ impl RebornBinaryE2EHarness {
             loop_checkpoint_store: Arc::clone(&loop_checkpoint_store),
             accept_harness_blocked_evidence,
         });
-        let turn_state_for_runtime: Arc<dyn RuntimeTurnStateStore> = turn_store.clone();
         let composition = build_default_planned_runtime(DefaultPlannedRuntimeParts {
-            turn_state: turn_state_for_runtime,
-            process_system: ProcessRuntimeSystem::in_memory_ephemeral().expect("process system"),
+            process_system,
             thread_service: thread_harness.service.clone()
                 as Arc<dyn ironclaw_threads::SessionThreadService>,
             thread_scope: thread_scope.clone(),
@@ -909,7 +913,7 @@ impl RebornBinaryE2EHarness {
             binding,
             thread_scope,
             turn_scope,
-            turn_store,
+            turn_runtime,
             product_harness,
             thread_harness,
             model_gateway,
@@ -928,7 +932,7 @@ impl RebornBinaryE2EHarness {
         binding: ResolvedBinding,
         thread_scope: ThreadScope,
         turn_scope: TurnScope,
-        turn_store: Arc<TurnStateRowStore<HarnessTurnBackend>>,
+        turn_runtime: Arc<ironclaw_turns::AgentTurnProcessRuntime>,
         product_harness: RebornProductSurfaceHarness,
         thread_harness: RebornThreadHarness,
         model_gateway: RebornTraceReplayModelGateway,
@@ -949,7 +953,7 @@ impl RebornBinaryE2EHarness {
             binding,
             thread_scope,
             turn_scope,
-            turn_store,
+            turn_runtime,
             coordinator,
             _product_harness: product_harness,
             thread_harness,
@@ -1272,10 +1276,7 @@ impl RebornBinaryE2EHarness {
         scope: TurnScope,
         run_id: TurnRunId,
     ) -> HarnessResult<TurnRunState> {
-        Ok(self
-            .turn_store
-            .get_run_state(GetRunStateRequest { scope, run_id })
-            .await?)
+        Ok(self.turn_runtime.get_run_state(&scope, run_id).await?)
     }
 
     pub async fn assert_final_reply(&self, text: &str) -> HarnessResult<()> {
@@ -1327,7 +1328,7 @@ impl RebornBinaryE2EHarness {
         scope: &TurnScope,
         run_id: TurnRunId,
     ) -> HarnessResult<Vec<TurnRunRecord>> {
-        Ok(self.turn_store.children_of(scope, run_id).await?)
+        Ok(self.turn_runtime.children_of(scope, run_id).await?)
     }
 
     pub fn model_requests(&self) -> Vec<HostManagedModelRequest> {
