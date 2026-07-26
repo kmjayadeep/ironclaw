@@ -818,7 +818,7 @@ async fn local_dev_denied_shell_approval_does_not_issue_resume_lease() {
     let RuntimeCapabilityOutcome::Failed(failure) = resumed else {
         panic!("denied approval must not resume successfully, got {resumed:?}");
     };
-    assert_eq!(failure.kind, FailureKind::Authorization);
+    assert_eq!(failure.kind, FailureKind::Authorization); // safety: test-only assertion.
     assert!(
         runtime_surfaces
             .capability_leases_for_test()
