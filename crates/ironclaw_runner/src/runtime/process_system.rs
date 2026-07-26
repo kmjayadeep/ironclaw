@@ -9,6 +9,7 @@ use ironclaw_turns::ProcessJournalStoreTurnAdapter;
 
 #[derive(Clone)]
 pub struct ProcessRuntimeSystem {
+    runtime: Arc<dyn ProcessRuntimePort>,
     submission: Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
     adapter: Arc<ProcessJournalStoreTurnAdapter>,
     observers: Arc<dyn ProcessJournalObserverRegistry>,
@@ -25,11 +26,16 @@ impl ProcessRuntimeSystem {
             Arc::clone(&store) as Arc<dyn ProcessRuntimePort>
         ));
         Self {
+            runtime: Arc::clone(&store) as Arc<dyn ProcessRuntimePort>,
             submission: Arc::clone(&store)
                 as Arc<dyn ProcessSubmissionPort<Error = ProcessJournalStoreError>>,
             adapter,
             observers: store as Arc<dyn ProcessJournalObserverRegistry>,
         }
+    }
+
+    pub fn runtime(&self) -> Arc<dyn ProcessRuntimePort> {
+        Arc::clone(&self.runtime)
     }
 
     pub fn in_memory_ephemeral() -> Result<Self, String> {

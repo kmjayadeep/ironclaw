@@ -214,55 +214,6 @@ async fn filesystem_run_state_rejects_duplicate_invocation_in_same_tenant_user()
     );
 }
 
-#[tokio::test]
-async fn filesystem_run_state_duplicate_start_is_serialized_across_store_instances() {
-    let fs = Arc::new(ConcurrentMissingReadFilesystem::new(engine_filesystem()));
-    let scoped = scoped_run_state_fs(fs);
-    let first_store = RunStateStore::new(Arc::clone(&scoped));
-    let second_store = RunStateStore::new(scoped);
-    let invocation_id = InvocationId::new();
-    let scope = sample_scope(invocation_id, "tenant1", "user1");
-
-    let (first, second) = tokio::join!(
-        first_store.start(RunStart {
-            invocation_id,
-            capability_id: CapabilityId::new("echo.one").unwrap(),
-            scope: scope.clone(),
-            authenticated_actor_user_id: None,
-        }),
-        second_store.start(RunStart {
-            invocation_id,
-            capability_id: CapabilityId::new("echo.two").unwrap(),
-            scope: scope.clone(),
-            authenticated_actor_user_id: None,
-        })
-    );
-
-    assert_eq!(
-        [&first, &second]
-            .into_iter()
-            .filter(|result| result.is_ok())
-            .count(),
-        1,
-        "only one filesystem-backed store instance may create a given invocation"
-    );
-    assert_eq!(
-        [&first, &second]
-            .into_iter()
-            .filter(|result| matches!(result, Err(RunStateError::InvocationAlreadyExists { invocation_id: id }) if *id == invocation_id))
-            .count(),
-        1,
-        "the losing store instance should observe the record created by the winner"
-    );
-    assert!(
-        first_store
-            .get(&scope, invocation_id)
-            .await
-            .unwrap()
-            .is_some()
-    );
-}
-
 /// The same invocation_id under two tenants coexists because each tenant resolves
 /// to a distinct `/run-state` mount subtree (arch-simplification §4.3 — the store
 /// no longer hand-keys the full scope tuple; tenant/user come from the mount). Two
@@ -352,47 +303,6 @@ async fn in_memory_run_state_hides_records_from_other_tenants_and_users() {
         store.complete(&tenant_b, invocation_id).await.unwrap_err(),
         RunStateError::UnknownInvocation { .. }
     ));
-}
-
-#[tokio::test]
-async fn filesystem_run_state_store_persists_records_under_run_state_alias() {
-    let fs = Arc::new(engine_filesystem());
-    let scoped = scoped_run_state_fs(fs);
-    let store = RunStateStore::new(Arc::clone(&scoped));
-    let invocation_id = InvocationId::new();
-    let scope = sample_scope(invocation_id, "tenant1", "user1");
-    let approval = approval_request(invocation_id);
-
-    store
-        .start(RunStart {
-            invocation_id,
-            capability_id: CapabilityId::new("echo.say").unwrap(),
-            scope: scope.clone(),
-            authenticated_actor_user_id: None,
-        })
-        .await
-        .unwrap();
-    store
-        .block_approval(&scope, invocation_id, approval.clone())
-        .await
-        .unwrap();
-
-    let reloaded = RunStateStore::new(Arc::clone(&scoped))
-        .get(&scope, invocation_id)
-        .await
-        .unwrap()
-        .unwrap();
-
-    assert_eq!(reloaded.status, RunStatus::BlockedApproval);
-    assert_eq!(reloaded.approval_request_id, Some(approval.id));
-    assert_eq!(
-        RunStateStore::new(scoped)
-            .records_for_scope(&scope)
-            .await
-            .unwrap()
-            .len(),
-        1
-    );
 }
 
 #[tokio::test]
@@ -1213,42 +1123,6 @@ async fn filesystem_approval_store_fails_closed_on_byte_only_backend() {
     let approval = approval_request(invocation_id);
 
     let err = store.save_pending(scope, approval).await.unwrap_err();
-    assert!(
-        matches!(&err, RunStateError::Backend(msg) if msg.contains("compare-and-swap")),
-        "expected Backend(CasUnsupported) from byte-only DiskFilesystem but got {err:?}",
-    );
-}
-
-/// Caller-level mirror of `filesystem_approval_store_fails_closed_on_byte_only_backend`
-/// for `RunStateStore::start`: a regression that drops
-/// `RUN_STATE_RECORD_KIND` from the run-record encoder (`record_entry`), or
-/// breaks the `CasUnsupported` mapping, would let `start` silently succeed
-/// against a byte-only backend instead of failing closed.
-#[tokio::test]
-async fn filesystem_run_state_store_start_fails_closed_on_byte_only_backend() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let mut local_fs = DiskFilesystem::new();
-    local_fs
-        .mount_local(
-            VirtualPath::new("/engine").expect("virtual root"),
-            HostPath::from_path_buf(dir.path().to_path_buf()),
-        )
-        .expect("mount /engine at temp dir");
-    let scoped = scoped_run_state_fs(Arc::new(local_fs));
-    let store = RunStateStore::new(scoped);
-    let invocation_id = InvocationId::new();
-    let scope = sample_scope(invocation_id, "test-tenant", "test-user");
-    let capability_id = CapabilityId::new("echo.say").unwrap();
-
-    let err = store
-        .start(RunStart {
-            invocation_id,
-            capability_id,
-            scope,
-            authenticated_actor_user_id: None,
-        })
-        .await
-        .unwrap_err();
     assert!(
         matches!(&err, RunStateError::Backend(msg) if msg.contains("compare-and-swap")),
         "expected Backend(CasUnsupported) from byte-only DiskFilesystem but got {err:?}",

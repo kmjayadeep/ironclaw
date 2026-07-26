@@ -14,10 +14,10 @@ use super::{
     ProductionImplementationReadiness, ProductionWiringComponent, ProductionWiringIssueKind,
     ProductionWiringReport, RebornEventStoreConfig, RebornEventStoreError, RebornEventStores,
     RebornProfile, ResourceGovernor, RootFilesystem, RunProfileResolver, RunStateApprovalStorePort,
-    RunStateStore, RunStateStorePort, RuntimeBackendHealth, RuntimeCredentialAccountResolver,
-    RuntimeHttpEgress, RuntimeKind, RuntimeProcessPort, ScopedFilesystem, ScriptExecutor,
-    SecretMode, SecretStorePort, SecurityAuditSink, SharedSecretStore, TenantSandboxProcessPort,
-    TrustPolicy, TurnRunWakeNotifier, WasmError, WasmRuntimeAdapter, WasmRuntimeCredentialProvider,
+    RunStateStorePort, RuntimeBackendHealth, RuntimeCredentialAccountResolver, RuntimeHttpEgress,
+    RuntimeKind, RuntimeProcessPort, ScopedFilesystem, ScriptExecutor, SecretMode, SecretStorePort,
+    SecurityAuditSink, SharedSecretStore, TenantSandboxProcessPort, TrustPolicy,
+    TurnRunWakeNotifier, WasmError, WasmRuntimeAdapter, WasmRuntimeCredentialProvider,
     WasmStagedRuntimeCredentials, WitToolHost, WitToolRuntimeConfig, build_reborn_event_stores,
     production_wiring_report, set_runtime_http_egress, set_tool_call_http_egress,
 };
@@ -376,14 +376,17 @@ where
     /// `ironclaw_capabilities::host`. Production composition should layer a
     /// transactional wrapper (or accept the two-step semantics) when
     /// cross-record atomicity matters.
-    pub fn with_filesystem_run_state<FsBackend>(
+    pub fn with_process_journal_run_state<FsBackend>(
         self,
+        process_runtime: Arc<dyn ironclaw_processes::ProcessRuntimePort>,
         scoped_filesystem: Arc<ScopedFilesystem<FsBackend>>,
     ) -> Self
     where
         FsBackend: RootFilesystem + 'static,
     {
-        let run_state = Arc::new(RunStateStore::new(Arc::clone(&scoped_filesystem)));
+        let run_state = Arc::new(crate::process_run_state::ProcessRunStateStore::new(
+            process_runtime,
+        ));
         let approval_requests = Arc::new(ApprovalRequestStore::new(scoped_filesystem));
         self.with_run_state(run_state)
             .with_approval_requests(approval_requests)

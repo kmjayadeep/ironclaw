@@ -1,11 +1,11 @@
 //! Run-state contracts for IronClaw Reborn.
 //!
-//! `ironclaw_run_state` stores the current lifecycle state for host-managed
-//! invocations. It is separate from runtime events: events are append-only
-//! history, while run state answers "what is this invocation waiting on now?".
+//! `ironclaw_run_state` retains compatibility vocabulary for capability
+//! invocation projections plus durable approval and gate records. Production
+//! invocation lifecycle is owned by the process journal.
 //!
-//! Durable persistence is provided by [`RunStateStore`],
-//! [`ApprovalRequestStore`], and [`GateRecordStore`] over a
+//! Durable approval persistence is provided by [`ApprovalRequestStore`] and
+//! [`GateRecordStore`] over a
 //! [`ScopedFilesystem`](ironclaw_filesystem::ScopedFilesystem). The
 //! `RootFilesystem` choice (libSQL-backed, PostgreSQL-backed, in-memory, or
 //! local-disk) is made at the filesystem layer — the consumer-store level no
@@ -29,7 +29,7 @@ use thiserror::Error;
 mod test_support;
 #[cfg(any(test, feature = "test-support"))]
 pub use test_support::{
-    in_memory_backed_approval_request_store, in_memory_backed_gate_record_store,
+    RunStateStore, in_memory_backed_approval_request_store, in_memory_backed_gate_record_store,
     in_memory_backed_run_state_filesystem, in_memory_backed_run_state_store,
 };
 
@@ -281,248 +281,13 @@ pub trait GateRecordStorePort: Send + Sync {
     ) -> Result<Option<GateRecord>, RunStateError>;
 }
 
-/// `RecordKind` tag written on every run-state entry so byte-only backends
-/// (e.g. `DiskFilesystem`) are rejected with `Unsupported{WriteFile}` on
-/// first put, which `cas_update` maps to `CasUnsupported` (fail-closed).
-const RUN_STATE_RECORD_KIND: &str = "run_state_record";
-
 /// `RecordKind` tag written on every approval-request entry for the same
-/// fail-closed CAS gate as [`RUN_STATE_RECORD_KIND`].
+/// fail-closed CAS gate as other typed records.
 const APPROVAL_RECORD_KIND: &str = "approval_record";
 
 /// `RecordKind` tag written on every gate-record entry for the same
-/// fail-closed CAS gate as [`RUN_STATE_RECORD_KIND`].
+/// fail-closed CAS gate as other typed records.
 const GATE_RECORD_KIND: &str = "gate_record";
-
-/// Filesystem-backed run-state store under the `/run-state` mount alias.
-///
-/// Construct with a [`ScopedFilesystem`] over any [`RootFilesystem`]. The
-/// [`ScopedFilesystem`] resolves the `/run-state` alias to a
-/// tenant/user-scoped [`VirtualPath`](ironclaw_host_api::VirtualPath) per
-/// its [`MountView`](ironclaw_host_api::MountView) and enforces per-op ACL
-/// before any backend dispatch — so tenant isolation is structural rather
-/// than something this crate has to re-derive from `ResourceScope.tenant_id`
-/// / `user_id`. Within-tenant axes (agent/project/mission/thread) remain in
-/// the alias-relative path because they are not covered by the per-tenant
-/// `MountAlias`.
-pub struct RunStateStore<F>
-where
-    F: RootFilesystem,
-{
-    filesystem: Arc<ScopedFilesystem<F>>,
-}
-
-impl<F> RunStateStore<F>
-where
-    F: RootFilesystem,
-{
-    pub fn new(filesystem: Arc<ScopedFilesystem<F>>) -> Self {
-        Self { filesystem }
-    }
-
-    fn record_entry(record: &RunRecord) -> Result<Entry, RunStateError> {
-        let body = serialize_pretty(record)?;
-        let kind = RecordKind::new(RUN_STATE_RECORD_KIND)
-            .map_err(|e| RunStateError::Backend(e.to_string()))?;
-        let mut entry = Entry::bytes(body).with_content_type(ContentType::json());
-        entry.kind = Some(kind);
-        Ok(entry)
-    }
-
-    async fn read_versioned(
-        &self,
-        scope: &ResourceScope,
-        invocation_id: InvocationId,
-    ) -> Result<Option<(RunRecord, ironclaw_filesystem::RecordVersion)>, RunStateError> {
-        let path = run_record_path(scope, invocation_id)?;
-        let Some(versioned) = self.filesystem.get(scope, &path).await? else {
-            return Ok(None);
-        };
-        let record = deserialize::<RunRecord>(&versioned.entry.body)?;
-        if same_scope_owner(&record.scope, scope) {
-            Ok(Some((record, versioned.version)))
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Read-modify-write a run record using the shared lock-free CAS helper.
-    ///
-    /// `mutate` projects the staged record onto its new shape. The helper's
-    /// optimistic CAS-retry loop handles cross-process contention without
-    /// holding any lock across `.await`.
-    async fn apply_update<M>(
-        &self,
-        scope: &ResourceScope,
-        invocation_id: InvocationId,
-        mut mutate: M,
-    ) -> Result<RunRecord, RunStateError>
-    where
-        M: FnMut(&mut RunRecord),
-    {
-        let path = run_record_path(scope, invocation_id)?;
-        let scope_clone = scope.clone();
-        cas_update(
-            self.filesystem.as_ref(),
-            scope,
-            &path,
-            |bytes: &[u8]| deserialize::<RunRecord>(bytes),
-            |record: &RunRecord| Self::record_entry(record),
-            |current: Option<RunRecord>| {
-                // Compute the outcome synchronously so the async block only
-                // captures an already-resolved `Result` (mirrors cas_snapshot.rs).
-                let outcome = (|| {
-                    let mut record =
-                        current.ok_or(RunStateError::UnknownInvocation { invocation_id })?;
-                    // Enforce scope ownership on each retry against a freshly read record.
-                    if !same_scope_owner(&record.scope, &scope_clone) {
-                        return Err(RunStateError::UnknownInvocation { invocation_id });
-                    }
-                    mutate(&mut record);
-                    Ok(CasApply::new(record.clone(), record))
-                })();
-                async move { outcome }
-            },
-        )
-        .await
-        .map_err(map_cas_error)
-    }
-}
-
-#[async_trait]
-impl<F> RunStateStorePort for RunStateStore<F>
-where
-    F: RootFilesystem,
-{
-    async fn start(&self, start: RunStart) -> Result<RunRecord, RunStateError> {
-        let path = run_record_path(&start.scope, start.invocation_id)?;
-        let invocation_id = start.invocation_id;
-        let record = RunRecord {
-            invocation_id: start.invocation_id,
-            capability_id: start.capability_id,
-            scope: start.scope,
-            authenticated_actor_user_id: start.authenticated_actor_user_id,
-            status: RunStatus::Running,
-            approval_request_id: None,
-            error_kind: None,
-        };
-        let scope = record.scope.clone();
-        cas_update(
-            self.filesystem.as_ref(),
-            &scope,
-            &path,
-            |bytes: &[u8]| deserialize::<RunRecord>(bytes),
-            |r: &RunRecord| Self::record_entry(r),
-            |current: Option<RunRecord>| {
-                let fresh = record.clone();
-                let outcome = if current.is_some() {
-                    Err(RunStateError::InvocationAlreadyExists { invocation_id })
-                } else {
-                    Ok(CasApply::new(fresh.clone(), fresh))
-                };
-                async move { outcome }
-            },
-        )
-        .await
-        .map_err(map_cas_error)
-    }
-
-    async fn block_approval(
-        &self,
-        scope: &ResourceScope,
-        invocation_id: InvocationId,
-        approval: ApprovalRequest,
-    ) -> Result<RunRecord, RunStateError> {
-        self.apply_update(scope, invocation_id, |record| {
-            record.status = RunStatus::BlockedApproval;
-            record.approval_request_id = Some(approval.id);
-            record.error_kind = None;
-        })
-        .await
-    }
-
-    async fn block_auth(
-        &self,
-        scope: &ResourceScope,
-        invocation_id: InvocationId,
-        error_kind: String,
-    ) -> Result<RunRecord, RunStateError> {
-        self.apply_update(scope, invocation_id, |record| {
-            record.status = RunStatus::BlockedAuth;
-            record.approval_request_id = None;
-            record.error_kind = Some(error_kind.clone());
-        })
-        .await
-    }
-
-    async fn complete(
-        &self,
-        scope: &ResourceScope,
-        invocation_id: InvocationId,
-    ) -> Result<RunRecord, RunStateError> {
-        self.apply_update(scope, invocation_id, |record| {
-            record.status = RunStatus::Completed;
-            record.approval_request_id = None;
-            record.error_kind = None;
-        })
-        .await
-    }
-
-    async fn fail(
-        &self,
-        scope: &ResourceScope,
-        invocation_id: InvocationId,
-        error_kind: String,
-    ) -> Result<RunRecord, RunStateError> {
-        self.apply_update(scope, invocation_id, |record| {
-            record.status = RunStatus::Failed;
-            record.approval_request_id = None;
-            record.error_kind = Some(error_kind.clone());
-        })
-        .await
-    }
-
-    async fn get(
-        &self,
-        scope: &ResourceScope,
-        invocation_id: InvocationId,
-    ) -> Result<Option<RunRecord>, RunStateError> {
-        Ok(self
-            .read_versioned(scope, invocation_id)
-            .await?
-            .map(|(record, _)| record))
-    }
-
-    async fn records_for_scope(
-        &self,
-        scope: &ResourceScope,
-    ) -> Result<Vec<RunRecord>, RunStateError> {
-        let root = run_records_root(scope)?;
-        let entries = match self.filesystem.list_dir(scope, &root).await {
-            Ok(entries) => entries,
-            Err(error) if is_not_found(&error) => return Ok(Vec::new()),
-            Err(error) => return Err(error.into()),
-        };
-        let mut records = Vec::new();
-        for entry in entries {
-            if entry.name.ends_with(".json") {
-                // `list_dir` returns post-resolution `VirtualPath`s; reconstruct
-                // the alias-relative `ScopedPath` so the follow-up `get` still
-                // runs through the per-op ACL.
-                let child = join_scoped(&root, &entry.name)?;
-                let Some(versioned) = self.filesystem.get(scope, &child).await? else {
-                    continue;
-                };
-                let record = deserialize::<RunRecord>(&versioned.entry.body)?;
-                if same_scope_owner(&record.scope, scope) {
-                    records.push(record);
-                }
-            }
-        }
-        records.sort_by_key(|record| record.invocation_id.as_uuid());
-        Ok(records)
-    }
-}
 
 /// Filesystem-backed approval request store under the `/approvals` mount alias.
 ///
@@ -864,9 +629,8 @@ where
     }
 }
 
-// Path layout under the `/run-state` and `/approvals` mount aliases:
+// Path layout under the `/approvals` and `/gate-records` mount aliases:
 //
-//     /run-state[/agents/<agent>][/projects/<project>][/missions/<mission>][/threads/<thread>]/runs/<invocation_id>.json
 //     /approvals[/agents/<agent>][/projects/<project>][/missions/<mission>][/threads/<thread>]/<request_id>.json
 //     /gate-records[/agents/<agent>][/projects/<project>][/missions/<mission>][/threads/<thread>]/<gate_ref>.json
 //
@@ -876,27 +640,8 @@ where
 // stay in the alias-relative path because they are within-tenant scoping
 // not covered by the per-tenant `MountAlias`.
 
-const RUN_STATE_PREFIX: &str = "/run-state";
 const APPROVALS_PREFIX: &str = "/approvals";
 const GATE_RECORDS_PREFIX: &str = "/gate-records";
-
-fn run_record_path(
-    scope: &ResourceScope,
-    invocation_id: InvocationId,
-) -> Result<ScopedPath, RunStateError> {
-    scoped_path(&format!(
-        "{}/{invocation_id}.json",
-        run_records_root_string(scope)
-    ))
-}
-
-fn run_records_root(scope: &ResourceScope) -> Result<ScopedPath, RunStateError> {
-    scoped_path(&run_records_root_string(scope))
-}
-
-fn run_records_root_string(scope: &ResourceScope) -> String {
-    format!("{}/runs", scope_owner_alias_string(RUN_STATE_PREFIX, scope))
-}
 
 fn approval_record_path(
     scope: &ResourceScope,

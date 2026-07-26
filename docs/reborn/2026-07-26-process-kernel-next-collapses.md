@@ -42,6 +42,17 @@ soaks as complete.
 
 ## Slice 1: retire the second process lifecycle
 
+Status on `process-journal-kernel-transition`: production lifecycle persistence
+is collapsed. Capability/background records are submitted as
+`ProcessKind::CapabilityInvocation`, and `ProcessServices` uses a journal-backed
+compatibility projection. `process_store.rs`, lifecycle decorators, and their
+parallel state-machine tests are deleted. Externalized result bodies remain in
+the dedicated result store.
+
+The compatibility `ProcessStorePort`/`ProcessRecord` surface still exists for
+the background manager and host API. It is no longer a durable authority and
+should disappear with Slice 6's generic supervisor.
+
 `ironclaw_processes` still has a separate capability/background process stack:
 
 - `process_store.rs`: 920 lines
@@ -68,6 +79,18 @@ Expected result: the largest low-risk consolidation and one lifecycle for
 agent, capability, and background work.
 
 ## Slice 2: dissolve `ironclaw_run_state`
+
+Status on `process-journal-kernel-transition`: production invocation lifecycle
+is now a process-journal projection. The host runtime maps `InvocationId`
+directly to `ProcessId`, records authorization and approval waits as process
+suspensions, and resumes/claims the same process before terminal transition.
+The filesystem-backed `RunStateStore` and `/run-state` record path are deleted.
+
+`ironclaw_run_state` still owns compatibility lifecycle DTOs/ports and the
+approval/gate stores. Its lifecycle fake is test-only. The remaining dissolution
+is to move approval/gate ownership to `ironclaw_approvals` and replace the
+capability host's `RunStateStorePort` vocabulary with the process projection
+port directly.
 
 `ironclaw_run_state/src/lib.rs` is 1,019 lines of invocation lifecycle:
 `start`, approval/auth blocking, `complete`, `fail`, scoped lookup, and listing.
