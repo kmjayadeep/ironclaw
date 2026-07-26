@@ -699,7 +699,7 @@ mod tests {
         };
         let policy = MemoryBindingPolicy::resolve(MemoryBindingInput {
             provider: Some(extension_id.to_string()),
-            ..MemoryBindingInput::native_default(MemoryDeploymentProfile::LocalDev)
+            ..MemoryBindingInput::native_default(MemoryDeploymentProfile::Standalone)
         })
         .expect("policy resolves");
         MemoryServiceResolver::from_policy(policy)

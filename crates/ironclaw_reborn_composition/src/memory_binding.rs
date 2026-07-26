@@ -19,9 +19,11 @@ fn deployment_profile(profile: RebornCompositionProfile) -> MemoryDeploymentProf
         // `Disabled` never reaches memory composition; treat it as the safest
         // non-production profile so a stray call cannot relax production rules.
         RebornCompositionProfile::Disabled | RebornCompositionProfile::Standalone => {
-            MemoryDeploymentProfile::LocalDev
+            MemoryDeploymentProfile::Standalone
         }
-        RebornCompositionProfile::StandaloneUnrestricted => MemoryDeploymentProfile::LocalDevYolo,
+        RebornCompositionProfile::StandaloneUnrestricted => {
+            MemoryDeploymentProfile::StandaloneUnrestricted
+        }
         // Volume-backed hosted single-tenant shares the same single-tenant trust
         // model as plain hosted-single-tenant, so it gets the same memory
         // deployment classification (and the same binding-certification rules).

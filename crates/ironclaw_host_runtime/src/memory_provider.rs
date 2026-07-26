@@ -186,7 +186,7 @@ mod tests {
     fn policy_with_document_store(extension_id: &str) -> MemoryBindingPolicy {
         MemoryBindingPolicy::resolve(MemoryBindingInput {
             provider: Some(extension_id.to_string()),
-            ..MemoryBindingInput::native_default(MemoryDeploymentProfile::LocalDev)
+            ..MemoryBindingInput::native_default(MemoryDeploymentProfile::Standalone)
         })
         .expect("policy resolves")
     }
