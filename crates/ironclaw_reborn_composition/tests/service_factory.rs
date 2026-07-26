@@ -473,8 +473,8 @@ fn empty_trust_policy() -> Arc<HostTrustPolicy> {
 fn live_wake_notifier() -> (Arc<SchedulerTurnRunWakeNotifier>, TurnRunSchedulerHandle) {
     let processes = ProcessRuntimeSystem::in_memory_ephemeral().expect("process system");
     let executor: Arc<dyn TurnRunExecutor> = Arc::new(NoopTurnRunExecutor);
-    let handle = TurnRunScheduler::new_with_process_transition(
-        processes.transitions(),
+    let handle = TurnRunScheduler::new_with_process_runtime(
+        processes.runtime(),
         executor,
         TurnRunSchedulerConfig::default(),
     )

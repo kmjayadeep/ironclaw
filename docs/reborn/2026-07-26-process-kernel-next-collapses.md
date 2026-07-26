@@ -200,17 +200,22 @@ from public process snapshots and event projections.
 
 ## Slice 6: generalize scheduler wake and cancellation
 
-`runner/turn_scheduler.rs` is 1,129 lines and still owns a turn-named wake
-channel around generic process claiming. Move claim-loop wakeup, lease
-heartbeat, shutdown, and cancellation-handle registration into a generic
-process supervisor.
+Status on `process-journal-kernel-transition`: generic claim-loop wakeup,
+bounded concurrency, lease heartbeat/recovery, executor panic containment,
+terminal-failure recording, and shutdown lease relinquishment now live in
+`ironclaw_processes::ProcessSupervisor`. The former 1,129-line turn scheduler is
+a small `ProcessKind::AgentTurn` adapter over that supervisor; its separate
+executor-task and latency modules are deleted.
 
 The runner registers the executor for `ProcessKind::AgentTurn`; extension and
 host runtimes register their own executors. Scheduling policy, model turns, and
 agent-loop behavior stay outside the kernel.
 
-This should follow lifecycle unification so it replaces both the turn scheduler
-and `ProcessServices` background manager rather than creating another manager.
+The remaining work is to replace `ProcessServices`' detached
+`BackgroundProcessManager` and its compatibility `ProcessStorePort` lifecycle
+with a `ProcessKind::CapabilityInvocation` executor registered on this
+supervisor. Cancellation registration must move with that executor before the
+old manager and store surface are deleted.
 
 ## Recommended order
 

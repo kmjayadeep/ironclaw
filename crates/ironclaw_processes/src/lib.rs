@@ -24,6 +24,7 @@ mod journal_process_store;
 mod journal_store;
 mod result_store;
 mod services;
+mod supervisor;
 #[cfg(any(test, feature = "test-support"))]
 mod test_support;
 mod types;
@@ -68,6 +69,10 @@ pub use result_store::ProcessResultStore;
 pub use services::{
     BackgroundErrorHandler, BackgroundFailure, BackgroundFailureStage, BackgroundProcessManager,
     ProcessServices,
+};
+pub use supervisor::{
+    JournalProcessExecutor, ProcessExecutorFailure, ProcessSupervisor, ProcessSupervisorConfig,
+    ProcessSupervisorHandle, ProcessWakeChannel, ProcessWakeError, ProcessWakeNotifier,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use test_support::{

@@ -1,0 +1,969 @@
+//! Generic execution supervision over the process journal.
+
+use std::{collections::HashMap, fmt, panic::AssertUnwindSafe, sync::Arc, time::Duration};
+
+use async_trait::async_trait;
+use chrono::Utc;
+use futures::FutureExt;
+use ironclaw_host_api::{ProcessId, ResourceScope, SanitizedFailure};
+use tokio::{
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch},
+    task::{JoinHandle, JoinSet},
+    time::{MissedTickBehavior, interval, sleep},
+};
+use tracing::{Instrument, debug};
+
+use crate::{
+    ClaimProcessesRequest, ClaimedProcess, FailProcessRequest, ProcessJournalStoreError,
+    ProcessKind, ProcessLeaseRequest, ProcessLeaseToken, ProcessRuntimePort, ProcessWorkerId,
+    RecoverExpiredProcessLeasesRequest,
+};
+
+const MAX_CLAIMS_PER_DRAIN_BATCH: usize = 128;
+
+#[derive(Debug, Clone)]
+pub struct ProcessSupervisorConfig {
+    max_concurrent_processes: usize,
+    poll_interval: Duration,
+    lease_recovery_interval: Duration,
+    heartbeat_interval: Duration,
+    max_consecutive_heartbeat_failures: usize,
+    terminal_failure_record_attempts: usize,
+    terminal_failure_record_backoff: Duration,
+    claim_error_backoff: Duration,
+    wake_channel_capacity: usize,
+}
+
+impl Default for ProcessSupervisorConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_processes: 4,
+            poll_interval: Duration::from_secs(5),
+            lease_recovery_interval: Duration::from_secs(10),
+            heartbeat_interval: Duration::from_secs(30),
+            max_consecutive_heartbeat_failures: 3,
+            terminal_failure_record_attempts: 3,
+            terminal_failure_record_backoff: Duration::from_millis(100),
+            claim_error_backoff: Duration::from_secs(1),
+            wake_channel_capacity: 128,
+        }
+    }
+}
+
+impl ProcessSupervisorConfig {
+    pub fn max_concurrent_processes(&self) -> usize {
+        self.max_concurrent_processes
+    }
+
+    pub fn poll_interval(&self) -> Duration {
+        self.poll_interval
+    }
+
+    pub fn lease_recovery_interval(&self) -> Duration {
+        self.lease_recovery_interval
+    }
+
+    pub fn heartbeat_interval(&self) -> Duration {
+        self.heartbeat_interval
+    }
+
+    pub fn max_consecutive_heartbeat_failures(&self) -> usize {
+        self.max_consecutive_heartbeat_failures
+    }
+
+    pub fn terminal_failure_record_attempts(&self) -> usize {
+        self.terminal_failure_record_attempts
+    }
+
+    pub fn terminal_failure_record_backoff(&self) -> Duration {
+        self.terminal_failure_record_backoff
+    }
+
+    pub fn claim_error_backoff(&self) -> Duration {
+        self.claim_error_backoff
+    }
+
+    pub fn wake_channel_capacity(&self) -> usize {
+        self.wake_channel_capacity
+    }
+
+    pub fn with_max_concurrent_processes(mut self, maximum: usize) -> Self {
+        self.max_concurrent_processes = maximum.max(1);
+        self
+    }
+
+    pub fn with_poll_interval(mut self, value: Duration) -> Self {
+        self.poll_interval = non_zero_duration(value);
+        self
+    }
+
+    pub fn with_lease_recovery_interval(mut self, value: Duration) -> Self {
+        self.lease_recovery_interval = non_zero_duration(value);
+        self
+    }
+
+    pub fn with_heartbeat_interval(mut self, value: Duration) -> Self {
+        self.heartbeat_interval = non_zero_duration(value);
+        self
+    }
+
+    pub fn with_max_consecutive_heartbeat_failures(mut self, maximum: usize) -> Self {
+        self.max_consecutive_heartbeat_failures = maximum.max(1);
+        self
+    }
+
+    pub fn with_terminal_failure_record_attempts(mut self, maximum: usize) -> Self {
+        self.terminal_failure_record_attempts = maximum.max(1);
+        self
+    }
+
+    pub fn with_terminal_failure_record_backoff(mut self, value: Duration) -> Self {
+        self.terminal_failure_record_backoff = non_zero_duration(value);
+        self
+    }
+
+    pub fn with_claim_error_backoff(mut self, value: Duration) -> Self {
+        self.claim_error_backoff = non_zero_duration(value);
+        self
+    }
+
+    pub fn with_wake_channel_capacity(mut self, capacity: usize) -> Self {
+        self.wake_channel_capacity = capacity.max(1);
+        self
+    }
+}
+
+fn non_zero_duration(value: Duration) -> Duration {
+    if value.is_zero() {
+        Duration::from_millis(1)
+    } else {
+        value
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessExecutorFailure {
+    failure: Option<SanitizedFailure>,
+    fallback_category: String,
+}
+
+impl ProcessExecutorFailure {
+    pub fn new(category: impl Into<String>) -> Self {
+        let fallback_category = category.into();
+        let failure = SanitizedFailure::new(fallback_category.clone()).ok();
+        Self {
+            failure,
+            fallback_category,
+        }
+    }
+
+    pub fn from_failure(failure: SanitizedFailure) -> Self {
+        let fallback_category = failure.category().to_string();
+        Self {
+            failure: Some(failure),
+            fallback_category,
+        }
+    }
+
+    pub fn failure(&self) -> Option<&SanitizedFailure> {
+        self.failure.as_ref()
+    }
+
+    pub fn failure_category(&self) -> &str {
+        self.failure
+            .as_ref()
+            .map_or(self.fallback_category.as_str(), SanitizedFailure::category)
+    }
+}
+
+impl fmt::Display for ProcessExecutorFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "process executor failed: {}",
+            self.failure_category()
+        )
+    }
+}
+
+impl std::error::Error for ProcessExecutorFailure {}
+
+#[async_trait]
+pub trait JournalProcessExecutor: Send + Sync {
+    async fn execute_claimed_process(
+        &self,
+        claimed: ClaimedProcess,
+    ) -> Result<(), ProcessExecutorFailure>;
+
+    fn panic_failure(&self) -> ProcessExecutorFailure {
+        ProcessExecutorFailure::new("process_executor_panic")
+    }
+
+    fn heartbeat_failure(&self) -> ProcessExecutorFailure {
+        ProcessExecutorFailure::new("process_heartbeat_failed")
+    }
+}
+
+pub struct ProcessSupervisor {
+    runtime: Arc<dyn ProcessRuntimePort>,
+    executor: Arc<dyn JournalProcessExecutor>,
+    process_kind: ProcessKind,
+    config: ProcessSupervisorConfig,
+    worker_id: ProcessWorkerId,
+}
+
+impl ProcessSupervisor {
+    pub fn new(
+        runtime: Arc<dyn ProcessRuntimePort>,
+        executor: Arc<dyn JournalProcessExecutor>,
+        process_kind: ProcessKind,
+        config: ProcessSupervisorConfig,
+    ) -> Self {
+        Self {
+            runtime,
+            executor,
+            process_kind,
+            config,
+            worker_id: ProcessWorkerId::from_trusted(ProcessId::new().to_string()),
+        }
+    }
+
+    pub fn start(self) -> ProcessSupervisorHandle {
+        let (notifier, channel) = ProcessWakeNotifier::channel(self.config.wake_channel_capacity());
+        self.start_with_channel(notifier, channel)
+    }
+
+    pub fn start_with_channel(
+        self,
+        notifier: Arc<ProcessWakeNotifier>,
+        channel: ProcessWakeChannel,
+    ) -> ProcessSupervisorHandle {
+        let ProcessWakeChannel {
+            command_tx,
+            command_rx,
+        } = channel;
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let supervisor = tokio::spawn(run_supervisor_loop(
+            command_rx,
+            SupervisorLoop {
+                command_tx,
+                runtime: self.runtime,
+                executor: self.executor,
+                process_kind: self.process_kind,
+                config: self.config,
+                worker_id: self.worker_id,
+                shutdown_rx,
+            },
+        ));
+        ProcessSupervisorHandle {
+            notifier,
+            supervisor: Some(supervisor),
+            shutdown_tx,
+        }
+    }
+}
+
+pub struct ProcessWakeChannel {
+    command_tx: mpsc::Sender<SupervisorCommand>,
+    command_rx: mpsc::Receiver<SupervisorCommand>,
+}
+
+#[derive(Clone)]
+pub struct ProcessWakeNotifier {
+    command_tx: mpsc::Sender<SupervisorCommand>,
+}
+
+impl ProcessWakeNotifier {
+    pub fn channel(capacity: usize) -> (Arc<Self>, ProcessWakeChannel) {
+        let (command_tx, command_rx) = mpsc::channel(capacity.max(1));
+        (
+            Arc::new(Self {
+                command_tx: command_tx.clone(),
+            }),
+            ProcessWakeChannel {
+                command_tx,
+                command_rx,
+            },
+        )
+    }
+
+    pub fn notify_scope(&self, scope: ResourceScope) -> Result<(), ProcessWakeError> {
+        self.command_tx
+            .try_send(SupervisorCommand::Wake(scope))
+            .map_err(|_| ProcessWakeError::DeliveryUnavailable)
+    }
+}
+
+impl fmt::Debug for ProcessWakeNotifier {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ProcessWakeNotifier")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ProcessWakeError {
+    #[error("process supervisor wake delivery unavailable")]
+    DeliveryUnavailable,
+}
+
+pub struct ProcessSupervisorHandle {
+    notifier: Arc<ProcessWakeNotifier>,
+    supervisor: Option<JoinHandle<()>>,
+    shutdown_tx: watch::Sender<bool>,
+}
+
+impl ProcessSupervisorHandle {
+    pub fn wake_notifier(&self) -> Arc<ProcessWakeNotifier> {
+        Arc::clone(&self.notifier)
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.supervisor
+            .as_ref()
+            .is_none_or(tokio::task::JoinHandle::is_finished)
+    }
+
+    pub async fn shutdown(mut self) {
+        let _ = self.shutdown_tx.send(true);
+        if let Some(supervisor) = self.supervisor.take() {
+            let _ = supervisor.await;
+        }
+    }
+}
+
+impl Drop for ProcessSupervisorHandle {
+    fn drop(&mut self) {
+        let _ = self.shutdown_tx.send(true);
+    }
+}
+
+#[derive(Debug)]
+enum SupervisorCommand {
+    Wake(ResourceScope),
+    Drain,
+    RetryDrain,
+}
+
+struct ClaimedIdentity {
+    process_id: ProcessId,
+    worker_id: ProcessWorkerId,
+    lease_token: ProcessLeaseToken,
+}
+
+struct SupervisorLoop {
+    command_tx: mpsc::Sender<SupervisorCommand>,
+    runtime: Arc<dyn ProcessRuntimePort>,
+    executor: Arc<dyn JournalProcessExecutor>,
+    process_kind: ProcessKind,
+    config: ProcessSupervisorConfig,
+    worker_id: ProcessWorkerId,
+    shutdown_rx: watch::Receiver<bool>,
+}
+
+struct DrainContext {
+    command_tx: mpsc::Sender<SupervisorCommand>,
+    runtime: Arc<dyn ProcessRuntimePort>,
+    executor: Arc<dyn JournalProcessExecutor>,
+    process_kind: ProcessKind,
+    config: ProcessSupervisorConfig,
+    worker_id: ProcessWorkerId,
+    semaphore: Arc<Semaphore>,
+}
+
+async fn run_supervisor_loop(
+    mut command_rx: mpsc::Receiver<SupervisorCommand>,
+    loop_state: SupervisorLoop,
+) {
+    let mut shutdown_rx = loop_state.shutdown_rx;
+    let context = DrainContext {
+        command_tx: loop_state.command_tx,
+        runtime: loop_state.runtime,
+        executor: loop_state.executor,
+        process_kind: loop_state.process_kind,
+        semaphore: Arc::new(Semaphore::new(loop_state.config.max_concurrent_processes())),
+        config: loop_state.config,
+        worker_id: loop_state.worker_id,
+    };
+    let mut tasks = JoinSet::new();
+    let mut active = HashMap::new();
+    let mut poll_tick = interval(context.config.poll_interval());
+    poll_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut recovery_tick = interval(context.config.lease_recovery_interval());
+    recovery_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut claim_retry_pending = false;
+
+    loop {
+        tokio::select! {
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    shutdown_supervisor(&context, &mut tasks, active).await;
+                    break;
+                }
+            }
+            Some(command) = command_rx.recv() => {
+                match command {
+                    SupervisorCommand::Wake(scope) => {
+                        drain_or_retry(&context, Some(scope), &mut tasks, &mut active, &mut claim_retry_pending).await;
+                        drain_or_retry(&context, None, &mut tasks, &mut active, &mut claim_retry_pending).await;
+                    }
+                    SupervisorCommand::Drain => {
+                        drain_or_retry(&context, None, &mut tasks, &mut active, &mut claim_retry_pending).await;
+                    }
+                    SupervisorCommand::RetryDrain => {
+                        claim_retry_pending = false;
+                        drain_or_retry(&context, None, &mut tasks, &mut active, &mut claim_retry_pending).await;
+                    }
+                }
+            }
+            _ = poll_tick.tick() => {
+                drain_or_retry(&context, None, &mut tasks, &mut active, &mut claim_retry_pending).await;
+            }
+            Some(result) = tasks.join_next(), if !tasks.is_empty() => {
+                match result {
+                    Ok(process_id) => {
+                        active.remove(&process_id);
+                    }
+                    Err(error) => debug!(%error, "process executor supervisor task failed"),
+                }
+            }
+            _ = recovery_tick.tick() => {
+                recover_expired_leases(&context).await;
+            }
+        }
+    }
+}
+
+async fn drain_or_retry(
+    context: &DrainContext,
+    scope: Option<ResourceScope>,
+    tasks: &mut JoinSet<ProcessId>,
+    active: &mut HashMap<ProcessId, ClaimedIdentity>,
+    retry_pending: &mut bool,
+) {
+    if !*retry_pending && drain_queued(context, scope, tasks, active).await {
+        *retry_pending = true;
+        schedule_retry(
+            context.command_tx.clone(),
+            context.config.claim_error_backoff(),
+        );
+    }
+}
+
+async fn drain_queued(
+    context: &DrainContext,
+    scope_filter: Option<ResourceScope>,
+    tasks: &mut JoinSet<ProcessId>,
+    active: &mut HashMap<ProcessId, ClaimedIdentity>,
+) -> bool {
+    loop {
+        let permits = acquire_claim_permits(&context.semaphore);
+        if permits.is_empty() {
+            return false;
+        }
+        match context
+            .runtime
+            .claim_next_processes(ClaimProcessesRequest {
+                worker_id: context.worker_id.clone(),
+                scope_filter: scope_filter.clone(),
+                process_id_filter: None,
+                process_kind_filter: Some(context.process_kind.clone()),
+                max_processes: permits.len(),
+            })
+            .await
+        {
+            Ok(claims) if claims.is_empty() => return false,
+            Ok(claims) => {
+                for (claimed, permit) in claims.into_iter().zip(permits) {
+                    let process_id = claimed.state.process_id;
+                    active.insert(
+                        process_id,
+                        ClaimedIdentity {
+                            process_id,
+                            worker_id: claimed.worker_id.clone(),
+                            lease_token: claimed.lease_token.clone(),
+                        },
+                    );
+                    spawn_executor(context, claimed, permit, tasks);
+                }
+            }
+            Err(error) => {
+                debug!(%error, process_kind = ?context.process_kind, "process claim failed");
+                return true;
+            }
+        }
+    }
+}
+
+fn acquire_claim_permits(semaphore: &Arc<Semaphore>) -> Vec<OwnedSemaphorePermit> {
+    let mut permits = Vec::new();
+    for _ in 0..MAX_CLAIMS_PER_DRAIN_BATCH {
+        let Ok(permit) = Arc::clone(semaphore).try_acquire_owned() else {
+            break;
+        };
+        permits.push(permit);
+    }
+    permits
+}
+
+fn spawn_executor(
+    context: &DrainContext,
+    claimed: ClaimedProcess,
+    permit: OwnedSemaphorePermit,
+    tasks: &mut JoinSet<ProcessId>,
+) {
+    let runtime = Arc::clone(&context.runtime);
+    let executor = Arc::clone(&context.executor);
+    let command_tx = context.command_tx.clone();
+    let config = context.config.clone();
+    let identity = ClaimedIdentity {
+        process_id: claimed.state.process_id,
+        worker_id: claimed.worker_id.clone(),
+        lease_token: claimed.lease_token.clone(),
+    };
+    let process_kind = claimed.state.process_kind.clone();
+    let process_id = claimed.state.process_id;
+    let span = tracing::info_span!("process", %process_id, process_kind = ?process_kind);
+    tasks.spawn(
+        async move {
+            let mut heartbeat_tick = interval(config.heartbeat_interval());
+            heartbeat_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            heartbeat_tick.tick().await;
+            let execution =
+                AssertUnwindSafe(executor.execute_claimed_process(claimed)).catch_unwind();
+            tokio::pin!(execution);
+            let mut heartbeats = InFlightHeartbeat::default();
+            let mut consecutive_failures = 0usize;
+            let failure = loop {
+                tokio::select! {
+                    biased;
+                    result = &mut execution => {
+                        break match result {
+                            Ok(Ok(())) => None,
+                            Ok(Err(error)) => error
+                                .failure()
+                                .cloned()
+                                .or_else(|| static_failure("unknown_failure")),
+                            Err(_) => executor
+                                .panic_failure()
+                                .failure()
+                                .cloned()
+                                .or_else(|| static_failure("unknown_failure")),
+                        };
+                    }
+                    _ = heartbeat_tick.tick(), if heartbeats.is_idle() => {
+                        heartbeats.spawn(
+                            Arc::clone(&runtime),
+                            identity.process_id,
+                            identity.worker_id.clone(),
+                            identity.lease_token.clone(),
+                            config.heartbeat_interval(),
+                        );
+                    }
+                    Some(result) = heartbeats.join(), if heartbeats.is_running() => {
+                        match heartbeat_outcome(result) {
+                            HeartbeatOutcome::Succeeded => consecutive_failures = 0,
+                            HeartbeatOutcome::Failed => {
+                                consecutive_failures = consecutive_failures.saturating_add(1);
+                            }
+                            HeartbeatOutcome::TimedOut => {}
+                        }
+                        if consecutive_failures >= config.max_consecutive_heartbeat_failures() {
+                            break executor
+                                .heartbeat_failure()
+                                .failure()
+                                .cloned()
+                                .or_else(|| static_failure("unknown_failure"));
+                        }
+                    }
+                }
+            };
+            heartbeats.abort();
+            if let Some(failure) = failure
+                && let Err(error) = record_failure(&runtime, &identity, failure, &config).await
+            {
+                debug!(%error, %process_id, "process terminal failure recording exhausted");
+                relinquish(&runtime, &identity).await;
+            }
+            drop(permit);
+            let _ = command_tx.send(SupervisorCommand::Drain).await;
+            process_id
+        }
+        .instrument(span),
+    );
+}
+
+#[derive(Default)]
+struct InFlightHeartbeat {
+    task: Option<JoinHandle<HeartbeatOutcome>>,
+}
+
+impl InFlightHeartbeat {
+    fn is_idle(&self) -> bool {
+        self.task.is_none()
+    }
+
+    fn is_running(&self) -> bool {
+        self.task.is_some()
+    }
+
+    fn spawn(
+        &mut self,
+        runtime: Arc<dyn ProcessRuntimePort>,
+        process_id: ProcessId,
+        worker_id: ProcessWorkerId,
+        lease_token: ProcessLeaseToken,
+        timeout_after: Duration,
+    ) {
+        self.task = Some(tokio::spawn(async move {
+            let heartbeat = runtime.heartbeat_process(ProcessLeaseRequest {
+                process_id,
+                worker_id,
+                lease_token,
+            });
+            match tokio::time::timeout(timeout_after, heartbeat).await {
+                Ok(Ok(_)) => HeartbeatOutcome::Succeeded,
+                Ok(Err(_)) => HeartbeatOutcome::Failed,
+                Err(_) => HeartbeatOutcome::TimedOut,
+            }
+        }));
+    }
+
+    async fn join(&mut self) -> Option<Result<HeartbeatOutcome, tokio::task::JoinError>> {
+        let result = self.task.as_mut()?.await;
+        self.task = None;
+        Some(result)
+    }
+
+    fn abort(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum HeartbeatOutcome {
+    Succeeded,
+    Failed,
+    TimedOut,
+}
+
+fn heartbeat_outcome(result: Result<HeartbeatOutcome, tokio::task::JoinError>) -> HeartbeatOutcome {
+    result.unwrap_or(HeartbeatOutcome::Failed)
+}
+
+async fn record_failure(
+    runtime: &Arc<dyn ProcessRuntimePort>,
+    identity: &ClaimedIdentity,
+    failure: SanitizedFailure,
+    config: &ProcessSupervisorConfig,
+) -> Result<(), ProcessJournalStoreError> {
+    for attempt in 1..=config.terminal_failure_record_attempts() {
+        match runtime
+            .fail_process(FailProcessRequest {
+                process_id: identity.process_id,
+                worker_id: identity.worker_id.clone(),
+                lease_token: identity.lease_token.clone(),
+                failure: failure.clone(),
+                metadata: None,
+            })
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(error)
+                if retryable_store_error(&error)
+                    && attempt < config.terminal_failure_record_attempts() =>
+            {
+                sleep(config.terminal_failure_record_backoff()).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn retryable_store_error(error: &ProcessJournalStoreError) -> bool {
+    matches!(
+        error,
+        ProcessJournalStoreError::Filesystem(_)
+            | ProcessJournalStoreError::Serialization(_)
+            | ProcessJournalStoreError::Deserialization(_)
+            | ProcessJournalStoreError::Observer(_)
+    )
+}
+
+async fn recover_expired_leases(context: &DrainContext) {
+    match context
+        .runtime
+        .recover_expired_process_leases(RecoverExpiredProcessLeasesRequest {
+            now: Utc::now(),
+            scope_filter: None,
+            process_kind_filter: Some(context.process_kind.clone()),
+        })
+        .await
+    {
+        Ok(response) => {
+            for state in response.recovered {
+                debug!(
+                    process_id = %state.process_id,
+                    process_kind = ?state.process_kind,
+                    status = ?state.status,
+                    "process supervisor recovered expired lease"
+                );
+            }
+        }
+        Err(error) => debug!(%error, "process lease recovery failed"),
+    }
+}
+
+async fn shutdown_supervisor(
+    context: &DrainContext,
+    tasks: &mut JoinSet<ProcessId>,
+    active: HashMap<ProcessId, ClaimedIdentity>,
+) {
+    tasks.shutdown().await;
+    for identity in active.into_values() {
+        relinquish(&context.runtime, &identity).await;
+    }
+}
+
+async fn relinquish(runtime: &Arc<dyn ProcessRuntimePort>, identity: &ClaimedIdentity) {
+    if let Err(error) = runtime
+        .relinquish_process(ProcessLeaseRequest {
+            process_id: identity.process_id,
+            worker_id: identity.worker_id.clone(),
+            lease_token: identity.lease_token.clone(),
+        })
+        .await
+    {
+        debug!(%error, process_id = %identity.process_id, "failed to relinquish process");
+    }
+}
+
+fn static_failure(category: &'static str) -> Option<SanitizedFailure> {
+    SanitizedFailure::new(category).ok()
+}
+
+fn schedule_retry(command_tx: mpsc::Sender<SupervisorCommand>, delay: Duration) {
+    tokio::spawn(async move {
+        sleep(delay).await;
+        let _ = command_tx.send(SupervisorCommand::RetryDrain).await;
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        GetProcessSnapshotRequest, JournaledProcessSnapshot, ProcessJournalSource,
+        ProcessLifecycleStatus, ProcessStateTransitionRequest, ProcessSubmissionPort,
+        SubmitProcessRequest, test_support::in_memory_backed_processes_filesystem,
+    };
+    use ironclaw_host_api::{AgentId, InvocationId, ProjectId, TenantId, ThreadId, UserId};
+    use tokio::sync::Notify;
+
+    struct CompletingExecutor {
+        runtime: Arc<dyn ProcessRuntimePort>,
+    }
+
+    #[async_trait]
+    impl JournalProcessExecutor for CompletingExecutor {
+        async fn execute_claimed_process(
+            &self,
+            claimed: ClaimedProcess,
+        ) -> Result<(), ProcessExecutorFailure> {
+            self.runtime
+                .complete_process(ProcessStateTransitionRequest {
+                    lease: ProcessLeaseRequest {
+                        process_id: claimed.state.process_id,
+                        worker_id: claimed.worker_id,
+                        lease_token: claimed.lease_token,
+                    },
+                    metadata: None,
+                })
+                .await
+                .map_err(|_| ProcessExecutorFailure::new("completion_failed"))?;
+            Ok(())
+        }
+    }
+
+    struct FailingExecutor;
+
+    #[async_trait]
+    impl JournalProcessExecutor for FailingExecutor {
+        async fn execute_claimed_process(
+            &self,
+            _claimed: ClaimedProcess,
+        ) -> Result<(), ProcessExecutorFailure> {
+            Err(ProcessExecutorFailure::new("executor_rejected"))
+        }
+    }
+
+    struct BlockingExecutor {
+        started: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl JournalProcessExecutor for BlockingExecutor {
+        async fn execute_claimed_process(
+            &self,
+            _claimed: ClaimedProcess,
+        ) -> Result<(), ProcessExecutorFailure> {
+            self.started.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn wake_executes_and_completes_matching_process_kind() {
+        let store = Arc::new(crate::ProcessJournalStore::new(
+            in_memory_backed_processes_filesystem(),
+        ));
+        let runtime: Arc<dyn ProcessRuntimePort> = store.clone();
+        let process_id = submit(&store, ProcessKind::Internal).await;
+        let executor = Arc::new(CompletingExecutor {
+            runtime: Arc::clone(&runtime),
+        });
+        let handle =
+            ProcessSupervisor::new(runtime, executor, ProcessKind::Internal, fast_config()).start();
+
+        handle
+            .wake_notifier()
+            .notify_scope(scope())
+            .expect("wake supervisor");
+        let snapshot = wait_for_status(&store, process_id, ProcessLifecycleStatus::Completed).await;
+
+        assert_eq!(snapshot.status, ProcessLifecycleStatus::Completed);
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn executor_failure_is_recorded_by_supervisor() {
+        let store = Arc::new(crate::ProcessJournalStore::new(
+            in_memory_backed_processes_filesystem(),
+        ));
+        let process_id = submit(&store, ProcessKind::Internal).await;
+        let runtime: Arc<dyn ProcessRuntimePort> = store.clone();
+        let handle = ProcessSupervisor::new(
+            runtime,
+            Arc::new(FailingExecutor),
+            ProcessKind::Internal,
+            fast_config(),
+        )
+        .start();
+
+        let snapshot = wait_for_status(&store, process_id, ProcessLifecycleStatus::Failed).await;
+
+        assert_eq!(
+            snapshot.failure.as_ref().map(SanitizedFailure::category),
+            Some("executor_rejected")
+        );
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_relinquishes_in_flight_process() {
+        let store = Arc::new(crate::ProcessJournalStore::new(
+            in_memory_backed_processes_filesystem(),
+        ));
+        let process_id = submit(&store, ProcessKind::Internal).await;
+        let runtime: Arc<dyn ProcessRuntimePort> = store.clone();
+        let started = Arc::new(Notify::new());
+        let handle = ProcessSupervisor::new(
+            runtime,
+            Arc::new(BlockingExecutor {
+                started: Arc::clone(&started),
+            }),
+            ProcessKind::Internal,
+            fast_config(),
+        )
+        .start();
+
+        tokio::time::timeout(Duration::from_secs(2), started.notified())
+            .await
+            .expect("executor starts");
+        handle.shutdown().await;
+        let snapshot = store
+            .get_process_snapshot(GetProcessSnapshotRequest {
+                scope: scope(),
+                process_id,
+            })
+            .await
+            .expect("load process");
+
+        assert_eq!(snapshot.status, ProcessLifecycleStatus::Queued);
+        assert!(snapshot.lease.is_none());
+    }
+
+    fn fast_config() -> ProcessSupervisorConfig {
+        ProcessSupervisorConfig::default()
+            .with_poll_interval(Duration::from_millis(5))
+            .with_lease_recovery_interval(Duration::from_secs(60))
+            .with_heartbeat_interval(Duration::from_secs(60))
+    }
+
+    async fn submit(
+        store: &crate::ProcessJournalStore<ironclaw_filesystem::InMemoryBackend>,
+        process_kind: ProcessKind,
+    ) -> ProcessId {
+        let process_id = ProcessId::new();
+        let resource_scope = scope();
+        store
+            .submit_process(SubmitProcessRequest {
+                process_id,
+                process_kind,
+                scope: resource_scope.clone(),
+                exclusive_within_scope: false,
+                operation_id: None,
+                owner_user_id: Some(resource_scope.user_id),
+                concurrency_class: None,
+                parent_process_id: None,
+                root_process_id: None,
+                spawn_tree_descendant_cap: None,
+                dependency: None,
+                checkpoint_ref: None,
+                input: None,
+                created_at: Utc::now(),
+                metadata: serde_json::Value::Null,
+            })
+            .await
+            .expect("submit process");
+        process_id
+    }
+
+    async fn wait_for_status(
+        store: &crate::ProcessJournalStore<ironclaw_filesystem::InMemoryBackend>,
+        process_id: ProcessId,
+        expected: ProcessLifecycleStatus,
+    ) -> JournaledProcessSnapshot {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let snapshot = store
+                    .get_process_snapshot(GetProcessSnapshotRequest {
+                        scope: scope(),
+                        process_id,
+                    })
+                    .await
+                    .expect("load process");
+                if snapshot.status == expected {
+                    return snapshot;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("process reaches expected status")
+    }
+
+    fn scope() -> ResourceScope {
+        ResourceScope {
+            tenant_id: TenantId::new("tenant-supervisor").expect("tenant"),
+            user_id: UserId::new("user-supervisor").expect("user"),
+            agent_id: Some(AgentId::new("agent-supervisor").expect("agent")),
+            project_id: Some(ProjectId::new("project-supervisor").expect("project")),
+            mission_id: None,
+            thread_id: Some(ThreadId::new("thread-supervisor").expect("thread")),
+            invocation_id: InvocationId::new(),
+        }
+    }
+}

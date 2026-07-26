@@ -817,8 +817,8 @@ where
         .with_runner_heartbeat_interval(parts.config.heartbeat_interval)
         .with_poll_interval(parts.config.poll_interval)
         .with_lease_recovery_interval(parts.config.lease_recovery_interval);
-    let scheduler = TurnRunScheduler::new_with_process_transition(
-        process_transition_port,
+    let scheduler = TurnRunScheduler::new_with_process_runtime(
+        process_system.runtime(),
         executor,
         scheduler_config,
     );
