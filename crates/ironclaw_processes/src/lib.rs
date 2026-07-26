@@ -17,10 +17,10 @@
 //!   production [`BackgroundProcessManager`]
 
 mod cancellation;
+mod compatibility;
 mod host;
 mod invocation_state;
 mod journal;
-mod journal_process_store;
 mod journal_store;
 mod result_store;
 mod services;
@@ -62,9 +62,9 @@ pub use journal::{
     SettleProcessDependencyRequest, StopProcessRequest, SubmitProcessRequest,
     SuspendProcessRequest,
 };
-pub use journal_process_store::JournalProcessStore;
 pub use journal_store::{ProcessJournalStore, ProcessJournalStoreError};
-pub type ProcessStore<F> = JournalProcessStore<F>;
+pub type JournalProcessStore<F> = ProcessJournalStore<F>;
+pub type ProcessStore<F> = ProcessJournalStore<F>;
 pub use result_store::ProcessResultStore;
 pub use services::{
     BackgroundErrorHandler, BackgroundFailure, BackgroundFailureStage, BackgroundProcessManager,

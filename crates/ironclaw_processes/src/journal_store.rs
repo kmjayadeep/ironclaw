@@ -219,11 +219,27 @@ where
     F: RootFilesystem,
 {
     filesystem: Arc<ScopedFilesystem<F>>,
-    projection: Mutex<CachedProjection>,
-    legacy_checked: AtomicBool,
-    observers: StdMutex<Vec<Arc<dyn ProcessJournalCommitObserver>>>,
+    projection: Arc<Mutex<CachedProjection>>,
+    legacy_checked: Arc<AtomicBool>,
+    observers: Arc<StdMutex<Vec<Arc<dyn ProcessJournalCommitObserver>>>>,
     lease_duration: Duration,
     concurrency_limits: ProcessConcurrencyLimits,
+}
+
+impl<F> Clone for ProcessJournalStore<F>
+where
+    F: RootFilesystem,
+{
+    fn clone(&self) -> Self {
+        Self {
+            filesystem: Arc::clone(&self.filesystem),
+            projection: Arc::clone(&self.projection),
+            legacy_checked: Arc::clone(&self.legacy_checked),
+            observers: Arc::clone(&self.observers),
+            lease_duration: self.lease_duration,
+            concurrency_limits: self.concurrency_limits.clone(),
+        }
+    }
 }
 
 impl<F> ProcessJournalStore<F>
@@ -233,9 +249,9 @@ where
     pub fn new(filesystem: Arc<ScopedFilesystem<F>>) -> Self {
         Self {
             filesystem,
-            projection: Mutex::new(CachedProjection::default()),
-            legacy_checked: AtomicBool::new(false),
-            observers: StdMutex::new(Vec::new()),
+            projection: Arc::new(Mutex::new(CachedProjection::default())),
+            legacy_checked: Arc::new(AtomicBool::new(false)),
+            observers: Arc::new(StdMutex::new(Vec::new())),
             lease_duration: DEFAULT_LEASE_DURATION,
             concurrency_limits: ProcessConcurrencyLimits::default(),
         }

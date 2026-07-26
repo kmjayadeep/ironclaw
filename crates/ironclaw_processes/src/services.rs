@@ -21,16 +21,15 @@ use ironclaw_host_api::{ProcessId, ResourceReservation, ResourceScope};
 
 use crate::cancellation::ProcessCancellationRegistry;
 use crate::host::ProcessHost;
-use crate::journal_process_store::JournalProcessStore;
 use crate::result_store::ProcessResultStore;
 use crate::types::{
     ProcessError, ProcessExecutionRequest, ProcessExecutor, ProcessManager, ProcessRecord,
     ProcessResultStorePort, ProcessStart, ProcessStatus, ProcessStorePort,
 };
 use crate::{
-    ClaimedProcess, GetProcessInputRequest, JournalProcessExecutor, ProcessExecutorFailure,
-    ProcessKind, ProcessRuntimePort, ProcessSupervisor, ProcessSupervisorConfig,
-    ProcessSupervisorHandle,
+    ClaimedProcess, GetProcessInputRequest, JournalProcessExecutor, JournalProcessStore,
+    ProcessExecutorFailure, ProcessKind, ProcessRuntimePort, ProcessSupervisor,
+    ProcessSupervisorConfig, ProcessSupervisorHandle,
 };
 
 /// Stage at which a background task failed to persist state.
@@ -149,7 +148,7 @@ where
 {
     pub fn filesystem(filesystem: Arc<ScopedFilesystem<F>>) -> Self {
         Self::new(
-            Arc::new(JournalProcessStore::from_arc(Arc::clone(&filesystem))),
+            Arc::new(JournalProcessStore::new(Arc::clone(&filesystem))),
             Arc::new(ProcessResultStore::from_arc(filesystem)),
         )
     }
@@ -336,7 +335,7 @@ impl BackgroundJournalExecutor {
                 scope: scope.clone(),
             })
             .await
-            .map_err(crate::journal_process_store::map_journal_error)?
+            .map_err(crate::compatibility::map_journal_error)?
             .ok_or_else(|| ProcessError::InvalidStoredRecord {
                 reason: format!("process {process_id} has no durable input"),
             })
