@@ -170,13 +170,9 @@ where
     run_id: String,
     target: String,
     process_journal_backend: ProcessJournalBackend,
-    /// Shared process-journal authorities keyed by tenant/user mount. This preserves
-    /// durable filesystem writes while avoiding a full row-set reload for every
-    /// measured operation in the same process.
+    /// Shared process-journal authorities keyed by tenant/user mount.
     process_systems: Mutex<ProcessSystemCache>,
-    /// Shared in-memory `RootFilesystem` backing the `MemoryJournal` variant's row
-    /// stores — one in-process backend for the whole run, so the process journal's
-    /// journal/delta mechanism is measured without durable-backend cost.
+    /// Shared in-memory `RootFilesystem` for the `MemoryJournal` variant.
     memory_root: Arc<InMemoryBackend>,
 }
 
@@ -1716,9 +1712,7 @@ where
                     stress_process_system(scoped)
                 })
             }
-            // Same process-journal mechanism, but over the shared in-process
-            // in-memory backend (journal/delta semantics, no durable-backend
-            // cost).
+            // Same process-journal mechanism over the shared in-memory backend.
             ProcessJournalBackend::MemoryJournal => {
                 let resource_scope = context.turn_scope.to_resource_scope();
                 self.cached_process_system(&resource_scope, |view| {
@@ -1848,6 +1842,23 @@ fn user_turn_mount_view(run_id: &str, scope: &ResourceScope) -> Result<MountView
         }
         (None, None) => format!("{base}/users/{user}/turns"),
     };
+    let processes_target = match (scope.agent_id.as_ref(), scope.project_id.as_ref()) {
+        (Some(agent_id), Some(project_id)) => format!(
+            "{base}/agents/{}/projects/{}/users/{user}/processes",
+            agent_id.as_str(),
+            project_id.as_str()
+        ),
+        (Some(agent_id), None) => {
+            format!("{base}/agents/{}/users/{user}/processes", agent_id.as_str())
+        }
+        (None, Some(project_id)) => {
+            format!(
+                "{base}/projects/{}/users/{user}/processes",
+                project_id.as_str()
+            )
+        }
+        (None, None) => format!("{base}/users/{user}/processes"),
+    };
 
     MountView::new(vec![
         MountGrant::new(
@@ -1862,7 +1873,7 @@ fn user_turn_mount_view(run_id: &str, scope: &ResourceScope) -> Result<MountView
         ),
         MountGrant::new(
             MountAlias::new("/processes")?,
-            VirtualPath::new(turns_target)?,
+            VirtualPath::new(processes_target)?,
             MountPermissions::read_write_list_delete(),
         ),
     ])

@@ -111,10 +111,9 @@ pub(crate) struct Args {
     #[arg(long, default_value_t = 0)]
     pub(crate) active_thread_count: usize,
 
-    /// Distinct threads per owner-user that share one `/turns/state.json`. Set
-    /// above 1 to reproduce the production contention shape (a user's foreground
-    /// turn plus routine turns on different threads concurrently writing the same
-    /// per-user turn-state document). Default 1 = one thread per owner.
+    /// Distinct threads per owner-user that share one process-journal mount. Set
+    /// above 1 to exercise cross-thread writes against one owner's journal.
+    /// Default 1 = one thread per owner.
     #[arg(long, default_value_t = 1)]
     pub(crate) threads_per_owner: usize,
 
@@ -134,13 +133,9 @@ pub(crate) struct Args {
     #[arg(long, default_value_t = 4)]
     pub(crate) prefill_concurrency: usize,
 
-    /// Exercise the gate-blocked turn path: every Nth measured user-turn
-    /// operation blocks its run on a gate (alternating approval/auth), resumes
-    /// it, then re-claims and completes. 0 (default) = never block, the pure
-    /// claim/complete hot path. Combine with
-    /// `--process-journal-backend memory-persist-on-block` to drive persist-on-block
-    /// writes under concurrency and confirm the durable sink does not
-    /// reintroduce contention.
+    /// Exercise the gate-blocked process path: every Nth measured user-turn
+    /// operation suspends on a gate (alternating approval/auth), resumes, then
+    /// reclaims and completes. 0 (default) is the submit/claim/complete path.
     #[arg(long, default_value_t = 0)]
     pub(crate) gate_blocked_every: usize,
 
@@ -578,12 +573,10 @@ impl Backend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ProcessJournalBackend {
-    /// Durable typed append-log deltas with one hot in-process store per
-    /// tenant/user. The production turn-state store.
+    /// The production process journal over the selected durable filesystem.
     FilesystemJournal,
-    /// The process journal over an in-memory `RootFilesystem` backend — the in-memory
-    /// turn-state authority: coordination in memory with the durable backend
-    /// cost removed. Measures the process-journal mechanism's overhead in isolation.
+    /// The same process journal over an in-memory `RootFilesystem`, removing
+    /// durable-backend cost while preserving journal serialization and CAS.
     MemoryJournal,
 }
 
