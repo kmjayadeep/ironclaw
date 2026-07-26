@@ -304,8 +304,12 @@ async fn run_setup(setup: FailureSetup) -> ObservedTerminal {
             run_local(crate::families::default(), host, None).await
         }
         FailureSetup::CapabilityOperationFailedRecoverable => {
+            // Provider-call path on purpose: model-visible observations are
+            // persisted on provider result refs only, so the cause-survival
+            // assertion below is real (a plain `calls_response()` would leave
+            // `model_observation` None and silently skip it).
             let host = MockHost::new(vec![
-                calls_response(),
+                provider_calls_response(),
                 reply_response_with_text("explanation"),
             ])
             .with_batch_outcomes(vec![batch_outcome(resolution::failed(
@@ -592,16 +596,15 @@ fn assert_expected_terminal(row: &MatrixRow, observed: &ObservedTerminal) {
                 let observation = observed
                     .appended_result_refs
                     .iter()
-                    .find_map(|result| result.model_observation.as_ref());
-                if let Some(observation) = observation {
-                    assert!(matches!(
-                        &observation.detail,
-                        ToolObservationDetail::GenericFailure {
-                            failure_kind: FailureKind::OperationFailed,
-                            detail: Some(detail),
-                        } if detail == OPERATION_FAILED_CAPABILITY_DETAIL
-                    ));
-                }
+                    .find_map(|result| result.model_observation.as_ref())
+                    .expect("recovered capability failure must carry a model-visible observation");
+                assert!(matches!(
+                    &observation.detail,
+                    ToolObservationDetail::GenericFailure {
+                        failure_kind: FailureKind::OperationFailed,
+                        detail: Some(detail),
+                    } if detail == OPERATION_FAILED_CAPABILITY_DETAIL
+                ));
             }
             if matches!(row.setup, FailureSetup::CapabilityInvalidOutputRecoverable) {
                 // Phase 1: the capability failure's safe_summary carries `/`

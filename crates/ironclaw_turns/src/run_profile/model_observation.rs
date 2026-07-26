@@ -516,6 +516,20 @@ mod tests {
                 detail: None
             }
         ));
+        // A retired coarse tag decodes through `from_tag`'s historical alias.
+        let aliased = serde_json::json!({
+            "kind": "generic_failure",
+            "failure_kind": "invalid_input"
+        });
+        let detail: ToolObservationDetail =
+            serde_json::from_value(aliased).expect("aliased legacy tag deserializes");
+        assert!(matches!(
+            detail,
+            ToolObservationDetail::GenericFailure {
+                failure_kind: FailureKind::InputEncode,
+                detail: None
+            }
+        ));
     }
 
     #[test]

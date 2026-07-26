@@ -2756,7 +2756,13 @@ mod tests {
             matches!(
                 outcome,
                 Resolution::Done(ref o)
-                    if o.verdict.error_kind() == Some(&FailureKind::InputEncode)
+                    if matches!(
+                        o.verdict,
+                        ToolVerdict::RecoverableFailure {
+                            error_kind: FailureKind::InputEncode,
+                            ..
+                        }
+                    )
             ),
             "fallback must be a recoverable InvalidInput failure, not run death"
         );
@@ -2814,7 +2820,13 @@ mod tests {
             matches!(
                 outcome,
                 Resolution::Done(ref o)
-                    if o.verdict.error_kind() == Some(&FailureKind::InputEncode)
+                    if matches!(
+                        o.verdict,
+                        ToolVerdict::RecoverableFailure {
+                            error_kind: FailureKind::InputEncode,
+                            ..
+                        }
+                    )
             ),
             "recursive tool_call must be a recoverable InvalidInput failure, not run death"
         );
@@ -2888,7 +2900,13 @@ mod tests {
             matches!(
                 outcome,
                 Resolution::Done(ref o)
-                    if o.verdict.error_kind() == Some(&FailureKind::InputEncode)
+                    if matches!(
+                        o.verdict,
+                        ToolVerdict::RecoverableFailure {
+                            error_kind: FailureKind::InputEncode,
+                            ..
+                        }
+                    )
             ),
             "unknown-target tool_call must be a recoverable InvalidInput failure"
         );
@@ -3065,7 +3083,13 @@ mod tests {
             assert!(matches!(
                 outcome,
                 Resolution::Done(ref o)
-                    if o.verdict.error_kind() == Some(&FailureKind::InputEncode)
+                    if matches!(
+                        o.verdict,
+                        ToolVerdict::RecoverableFailure {
+                            error_kind: FailureKind::InputEncode,
+                            ..
+                        }
+                    )
             ));
         }
     }

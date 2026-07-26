@@ -55,8 +55,13 @@ impl RecordingTestCapabilityPort {
         Self::new(CapabilityMode::Echo, false, false)
     }
 
-    /// Every capability invocation fails with a scripted host invocation error
-    /// (fault-matrix P4: non-model capability-stage failure).
+    /// Every capability invocation fails with a scripted TERMINAL host fault
+    /// (`Unavailable` — fault-matrix P4: non-model capability-stage failure).
+    /// Deliberately a kind in the executor's terminal set
+    /// (`capability_port_error_is_terminal`): caller-shaped kinds such as
+    /// `InvalidInvocation` now surface model-visibly and the run recovers
+    /// in-loop, which would defeat the run-failed → user-retry journeys this
+    /// double exists to drive.
     pub fn invocation_error() -> Self {
         Self::new(CapabilityMode::InvocationError, false, false)
     }
@@ -271,8 +276,11 @@ impl LoopCapabilityPort for RecordingTestCapabilityPort {
     ) -> Result<Resolution, AgentLoopHostError> {
         self.invocations.lock().unwrap().push(request);
         if matches!(self.mode, CapabilityMode::InvocationError) {
+            // Terminal host fault: `Unavailable` stays in the executor's
+            // terminal set, so the run fails with a retryable checkpoint
+            // instead of recovering in-loop (see `invocation_error()`).
             return Err(AgentLoopHostError::new(
-                AgentLoopHostErrorKind::InvalidInvocation,
+                AgentLoopHostErrorKind::Unavailable,
                 "scripted capability invocation failure",
             ));
         }
