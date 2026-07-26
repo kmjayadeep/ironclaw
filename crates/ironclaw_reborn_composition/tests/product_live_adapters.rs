@@ -1658,7 +1658,7 @@ async fn enable_global_auto_approve_for_run(
     user_id: UserId,
 ) {
     let store = runtime
-        .local_dev_auto_approve_settings_for_test()
+        .standalone_auto_approve_settings_for_test()
         .expect("local-dev exposes auto-approve settings for test");
     let mut scope = run_context.scope.to_resource_scope();
     scope.user_id = user_id;
@@ -1680,7 +1680,7 @@ async fn disable_global_auto_approve_for_run(
     user_id: UserId,
 ) {
     let store = runtime
-        .local_dev_auto_approve_settings_for_test()
+        .standalone_auto_approve_settings_for_test()
         .expect("local-dev exposes auto-approve settings for test");
     let mut scope = run_context.scope.to_resource_scope();
     scope.user_id = user_id;

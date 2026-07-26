@@ -1040,7 +1040,7 @@ async fn local_dev_test_support_interaction_services_use_supplied_turn_coordinat
     // `write_filesystem` capabilities instead of gating them. Disable it here
     // so the scripted write actually parks on `BlockedApproval`.
     runtime
-        .local_dev_auto_approve_settings_for_test()
+        .standalone_auto_approve_settings_for_test()
         .expect("local-dev exposes auto-approve settings for test")
         .set(AutoApproveSettingInput {
             updated_by: Principal::User(UserId::new(format!("{tag}-owner")).expect("user")),

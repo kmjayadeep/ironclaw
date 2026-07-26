@@ -1021,7 +1021,7 @@ pub(crate) struct RebornRuntimeStores {
     /// degrade-to-empty for disabled/third-party).
     pub(crate) memory_service_resolver: MemoryServiceResolver,
     pub(crate) workspace_mounts: MountView,
-    pub(crate) local_dev_storage_root: Option<PathBuf>,
+    pub(crate) standalone_storage_root: Option<PathBuf>,
     pub(crate) default_system_prompt_path: Option<PathBuf>,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) in_memory_budget_event_sink: Arc<ironclaw_resources::InMemoryBudgetEventSink>,
@@ -1053,7 +1053,7 @@ pub(crate) struct RebornRuntimeStores {
     /// rather than standing up a second authority.
     pub(crate) secret_store: Arc<dyn SecretStorePort>,
     #[cfg(test)]
-    pub(crate) local_dev_wasm_runtime_credential_provider_captured: bool,
+    pub(crate) standalone_wasm_runtime_credential_provider_captured: bool,
     /// Readiness of the background credential keepalive worker (B1). Carries the
     /// worker's dependencies together so "both deps present or neither" is a type
     /// invariant rather than a runtime check. MUST stay private — the worker is
@@ -1146,11 +1146,11 @@ pub use test_support::{AttachmentTestSupport, ChannelHostAssemblyTestWiring};
 
 #[cfg(feature = "test-support")]
 pub(crate) use test_support::{
-    mount_default_database_roots, open_local_dev_approval_request_store_for_test,
-    open_local_dev_approval_settings_stores_for_test,
-    open_local_dev_extension_installation_store_for_test,
-    open_local_dev_outbound_preferences_store_for_test, open_local_dev_root_filesystem_for_test,
-    open_local_dev_trigger_repository_for_test,
+    mount_default_database_roots, open_standalone_approval_request_store_for_test,
+    open_standalone_approval_settings_stores_for_test,
+    open_standalone_extension_installation_store_for_test,
+    open_standalone_outbound_preferences_store_for_test, open_standalone_root_filesystem_for_test,
+    open_standalone_trigger_repository_for_test,
 };
 
 impl std::fmt::Debug for RebornRuntimeStores {
@@ -1347,7 +1347,7 @@ fn production_config(
 /// hosted-single-tenant. Hosted single-tenant supplies a durable Postgres
 /// backend through `RebornStorageInput::HostedSingleTenantPostgres`; local-dev
 /// keeps its historical local filesystem/libSQL default.
-fn local_dev_extension_lifecycle_surface_context(
+fn extension_lifecycle_surface_context(
     owner_user_id: UserId,
     local_runtime_identity: Option<&RebornLocalRuntimeIdentity>,
 ) -> Result<LifecycleProductSurfaceContext, RebornBuildError> {
@@ -1441,7 +1441,7 @@ where
     TurnStateRowStore::new(filesystem).with_limits(limits)
 }
 
-async fn local_dev_trigger_repository(
+async fn trigger_repository_for_durable_backend(
     backend: &DurableBackend,
 ) -> Result<Arc<dyn TriggerRepository>, RebornBuildError> {
     match backend {
@@ -2268,13 +2268,13 @@ pub async fn provision_standalone_keychain_master_key() -> KeychainMasterKeyOutc
     }
 }
 
-fn local_dev_scoped_filesystem(
+fn scoped_composite_filesystem(
     filesystem: Arc<CompositeRootFilesystem>,
 ) -> Arc<ScopedFilesystem<CompositeRootFilesystem>> {
     crate::wrap_scoped(filesystem)
 }
 
-/// Unified bundle of outbound store handles returned by [`local_dev_outbound_store`].
+/// Unified bundle of outbound store handles returned by [`build_outbound_stores`].
 ///
 /// All four trait roles must be satisfied on construction.  Every role is an
 /// `Arc` clone of a single `OutboundStateStore` — which implements all
@@ -2332,7 +2332,7 @@ fn host_owned_outbound_delivery_target_registry()
     Ok(registry)
 }
 
-fn local_dev_outbound_store(filesystem: Arc<CompositeRootFilesystem>) -> OutboundStores {
+fn build_outbound_stores(filesystem: Arc<CompositeRootFilesystem>) -> OutboundStores {
     // One store instance over the composition-owned per-user scoped filesystem
     // (`/outbound` → `/tenants/<t>/users/<u>/outbound`). All four outbound
     // roles — preferences, state, delivered-gate routes, triggered-run delivery
@@ -2340,7 +2340,7 @@ fn local_dev_outbound_store(filesystem: Arc<CompositeRootFilesystem>) -> Outboun
     // facade and the Slack delivery path share the same backing tree.
     #[allow(clippy::disallowed_methods)]
     let store: Arc<OutboundStateStore<CompositeRootFilesystem>> = Arc::new(
-        OutboundStateStore::new(local_dev_scoped_filesystem(filesystem)),
+        OutboundStateStore::new(scoped_composite_filesystem(filesystem)),
     );
     OutboundStores {
         outbound_preferences: Arc::clone(&store) as Arc<dyn CommunicationPreferenceRepository>,
@@ -2713,7 +2713,7 @@ async fn build_production_shaped(
                 first_party_registrars,
                 credential_account_visibility_policy,
                 workspace_filesystems: None,
-                local_dev_storage_root: None,
+                standalone_storage_root: None,
                 default_system_prompt_path: None,
                 #[cfg(any(test, feature = "test-support"))]
                 network_http_egress_for_test: network_http_egress_for_test.clone(),
@@ -2774,7 +2774,7 @@ async fn build_production_shaped(
                 first_party_registrars,
                 credential_account_visibility_policy,
                 workspace_filesystems: None,
-                local_dev_storage_root: None,
+                standalone_storage_root: None,
                 default_system_prompt_path: None,
                 #[cfg(any(test, feature = "test-support"))]
                 network_http_egress_for_test: network_http_egress_for_test.clone(),
@@ -2846,7 +2846,7 @@ async fn build_production_shaped(
                 first_party_registrars,
                 credential_account_visibility_policy,
                 workspace_filesystems: None,
-                local_dev_storage_root: None,
+                standalone_storage_root: None,
                 default_system_prompt_path: None,
                 #[cfg(any(test, feature = "test-support"))]
                 network_http_egress_for_test: network_http_egress_for_test.clone(),
@@ -2907,7 +2907,7 @@ async fn build_production_shaped(
                 first_party_registrars,
                 credential_account_visibility_policy,
                 workspace_filesystems: None,
-                local_dev_storage_root: None,
+                standalone_storage_root: None,
                 default_system_prompt_path: None,
                 #[cfg(any(test, feature = "test-support"))]
                 network_http_egress_for_test: network_http_egress_for_test.clone(),
@@ -2983,7 +2983,7 @@ async fn build_local_storage_production_shaped(
             .build()
             .await?;
     let trigger_repository =
-        local_dev_trigger_repository(&filesystem_bundle.durable_backend).await?;
+        trigger_repository_for_durable_backend(&filesystem_bundle.durable_backend).await?;
     let refresh_lock_pool = match &filesystem_bundle.durable_backend {
         DurableBackend::LibSql(_) => None,
         DurableBackend::Postgres(pool) => Some(pool.clone()),
@@ -3001,7 +3001,7 @@ async fn build_local_storage_production_shaped(
     context.workspace_filesystems =
         Some(host_access.build_workspace_filesystems(Arc::clone(&filesystem))?);
     context.local_process_port = host_access.process_port;
-    context.local_dev_storage_root = Some(root.clone());
+    context.standalone_storage_root = Some(root.clone());
     context.default_system_prompt_path = Some(bootstrap.default_system_prompt_path);
     let scoped_filesystem = crate::wrap_scoped(Arc::clone(&filesystem));
     let (_secret_store, crypto) = build_secret_store(
@@ -3075,7 +3075,7 @@ struct RebornProductionBuildContext {
     credential_account_visibility_policy:
         Option<Arc<dyn ironclaw_auth::RuntimeCredentialAccountVisibilityPolicy>>,
     workspace_filesystems: Option<WorkspaceFilesystems>,
-    local_dev_storage_root: Option<PathBuf>,
+    standalone_storage_root: Option<PathBuf>,
     default_system_prompt_path: Option<PathBuf>,
     /// Test-support host HTTP egress override (see `TestNetworkHttpEgress`).
     /// Carried from `RebornHostBindings::network_http_egress_for_test` so the
@@ -3692,7 +3692,7 @@ async fn build_backend_production(
         first_party_registrars,
         credential_account_visibility_policy,
         workspace_filesystems,
-        local_dev_storage_root,
+        standalone_storage_root,
         default_system_prompt_path,
         #[cfg(any(test, feature = "test-support"))]
         network_http_egress_for_test,
@@ -3753,7 +3753,7 @@ async fn build_backend_production(
         skill_management_filesystem,
         Arc::new(production_skill_management_mount_view),
     ));
-    let extension_lifecycle_surface_context = local_dev_extension_lifecycle_surface_context(
+    let extension_lifecycle_surface_context = extension_lifecycle_surface_context(
         owner_user_id.clone(),
         local_runtime_identity.as_ref(),
     )?;
@@ -3833,7 +3833,7 @@ async fn build_backend_production(
         Arc::clone(&capability_policy),
         approval_settings_provider,
     );
-    let outbound_stores = local_dev_outbound_store(Arc::clone(&stores.filesystem));
+    let outbound_stores = build_outbound_stores(Arc::clone(&stores.filesystem));
     let outbound_delivery_targets = host_owned_outbound_delivery_target_registry()?;
     let skill_auto_activate_learned = Arc::new(AtomicBool::new(true));
     let process_backend = production_wiring.runtime_policy.process_backend;
@@ -4762,7 +4762,7 @@ async fn build_backend_production(
     let shared_extension_registry = services.shared_extension_registry();
 
     #[cfg(test)]
-    let local_dev_wasm_runtime_credential_provider_captured =
+    let standalone_wasm_runtime_credential_provider_captured =
         services.wasm_runtime_credential_provider_captured_for_test();
     let host_runtime: Arc<dyn ironclaw_host_runtime::HostRuntime> = if uses_local_host_runtime {
         Arc::new(services.host_runtime_for_local_testing())
@@ -4814,7 +4814,7 @@ async fn build_backend_production(
         extension_filesystem: Arc::clone(&stores.filesystem),
         memory_service_resolver: memory_resolver,
         workspace_mounts: runtime_workspace_mounts,
-        local_dev_storage_root,
+        standalone_storage_root,
         default_system_prompt_path,
         #[cfg(any(test, feature = "test-support"))]
         in_memory_budget_event_sink,
@@ -4837,7 +4837,7 @@ async fn build_backend_production(
         production_scheduler_wake: Some(scheduler_wake_wiring),
         secret_store,
         #[cfg(test)]
-        local_dev_wasm_runtime_credential_provider_captured,
+        standalone_wasm_runtime_credential_provider_captured,
         // `Ready` only when this path built a durable candidate source (i.e. no
         // caller-supplied product_auth_ports override); `Absent` otherwise. The
         // leader lock is always available on this production path.

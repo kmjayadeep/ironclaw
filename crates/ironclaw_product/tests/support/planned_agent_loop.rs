@@ -184,7 +184,7 @@ async fn enable_host_runtime_auto_approve_for_harness_user(
     binding: &ResolvedBinding,
 ) {
     let auto_approve = services
-        .local_dev_auto_approve_settings_for_test()
+        .standalone_auto_approve_settings_for_test()
         .expect("local-dev host runtime auto-approve settings");
     let scope = ResourceScope {
         tenant_id: binding.tenant_id.clone(),

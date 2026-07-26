@@ -97,12 +97,13 @@ pub use channel_connection::{
     ChannelConnectionTestBundle, ChannelConnectionTestConfig, build_channel_connection_for_test,
 };
 #[cfg(feature = "test-support")]
-pub use durable::open_local_dev_extension_installation_store_for_test;
+pub use durable::open_standalone_extension_installation_store_for_test;
 #[cfg(feature = "test-support")]
 pub use durable::{
-    open_local_dev_approval_request_store_for_test,
-    open_local_dev_approval_settings_stores_for_test,
-    open_local_dev_outbound_preferences_store_for_test, open_local_dev_trigger_repository_for_test,
+    open_standalone_approval_request_store_for_test,
+    open_standalone_approval_settings_stores_for_test,
+    open_standalone_outbound_preferences_store_for_test,
+    open_standalone_trigger_repository_for_test,
 };
 pub use oauth_product_auth::build_google_oauth_product_auth_for_test;
 pub use oauth_product_auth::build_oauth_product_auth_for_test_on_libsql;

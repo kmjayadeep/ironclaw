@@ -314,7 +314,7 @@ async fn local_dev_google_oauth_backend_builds_with_host_provider_config() {
     .expect("local-dev services build");
     let _ = &services.product_auth;
     assert!(
-        services.local_dev_wasm_runtime_credential_provider_captured,
+        services.standalone_wasm_runtime_credential_provider_captured,
         "local-dev WASM runtime must capture the product-auth credential provider"
     );
 }
@@ -367,7 +367,7 @@ async fn production_libsql_google_oauth_backend_captures_wasm_credential_provide
 
     let _ = &services.product_auth;
     assert!(
-        services.local_dev_wasm_runtime_credential_provider_captured,
+        services.standalone_wasm_runtime_credential_provider_captured,
         "production WASM runtime must capture the product-auth credential provider"
     );
 }

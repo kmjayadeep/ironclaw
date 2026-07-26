@@ -252,7 +252,7 @@ async fn invoke_outcome_with_context(
     context: ExecutionContext,
     input: serde_json::Value,
 ) -> RuntimeCapabilityOutcome {
-    crate::approval_test_support::invoke_with_local_dev_approval(
+    crate::approval_test_support::invoke_with_standalone_approval(
         services,
         capability_id,
         context,

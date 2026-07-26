@@ -90,20 +90,20 @@ pub(crate) async fn disable_global_auto_approve(
         .expect("disable global auto-approve"); // safety: test-only gating precondition
 }
 
-pub(crate) async fn invoke_json_with_local_dev_approval(
+pub(crate) async fn invoke_json_with_standalone_approval(
     runtime: &impl ApprovalHarness,
     capability_id: &str,
     context: ExecutionContext,
     input: serde_json::Value,
 ) -> Result<serde_json::Value, RuntimeFailureKind> {
-    match invoke_with_local_dev_approval(runtime, capability_id, context, input).await {
+    match invoke_with_standalone_approval(runtime, capability_id, context, input).await {
         RuntimeCapabilityOutcome::Completed(completed) => Ok(completed.output),
         RuntimeCapabilityOutcome::Failed(failure) => Err(failure.kind),
         other => panic!("unexpected runtime outcome: {other:?}"),
     }
 }
 
-pub(crate) async fn invoke_with_local_dev_approval(
+pub(crate) async fn invoke_with_standalone_approval(
     runtime: &impl ApprovalHarness,
     capability_id: &str,
     context: ExecutionContext,

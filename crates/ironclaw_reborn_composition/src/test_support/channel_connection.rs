@@ -297,7 +297,7 @@ impl ChannelConnectionTestBundle {
         storage_root: &std::path::Path,
         user_ids: &[&UserId],
     ) -> Result<Vec<bool>, String> {
-        let filesystem = crate::factory::open_local_dev_root_filesystem_for_test(storage_root)
+        let filesystem = crate::factory::open_standalone_root_filesystem_for_test(storage_root)
             .await
             .map_err(|error| error.to_string())?;
         let store = Arc::new(

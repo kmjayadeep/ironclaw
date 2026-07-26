@@ -11,61 +11,61 @@
 /// production filesystem mounts + install-store load in `factory` so the reopen
 /// path never drifts from `build_runtime_substrate`. Tests only.
 #[cfg(feature = "test-support")]
-pub async fn open_local_dev_extension_installation_store_for_test(
+pub async fn open_standalone_extension_installation_store_for_test(
     storage_root: &std::path::Path,
 ) -> Result<
     std::sync::Arc<dyn ironclaw_extensions::ExtensionInstallationStorePort>,
     crate::RebornBuildError,
 > {
-    crate::factory::open_local_dev_extension_installation_store_for_test(storage_root).await
+    crate::factory::open_standalone_extension_installation_store_for_test(storage_root).await
 }
 
 /// Test-support entry point (C-DURABLE): reopen a fresh, independent
 /// `ApprovalRequestStore` at an existing local-dev `storage_root`. Mirrors
-/// [`open_local_dev_extension_installation_store_for_test`] for approval-gate
+/// [`open_standalone_extension_installation_store_for_test`] for approval-gate
 /// records instead of extension installs. Tests only.
 #[cfg(feature = "test-support")]
-pub async fn open_local_dev_approval_request_store_for_test(
+pub async fn open_standalone_approval_request_store_for_test(
     storage_root: &std::path::Path,
 ) -> Result<std::sync::Arc<dyn ironclaw_run_state::ApprovalRequestStorePort>, crate::RebornBuildError>
 {
-    crate::factory::open_local_dev_approval_request_store_for_test(storage_root).await
+    crate::factory::open_standalone_approval_request_store_for_test(storage_root).await
 }
 
 /// Test-support entry point (C-DURABLE): reopen a fresh, independent
 /// `TriggerRepository` at an existing local-dev `storage_root`. Mirrors
-/// [`open_local_dev_extension_installation_store_for_test`] for triggers
+/// [`open_standalone_extension_installation_store_for_test`] for triggers
 /// instead of extension installs. Tests only.
 #[cfg(feature = "test-support")]
-pub async fn open_local_dev_trigger_repository_for_test(
+pub async fn open_standalone_trigger_repository_for_test(
     storage_root: &std::path::Path,
 ) -> Result<std::sync::Arc<dyn ironclaw_triggers::TriggerRepository>, crate::RebornBuildError> {
-    crate::factory::open_local_dev_trigger_repository_for_test(storage_root).await
+    crate::factory::open_standalone_trigger_repository_for_test(storage_root).await
 }
 
 /// Test-support entry point (W6-COLD-SPOTS): reopen a fresh, independent
 /// `CommunicationPreferenceRepository` at an existing local-dev `storage_root`.
-/// Mirrors [`open_local_dev_approval_request_store_for_test`] for outbound
+/// Mirrors [`open_standalone_approval_request_store_for_test`] for outbound
 /// preferences instead of approval-gate records. Tests only.
 #[cfg(feature = "test-support")]
-pub async fn open_local_dev_outbound_preferences_store_for_test(
+pub async fn open_standalone_outbound_preferences_store_for_test(
     storage_root: &std::path::Path,
 ) -> Result<
     std::sync::Arc<dyn ironclaw_outbound::CommunicationPreferenceRepository>,
     crate::RebornBuildError,
 > {
-    crate::factory::open_local_dev_outbound_preferences_store_for_test(storage_root).await
+    crate::factory::open_standalone_outbound_preferences_store_for_test(storage_root).await
 }
 
 /// Test-support entry point (W5-WEBUI-API-1 seam): reopen FRESH, independent
 /// `ToolPermissionOverrideStore` / `AutoApproveSettingStore` /
 /// `PersistentApprovalPolicyStore` handles at an existing local-dev
-/// `storage_root`. Mirrors [`open_local_dev_extension_installation_store_for_test`]
+/// `storage_root`. Mirrors [`open_standalone_extension_installation_store_for_test`]
 /// for the tool-settings/approval-policy stores instead of extension installs
 /// — lets a cold-reopen test prove settings state survives a fresh local-dev
 /// store reopen rather than re-reading the same live `Arc`s. Tests only.
 #[cfg(feature = "test-support")]
-pub async fn open_local_dev_approval_settings_stores_for_test(
+pub async fn open_standalone_approval_settings_stores_for_test(
     storage_root: &std::path::Path,
 ) -> Result<
     (
@@ -75,5 +75,5 @@ pub async fn open_local_dev_approval_settings_stores_for_test(
     ),
     crate::RebornBuildError,
 > {
-    crate::factory::open_local_dev_approval_settings_stores_for_test(storage_root).await
+    crate::factory::open_standalone_approval_settings_stores_for_test(storage_root).await
 }

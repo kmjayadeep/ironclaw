@@ -678,7 +678,7 @@ mod tests {
     use super::*;
     use crate::lifecycle_test_support::{
         ExtensionLifecycleTestServices, build_lifecycle_test_services,
-        invoke_json_with_local_dev_approval, invoke_with_local_dev_approval,
+        invoke_json_with_standalone_approval, invoke_with_standalone_approval,
     };
     use ironclaw_host_api::InstallationState;
     use ironclaw_product::{
@@ -1276,7 +1276,7 @@ mod tests {
         // install exists and leaks its credential requirement shape. Ownership
         // masks before the credential preflight, so the non-owner sees the
         // same failure a missing installation would produce.
-        let outcome = invoke_with_local_dev_approval(
+        let outcome = invoke_with_standalone_approval(
             &services,
             EXTENSION_ACTIVATE_CAPABILITY_ID,
             execution_context_for_user(
@@ -1678,7 +1678,7 @@ mod tests {
         capability_id: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, RuntimeFailureKind> {
-        invoke_json_with_local_dev_approval(
+        invoke_json_with_standalone_approval(
             services,
             capability_id,
             execution_context([capability_id]),
@@ -1692,7 +1692,7 @@ mod tests {
         capability_id: &str,
         input: serde_json::Value,
     ) -> RuntimeCapabilityOutcome {
-        invoke_with_local_dev_approval(
+        invoke_with_standalone_approval(
             services,
             capability_id,
             execution_context([capability_id]),

@@ -705,7 +705,7 @@ async fn configure_delivery_targets(runtime: &RebornRuntime) {
     let user_id = UserId::new(USER).expect("valid user id");
     register_delivery_targets(runtime);
     runtime
-        .local_dev_outbound_preferences_for_test()
+        .standalone_outbound_preferences_for_test()
         .expect("local runtime exposes outbound preferences")
         .put_communication_preference(CommunicationPreferenceRecord {
             scope: DeliveryDefaultScope::personal(tenant_id, user_id.clone()),
@@ -893,7 +893,7 @@ async fn invoke_trigger_create(runtime: &RebornRuntime, input: Value) -> Value {
     // same tenant/user) exercise the dispatch path instead of stopping at the
     // per-tool approval gate.
     let auto_approve = runtime
-        .local_dev_auto_approve_settings_for_test()
+        .standalone_auto_approve_settings_for_test()
         .expect("local-dev exposes auto-approve settings for test");
     let auto_approve_scope = trigger_management_execution_context().resource_scope;
     auto_approve

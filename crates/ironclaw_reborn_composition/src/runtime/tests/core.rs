@@ -5125,7 +5125,7 @@ async fn local_dev_runtime_webui_bundle_reuses_thread_and_turn_services() {
 /// through the same `ProjectScopedAttachmentReader` production wires
 /// `attachment_read_port` with. The C-ATTACH integration tests exercise the
 /// shared `RebornRuntimeStores::read_write_workspace_filesystem` recipe via the
-/// `local_dev_attachment_test_support_for_test` seam, but never call through
+/// `standalone_attachment_test_support_for_test` seam, but never call through
 /// this `RebornRuntime` wrapper itself; this closes that gap so a future
 /// regression in the wrapper (not just the shared recipe) fails a test
 /// instead of only breaking WebUI/OpenAI-compatible attachment landing in

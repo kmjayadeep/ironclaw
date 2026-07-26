@@ -731,7 +731,7 @@ async fn local_dev_default_product_auth_preserves_manual_token_across_rebuilds()
     .filesystem;
     let (rebuilt_secret_store, _rebuilt_secret_crypto) = build_secret_store(
         &local_dev_root,
-        local_dev_scoped_filesystem(rebuilt_filesystem),
+        scoped_composite_filesystem(rebuilt_filesystem),
         None,
     )
     .await
@@ -2508,7 +2508,7 @@ async fn invoke_json(
     context: ExecutionContext,
     input: serde_json::Value,
 ) -> Result<serde_json::Value, RuntimeFailureKind> {
-    crate::approval_test_support::invoke_json_with_local_dev_approval(
+    crate::approval_test_support::invoke_json_with_standalone_approval(
         services,
         capability_id,
         context,
@@ -2780,7 +2780,7 @@ fn skill_md(name: &str, description: &str, prompt: &str) -> String {
     format!("---\nname: {name}\ndescription: {description}\n---\n{prompt}\n")
 }
 
-/// Verify that the durable `local_dev_outbound_store` bundle (libsql or postgres)
+/// Verify that the durable `build_outbound_stores` bundle (libsql or postgres)
 /// shares a single `OutboundStateStore` allocation across all four
 /// trait-object roles.
 ///

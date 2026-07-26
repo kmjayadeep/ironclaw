@@ -1488,7 +1488,7 @@ impl RebornRuntime {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn local_dev_auto_approve_settings_for_test(
+    pub fn standalone_auto_approve_settings_for_test(
         &self,
     ) -> Option<Arc<dyn ironclaw_approvals::AutoApproveSettingStorePort>> {
         Some(self.auto_approve_settings.clone()
@@ -1547,7 +1547,7 @@ impl RebornRuntime {
     /// `CapabilityLeaseStore` over `scoped_filesystem`). Test-support
     /// only; zero bytes in production builds.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn local_dev_approval_test_parts(&self) -> Option<crate::RebornApprovalTestParts> {
+    pub fn standalone_approval_test_parts(&self) -> Option<crate::RebornApprovalTestParts> {
         let capability_store_filesystem =
             crate::wrap_scoped(Arc::clone(&self.extension_filesystem));
         let approval_requests: Arc<dyn ironclaw_run_state::ApprovalRequestStorePort> = Arc::new(
@@ -1572,28 +1572,28 @@ impl RebornRuntime {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn local_dev_profile_filesystem_for_test(
+    pub fn standalone_profile_filesystem_for_test(
         &self,
     ) -> Option<Arc<dyn ironclaw_filesystem::RootFilesystem>> {
         Some(Arc::clone(&self.extension_filesystem) as Arc<dyn ironclaw_filesystem::RootFilesystem>)
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn local_dev_project_service_for_test(
+    pub fn standalone_project_service_for_test(
         &self,
     ) -> Option<Arc<dyn ironclaw_product::ProjectService>> {
         Some(Arc::clone(&self.project_service))
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn local_dev_thread_service_for_test(
+    pub fn standalone_thread_service_for_test(
         &self,
     ) -> Option<Arc<dyn ironclaw_threads::SessionThreadService>> {
         Some(Arc::clone(&self.thread_service))
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn local_dev_outbound_preferences_for_test(
+    pub fn standalone_outbound_preferences_for_test(
         &self,
     ) -> Option<Arc<dyn CommunicationPreferenceRepository>> {
         Some(Arc::clone(&self.outbound_preferences))
@@ -1841,7 +1841,7 @@ impl RebornRuntime {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn local_dev_tool_permission_overrides_for_test(
+    pub fn standalone_tool_permission_overrides_for_test(
         &self,
     ) -> Option<Arc<dyn ironclaw_approvals::ToolPermissionOverrideStorePort>> {
         Some(self.tool_permission_overrides.clone()
@@ -1849,7 +1849,7 @@ impl RebornRuntime {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn local_dev_persistent_approval_policies_for_test(
+    pub fn standalone_persistent_approval_policies_for_test(
         &self,
     ) -> Option<Arc<dyn ironclaw_approvals::PersistentApprovalPolicyStorePort>> {
         Some(self.persistent_approval_policies.clone()
@@ -1857,7 +1857,7 @@ impl RebornRuntime {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn local_dev_shared_trigger_repository_for_test(
+    pub fn standalone_shared_trigger_repository_for_test(
         &self,
     ) -> Option<Arc<dyn ironclaw_triggers::TriggerRepository>> {
         Some(Arc::clone(&self.trigger_repository))
@@ -1872,7 +1872,7 @@ impl RebornRuntime {
     // separately-stored runtime field. Test-support only; zero bytes shipped in
     // production builds.
     #[cfg(feature = "test-support")]
-    fn local_dev_workspace_attachment_reader_for_test(
+    fn standalone_workspace_attachment_reader_for_test(
         &self,
     ) -> Option<Arc<crate::support::fs::ProjectScopedAttachmentReader<CompositeRootFilesystem>>>
     {
@@ -1884,18 +1884,18 @@ impl RebornRuntime {
     }
 
     #[cfg(feature = "test-support")]
-    pub fn local_dev_inbound_attachment_reader_for_test(
+    pub fn standalone_inbound_attachment_reader_for_test(
         &self,
     ) -> Option<Arc<dyn ironclaw_product::InboundAttachmentReader>> {
-        Some(self.local_dev_workspace_attachment_reader_for_test()?
+        Some(self.standalone_workspace_attachment_reader_for_test()?
             as Arc<dyn ironclaw_product::InboundAttachmentReader>)
     }
 
     #[cfg(feature = "test-support")]
-    pub fn local_dev_attachment_test_support_for_test(
+    pub fn standalone_attachment_test_support_for_test(
         &self,
     ) -> Option<crate::factory::AttachmentTestSupport> {
-        let read_port = self.local_dev_workspace_attachment_reader_for_test()?
+        let read_port = self.standalone_workspace_attachment_reader_for_test()?
             as Arc<dyn ironclaw_loop_host::LoopAttachmentReadPort>;
         let read_write_workspace_filesystem = self.read_write_workspace_filesystem()?;
         Some(crate::factory::AttachmentTestSupport {
@@ -1920,7 +1920,7 @@ impl RebornRuntime {
     }
 
     #[cfg(feature = "test-support")]
-    pub async fn local_dev_active_extension_authority_for_test(
+    pub async fn standalone_active_extension_authority_for_test(
         &self,
         grantee: &ExtensionId,
     ) -> Option<
@@ -2383,7 +2383,7 @@ impl RebornRuntime {
     /// `local_dev_setup_marker_workspace_filesystem_is_read_only`), so writing
     /// an attachment through it fails closed with `PermissionDenied`. Delegates
     /// to `RebornRuntimeStores::read_write_workspace_filesystem` — the single owner
-    /// of this recipe, shared with the `local_dev_attachment_test_support_for_test`
+    /// of this recipe, shared with the `standalone_attachment_test_support_for_test`
     /// C-ATTACH test seam so the two views can never drift apart.
     pub(crate) fn webui_workspace_filesystem(
         &self,
@@ -4190,15 +4190,15 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
         skill_context_source,
         input_queue: None,
         identity_context_source: match (
-            services.local_dev_storage_root.clone(),
+            services.standalone_storage_root.clone(),
             services.default_system_prompt_path.clone(),
         ) {
-            (Some(local_dev_storage_root), Some(default_system_prompt_path)) => {
+            (Some(standalone_storage_root), Some(default_system_prompt_path)) => {
                 Arc::new(
                     // Local-dev seeding validates the prompt path first, so non-file prompt paths fail
                     // as build errors before this runtime-level identity-source guard is reached.
                     DefaultSystemPromptIdentitySource::try_new(
-                        local_dev_storage_root,
+                        standalone_storage_root,
                         default_system_prompt_path,
                         resolved_tool_disclosure.is_bridged(),
                     )

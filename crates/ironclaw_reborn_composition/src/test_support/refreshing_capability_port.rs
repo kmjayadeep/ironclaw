@@ -114,7 +114,7 @@ pub struct RefreshingCapabilityPortTestParts {
 /// `RebornRuntimeStores`, for wiring
 /// [`RefreshingCapabilityPortTestParts::extension_management`].
 /// `None` when the services were built without a local-dev runtime (mirrors
-/// `local_dev_active_extension_authority_for_test`'s `None`-propagation
+/// `standalone_active_extension_authority_for_test`'s `None`-propagation
 /// shape), OR when no extension is currently active (matches production:
 /// `ExtensionCapabilitySurfaceSource::new` accepts the port either way and
 /// `snapshot()` just returns an empty surface); tests that never
