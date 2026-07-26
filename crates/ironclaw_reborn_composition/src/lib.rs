@@ -66,21 +66,21 @@ pub use error::RebornBuildError;
 pub use factory::AttachmentTestSupport;
 #[cfg(feature = "test-support")]
 pub use factory::ChannelHostAssemblyTestWiring;
-pub use factory::LOCAL_DEV_SECRETS_MASTER_KEY_PATH;
 #[cfg(feature = "test-support")]
 pub use factory::RebornApprovalTestParts;
+pub use factory::STANDALONE_SECRETS_MASTER_KEY_PATH;
 /// Crate-root alias for composition's own unit tests (the src `#[cfg(test)]`
 /// modules that build a production trust policy from the concrete inventory).
 #[cfg(test)]
 pub(crate) use factory::builtin_first_party_trust_policy;
 pub use factory::local_dev_db_path;
-pub use factory::open_local_dev_secret_store;
+pub use factory::open_standalone_secret_store;
 /// Production first-party trust-policy builder over the neutral injected bundle
 /// set. Public so integration tests (which convert the concrete first-party
 /// inventory via the dev-dependency) can build the same trust policy the
 /// production binary composes at build time.
 pub use factory::production_first_party_trust_policy;
-pub use factory::{KeychainMasterKeyOutcome, provision_local_dev_keychain_master_key};
+pub use factory::{KeychainMasterKeyOutcome, provision_standalone_keychain_master_key};
 pub use google_oauth_secret_store::{GoogleOauthSecretStore, GoogleOauthSecretStoreError};
 pub use input::{
     ChannelExtensionBinding, OAuthClientConfig, RebornHostBindings, RebornRuntimeProcessBinding,

@@ -514,9 +514,10 @@ fn resolve_reborn_runtime_llm_with_stored_key_fallback(
         return Err(error.into());
     }
     let has_stored_key = block_on_cli(async move {
-        let store = ironclaw_reborn_composition::open_local_dev_secret_store(&runtime_storage_root)
-            .await
-            .map_err(anyhow::Error::from)?;
+        let store =
+            ironclaw_reborn_composition::open_standalone_secret_store(&runtime_storage_root)
+                .await
+                .map_err(anyhow::Error::from)?;
         ironclaw_operator::LlmKeyStore::new(store)
             .exists(&provider_id)
             .await
@@ -853,7 +854,7 @@ pub(crate) fn resolve_google_oauth_config_state_from_env(
 
 /// Read the Google OAuth client secret from the encrypted local-dev secret
 /// store (the same store `config set google.client_secret` writes to via
-/// `LocalDevSecretStoreOpener` — see `commands::config::set`). Opening the
+/// `StandaloneSecretStoreOpener` — see `commands::config::set`). Opening the
 /// store is an idempotent, safe-to-repeat operation. Boot invokes this lazily
 /// only after public OAuth configuration is complete and no higher-precedence
 /// env secret exists, avoiding unnecessary keychain or filesystem access on
@@ -869,7 +870,7 @@ fn google_oauth_client_secret_from_store(
         return Ok(None);
     }
     block_on_cli(async move {
-        let store = ironclaw_reborn_composition::open_local_dev_secret_store(&storage_root)
+        let store = ironclaw_reborn_composition::open_standalone_secret_store(&storage_root)
             .await
             .map_err(anyhow::Error::from)?;
         ironclaw_reborn_composition::GoogleOauthSecretStore::new(store)
@@ -3911,7 +3912,7 @@ poll_interval_secs = 15
     /// End-to-end wiring proof (item 1) that
     /// `google_oauth_client_secret_from_store` actually reads back a secret
     /// written the same way `config set google.client_secret` writes it
-    /// (`GoogleOauthSecretStore` over `open_local_dev_secret_store`), not
+    /// (`GoogleOauthSecretStore` over `open_standalone_secret_store`), not
     /// just that the pure merge function accepts a hand-built
     /// `SecretString` — the merge-function tests above already cover the
     /// precedence rules in isolation.
@@ -3934,12 +3935,12 @@ poll_interval_secs = 15
         // this test holds the process-wide env lock, serializing every other
         // env-mutating test behind an interactive system service.
         std::fs::write(
-            storage_root.join(ironclaw_reborn_composition::LOCAL_DEV_SECRETS_MASTER_KEY_PATH),
+            storage_root.join(ironclaw_reborn_composition::STANDALONE_SECRETS_MASTER_KEY_PATH),
             "00112233445566778899aabbccddeeff".repeat(2),
         )
         .expect("seed cached master key");
         block_on_cli(async move {
-            let store = ironclaw_reborn_composition::open_local_dev_secret_store(&storage_root)
+            let store = ironclaw_reborn_composition::open_standalone_secret_store(&storage_root)
                 .await
                 .map_err(anyhow::Error::from)?;
             ironclaw_reborn_composition::GoogleOauthSecretStore::new(store)

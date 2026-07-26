@@ -875,7 +875,7 @@ async fn build_runtime_with_tool_disclosure<G: HostManagedModelGateway + 'static
 
 /// Keep parallel runtime tests off the ambient OS keychain. The production
 /// resolver deliberately prefers this cached dotfile, so this still exercises
-/// the real local-dev secret-store construction without process-global env
+/// the real standalone secret-store construction without process-global env
 /// mutation or platform keychain serialization.
 fn seed_test_secret_master_key(root: &Path) {
     let local_dev_root = root.join("local-dev");

@@ -735,7 +735,7 @@ async fn local_dev_default_product_auth_preserves_manual_token_across_rebuilds()
         None,
     )
     .await
-    .expect("local-dev secret store rebuild");
+    .expect("standalone secret store rebuild");
     let lease = rebuilt_secret_store
         .lease_once(&scope.resource, &access_secret)
         .await
@@ -798,15 +798,15 @@ fn attach_hosted_mcp_runtime_skips_services_without_http_egress() {
 /// real all-zeros key an `[env] SECRETS_MASTER_KEY = "000...0"` cargo
 /// override writes into the cached key file.
 #[tokio::test]
-async fn resolve_local_dev_secret_master_key_rejects_malformed_file_with_path_context() {
+async fn resolve_standalone_secret_master_key_rejects_malformed_file_with_path_context() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    let key_path = root.join(LOCAL_DEV_SECRETS_MASTER_KEY_PATH);
+    let key_path = root.join(STANDALONE_SECRETS_MASTER_KEY_PATH);
     // 64 zero chars: passes the length floor but has a single distinct
     // byte, which `SecretsCrypto::new` rejects on the entropy check.
     std::fs::write(&key_path, "0".repeat(64)).expect("write malformed key");
 
-    let error = resolve_local_dev_secret_master_key(root)
+    let error = resolve_standalone_secret_master_key(root)
         .await
         .expect_err("malformed local-dev master key must be rejected");
 
@@ -827,15 +827,15 @@ async fn resolve_local_dev_secret_master_key_rejects_malformed_file_with_path_co
 
 /// An explicit but malformed `SECRETS_MASTER_KEY` env value (the actual
 /// root cause of the original report) must fail loud and name the env var.
-/// Driven through the real caller `resolve_local_dev_secret_master_key`
+/// Driven through the real caller `resolve_standalone_secret_master_key`
 /// (via its env-parameterized inner) so this also guards the
 /// write-before-validate invariant: a rejected env key must never be
 /// persisted to the cached `.reborn-local-dev-secrets-master-key` file.
 #[tokio::test]
-async fn resolve_local_dev_secret_master_key_rejects_malformed_env_without_persisting() {
+async fn resolve_standalone_secret_master_key_rejects_malformed_env_without_persisting() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    let key_path = root.join(LOCAL_DEV_SECRETS_MASTER_KEY_PATH);
+    let key_path = root.join(STANDALONE_SECRETS_MASTER_KEY_PATH);
     assert!(
         !key_path.exists(),
         "precondition: cached key file must not exist yet"
@@ -843,7 +843,7 @@ async fn resolve_local_dev_secret_master_key_rejects_malformed_env_without_persi
 
     // 64 zero chars: passes the length floor but has a single distinct byte,
     // so the entropy check rejects it.
-    let error = resolve_local_dev_secret_master_key_with_env(root, Some("0".repeat(64)))
+    let error = resolve_standalone_secret_master_key_with_env(root, Some("0".repeat(64)))
         .await
         .expect_err("malformed env master key must be rejected");
 
@@ -871,16 +871,16 @@ async fn resolve_local_dev_secret_master_key_rejects_malformed_env_without_persi
 }
 
 #[tokio::test]
-async fn resolve_local_dev_secret_master_key_rejects_set_but_empty_env_without_persisting() {
+async fn resolve_standalone_secret_master_key_rejects_set_but_empty_env_without_persisting() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    let key_path = root.join(LOCAL_DEV_SECRETS_MASTER_KEY_PATH);
+    let key_path = root.join(STANDALONE_SECRETS_MASTER_KEY_PATH);
 
     // A set-but-empty (or whitespace-only) env value is explicit-but-unusable
     // configuration: it must fail closed, NOT collapse to "absent" and
     // generate + persist a fresh key the operator never chose.
     for empty in ["", "   ", "\n\t "] {
-        let error = resolve_local_dev_secret_master_key_with_env(root, Some(empty.to_string()))
+        let error = resolve_standalone_secret_master_key_with_env(root, Some(empty.to_string()))
             .await
             .expect_err("set-but-empty env master key must be rejected");
         match error {
@@ -899,14 +899,14 @@ async fn resolve_local_dev_secret_master_key_rejects_set_but_empty_env_without_p
 }
 
 #[tokio::test]
-async fn resolve_local_dev_secret_master_key_rejects_empty_env_even_with_cached_file() {
+async fn resolve_standalone_secret_master_key_rejects_empty_env_even_with_cached_file() {
     // Regression: the empty-env rejection must run BEFORE the cached-file
     // read, so an explicitly-set-but-empty SECRETS_MASTER_KEY fails closed
     // on a rebuild even when `.reborn-local-dev-secrets-master-key` already
     // exists — it must not be silently ignored in favor of the cached key.
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    let key_path = root.join(LOCAL_DEV_SECRETS_MASTER_KEY_PATH);
+    let key_path = root.join(STANDALONE_SECRETS_MASTER_KEY_PATH);
 
     // Seed directly (not through the resolver): this test is about
     // empty-env/cached-file precedence, not the keychain step, and this
@@ -920,7 +920,7 @@ async fn resolve_local_dev_secret_master_key_rejects_empty_env_even_with_cached_
     assert!(key_path.exists(), "precondition: cached key file exists");
     let cached_before = std::fs::read_to_string(&key_path).expect("read cached key");
 
-    let error = resolve_local_dev_secret_master_key_with_env(root, Some("   ".to_string()))
+    let error = resolve_standalone_secret_master_key_with_env(root, Some("   ".to_string()))
         .await
         .expect_err("empty env must fail closed even with a cached file");
     match error {
@@ -939,16 +939,16 @@ async fn resolve_local_dev_secret_master_key_rejects_empty_env_even_with_cached_
 }
 
 #[tokio::test]
-async fn resolve_local_dev_secret_master_key_rejects_malformed_env_even_with_cached_file() {
+async fn resolve_standalone_secret_master_key_rejects_malformed_env_even_with_cached_file() {
     // A non-empty-but-malformed env value must also fail closed BEFORE the
     // cached-file read, so `SECRETS_MASTER_KEY=0000...` is not silently
     // ignored in favor of a valid cached key on a rebuild.
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    let key_path = root.join(LOCAL_DEV_SECRETS_MASTER_KEY_PATH);
+    let key_path = root.join(STANDALONE_SECRETS_MASTER_KEY_PATH);
 
     // Seed directly, not through the resolver — see the comment in
-    // `resolve_local_dev_secret_master_key_rejects_empty_env_even_with_cached_file`
+    // `resolve_standalone_secret_master_key_rejects_empty_env_even_with_cached_file`
     // for why a `None`-env resolver call here would hit the real OS
     // keychain in-process.
     std::fs::write(
@@ -959,7 +959,7 @@ async fn resolve_local_dev_secret_master_key_rejects_malformed_env_even_with_cac
     let cached_before = std::fs::read_to_string(&key_path).expect("read cached key");
 
     // 64 zero chars: passes the length floor but fails the entropy check.
-    let error = resolve_local_dev_secret_master_key_with_env(root, Some("0".repeat(64)))
+    let error = resolve_standalone_secret_master_key_with_env(root, Some("0".repeat(64)))
         .await
         .expect_err("malformed env must fail closed even with a cached file");
     match error {
@@ -978,18 +978,18 @@ async fn resolve_local_dev_secret_master_key_rejects_malformed_env_even_with_cac
 
 /// A well-formed cached key file passes through unchanged.
 #[tokio::test]
-async fn resolve_local_dev_secret_master_key_accepts_valid_cached_file() {
+async fn resolve_standalone_secret_master_key_accepts_valid_cached_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let valid = ironclaw_secrets::keychain::generate_master_key_hex();
-    std::fs::write(root.join(LOCAL_DEV_SECRETS_MASTER_KEY_PATH), &valid).expect("write valid key");
+    std::fs::write(root.join(STANDALONE_SECRETS_MASTER_KEY_PATH), &valid).expect("write valid key");
 
-    resolve_local_dev_secret_master_key(root)
+    resolve_standalone_secret_master_key(root)
         .await
         .expect("valid cached key must be accepted");
 }
 
-/// `open_local_dev_secret_store` is the narrow pre-composition opener
+/// `open_standalone_secret_store` is the narrow pre-composition opener
 /// onboard needs: no full [`CompositeRootFilesystem`], just the physical
 /// libSQL file backing `/secrets`. A cached master-key dotfile is seeded
 /// up front so the resolver never touches the OS keychain or env (see the
@@ -997,14 +997,14 @@ async fn resolve_local_dev_secret_master_key_accepts_valid_cached_file() {
 /// mutate process env, and a cached dotfile is the non-env-mutating way
 /// to make the resolver deterministic here).
 #[tokio::test]
-async fn open_local_dev_secret_store_opens_a_working_store_over_the_bare_root() {
+async fn open_standalone_secret_store_opens_a_working_store_over_the_bare_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let valid = ironclaw_secrets::keychain::generate_master_key_hex();
-    std::fs::write(root.join(LOCAL_DEV_SECRETS_MASTER_KEY_PATH), &valid)
+    std::fs::write(root.join(STANDALONE_SECRETS_MASTER_KEY_PATH), &valid)
         .expect("seed cached master key");
 
-    let store = open_local_dev_secret_store(root)
+    let store = open_standalone_secret_store(root)
         .await
         .expect("opener must succeed over a bare root");
 
@@ -1028,14 +1028,14 @@ async fn open_local_dev_secret_store_opens_a_working_store_over_the_bare_root() 
 /// prior open — this is the "onboard writes, serve reads" contract B2
 /// exists to satisfy.
 #[tokio::test]
-async fn open_local_dev_secret_store_is_visible_across_reopens_of_the_same_root() {
+async fn open_standalone_secret_store_is_visible_across_reopens_of_the_same_root() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let valid = ironclaw_secrets::keychain::generate_master_key_hex();
-    std::fs::write(root.join(LOCAL_DEV_SECRETS_MASTER_KEY_PATH), &valid)
+    std::fs::write(root.join(STANDALONE_SECRETS_MASTER_KEY_PATH), &valid)
         .expect("seed cached master key");
 
-    let first = open_local_dev_secret_store(root)
+    let first = open_standalone_secret_store(root)
         .await
         .expect("first open must succeed");
     ironclaw_operator::LlmKeyStore::new(first)
@@ -1046,7 +1046,7 @@ async fn open_local_dev_secret_store_is_visible_across_reopens_of_the_same_root(
         .await
         .expect("put through the first open");
 
-    let second = open_local_dev_secret_store(root)
+    let second = open_standalone_secret_store(root)
         .await
         .expect("second open (simulating `serve`) must succeed");
     let read = ironclaw_operator::LlmKeyStore::new(second)
@@ -1061,9 +1061,9 @@ async fn open_local_dev_secret_store_is_visible_across_reopens_of_the_same_root(
 }
 
 // The keychain-fallthrough + idempotency test for
-// `resolve_local_dev_secret_master_key_with_env` lives in
+// `resolve_standalone_secret_master_key_with_env` lives in
 // `tests/facade_factory.rs`
-// (`local_dev_secret_store_falls_through_suppressed_keychain_to_dotfile`):
+// (`standalone_secret_store_falls_through_suppressed_keychain_to_dotfile`):
 // proving it needs the real process env var `IRONCLAW_DISABLE_OS_KEYCHAIN`
 // set, and `set_var` is `unsafe` — blocked here by this crate's
 // `forbid(unsafe_code)` even in `#[cfg(test)]`. `tests/*.rs` binaries are

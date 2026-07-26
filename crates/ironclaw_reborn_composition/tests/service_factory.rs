@@ -1,4 +1,4 @@
-// arch-exempt: large_file, pre-existing ~1.9K-line service test suite; this change is a net-zero rename of build_local_dev_secret_store_for_test call sites with no cases added, plan #6168
+// arch-exempt: large_file, pre-existing ~1.9K-line service test suite; this change is a net-zero rename of build_standalone_secret_store_for_test call sites with no cases added, plan #6168
 //
 // Decomposition of this suite travels with the composition god-crate shrink
 // (#6168); do not add unrelated cases here.
@@ -1241,7 +1241,7 @@ async fn production_libsql_resolved_secret_master_key_rejects_invalid_env_key() 
 }
 
 /// With no cached dotfile and no `SECRETS_MASTER_KEY` env var,
-/// `resolve_local_dev_secret_master_key` (`src/factory.rs`) tries the OS
+/// `resolve_standalone_secret_master_key` (`src/factory.rs`) tries the OS
 /// keychain before generating a fresh key.
 ///
 /// - Under `IRONCLAW_DISABLE_OS_KEYCHAIN` the keychain lookup returns
@@ -1256,7 +1256,7 @@ async fn production_libsql_resolved_secret_master_key_rejects_invalid_env_key() 
 ///   binary is a separate crate the `forbid` doesn't reach, and already uses
 ///   the `EnvVarGuard`/`SECRETS_MASTER_KEY_ENV_LOCK` convention for this.
 #[tokio::test]
-async fn local_dev_secret_store_falls_through_suppressed_keychain_to_dotfile() {
+async fn standalone_secret_store_falls_through_suppressed_keychain_to_dotfile() {
     let _guard = SECRETS_MASTER_KEY_ENV_LOCK.lock().await;
     let _env = EnvVarGuard::set("IRONCLAW_DISABLE_OS_KEYCHAIN", "1");
     let dir = tempfile::tempdir().unwrap();

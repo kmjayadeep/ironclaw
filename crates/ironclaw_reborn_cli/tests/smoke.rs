@@ -4902,7 +4902,7 @@ fn patch_config_base_url_replacing_previous(reborn_home: &Path, base_url: &str) 
 }
 
 /// Seed the local-dev encrypted secret store with an LLM API key for
-/// `provider_id`, through the same `open_local_dev_secret_store` +
+/// `provider_id`, through the same `open_standalone_secret_store` +
 /// `LlmKeyStore::put` opener `onboard`'s interactive credential prompt uses
 /// — bypassing the prompt UI. Also seeds the cached master-key dotfile first
 /// so the resolver never reaches the OS keychain (a headless run would
@@ -4911,7 +4911,7 @@ fn patch_config_base_url_replacing_previous(reborn_home: &Path, base_url: &str) 
 /// call site for the same rationale).
 fn seed_stored_llm_key(reborn_home: &Path, provider_id: &str, key: &str) {
     std::fs::write(
-        reborn_home.join(ironclaw_reborn_composition::LOCAL_DEV_SECRETS_MASTER_KEY_PATH),
+        reborn_home.join(ironclaw_reborn_composition::STANDALONE_SECRETS_MASTER_KEY_PATH),
         ironclaw_secrets::keychain::generate_master_key_hex(),
     )
     .expect("seed cached master key dotfile");
@@ -4923,9 +4923,9 @@ fn seed_stored_llm_key(reborn_home: &Path, provider_id: &str, key: &str) {
     let key = key.to_string();
     let reborn_home = reborn_home.to_path_buf();
     seed_rt.block_on(async move {
-        let store = ironclaw_reborn_composition::open_local_dev_secret_store(&reborn_home)
+        let store = ironclaw_reborn_composition::open_standalone_secret_store(&reborn_home)
             .await
-            .expect("open local dev secret store");
+            .expect("open standalone secret store");
         ironclaw_operator::LlmKeyStore::new(store)
             .put(&provider_id, ironclaw_secrets::SecretMaterial::from(key))
             .await
@@ -5821,7 +5821,7 @@ fn onboard_reports_suppressed_master_key_fallback_and_still_succeeds() {
 /// The dotfile is seeded at the RUNTIME storage root
 /// (`<reborn_home>/local-dev/…`, `local_runtime_storage_root`'s subdir for
 /// `RebornProfile::Standalone`) — the same root the real resolver
-/// (`resolve_local_dev_secret_master_key_with_env`) reads/writes and
+/// (`resolve_standalone_secret_master_key_with_env`) reads/writes and
 /// `serve` actually boots against — not the bare `reborn_home` root (PR
 /// #6174 item D: `provision_master_key` used to check the bare root, so its
 /// `exists()` check was always false and it re-attempted keychain

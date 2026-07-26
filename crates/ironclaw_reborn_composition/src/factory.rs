@@ -814,11 +814,11 @@ type WorkspaceFilesystems = (
 const LOCAL_DEV_DEFAULT_SYSTEM_PROMPT_PATH: &str = "system/prompts/default-system.md";
 const LOCAL_DEV_LEGACY_SKILLS_BACKFILL_MARKER: &str = ".legacy-skills-backfilled";
 const LOCAL_DEV_LEGACY_SKILLS_BACKFILL_MAX_DEPTH: usize = 64;
-/// Filename of the cached local-dev secrets master-key dotfile under a
+/// Filename of the cached standalone secrets master-key dotfile under a
 /// Reborn home / local-dev root directory. `pub` (re-exported from `lib.rs`)
 /// so onboarding (`ironclaw_reborn_cli::commands::onboard`) can check for its
 /// presence without duplicating the literal.
-pub const LOCAL_DEV_SECRETS_MASTER_KEY_PATH: &str = ".reborn-local-dev-secrets-master-key";
+pub const STANDALONE_SECRETS_MASTER_KEY_PATH: &str = ".reborn-local-dev-secrets-master-key";
 
 /// The ONE construction seam for host HTTP egress: policy enforcement over
 /// the reqwest transport, honoring the env-gated test-only host rewrite map
@@ -2254,7 +2254,7 @@ where
 {
     let master_key = match explicit_master_key {
         Some(master_key) => master_key,
-        None => resolve_local_dev_secret_master_key(root).await?,
+        None => resolve_standalone_secret_master_key(root).await?,
     };
     // The crypto is returned alongside the store so the admin secret
     // provisioner (`admin_secrets.rs`) can build per-target-user stores that
@@ -2281,7 +2281,7 @@ where
 ///   OS keychain -> generate-and-cache, via [`build_secret_store`]).
 /// - `run_migrations()` here and again on `serve`'s later open is safe —
 ///   already relied on as idempotent elsewhere in this module's tests.
-pub async fn open_local_dev_secret_store(
+pub async fn open_standalone_secret_store(
     root: &Path,
 ) -> Result<Arc<dyn SecretStorePort>, RebornBuildError> {
     let db = open_local_dev_libsql_database(root).await?;
@@ -2324,7 +2324,7 @@ fn validate_resolved_master_key(
         };
         RebornBuildError::InvalidConfig {
             reason: format!(
-                "local-dev secrets master key from {location} is malformed: {error}; \
+                "standalone secrets master key from {location} is malformed: {error}; \
                  it must be at least 32 bytes with at least 8 distinct byte values. \
                  Remove or replace it and retry."
             ),
@@ -2332,13 +2332,13 @@ fn validate_resolved_master_key(
     })
 }
 
-async fn resolve_local_dev_secret_master_key(
+async fn resolve_standalone_secret_master_key(
     root: &Path,
 ) -> Result<ironclaw_secrets::SecretMaterial, RebornBuildError> {
     // Fail closed on an explicitly-set-but-unusable master key: only an
     // *absent* env var is "not configured". A non-Unicode value must not be
     // silently dropped (via `.ok()`) and fall through to generating a fresh
-    // key, which would encrypt local-dev secrets under an unintended key the
+    // key, which would encrypt standalone secrets under an unintended key the
     // operator never chose.
     let env_key = match std::env::var(ironclaw_secrets::keychain::SECRETS_MASTER_KEY_ENV) {
         Ok(value) => Some(value),
@@ -2346,13 +2346,13 @@ async fn resolve_local_dev_secret_master_key(
         Err(std::env::VarError::NotUnicode(_)) => {
             return Err(RebornBuildError::InvalidConfig {
                 reason: format!(
-                    "local-dev secrets master key env var {} is set but not valid UTF-8",
+                    "standalone secrets master key env var {} is set but not valid UTF-8",
                     ironclaw_secrets::keychain::SECRETS_MASTER_KEY_ENV
                 ),
             });
         }
     };
-    resolve_local_dev_secret_master_key_with_env(root, env_key).await
+    resolve_standalone_secret_master_key_with_env(root, env_key).await
 }
 
 /// Inner resolver that takes the `SECRETS_MASTER_KEY` env value as a parameter
@@ -2371,7 +2371,7 @@ async fn resolve_local_dev_secret_master_key(
 /// written to the dotfile — the dotfile and keychain are alternative sources
 /// for the same secret, not layered, so writing both would mean the two
 /// copies must agree forever.
-async fn resolve_local_dev_secret_master_key_with_env(
+async fn resolve_standalone_secret_master_key_with_env(
     root: &Path,
     env_key: Option<String>,
 ) -> Result<ironclaw_secrets::SecretMaterial, RebornBuildError> {
@@ -2388,7 +2388,7 @@ async fn resolve_local_dev_secret_master_key_with_env(
             if trimmed.is_empty() {
                 return Err(RebornBuildError::InvalidConfig {
                     reason: format!(
-                        "local-dev secrets master key env var {} is set but empty",
+                        "standalone secrets master key env var {} is set but empty",
                         ironclaw_secrets::keychain::SECRETS_MASTER_KEY_ENV
                     ),
                 });
@@ -2399,7 +2399,7 @@ async fn resolve_local_dev_secret_master_key_with_env(
         None => None,
     };
 
-    let key_path = root.join(LOCAL_DEV_SECRETS_MASTER_KEY_PATH);
+    let key_path = root.join(STANDALONE_SECRETS_MASTER_KEY_PATH);
     match std::fs::read_to_string(&key_path) {
         Ok(existing) => {
             let key = existing.trim().to_string();
@@ -2410,7 +2410,7 @@ async fn resolve_local_dev_secret_master_key_with_env(
         Err(error) => {
             return Err(RebornBuildError::InvalidConfig {
                 reason: format!(
-                    "local-dev secrets master key at {} could not be read: {error}",
+                    "standalone secrets master key at {} could not be read: {error}",
                     key_path.display()
                 ),
             });
@@ -2419,7 +2419,7 @@ async fn resolve_local_dev_secret_master_key_with_env(
 
     // No cached file. Prefer the explicit (already-validated) env key.
     if let Some(key) = env_key {
-        write_local_dev_secret_master_key(&key_path, &key)?;
+        write_standalone_secret_master_key(&key_path, &key)?;
         return Ok(ironclaw_secrets::SecretMaterial::from(key));
     }
 
@@ -2462,11 +2462,11 @@ async fn resolve_local_dev_secret_master_key_with_env(
 
     // No cached file, no env key, no keychain hit. Generate a fresh key.
     let key = ironclaw_secrets::keychain::generate_master_key_hex();
-    write_local_dev_secret_master_key(&key_path, &key)?;
+    write_standalone_secret_master_key(&key_path, &key)?;
     Ok(ironclaw_secrets::SecretMaterial::from(key))
 }
 
-fn write_local_dev_secret_master_key(path: &Path, key: &str) -> Result<(), RebornBuildError> {
+fn write_standalone_secret_master_key(path: &Path, key: &str) -> Result<(), RebornBuildError> {
     #[cfg(unix)]
     {
         use std::io::Write as _;
@@ -2478,12 +2478,12 @@ fn write_local_dev_secret_master_key(path: &Path, key: &str) -> Result<(), Rebor
             .mode(0o600)
             .open(path)
             .map_err(|error| RebornBuildError::InvalidConfig {
-                reason: format!("local-dev secrets master key could not be created: {error}"),
+                reason: format!("standalone secrets master key could not be created: {error}"),
             })?;
         file.write_all(key.as_bytes())
             .and_then(|_| file.write_all(b"\n"))
             .map_err(|error| RebornBuildError::InvalidConfig {
-                reason: format!("local-dev secrets master key could not be written: {error}"),
+                reason: format!("standalone secrets master key could not be written: {error}"),
             })
     }
     #[cfg(windows)]
@@ -2495,7 +2495,7 @@ fn write_local_dev_secret_master_key(path: &Path, key: &str) -> Result<(), Rebor
             .create_new(true)
             .open(path)
             .map_err(|error| RebornBuildError::InvalidConfig {
-                reason: format!("local-dev secrets master key could not be created: {error}"),
+                reason: format!("standalone secrets master key could not be created: {error}"),
             })?;
         let account = std::env::var("USERDOMAIN")
             .ok()
@@ -2508,7 +2508,7 @@ fn write_local_dev_secret_master_key(path: &Path, key: &str) -> Result<(), Rebor
             .map(|(domain, user)| format!("{domain}\\{user}"))
             .or_else(|| std::env::var("USERNAME").ok())
             .ok_or_else(|| RebornBuildError::InvalidConfig {
-                reason: "local-dev secrets master key could not be restricted: USERNAME is unset"
+                reason: "standalone secrets master key could not be restricted: USERNAME is unset"
                     .to_string(),
             })?;
         let status = std::process::Command::new("icacls")
@@ -2519,21 +2519,21 @@ fn write_local_dev_secret_master_key(path: &Path, key: &str) -> Result<(), Rebor
             .status()
             .map_err(|error| RebornBuildError::InvalidConfig {
                 reason: format!(
-                    "local-dev secrets master key permissions could not be set: {error}"
+                    "standalone secrets master key permissions could not be set: {error}"
                 ),
             })?;
         if !status.success() {
             let _ = std::fs::remove_file(path);
             return Err(RebornBuildError::InvalidConfig {
                 reason: format!(
-                    "local-dev secrets master key permissions could not be set: icacls exited with {status}"
+                    "standalone secrets master key permissions could not be set: icacls exited with {status}"
                 ),
             });
         }
         file.write_all(key.as_bytes())
             .and_then(|_| file.write_all(b"\n"))
             .map_err(|error| RebornBuildError::InvalidConfig {
-                reason: format!("local-dev secrets master key could not be written: {error}"),
+                reason: format!("standalone secrets master key could not be written: {error}"),
             })
     }
     #[cfg(not(any(unix, windows)))]
@@ -2548,8 +2548,8 @@ fn write_local_dev_secret_master_key(path: &Path, key: &str) -> Result<(), Rebor
     }
 }
 
-/// Outcome of provisioning a local-dev secrets master key directly into the
-/// OS keychain (as opposed to `resolve_local_dev_secret_master_key_with_env`'s
+/// Outcome of provisioning a standalone secrets master key directly into the
+/// OS keychain (as opposed to `resolve_standalone_secret_master_key_with_env`'s
 /// full resolution chain, which is only consulted at boot time). Used by
 /// `onboard`'s standalone keychain-provisioning step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2571,8 +2571,8 @@ pub enum KeychainMasterKeyOutcome {
 ///   `reborn_dependency_boundaries.rs::reborn_cli_binary_crate_stays_separate_from_v1_root`.
 /// - No key yet -> generate + store; already populated -> no-op `AlreadyPresent`.
 /// - Never returns an error: unavailable/denied keychain reports `Suppressed`,
-///   matching `resolve_local_dev_secret_master_key_with_env`'s env/dotfile fallback.
-pub async fn provision_local_dev_keychain_master_key() -> KeychainMasterKeyOutcome {
+///   matching `resolve_standalone_secret_master_key_with_env`'s env/dotfile fallback.
+pub async fn provision_standalone_keychain_master_key() -> KeychainMasterKeyOutcome {
     // `has_master_key()` collapses "no key yet" and "backend/permission/locked
     // error probing the keychain" into the same `false` — a false negative
     // here falls through to `generate` + `store` below, which overwrites
@@ -2590,7 +2590,7 @@ pub async fn provision_local_dev_keychain_master_key() -> KeychainMasterKeyOutco
         Err(error) => {
             tracing::debug!(
                 %error,
-                "OS keychain store of local-dev secrets master key failed during onboarding; \
+                "OS keychain store of standalone secrets master key failed during onboarding; \
                  falling back to env/dotfile resolution"
             );
             KeychainMasterKeyOutcome::Suppressed

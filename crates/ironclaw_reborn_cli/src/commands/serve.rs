@@ -448,7 +448,7 @@ impl ServeCommand {
             )? {
                 let handle_name = handle.as_str().to_string();
                 runtime
-                    .seed_local_dev_secret(shared_scope, handle, value)
+                    .seed_standalone_secret(shared_scope, handle, value)
                     .await
                     .map_err(|err| anyhow!("failed to seed dev secret `{handle_name}`: {err}"))?;
                 tracing::warn!(
@@ -1017,7 +1017,7 @@ fn print_serve_banner(
 
 /// Parse `IRONCLAW_REBORN_DEV_SECRET__<handle>=<value>` pairs from an
 /// environment snapshot into the `(scope, handle, value)` seeds `serve` writes
-/// through `RebornRuntime::seed_local_dev_secret` (#5459 tenant-shared tool
+/// through `RebornRuntime::seed_standalone_secret` (#5459 tenant-shared tool
 /// credentials). The contract, pinned by the unit tests below:
 /// - only names carrying the exact `IRONCLAW_REBORN_DEV_SECRET__` prefix
 ///   participate; every other env var is ignored;

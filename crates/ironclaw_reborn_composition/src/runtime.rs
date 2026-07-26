@@ -1956,7 +1956,7 @@ impl RebornRuntime {
     /// admin-managed scope, so one operator-provisioned key serves every user of
     /// the tenant (SSO users included) without per-user provisioning. The secret
     /// store is composition-private, so this is the single narrow write seam.
-    pub async fn seed_local_dev_secret(
+    pub async fn seed_standalone_secret(
         &self,
         owner: ResourceScope,
         handle: ironclaw_host_api::SecretHandle,
