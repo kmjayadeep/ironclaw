@@ -115,118 +115,167 @@ impl TerminateHint {
     }
 }
 
-/// The single failure vocabulary — one closed enum naming every way an
-/// operation can fail, carried unchanged from the mint site to the loop.
-///
-/// This unifies what were five overlapping enums (`RuntimeDispatchErrorKind`'s
-/// precise mechanism names, the loop's `CapabilityFailureKind`, host_runtime's
-/// `RuntimeFailureKind`, and the loop-private `CapabilityErrorClass`) into one
-/// list plus projection functions. Layers above the mint site ask questions
-/// ([`fate`](Self::fate), [`is_retryable`](Self::is_retryable),
-/// [`human_summary`](Self::human_summary)) instead of re-declaring the domain —
-/// re-declared domains drift, and the drift is where recoverability died
-/// (#6284).
-///
-/// Deliberately NOT `#[non_exhaustive]` and deliberately **closed** (no open
-/// `Unknown` escape hatch): every producer knows what it is minting, and a
-/// catch-all bucket invites the unclassified. Downstream matches are exhaustive,
-/// so a new variant fails to compile until every projection deliberately
-/// classifies it — that compile error *is* the recoverability review.
-///
-/// Wire tags are lowercase snake_case ([`as_str`](Self::as_str)) — they must
-/// pass `ironclaw_events`' `is_safe_error_kind` (first byte lowercase ASCII) or
-/// the event layer silently rewrites the tag to `Unclassified`. Historical tags
-/// from the retired coarse vocabularies remain readable via
-/// [`from_tag`](Self::from_tag) aliases.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FailureKind {
+/// Declares the closed [`FailureKind`] vocabulary exactly once: the enum, its
+/// wire tags ([`FailureKind::as_str`] and the primary [`FailureKind::from_tag`]
+/// arms), and [`FailureKind::ALL`] all expand from this single list. The
+/// compiler owns completeness — a variant cannot exist without its tag or its
+/// `ALL` membership, so downstream exhaustiveness pins that iterate `ALL`
+/// cannot silently stop covering a newly added kind.
+macro_rules! declare_failure_kinds {
+    ($( $(#[$meta:meta])* $variant:ident => $tag:literal ),+ $(,)?) => {
+        /// The single failure vocabulary — one closed enum naming every way an
+        /// operation can fail, carried unchanged from the mint site to the loop.
+        ///
+        /// This unifies what were five overlapping enums (`RuntimeDispatchErrorKind`'s
+        /// precise mechanism names, the loop's `CapabilityFailureKind`, host_runtime's
+        /// `RuntimeFailureKind`, and the loop-private `CapabilityErrorClass`) into one
+        /// list plus projection functions. Layers above the mint site ask questions
+        /// ([`fate`](Self::fate), [`is_retryable`](Self::is_retryable)) instead of
+        /// re-declaring the domain — re-declared domains drift, and the drift is
+        /// where recoverability died (#6284).
+        ///
+        /// Deliberately NOT `#[non_exhaustive]` and deliberately **closed** (no open
+        /// `Unknown(String)` escape hatch): every producer knows what it is minting.
+        /// The one sanctioned sink for values the system genuinely cannot classify
+        /// is the explicit [`Unclassified`](Self::Unclassified) variant — surfaced,
+        /// never retried. Downstream matches are exhaustive, so a new variant fails
+        /// to compile until every projection deliberately classifies it — that
+        /// compile error *is* the recoverability review.
+        ///
+        /// Wire tags are lowercase snake_case ([`as_str`](Self::as_str)) — they must
+        /// pass `ironclaw_events`' `is_safe_error_kind` (first byte lowercase ASCII) or
+        /// the event layer silently rewrites the tag to `Unclassified`. Historical tags
+        /// from the retired coarse vocabularies remain readable via
+        /// [`from_tag`](Self::from_tag) aliases.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum FailureKind {
+            $( $(#[$meta])* $variant, )+
+        }
+
+        impl FailureKind {
+            /// Every variant, for conformance tests (tag/validator round-trips).
+            /// Compiler-derived from the single declaration list — a variant
+            /// cannot exist outside `ALL`.
+            pub const ALL: &'static [FailureKind] = &[ $(Self::$variant),+ ];
+
+            /// The stable wire tag. Lowercase snake_case — every tag here passes the
+            /// event layer's `is_safe_error_kind` validator (pinned by test).
+            pub fn as_str(&self) -> &'static str {
+                match self {
+                    $( Self::$variant => $tag, )+
+                }
+            }
+
+            /// The primary tag decode: exactly the tags [`as_str`](Self::as_str)
+            /// emits. Aliases and the fallback live in
+            /// [`from_tag`](Self::from_tag).
+            fn from_primary_tag(tag: &str) -> Option<Self> {
+                match tag {
+                    $( $tag => Some(Self::$variant), )+
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+declare_failure_kinds! {
     // ── Model-visible: the model did something wrong and can correct it ──
     /// Invoked a method the capability does not expose.
-    MethodMissing,
+    MethodMissing => "method_missing",
     /// Invoked a capability the extension never declared in its manifest.
-    UndeclaredCapability,
+    UndeclaredCapability => "undeclared_capability",
     /// Invoked a capability no installed extension provides.
-    UnknownCapability,
+    UnknownCapability => "unknown_capability",
     /// Named a provider that does not exist.
-    UnknownProvider,
+    UnknownProvider => "unknown_provider",
     /// The input failed to encode against the tool's declared schema.
-    InputEncode,
+    InputEncode => "input_encode",
     /// The capability ran and reported a domain failure ("no such file").
-    OperationFailed,
+    OperationFailed => "operation_failed",
     /// The result exceeded the output size cap.
-    OutputTooLarge,
+    OutputTooLarge => "output_too_large",
     /// Hit a resource quota/limit the model could work around.
-    Resource,
+    Resource => "resource",
     /// Blocked by policy — permanently forbidden, not a gate.
-    PolicyDenied,
+    PolicyDenied => "policy_denied",
     /// Network egress denied by policy. Never retryable: policy does not
     /// change between attempts (retrying burns budget on a call that cannot
     /// succeed).
-    NetworkDenied,
+    NetworkDenied => "network_denied",
     /// Filesystem path access refused.
-    FilesystemDenied,
+    FilesystemDenied => "filesystem_denied",
     /// Secret/credential access refused.
-    SecretDenied,
+    SecretDenied => "secret_denied",
     /// Authorization failed (general case; the two `*Denied` variants above
     /// are specific causes).
-    Authorization,
+    Authorization => "authorization",
     /// The capability surface changed between disclosure and invocation —
     /// re-issue the call against the fresh surface.
-    StaleSurface,
+    StaleSurface => "stale_surface",
     /// The user declined the gate. Model-visible so the loop can pursue
     /// another approach; wire tag is load-bearing in the WebUI frontend.
-    GateDeclined,
+    GateDeclined => "gate_declined",
 
     // ── Retry quietly: the world hiccuped, the model did nothing wrong ──
     /// Transport-level network failure (timeout, connection reset) — distinct
     /// from [`NetworkDenied`](Self::NetworkDenied), which is policy.
-    Network,
+    Network => "network",
     /// Temporary fault; try again.
-    Transient,
+    Transient => "transient",
     /// The backing service is down right now.
-    Unavailable,
+    Unavailable => "unavailable",
     /// An upstream/backend service errored.
-    Backend,
+    Backend => "backend",
     /// Host internal fault, retryable.
-    Internal,
+    Internal => "internal",
 
     // ── Model-visible: the extension itself is broken ──
     /// Extension guest code crashed/trapped.
-    Guest,
+    Guest => "guest",
     /// A sandboxed process exited with failure.
-    ExitFailure,
+    ExitFailure => "exit_failure",
     /// The tool returned output that could not be decoded.
-    OutputDecode,
+    OutputDecode => "output_decode",
     /// The result violated the declared result schema.
-    InvalidResult,
+    InvalidResult => "invalid_result",
     /// The extension exceeded its memory limit.
-    Memory,
+    Memory => "memory",
 
     // ── Model-visible with user-setup remediation: configuration faults ──
     /// The extension manifest is invalid.
-    Manifest,
+    Manifest => "manifest",
     /// The extension was built for a different runtime than it was routed to.
-    ExtensionRuntimeMismatch,
+    ExtensionRuntimeMismatch => "extension_runtime_mismatch",
     /// Dispatch routed to the wrong runtime lane.
-    RuntimeMismatch,
+    RuntimeMismatch => "runtime_mismatch",
     /// The required runtime backend is not installed.
-    MissingRuntimeBackend,
+    MissingRuntimeBackend => "missing_runtime_backend",
     /// The runtime kind is not supported in this deployment.
-    UnsupportedRunner,
+    UnsupportedRunner => "unsupported_runner",
     /// The runtime for this capability is absent.
-    MissingRuntime,
+    MissingRuntime => "missing_runtime",
     /// Host-side client machinery fault.
-    Client,
+    Client => "client",
     /// Host-side executor machinery fault.
-    Executor,
+    Executor => "executor",
+
+    // ── Model-visible: the system could not classify the failure ──
+    /// The failure could not be classified: an unrecognized wire tag (a future
+    /// build's kind, a legacy open-set tag) or a lane's redacted unknown
+    /// bucket. Deliberately NOT retryable — an unclassifiable failure may be
+    /// permanent, so it surfaces to the model instead of silently consuming
+    /// retry budget. Distinct from [`Internal`](Self::Internal), which is a
+    /// *classified* retryable host fault.
+    Unclassified => "unclassified",
 
     // ── Park: waiting on a human or a gate ──
     /// A credential is required — park the run, launch the auth flow, resume.
-    AuthRequired,
+    AuthRequired => "auth_required",
 
     // ── Terminal: the only honest run-ender in this vocabulary ──
     /// Someone stopped the run. Nothing failed.
-    Cancelled,
+    Cancelled => "cancelled",
 }
 
 /// What the loop does with a [`FailureKind`] — the single fate decision,
@@ -289,7 +338,10 @@ impl FailureKind {
             | Self::UnsupportedRunner
             | Self::MissingRuntime
             | Self::Client
-            | Self::Executor => FailureFate::ModelVisible,
+            | Self::Executor
+            // Unclassifiable is NOT retryable: it may be permanent, and
+            // quiet retries would burn budget on a call that cannot succeed.
+            | Self::Unclassified => FailureFate::ModelVisible,
         }
     }
 
@@ -298,90 +350,17 @@ impl FailureKind {
         matches!(self.fate(), FailureFate::Retry)
     }
 
-    /// The stable wire tag. Lowercase snake_case — every tag here passes the
-    /// event layer's `is_safe_error_kind` validator (pinned by test).
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            FailureKind::MethodMissing => "method_missing",
-            FailureKind::UndeclaredCapability => "undeclared_capability",
-            FailureKind::UnknownCapability => "unknown_capability",
-            FailureKind::UnknownProvider => "unknown_provider",
-            FailureKind::InputEncode => "input_encode",
-            FailureKind::OperationFailed => "operation_failed",
-            FailureKind::OutputTooLarge => "output_too_large",
-            FailureKind::Resource => "resource",
-            FailureKind::PolicyDenied => "policy_denied",
-            FailureKind::NetworkDenied => "network_denied",
-            FailureKind::FilesystemDenied => "filesystem_denied",
-            FailureKind::SecretDenied => "secret_denied",
-            FailureKind::Authorization => "authorization",
-            FailureKind::StaleSurface => "stale_surface",
-            FailureKind::GateDeclined => "gate_declined",
-            FailureKind::Network => "network",
-            FailureKind::Transient => "transient",
-            FailureKind::Unavailable => "unavailable",
-            FailureKind::Backend => "backend",
-            FailureKind::Internal => "internal",
-            FailureKind::Guest => "guest",
-            FailureKind::ExitFailure => "exit_failure",
-            FailureKind::OutputDecode => "output_decode",
-            FailureKind::InvalidResult => "invalid_result",
-            FailureKind::Memory => "memory",
-            FailureKind::Manifest => "manifest",
-            FailureKind::ExtensionRuntimeMismatch => "extension_runtime_mismatch",
-            FailureKind::RuntimeMismatch => "runtime_mismatch",
-            FailureKind::MissingRuntimeBackend => "missing_runtime_backend",
-            FailureKind::UnsupportedRunner => "unsupported_runner",
-            FailureKind::MissingRuntime => "missing_runtime",
-            FailureKind::Client => "client",
-            FailureKind::Executor => "executor",
-            FailureKind::AuthRequired => "auth_required",
-            FailureKind::Cancelled => "cancelled",
-        }
-    }
-
     /// Reconstruct from a wire tag. Total over history: every tag any retired
     /// vocabulary ever emitted maps to its nearest surviving variant
     /// (`.claude/rules/types.md` — migrations preserve every historical value);
-    /// an unrecognized tag falls back to [`Internal`](Self::Internal), the
-    /// retryable "host fault without safe caller detail" bucket.
+    /// an unrecognized tag falls back to [`Unclassified`](Self::Unclassified),
+    /// the non-retryable model-visible sink — an unknown tag may name a
+    /// permanent failure, so it must not silently consume retry budget.
     pub fn from_tag(tag: &str) -> Self {
+        if let Some(kind) = Self::from_primary_tag(tag) {
+            return kind;
+        }
         match tag {
-            "method_missing" => Self::MethodMissing,
-            "undeclared_capability" => Self::UndeclaredCapability,
-            "unknown_capability" => Self::UnknownCapability,
-            "unknown_provider" => Self::UnknownProvider,
-            "input_encode" => Self::InputEncode,
-            "operation_failed" => Self::OperationFailed,
-            "output_too_large" => Self::OutputTooLarge,
-            "resource" => Self::Resource,
-            "policy_denied" => Self::PolicyDenied,
-            "network_denied" => Self::NetworkDenied,
-            "filesystem_denied" => Self::FilesystemDenied,
-            "secret_denied" => Self::SecretDenied,
-            "authorization" => Self::Authorization,
-            "stale_surface" => Self::StaleSurface,
-            "gate_declined" => Self::GateDeclined,
-            "network" => Self::Network,
-            "transient" => Self::Transient,
-            "unavailable" => Self::Unavailable,
-            "backend" => Self::Backend,
-            "internal" => Self::Internal,
-            "guest" => Self::Guest,
-            "exit_failure" => Self::ExitFailure,
-            "output_decode" => Self::OutputDecode,
-            "invalid_result" => Self::InvalidResult,
-            "memory" => Self::Memory,
-            "manifest" => Self::Manifest,
-            "extension_runtime_mismatch" => Self::ExtensionRuntimeMismatch,
-            "runtime_mismatch" => Self::RuntimeMismatch,
-            "missing_runtime_backend" => Self::MissingRuntimeBackend,
-            "unsupported_runner" => Self::UnsupportedRunner,
-            "missing_runtime" => Self::MissingRuntime,
-            "client" => Self::Client,
-            "executor" => Self::Executor,
-            "auth_required" => Self::AuthRequired,
-            "cancelled" => Self::Cancelled,
             // Historical tags from the retired coarse vocabularies.
             "invalid_input" => Self::InputEncode,
             "invalid_output" => Self::OutputDecode,
@@ -390,50 +369,11 @@ impl FailureKind {
             "permanent" => Self::OperationFailed,
             "auth_denied" => Self::Authorization,
             // Unrecognized (legacy open-set tags from the retired `Unknown`
-            // funnel): the retryable host-fault bucket, matching the retired
-            // total `from_tag` fallback.
-            _ => Self::Internal,
+            // funnel, or a future build's kind): the explicit non-retryable
+            // unclassified sink.
+            _ => Self::Unclassified,
         }
     }
-
-    /// Every variant, for conformance tests (tag/validator round-trips).
-    pub const ALL: [FailureKind; 35] = [
-        Self::MethodMissing,
-        Self::UndeclaredCapability,
-        Self::UnknownCapability,
-        Self::UnknownProvider,
-        Self::InputEncode,
-        Self::OperationFailed,
-        Self::OutputTooLarge,
-        Self::Resource,
-        Self::PolicyDenied,
-        Self::NetworkDenied,
-        Self::FilesystemDenied,
-        Self::SecretDenied,
-        Self::Authorization,
-        Self::StaleSurface,
-        Self::GateDeclined,
-        Self::Network,
-        Self::Transient,
-        Self::Unavailable,
-        Self::Backend,
-        Self::Internal,
-        Self::Guest,
-        Self::ExitFailure,
-        Self::OutputDecode,
-        Self::InvalidResult,
-        Self::Memory,
-        Self::Manifest,
-        Self::ExtensionRuntimeMismatch,
-        Self::RuntimeMismatch,
-        Self::MissingRuntimeBackend,
-        Self::UnsupportedRunner,
-        Self::MissingRuntime,
-        Self::Client,
-        Self::Executor,
-        Self::AuthRequired,
-        Self::Cancelled,
-    ];
 }
 
 impl std::fmt::Display for FailureKind {
@@ -910,7 +850,7 @@ mod tests {
 
     #[test]
     fn failure_kind_tags_round_trip_for_every_variant() {
-        for kind in FailureKind::ALL {
+        for &kind in FailureKind::ALL {
             let tag = kind.as_str();
             assert_eq!(
                 FailureKind::from_tag(tag),
@@ -925,10 +865,10 @@ mod tests {
 
     #[test]
     fn failure_kind_all_is_complete_and_distinct() {
-        // ALL covers every variant exactly once: 35 distinct tags, and the
-        // exhaustive `fate` match guarantees no variant exists outside it
-        // (a new variant fails to compile in `fate` before it can be missed
-        // here).
+        // ALL covers every variant exactly once. Membership is compiler-owned:
+        // `declare_failure_kinds!` expands the enum, the tags, and `ALL` from
+        // one list, so a variant cannot exist outside `ALL`. This test pins
+        // the remaining runtime property — tag distinctness.
         let tags: std::collections::HashSet<&str> =
             FailureKind::ALL.iter().map(|kind| kind.as_str()).collect();
         assert_eq!(tags.len(), FailureKind::ALL.len());
@@ -949,11 +889,13 @@ mod tests {
         for (tag, expected) in historical {
             assert_eq!(FailureKind::from_tag(tag), expected, "historical: {tag}");
         }
-        // Legacy open-set tags (the retired `Unknown` funnel) fall back to the
-        // retryable host-fault bucket instead of being dropped or crashing.
+        // Legacy open-set tags (the retired `Unknown` funnel) and future
+        // builds' tags fall back to the explicit non-retryable `Unclassified`
+        // sink instead of the retryable host-fault bucket — an unknown tag
+        // may name a permanent failure, so it must not burn retry budget.
         assert_eq!(
             FailureKind::from_tag("quota_exceeded"),
-            FailureKind::Internal
+            FailureKind::Unclassified
         );
     }
 
@@ -961,7 +903,8 @@ mod tests {
     fn failure_kind_fates_pin_the_recoverability_contract() {
         // The epic's invariant (#6284): exactly one variant may end a run.
         let terminal: Vec<FailureKind> = FailureKind::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|kind| kind.fate() == FailureFate::Terminal)
             .collect();
         assert_eq!(terminal, vec![FailureKind::Cancelled]);
@@ -970,6 +913,11 @@ mod tests {
         assert!(!FailureKind::PolicyDenied.is_retryable());
         // Transport faults do retry.
         assert!(FailureKind::Network.is_retryable());
+        // The unclassifiable sink surfaces model-visibly and never retries —
+        // it may be permanent, so quiet retries would burn budget.
+        assert_eq!(FailureKind::Unclassified.fate(), FailureFate::ModelVisible);
+        assert!(!FailureKind::Unclassified.is_retryable());
+        assert_eq!(FailureKind::Unclassified.as_str(), "unclassified");
         // The frontend's load-bearing literal survives the merge.
         assert_eq!(FailureKind::GateDeclined.as_str(), "gate_declined");
     }

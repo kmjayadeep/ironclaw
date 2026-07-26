@@ -510,6 +510,9 @@ fn generic_failure_recovery(error_kind: FailureKind) -> ToolRecoveryObservation 
         | FailureKind::Memory
         | FailureKind::Client
         | FailureKind::Executor
+        // Unclassifiable: the constraint is unknown, so do not forbid a
+        // retry the model judges worthwhile.
+        | FailureKind::Unclassified
         | FailureKind::StaleSurface => SameCallRetryConstraint::Allowed,
     };
     ToolRecoveryObservation {

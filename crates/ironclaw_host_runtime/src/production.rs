@@ -1804,7 +1804,13 @@ pub(crate) fn failure_kind_from(error: &CapabilityInvocationError) -> FailureKin
             ironclaw_capabilities::CapabilityObligationFailureKind::Mount => {
                 FailureKind::Authorization
             }
-            ironclaw_capabilities::CapabilityObligationFailureKind::Network => FailureKind::Network,
+            // Every Network obligation failure is deterministic policy/config
+            // (duplicate ApplyNetworkPolicy, empty allowed_targets, missing
+            // policy store) — never a transport fault, so it must not ride
+            // the retryable transport `Network` kind and burn retry budget.
+            ironclaw_capabilities::CapabilityObligationFailureKind::Network => {
+                FailureKind::NetworkDenied
+            }
             ironclaw_capabilities::CapabilityObligationFailureKind::Output => {
                 FailureKind::OutputTooLarge
             }
@@ -2073,10 +2079,11 @@ mod tests {
                 RuntimeDispatchErrorKind::UnsupportedRunner,
                 FailureKind::UnsupportedRunner,
             ),
-            // The fail-safe "uncategorized" redaction bucket collapses to a
-            // concrete, surfacing `Internal` rather than a dedicated `Unknown`
-            // category (which does not exist on the closed `FailureKind`).
-            (RuntimeDispatchErrorKind::Unknown, FailureKind::Internal),
+            // The fail-safe "uncategorized" redaction bucket routes to the
+            // explicit non-retryable `Unclassified` sink: an unclassifiable
+            // failure may be permanent, so it surfaces model-visibly instead
+            // of consuming retry budget in the retryable `Internal` bucket.
+            (RuntimeDispatchErrorKind::Unknown, FailureKind::Unclassified),
         ];
         for (variant, expected) in cases {
             let kind = DispatchFailureKind::Runtime(*variant);
@@ -2130,6 +2137,22 @@ mod tests {
     fn failure_kind_from_unknown_capability_variant_maps_to_missing_runtime() {
         let error = CapabilityInvocationError::UnknownCapability { capability: cap() };
         assert_eq!(failure_kind_from(&error), FailureKind::MissingRuntime);
+    }
+
+    /// Regression (#6684 review): a Network obligation failure is deterministic
+    /// policy/config (duplicate policy obligation, empty allowed_targets,
+    /// missing policy store) — it must map to the never-retryable
+    /// `NetworkDenied`, not the retryable transport `Network` kind, or retries
+    /// burn budget on a call that cannot succeed.
+    #[test]
+    fn failure_kind_from_network_obligation_failure_is_not_retryable() {
+        let error = CapabilityInvocationError::ObligationFailed {
+            capability: cap(),
+            kind: ironclaw_capabilities::CapabilityObligationFailureKind::Network,
+        };
+        let kind = failure_kind_from(&error);
+        assert_eq!(kind, FailureKind::NetworkDenied);
+        assert!(!kind.is_retryable());
     }
 
     #[test]
@@ -2458,7 +2481,7 @@ mod tests {
         // denials, config faults, park/terminal fates — surfaces as a
         // model-visible tool error. Exhaustive over the closed vocabulary so
         // a new variant fails this pin until deliberately classified.
-        for kind in FailureKind::ALL {
+        for &kind in FailureKind::ALL {
             let expected = match kind {
                 FailureKind::Network
                 | FailureKind::Transient

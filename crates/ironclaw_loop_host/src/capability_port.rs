@@ -5968,8 +5968,9 @@ mod tests {
                     message: Some("custom failure".to_string()),
                 }),
                 // Unrecognized legacy open-set tag: the closed vocabulary's
-                // total `from_tag` fallback lands on `Internal`.
-                FailureKind::Internal,
+                // total `from_tag` fallback lands on the non-retryable
+                // `Unclassified` sink.
+                FailureKind::Unclassified,
                 None,
             ),
         ];

@@ -569,6 +569,7 @@ fn capability_retry_attempt_class(kind: FailureKind) -> Option<RecoveryAttemptCl
         | FailureKind::MissingRuntime
         | FailureKind::Client
         | FailureKind::Executor
+        | FailureKind::Unclassified
         | FailureKind::AuthRequired
         | FailureKind::Cancelled => None,
     }
@@ -640,6 +641,7 @@ pub(crate) fn capability_error_to_failure_kind(kind: FailureKind) -> LoopFailure
         | FailureKind::MissingRuntime
         | FailureKind::Client
         | FailureKind::Executor
+        | FailureKind::Unclassified
         | FailureKind::Cancelled => LoopFailureKind::CapabilityProtocolError,
     }
 }
@@ -1279,7 +1281,7 @@ mod tests {
         #[tokio::test]
         async fn every_failure_kind_has_a_deliberate_capability_recovery_outcome() {
             let strategy = DefaultRecoveryStrategy::default();
-            for kind in FailureKind::ALL {
+            for &kind in FailureKind::ALL {
                 let state = state_with_no_attempts();
                 let outcome = strategy.on_capability_error(&state, &cap_err(kind)).await;
                 match kind.fate() {

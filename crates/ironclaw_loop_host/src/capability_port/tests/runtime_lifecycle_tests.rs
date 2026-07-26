@@ -415,8 +415,9 @@ async fn runtime_capability_failed_and_unknown_outcomes_emit_failure_milestones(
                 message: Some("custom failure".to_string()),
             }),
             // Unrecognized legacy open-set tag: the closed vocabulary's total
-            // `from_tag` fallback lands on `Internal`.
-            FailureKind::Internal,
+            // `from_tag` fallback lands on the non-retryable `Unclassified`
+            // sink.
+            FailureKind::Unclassified,
         ),
     ];
 
@@ -956,11 +957,11 @@ async fn host_runtime_default_auth_decline_fails_closed_as_unavailable() {
 
 /// The unified `FailureKind` vocabulary is closed and `from_tag` is total, so
 /// a wild/unsafe unknown-outcome tag no longer aborts the run with an internal
-/// "could not be represented" host error — it lands in the `Internal`
-/// host-fault bucket, emits the failure milestone, and returns a model-visible
-/// failed resolution.
+/// "could not be represented" host error — it lands in the non-retryable
+/// `Unclassified` sink, emits the failure milestone, and returns a
+/// model-visible failed resolution.
 #[tokio::test]
-async fn runtime_capability_unknown_outcome_with_wild_kind_maps_to_internal_failure() {
+async fn runtime_capability_unknown_outcome_with_wild_kind_maps_to_unclassified_failure() {
     let capability_id = CapabilityId::new("demo.echo").expect("valid capability id");
     let provider_id = ExtensionId::new("demo").expect("valid provider id");
     let milestone_sink =
@@ -994,7 +995,7 @@ async fn runtime_capability_unknown_outcome_with_wild_kind_maps_to_internal_fail
     assert!(matches!(
         &outcome,
         Resolution::Done(o)
-            if o.verdict.error_kind() == Some(&FailureKind::Internal)
+            if o.verdict.error_kind() == Some(&FailureKind::Unclassified)
     ));
     let milestones = milestone_sink.milestones();
     assert_eq!(milestones.len(), 2);
@@ -1009,7 +1010,7 @@ async fn runtime_capability_unknown_outcome_with_wild_kind_maps_to_internal_fail
             ..
         } if actual == &capability_id
             && provider == &provider_id
-            && reason_kind == &FailureKind::Internal
+            && reason_kind == &FailureKind::Unclassified
     ));
 }
 

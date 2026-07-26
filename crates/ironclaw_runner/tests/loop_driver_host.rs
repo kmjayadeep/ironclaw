@@ -7090,12 +7090,16 @@ async fn text_only_host_maps_explicit_unknown_runtime_outcome_to_failure() {
     let Resolution::Done(o) = outcome else {
         panic!("expected failed capability outcome");
     };
-    assert_eq!(
-        o.verdict.error_kind(),
-        // The closed FailureKind has no open `Unknown`; an unrecognized
-        // runtime outcome tag falls back to the retryable Internal bucket.
-        Some(&FailureKind::Internal)
-    );
+    // The closed FailureKind has no open `Unknown`; an unrecognized runtime
+    // outcome tag falls back to the explicit non-retryable `Unclassified`
+    // sink — surfaced to the model, never silently retried.
+    assert!(matches!(
+        o.verdict,
+        ToolVerdict::RecoverableFailure {
+            error_kind: FailureKind::Unclassified,
+            ..
+        }
+    ));
     assert_eq!(
         o.summary.as_str(),
         "streaming outcomes are not supported by this loop port"

@@ -260,7 +260,8 @@ pub(super) fn capability_error_failure_category(
         | FailureKind::UnsupportedRunner
         | FailureKind::MissingRuntime
         | FailureKind::Client
-        | FailureKind::Executor => "capability_operation_failed",
+        | FailureKind::Executor
+        | FailureKind::Unclassified => "capability_operation_failed",
     })
 }
 
@@ -420,7 +421,7 @@ mod tests {
             );
         }
 
-        for kind in FailureKind::ALL {
+        for &kind in FailureKind::ALL {
             let failure = capability_error_failure_category(kind).expect("valid category");
             let category = failure.category().to_string();
             assert!(

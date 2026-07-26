@@ -211,9 +211,12 @@ pub const INPUT_ENCODE_HUMAN_SUMMARY: &str = "the tool input could not be encode
 /// every precise mechanism name survives 1:1 — this replaces the retired
 /// 22→12 coarsening fold that destroyed 17 names (and with them, every
 /// remediation hint) on the way to the loop. The single non-identity edge is
-/// `Unknown` → `Internal` (the retired fold's own mapping): `Unknown` is the
-/// dispatch lane's redaction bucket, and `Internal` is the unified retryable
-/// host-fault bucket it always landed in.
+/// `Unknown` → `Unclassified`: `Unknown` is the dispatch lane's redaction
+/// bucket for failures it cannot classify, and the unified vocabulary's
+/// explicit `Unclassified` sink surfaces those model-visibly without retry —
+/// an unclassifiable failure may be permanent, so routing it to the retryable
+/// `Internal` bucket (the retired fold's mapping) burned retry budget on
+/// calls that could never succeed.
 impl From<RuntimeDispatchErrorKind> for crate::FailureKind {
     fn from(kind: RuntimeDispatchErrorKind) -> Self {
         match kind {
@@ -239,7 +242,7 @@ impl From<RuntimeDispatchErrorKind> for crate::FailureKind {
             RuntimeDispatchErrorKind::SecretDenied => Self::SecretDenied,
             RuntimeDispatchErrorKind::UndeclaredCapability => Self::UndeclaredCapability,
             RuntimeDispatchErrorKind::UnsupportedRunner => Self::UnsupportedRunner,
-            RuntimeDispatchErrorKind::Unknown => Self::Internal,
+            RuntimeDispatchErrorKind::Unknown => Self::Unclassified,
         }
     }
 }

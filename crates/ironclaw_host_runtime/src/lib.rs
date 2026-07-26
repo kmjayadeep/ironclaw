@@ -678,10 +678,12 @@ fn bounded_runtime_failure_summary(summary: &str) -> String {
 /// [`FailureKind::fate`] projection instead of re-deriving a local retryable
 /// set — re-declared domains drift, and the drift is where recoverability
 /// died (#6284). Only `Retry`-fated kinds are retried before the model sees
-/// anything; `Park` and `Terminal` fates never reach this disposition on the
-/// production paths (gates suspend as `AuthRequired`/`ApprovalRequired`
-/// outcomes, cancellation ends the run), so they conservatively surface as
-/// model-visible tool errors rather than burning retry budget. Security
+/// anything. `Park` and `Terminal` fates are not expected to reach this
+/// disposition on the production paths (gates suspend as
+/// `AuthRequired`/`ApprovalRequired` outcomes and cancellation ends the run
+/// upstream — intent, not a code-enforced invariant); if a lane nevertheless
+/// mints one, it conservatively surfaces as a model-visible tool error rather
+/// than burning retry budget. Security
 /// isolation failures must use a separate quarantine path instead of this
 /// generic failure disposition.
 pub fn capability_failure_disposition(kind: FailureKind) -> CapabilityFailureDisposition {
