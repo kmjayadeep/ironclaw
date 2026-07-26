@@ -4,8 +4,6 @@ use ironclaw_host_api::{AgentId, ProjectId, TenantId, UserId};
 use serde::{Deserialize, Serialize};
 
 use crate::TurnRunId;
-#[cfg(any(test, feature = "test-support"))]
-use crate::{TurnActor, TurnScope};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
@@ -251,59 +249,4 @@ pub struct TurnAdmissionReservationRecord {
     pub admission_class: TurnAdmissionClass,
     pub buckets: Vec<TurnAdmissionBucket>,
     pub released: bool,
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) fn admission_buckets(
-    scope: &TurnScope,
-    actor: &TurnActor,
-    admission_class: &TurnAdmissionClass,
-) -> Vec<TurnAdmissionBucket> {
-    let tenant_id = scope.tenant_id.clone();
-    let total_and_class = |axis_kind: TurnAdmissionAxisKind, scope: TurnAdmissionBucketScope| {
-        [
-            TurnAdmissionBucket {
-                axis_kind,
-                bucket_kind: TurnAdmissionBucketKind::Total,
-                admission_class: None,
-                scope: scope.clone(),
-            },
-            TurnAdmissionBucket {
-                axis_kind,
-                bucket_kind: TurnAdmissionBucketKind::Class,
-                admission_class: Some(admission_class.clone()),
-                scope,
-            },
-        ]
-    };
-
-    let mut buckets = Vec::with_capacity(8);
-    buckets.extend(total_and_class(
-        TurnAdmissionAxisKind::Tenant,
-        TurnAdmissionBucketScope::Tenant {
-            tenant_id: tenant_id.clone(),
-        },
-    ));
-    buckets.extend(total_and_class(
-        TurnAdmissionAxisKind::ActorUser,
-        TurnAdmissionBucketScope::ActorUser {
-            tenant_id: tenant_id.clone(),
-            user_id: actor.user_id.clone(),
-        },
-    ));
-    buckets.extend(total_and_class(
-        TurnAdmissionAxisKind::Project,
-        TurnAdmissionBucketScope::Project {
-            tenant_id: tenant_id.clone(),
-            project_id: scope.project_id.clone(),
-        },
-    ));
-    buckets.extend(total_and_class(
-        TurnAdmissionAxisKind::Agent,
-        TurnAdmissionBucketScope::Agent {
-            tenant_id,
-            agent_id: scope.agent_id.clone(),
-        },
-    ));
-    buckets
 }

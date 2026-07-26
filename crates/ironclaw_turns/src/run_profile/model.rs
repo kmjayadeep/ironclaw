@@ -657,24 +657,6 @@ fn log_milestone_failure(result: Result<(), AgentLoopHostError>, message: &'stat
 mod tests {
     use super::*;
 
-    /// The primary model-call idle timeout must fire before the runner lease can
-    /// reclaim the run mid-flight. This guards against a silent regression of
-    /// the 2026-06-24 wedge, where the provider timeout (120s) exceeded the
-    /// lease (90s) and the lease killed runners before any timeout fired.
-    #[test]
-    fn primary_model_call_idle_timeout_is_below_runner_lease() {
-        let lease_secs = u64::try_from(
-            crate::turn_state_row_store::turn_state_engine::DEFAULT_RUNNER_LEASE_TTL_SECONDS,
-        )
-        .expect("runner lease TTL is non-negative");
-        assert!(
-            PRIMARY_MODEL_CALL_IDLE_TIMEOUT.as_secs() < lease_secs,
-            "primary model-call idle timeout ({}s) must be below the runner lease ({}s)",
-            PRIMARY_MODEL_CALL_IDLE_TIMEOUT.as_secs(),
-            lease_secs,
-        );
-    }
-
     #[test]
     fn fallback_model_text_delta_emission_is_throttled_and_final() {
         let emitted = (1..=32)

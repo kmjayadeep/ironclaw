@@ -7,7 +7,6 @@
 #![warn(unreachable_pub)]
 
 mod admission;
-mod block_persistence;
 mod checkpoint_state;
 mod coordinator;
 pub mod events;
@@ -27,8 +26,6 @@ mod status;
 mod store;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
-#[cfg(any(test, feature = "test-support"))]
-mod turn_state_row_store;
 
 pub use admission::{
     AllowAllTurnAdmissionLimitProvider, StaticTurnAdmissionLimitProvider, TurnAdmissionAxisKind,
@@ -36,7 +33,6 @@ pub use admission::{
     TurnAdmissionCapacityDenial, TurnAdmissionClass, TurnAdmissionLimit,
     TurnAdmissionLimitProvider, TurnAdmissionLimitUnavailable, TurnAdmissionReservationRecord,
 };
-pub use block_persistence::TurnStateBlockPersistence;
 pub use checkpoint_state::{
     CheckpointStateMatchMetadata, CheckpointStateRecord, CheckpointStateStorePort,
     GetCheckpointStateRequest, GetLoopCheckpointRequest, LoopCheckpointRecord, LoopCheckpointStore,
@@ -118,8 +114,4 @@ pub use store::{
     TurnIdempotencyOutcomeKind, TurnIdempotencyRecord, TurnIdempotencyReplay, TurnLockVersion,
     TurnPersistenceSnapshot, TurnRecord, TurnRunRecord, TurnSpawnTreeStateStore, TurnStateStore,
     active_run_ref_state,
-};
-#[cfg(any(test, feature = "test-support"))]
-pub use turn_state_row_store::{
-    FilesystemTurnStateBlockPersistence, TurnStateRowStore, TurnStateStoreLimits,
 };

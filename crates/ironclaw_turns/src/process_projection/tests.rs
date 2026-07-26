@@ -5,20 +5,10 @@ use std::sync::Arc;
 
 use super::*;
 use crate::{
-    AcceptedMessageRef, AdmissionRejection, CapabilityActivityId, EventCursor, GateRef,
-    IdempotencyKey, InMemoryRunProfileResolver, LoopExitMapping, ReplyTargetBindingRef,
-    RunProfileRequest, RunProfileVersion, SourceBindingRef, SubmitTurnRequest, SubmitTurnResponse,
-    TurnActor, TurnAdmissionPolicy, TurnId, TurnRunProfile, TurnScope, TurnStateStore,
-    runner::ApplyValidatedLoopExitRequest,
+    AcceptedMessageRef, CapabilityActivityId, EventCursor, GateRef, LoopExitMapping,
+    ReplyTargetBindingRef, RunProfileVersion, SourceBindingRef, TurnActor, TurnId, TurnRunProfile,
+    TurnScope, runner::ApplyValidatedLoopExitRequest,
 };
-
-struct AllowAllAdmissionPolicy;
-
-impl TurnAdmissionPolicy for AllowAllAdmissionPolicy {
-    fn check_submit(&self, _request: &SubmitTurnRequest) -> Result<(), AdmissionRejection> {
-        Ok(())
-    }
-}
 
 fn scope() -> TurnScope {
     TurnScope::new(
@@ -81,27 +71,6 @@ fn process_lease_request() -> ProcessLeaseRequest {
         process_id: process_id_from_turn_run_id(TurnRunId::new()),
         worker_id: ProcessWorkerId::from_trusted(runner_id.to_wire_string()),
         lease_token: ProcessLeaseToken::from_trusted(lease_token.to_wire_string()),
-    }
-}
-
-fn submit_request(run_id: TurnRunId) -> SubmitTurnRequest {
-    SubmitTurnRequest {
-        requested_model: None,
-        scope: scope(),
-        actor: TurnActor::new(UserId::new("user:process").expect("user")),
-        accepted_message_ref: AcceptedMessageRef::new("accepted-process-transition")
-            .expect("accepted"),
-        source_binding_ref: SourceBindingRef::new("source-process-transition").expect("source"),
-        reply_target_binding_ref: ReplyTargetBindingRef::new("reply-process-transition")
-            .expect("reply"),
-        requested_run_profile: Some(RunProfileRequest::new("default").expect("profile")),
-        idempotency_key: IdempotencyKey::new("idem-process-transition").expect("idempotency"),
-        received_at: Utc::now(),
-        requested_run_id: Some(run_id),
-        parent_run_id: None,
-        subagent_depth: 0,
-        spawn_tree_root_run_id: None,
-        product_context: None,
     }
 }
 
@@ -347,69 +316,6 @@ fn claimed_process_round_trips_to_turn_executor_view() {
         round_trip.resolved_run_profile,
         claimed.resolved_run_profile
     );
-}
-
-#[tokio::test]
-async fn process_transition_adapter_drives_real_turn_store_transitions() {
-    let store = Arc::new(crate::test_support::in_memory_turn_state_store());
-    let transitions: Arc<dyn TurnRunTransitionPort> = store.clone();
-    let adapter = AgentTurnProcessTransitionAdapter::new(transitions);
-    let run_id = TurnRunId::new();
-    let response = store
-        .submit_turn(
-            submit_request(run_id),
-            &AllowAllAdmissionPolicy,
-            &InMemoryRunProfileResolver::default(),
-        )
-        .await
-        .expect("submit turn");
-    let SubmitTurnResponse::Accepted {
-        run_id: accepted_run_id,
-        ..
-    } = response;
-    assert_eq!(accepted_run_id, run_id);
-
-    let worker_id = ProcessWorkerId::from_trusted(TurnRunnerId::new().to_wire_string());
-    let claimed = adapter
-        .claim_next_processes(ClaimProcessesRequest {
-            worker_id: worker_id.clone(),
-            scope_filter: None,
-            max_processes: 1,
-        })
-        .await
-        .expect("claim process")
-        .pop()
-        .expect("claimed process");
-    assert_eq!(
-        claimed.state.process_id,
-        process_id_from_turn_run_id(run_id)
-    );
-    assert_eq!(claimed.state.status, ProcessLifecycleStatus::Running);
-    assert_eq!(claimed.worker_id, worker_id);
-    let lease_token = claimed.lease_token.clone();
-
-    let cursor = adapter
-        .heartbeat_process(ProcessLeaseRequest {
-            process_id: claimed.state.process_id,
-            worker_id: worker_id.clone(),
-            lease_token: lease_token.clone(),
-        })
-        .await
-        .expect("heartbeat process");
-    assert!(cursor.0 >= claimed.state.journal_cursor.0);
-
-    let completed = adapter
-        .complete_process(ProcessStateTransitionRequest {
-            lease: ProcessLeaseRequest {
-                process_id: claimed.state.process_id,
-                worker_id,
-                lease_token,
-            },
-            metadata: None,
-        })
-        .await
-        .expect("complete process");
-    assert_eq!(completed.status, ProcessLifecycleStatus::Completed);
 }
 
 #[tokio::test]
