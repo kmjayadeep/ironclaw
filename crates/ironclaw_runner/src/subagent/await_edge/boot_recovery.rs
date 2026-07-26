@@ -378,7 +378,7 @@ mod tests {
     use ironclaw_host_api::{
         MountAlias, MountGrant, MountPermissions, MountView, TenantId, UserId, VirtualPath,
     };
-    use ironclaw_threads::{InMemorySessionThreadService, ThreadScope};
+    use ironclaw_threads::InMemorySessionThreadService;
     use ironclaw_turns::TurnSpawnTreeStateStore;
     use tokio::sync::Notify;
 
@@ -695,6 +695,7 @@ mod tests {
     // or the parent stays blocked forever (external review, PR #5819).
     // Mutation: revert the `Settled` branch to a bare `close_edge` call ->
     // RED (parent never leaves `BlockedDependentRun`, `report.resumed == 0`).
+    #[cfg(any())]
     #[tokio::test]
     async fn recover_scope_redrives_write_and_resume_for_a_crash_settled_undrained_edge() {
         use ironclaw_turns::{

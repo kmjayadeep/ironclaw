@@ -1,12 +1,22 @@
 //! Process-backed fixtures for cross-crate turn projection tests.
 
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
+use async_trait::async_trait;
 use ironclaw_filesystem::{InMemoryBackend, ScopedFilesystem};
 use ironclaw_host_api::{MountAlias, MountGrant, MountPermissions, MountView, VirtualPath};
-use ironclaw_processes::{ProcessJournalStore, ProcessRuntimePort, ProcessTransitionPort};
+use ironclaw_processes::{
+    GetProcessCheckpointRequest, ProcessCheckpointId, ProcessCheckpointPort,
+    ProcessCheckpointRecord, ProcessJournalStore, ProcessRuntimePort, ProcessTransitionPort,
+    RecordProcessCheckpointRequest,
+};
 
-use crate::{AgentTurnProcessRuntime, ProcessJournalStoreTurnAdapter, TurnError};
+use crate::{
+    AgentTurnProcessRuntime, ProcessJournalStoreTurnAdapter, ProcessLoopCheckpointStore, TurnError,
+};
 
 #[derive(Clone)]
 pub struct InMemoryAgentTurnProcessSystem {
@@ -50,6 +60,65 @@ impl Default for InMemoryAgentTurnProcessSystem {
 
 pub fn in_memory_agent_turn_process_system() -> InMemoryAgentTurnProcessSystem {
     InMemoryAgentTurnProcessSystem::new()
+}
+
+/// Compatibility fixture name for tests that only require the turn projection.
+///
+/// This returns a process-backed runtime; there is no turn state store behind it.
+pub fn in_memory_turn_state_store() -> AgentTurnProcessRuntime {
+    in_memory_agent_turn_process_system().runtime()
+}
+
+pub fn in_memory_loop_checkpoint_store() -> ProcessLoopCheckpointStore {
+    ProcessLoopCheckpointStore::new(Arc::new(InMemoryProcessCheckpointPort::default()))
+}
+
+#[derive(Default)]
+struct InMemoryProcessCheckpointPort {
+    records: Mutex<HashMap<ProcessCheckpointId, ProcessCheckpointRecord>>,
+}
+
+#[async_trait]
+impl ProcessCheckpointPort for InMemoryProcessCheckpointPort {
+    type Error = TurnError;
+
+    async fn record_process_checkpoint(
+        &self,
+        request: RecordProcessCheckpointRequest,
+    ) -> Result<ProcessCheckpointRecord, Self::Error> {
+        let record = ProcessCheckpointRecord {
+            checkpoint_id: request.checkpoint_id.clone(),
+            process_id: request.process_id,
+            scope: request.scope,
+            state_ref: request.state_ref,
+            created_at: request.created_at,
+            metadata: request.metadata,
+        };
+        self.records
+            .lock()
+            .map_err(|_| TurnError::Unavailable {
+                reason: "process checkpoint fixture lock poisoned".to_string(),
+            })?
+            .insert(request.checkpoint_id, record.clone());
+        Ok(record)
+    }
+
+    async fn get_process_checkpoint(
+        &self,
+        request: GetProcessCheckpointRequest,
+    ) -> Result<Option<ProcessCheckpointRecord>, Self::Error> {
+        Ok(self
+            .records
+            .lock()
+            .map_err(|_| TurnError::Unavailable {
+                reason: "process checkpoint fixture lock poisoned".to_string(),
+            })?
+            .get(&request.checkpoint_id)
+            .filter(|record| {
+                record.process_id == request.process_id && record.scope == request.scope
+            })
+            .cloned())
+    }
 }
 
 pub fn in_memory_processes_filesystem() -> Arc<ScopedFilesystem<InMemoryBackend>> {

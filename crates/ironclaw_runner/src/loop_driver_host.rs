@@ -2811,10 +2811,10 @@ mod tests {
     use ironclaw_filesystem::InMemoryBackend;
     use ironclaw_host_api::{AgentId, ProjectId, TenantId, ThreadId, UserId};
     use ironclaw_loop_host::CheckpointStateStore;
-    use ironclaw_turns::test_support::in_memory_turn_state_store;
+    use ironclaw_turns::test_support::in_memory_loop_checkpoint_store;
     use ironclaw_turns::{
-        InMemoryRunProfileResolver, PutLoopCheckpointRequest, RunProfileResolver, TurnActor,
-        TurnCheckpointId, TurnId, TurnRunId, TurnScope, TurnStateRowStore,
+        InMemoryRunProfileResolver, ProcessLoopCheckpointStore, PutLoopCheckpointRequest,
+        RunProfileResolver, TurnActor, TurnCheckpointId, TurnId, TurnRunId, TurnScope,
         run_profile::{
             AgentLoopHostErrorKind, CheckpointSchemaId, InMemoryLoopHostMilestoneSink,
             LoadCheckpointPayloadRequest, LoopCheckpointKind, LoopCheckpointRequest,
@@ -2893,10 +2893,10 @@ mod tests {
     ) -> (
         HostManagedLoopCheckpointPort,
         Arc<CheckpointStateStore<InMemoryBackend>>,
-        Arc<TurnStateRowStore<InMemoryBackend>>,
+        Arc<ProcessLoopCheckpointStore>,
     ) {
         let state_store = in_memory_checkpoint_state_store();
-        let checkpoint_store = Arc::new(in_memory_turn_state_store());
+        let checkpoint_store = Arc::new(in_memory_loop_checkpoint_store());
         let milestone_sink = Arc::new(InMemoryLoopHostMilestoneSink::default());
         let port = HostManagedLoopCheckpointPort::new(
             context,
