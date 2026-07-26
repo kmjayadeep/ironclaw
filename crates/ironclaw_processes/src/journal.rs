@@ -141,7 +141,7 @@ impl ProcessConcurrencyClass {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessConcurrencyLimits {
     pub max_running_per_owner: Option<u32>,
     pub max_running_by_class: BTreeMap<ProcessConcurrencyClass, u32>,

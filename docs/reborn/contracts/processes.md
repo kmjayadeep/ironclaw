@@ -141,6 +141,16 @@ contracts over those ports. Its `ProcessJournalStoreTurnAdapter` translates
 errors at the crate boundary but owns no state and contains no reverse
 turn-transition engine.
 
+The durable journal is an append-only `RootFilesystem` event log at
+`/processes/journal/records`. Each submitted journal command is one physical
+event row in libSQL/PostgreSQL. Backend sequence order is the atomic authority
+for exclusive submission, claims, leases, controls, checkpoints, and process
+tree accounting. Current snapshots, lifecycle pages, gates, and lookup results
+are deterministic projections of those rows; they are not separately writable
+authorities. The former `/processes/journal/state.json` CAS document is
+read-only migration input: when present before the first row, it is imported
+once as the first journal command and subsequent mutations are row-native.
+
 `spawn_json` creates a `Running` process record. `BackgroundProcessManager` then drives `Running -> Completed` or `Running -> Failed` from the attached `ProcessExecutor`. `ProcessHost::kill` drives `Running -> Killed` and, when configured with a shared `ProcessCancellationRegistry`, also signals the running executor's cooperative cancellation token. Terminal states are protected: `Completed`, `Failed`, and `Killed` cannot be overwritten by a late background completion.
 
 ---

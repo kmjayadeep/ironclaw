@@ -1,13 +1,20 @@
 use std::collections::{HashMap, VecDeque};
 
+use std::time::Duration;
+
 use ironclaw_host_api::{ProcessId, ResourceScope};
 use serde::{Deserialize, Serialize};
 
-use super::ProcessJournalStoreError;
+use super::{
+    ProcessControlAction, ProcessJournalStoreError, StoredCommandOutcome, StoredProcessCommand,
+    StoredProcessJournalRecord, ensure_lease, ensure_transition, process_claim_within_limits,
+    process_scope_visible, same_lineage_scope, validate_tree_root,
+};
 use crate::{
-    JournaledProcessSnapshot, ProcessCheckpointId, ProcessCheckpointRecord, ProcessControlResult,
-    ProcessJournalCursor, ProcessJournalEntry, ProcessJournalPage, ProcessLifecycleStatus,
-    ProcessTreeReservation, types::same_scope_owner,
+    ClaimedProcess, JournaledProcessSnapshot, ProcessCheckpointId, ProcessCheckpointRecord,
+    ProcessControlResult, ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind,
+    ProcessJournalPage, ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleStatus,
+    ProcessTreeReservation, RecoverExpiredProcessLeasesResponse, types::same_scope_owner,
 };
 
 const MAX_IDEMPOTENCY_RECORDS: usize = 4096;
@@ -29,6 +36,8 @@ pub(super) struct ProcessJournalMaterializedState {
     pub(super) tree_reservations: HashMap<ProcessId, ProcessTreeReservation>,
     #[serde(default)]
     pub(super) checkpoints: HashMap<ProcessCheckpointId, ProcessCheckpointRecord>,
+    #[serde(default)]
+    legacy_imported: bool,
 }
 
 impl Default for ProcessJournalMaterializedState {
@@ -43,11 +52,561 @@ impl Default for ProcessJournalMaterializedState {
             submission_idempotency_order: VecDeque::new(),
             tree_reservations: HashMap::new(),
             checkpoints: HashMap::new(),
+            legacy_imported: false,
         }
     }
 }
 
 impl ProcessJournalMaterializedState {
+    pub(super) fn apply_record(
+        &mut self,
+        record: StoredProcessJournalRecord,
+    ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
+        match record {
+            StoredProcessJournalRecord::V1(command) => self.apply_command(command),
+        }
+    }
+
+    fn apply_command(
+        &mut self,
+        command: StoredProcessCommand,
+    ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
+        match command {
+            StoredProcessCommand::ImportLegacyState(state) => {
+                if !self.legacy_imported && self.processes.is_empty() && self.journal.is_empty() {
+                    let mut imported = *state;
+                    let max_cursor = imported
+                        .journal
+                        .last()
+                        .map(|entry| entry.cursor.0)
+                        .unwrap_or_else(|| imported.next_cursor.saturating_sub(1));
+                    imported.next_cursor = max_cursor.saturating_add(1);
+                    imported.legacy_imported = true;
+                    *self = imported;
+                }
+                Ok(StoredCommandOutcome::Imported)
+            }
+            StoredProcessCommand::Submit(request) => self.apply_submit(request),
+            StoredProcessCommand::Claim {
+                request,
+                now,
+                lease_duration_millis,
+                lease_nonce,
+                limits,
+            } => self.apply_claim(
+                request,
+                now,
+                Duration::from_millis(lease_duration_millis),
+                lease_nonce,
+                limits,
+            ),
+            StoredProcessCommand::Heartbeat {
+                request,
+                now,
+                lease_duration_millis,
+            } => self.apply_heartbeat(request, now, Duration::from_millis(lease_duration_millis)),
+            StoredProcessCommand::RecoverExpired(request) => self.apply_recover_expired(request),
+            StoredProcessCommand::LeasedTransition { request, mutation } => {
+                self.apply_leased_transition(request, mutation)
+            }
+            StoredProcessCommand::Control(mutation) => self.apply_control(mutation),
+            StoredProcessCommand::ReserveTree(request) => self.apply_reserve_tree(request),
+            StoredProcessCommand::ReleaseTree(request) => self.apply_release_tree(request),
+            StoredProcessCommand::PruneTree(request) => self.apply_prune_tree(request),
+            StoredProcessCommand::RecordCheckpoint(request) => self.apply_checkpoint(request),
+        }
+    }
+
+    fn apply_submit(
+        &mut self,
+        request: crate::SubmitProcessRequest,
+    ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
+        let replay_key = request
+            .operation_id
+            .as_ref()
+            .map(|operation_id| {
+                serde_json::to_string(&request.scope).map(|scope| {
+                    format!(
+                        "submit:{scope}:{:?}:{}",
+                        request.process_kind,
+                        operation_id.as_str()
+                    )
+                })
+            })
+            .transpose()
+            .map_err(|error| ProcessJournalStoreError::Serialization(error.to_string()))?;
+        if let Some(snapshot) = replay_key
+            .as_ref()
+            .and_then(|key| self.submission_idempotency.get(key))
+        {
+            return Ok(StoredCommandOutcome::Submitted(snapshot.clone(), false));
+        }
+        if self.processes.contains_key(&request.process_id) {
+            return Err(ProcessJournalStoreError::ProcessAlreadyExists {
+                process_id: request.process_id,
+            });
+        }
+        if request.exclusive_within_scope
+            && let Some(active) = self.processes.values().find(|snapshot| {
+                snapshot.process_kind == request.process_kind
+                    && snapshot.status.keeps_active_lock()
+                    && same_scope_owner(&snapshot.scope, &request.scope)
+            })
+        {
+            return Err(ProcessJournalStoreError::ActiveProcessConflict {
+                process_id: active.process_id,
+                process_kind: active.process_kind.clone(),
+                status: active.status,
+                suspension: active.suspension.clone().map(Box::new),
+                cursor: active.journal_cursor,
+            });
+        }
+        let tree_reservation = if let Some(parent_process_id) = request.parent_process_id {
+            let parent = self.processes.get(&parent_process_id).ok_or(
+                ProcessJournalStoreError::UnknownProcess {
+                    process_id: parent_process_id,
+                },
+            )?;
+            if !same_lineage_scope(&parent.scope, &request.scope) {
+                return Err(ProcessJournalStoreError::UnauthorizedScope);
+            }
+            let root_process_id = parent.root_process_id.unwrap_or(parent.process_id);
+            if request.root_process_id != Some(root_process_id) {
+                return Err(ProcessJournalStoreError::InvalidRequest(
+                    "child root_process_id does not match parent lineage".to_string(),
+                ));
+            }
+            let cap = request.spawn_tree_descendant_cap.ok_or_else(|| {
+                ProcessJournalStoreError::InvalidRequest(
+                    "child process submission requires a descendant cap".to_string(),
+                )
+            })?;
+            let current = self
+                .tree_reservations
+                .get(&root_process_id)
+                .map(|reservation| reservation.descendant_count)
+                .unwrap_or(0);
+            let next = current
+                .checked_add(1)
+                .ok_or(ProcessJournalStoreError::ProcessTreeCapacityExceeded { cap })?;
+            if next > u64::from(cap) {
+                return Err(ProcessJournalStoreError::ProcessTreeCapacityExceeded { cap });
+            }
+            Some((root_process_id, next))
+        } else {
+            if request.root_process_id.is_some() || request.spawn_tree_descendant_cap.is_some() {
+                return Err(ProcessJournalStoreError::InvalidRequest(
+                    "root lineage requires a parent process".to_string(),
+                ));
+            }
+            None
+        };
+        let cursor = self.next_cursor();
+        let snapshot = JournaledProcessSnapshot {
+            process_id: request.process_id,
+            process_kind: request.process_kind,
+            scope: request.scope,
+            status: ProcessLifecycleStatus::Queued,
+            suspension: None,
+            checkpoint_ref: request.checkpoint_ref,
+            failure: None,
+            journal_cursor: cursor,
+            lease: None,
+            created_at: request.created_at,
+            owner_user_id: request.owner_user_id,
+            concurrency_class: request.concurrency_class,
+            parent_process_id: request.parent_process_id,
+            root_process_id: request.root_process_id,
+            metadata: request.metadata,
+        };
+        self.push_entry(ProcessJournalEntry::from_snapshot(
+            &snapshot,
+            cursor,
+            ProcessJournalKind::Submitted,
+        ));
+        self.processes.insert(snapshot.process_id, snapshot.clone());
+        if let Some((root_process_id, descendant_count)) = tree_reservation {
+            let released_processes = self
+                .tree_reservations
+                .get(&root_process_id)
+                .map(|reservation| reservation.released_processes.clone())
+                .unwrap_or_default();
+            self.tree_reservations.insert(
+                root_process_id,
+                ProcessTreeReservation {
+                    root_process_id,
+                    descendant_count,
+                    released_processes,
+                },
+            );
+        }
+        self.remember_submission_result(replay_key, snapshot.clone());
+        Ok(StoredCommandOutcome::Submitted(snapshot, true))
+    }
+
+    fn apply_claim(
+        &mut self,
+        request: crate::ClaimProcessesRequest,
+        now: ironclaw_host_api::Timestamp,
+        lease_duration: Duration,
+        lease_nonce: ProcessId,
+        limits: crate::ProcessConcurrencyLimits,
+    ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
+        let mut claimed = Vec::new();
+        let process_ids = self.claimable_process_ids(request.scope_filter.as_ref());
+        for process_id in process_ids {
+            if claimed.len() >= request.max_processes {
+                break;
+            }
+            if !process_claim_within_limits(self, process_id, &limits) {
+                continue;
+            }
+            let cursor = self.next_cursor();
+            let Some(snapshot) = self.processes.get_mut(&process_id) else {
+                continue;
+            };
+            snapshot.status = ProcessLifecycleStatus::Running;
+            snapshot.suspension = None;
+            snapshot.lease = Some(ProcessLeaseSnapshot {
+                worker_id: request.worker_id.clone(),
+                lease_token: ProcessLeaseToken::from_trusted(lease_nonce.to_string()),
+                lease_expires_at: chrono::Duration::from_std(lease_duration)
+                    .ok()
+                    .map(|duration| now + duration),
+                last_heartbeat_at: Some(now),
+                claim_count: snapshot
+                    .lease
+                    .as_ref()
+                    .map(|lease| lease.claim_count)
+                    .unwrap_or(0)
+                    .saturating_add(1),
+            });
+            snapshot.journal_cursor = cursor;
+            let snapshot = snapshot.clone();
+            self.push_entry(ProcessJournalEntry::from_snapshot(
+                &snapshot,
+                cursor,
+                ProcessJournalKind::Claimed,
+            ));
+            let lease = snapshot
+                .lease
+                .clone()
+                .ok_or(ProcessJournalStoreError::InvalidLease { process_id })?;
+            claimed.push(ClaimedProcess {
+                state: snapshot,
+                worker_id: lease.worker_id,
+                lease_token: lease.lease_token,
+            });
+        }
+        Ok(StoredCommandOutcome::Claimed(claimed))
+    }
+
+    fn apply_heartbeat(
+        &mut self,
+        request: crate::ProcessLeaseRequest,
+        now: ironclaw_host_api::Timestamp,
+        lease_duration: Duration,
+    ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
+        let cursor = self.next_cursor();
+        let snapshot = self.process_mut(request.process_id)?;
+        ensure_transition(snapshot, ProcessLifecycleStatus::Running)?;
+        ensure_lease(snapshot, &request.worker_id, &request.lease_token)?;
+        if let Some(lease) = &mut snapshot.lease {
+            lease.last_heartbeat_at = Some(now);
+            lease.lease_expires_at = chrono::Duration::from_std(lease_duration)
+                .ok()
+                .map(|duration| now + duration);
+        }
+        snapshot.journal_cursor = cursor;
+        let snapshot = snapshot.clone();
+        self.push_entry(ProcessJournalEntry::from_snapshot(
+            &snapshot,
+            cursor,
+            ProcessJournalKind::Heartbeat,
+        ));
+        Ok(StoredCommandOutcome::Heartbeat(snapshot))
+    }
+
+    fn apply_recover_expired(
+        &mut self,
+        request: crate::RecoverExpiredProcessLeasesRequest,
+    ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
+        let expired = self.expired_process_ids(request.scope_filter.as_ref(), request.now);
+        let mut recovered = Vec::new();
+        for process_id in expired {
+            let cursor = self.next_cursor();
+            let snapshot = self.process_mut(process_id)?;
+            snapshot.status = ProcessLifecycleStatus::RecoveryRequired;
+            snapshot.lease = None;
+            snapshot.journal_cursor = cursor;
+            let snapshot = snapshot.clone();
+            self.push_entry(ProcessJournalEntry::from_snapshot(
+                &snapshot,
+                cursor,
+                ProcessJournalKind::RecoveryRequired,
+            ));
+            recovered.push(snapshot);
+        }
+        Ok(StoredCommandOutcome::Recovered(
+            RecoverExpiredProcessLeasesResponse { recovered },
+        ))
+    }
+
+    fn apply_leased_transition(
+        &mut self,
+        request: crate::ProcessLeaseRequest,
+        mutation: super::ProcessTransitionMutation,
+    ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
+        let cursor = self.next_cursor();
+        let snapshot = self.process_mut(request.process_id)?;
+        ensure_lease(snapshot, &request.worker_id, &request.lease_token)?;
+        ensure_transition(snapshot, mutation.status)?;
+        snapshot.status = mutation.status;
+        snapshot.suspension = mutation.suspension;
+        if mutation.checkpoint_ref.is_some() {
+            snapshot.checkpoint_ref = mutation.checkpoint_ref;
+        }
+        snapshot.failure = mutation.failure;
+        if let Some(metadata) = mutation.metadata {
+            snapshot.metadata = metadata;
+        }
+        if mutation.status != ProcessLifecycleStatus::Running {
+            snapshot.lease = None;
+        }
+        snapshot.journal_cursor = cursor;
+        let snapshot = snapshot.clone();
+        self.push_entry(ProcessJournalEntry::from_snapshot(
+            &snapshot,
+            cursor,
+            mutation.kind,
+        ));
+        Ok(StoredCommandOutcome::Transitioned(snapshot))
+    }
+
+    fn apply_control(
+        &mut self,
+        mutation: super::ProcessControlMutation,
+    ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
+        let replay_key = mutation.operation_id.as_ref().map(|id| {
+            format!(
+                "{}:{}:{}",
+                mutation.action.as_str(),
+                mutation.process_id,
+                id.as_str()
+            )
+        });
+        if let Some(result) = replay_key
+            .as_ref()
+            .and_then(|key| self.control_idempotency.get(key))
+        {
+            if !process_scope_visible(&result.state.scope, &mutation.scope) {
+                return Err(ProcessJournalStoreError::UnknownProcess {
+                    process_id: mutation.process_id,
+                });
+            }
+            return Ok(StoredCommandOutcome::Controlled(result.clone(), None));
+        }
+        let snapshot = self.process_mut(mutation.process_id)?;
+        if !process_scope_visible(&snapshot.scope, &mutation.scope) {
+            return Err(ProcessJournalStoreError::UnknownProcess {
+                process_id: mutation.process_id,
+            });
+        }
+        if let Some(expected) = mutation.expected_cursor
+            && expected != snapshot.journal_cursor
+        {
+            return Err(ProcessJournalStoreError::StaleSnapshot {
+                process_id: mutation.process_id,
+                expected,
+                actual: snapshot.journal_cursor,
+            });
+        }
+        let already_terminal = snapshot.status.is_terminal();
+        let transition = match mutation.action {
+            ProcessControlAction::Resume => {
+                ensure_transition(snapshot, ProcessLifecycleStatus::Queued)?;
+                Some((ProcessLifecycleStatus::Queued, ProcessJournalKind::Resumed))
+            }
+            ProcessControlAction::Stop => (!snapshot.status.is_terminal())
+                .then_some((ProcessLifecycleStatus::Stopped, ProcessJournalKind::Stopped)),
+            ProcessControlAction::Cancel => match snapshot.status {
+                status if status.is_terminal() => None,
+                ProcessLifecycleStatus::Running | ProcessLifecycleStatus::CancelRequested => {
+                    Some((
+                        ProcessLifecycleStatus::CancelRequested,
+                        ProcessJournalKind::CancelRequested,
+                    ))
+                }
+                _ => Some((
+                    ProcessLifecycleStatus::Cancelled,
+                    ProcessJournalKind::Cancelled,
+                )),
+            },
+            ProcessControlAction::Kill => (!snapshot.status.is_terminal())
+                .then_some((ProcessLifecycleStatus::Killed, ProcessJournalKind::Killed)),
+        };
+        let Some((status, kind)) = transition else {
+            let result = ProcessControlResult {
+                state: snapshot.clone(),
+                changed: false,
+                already_terminal,
+            };
+            self.remember_control_result(replay_key, result.clone());
+            return Ok(StoredCommandOutcome::Controlled(result, None));
+        };
+        if status == snapshot.status {
+            let result = ProcessControlResult {
+                state: snapshot.clone(),
+                changed: false,
+                already_terminal,
+            };
+            self.remember_control_result(replay_key, result.clone());
+            return Ok(StoredCommandOutcome::Controlled(result, None));
+        }
+        let cursor = self.next_cursor();
+        let snapshot = self.process_mut(mutation.process_id)?;
+        snapshot.status = status;
+        snapshot.suspension = None;
+        if mutation.checkpoint_ref.is_some() {
+            snapshot.checkpoint_ref = mutation.checkpoint_ref;
+        }
+        if let Some(metadata) = mutation.metadata {
+            snapshot.metadata = metadata;
+        }
+        snapshot.failure = None;
+        if status != ProcessLifecycleStatus::CancelRequested {
+            snapshot.lease = None;
+        }
+        snapshot.journal_cursor = cursor;
+        let snapshot = snapshot.clone();
+        let mut entry = ProcessJournalEntry::from_snapshot(&snapshot, cursor, kind);
+        entry.sanitized_reason = mutation.reason;
+        self.push_entry(entry);
+        let result = ProcessControlResult {
+            state: snapshot,
+            changed: true,
+            already_terminal,
+        };
+        self.remember_control_result(replay_key, result.clone());
+        Ok(StoredCommandOutcome::Controlled(result, Some(kind)))
+    }
+
+    fn apply_reserve_tree(
+        &mut self,
+        request: crate::ReserveProcessTreeRequest,
+    ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
+        if request.delta == 0 {
+            return Err(ProcessJournalStoreError::InvalidRequest(
+                "reservation delta must be greater than zero".to_string(),
+            ));
+        }
+        validate_tree_root(self, &request.scope, request.root_process_id)?;
+        let current = self
+            .tree_reservations
+            .get(&request.root_process_id)
+            .map(|reservation| reservation.descendant_count)
+            .unwrap_or(0);
+        let next = current
+            .checked_add(u64::from(request.delta))
+            .ok_or(ProcessJournalStoreError::ProcessTreeCapacityExceeded { cap: request.cap })?;
+        if next > u64::from(request.cap) {
+            return Err(ProcessJournalStoreError::ProcessTreeCapacityExceeded { cap: request.cap });
+        }
+        let released_processes = self
+            .tree_reservations
+            .get(&request.root_process_id)
+            .map(|reservation| reservation.released_processes.clone())
+            .unwrap_or_default();
+        let reservation = ProcessTreeReservation {
+            root_process_id: request.root_process_id,
+            descendant_count: next,
+            released_processes,
+        };
+        self.tree_reservations
+            .insert(request.root_process_id, reservation.clone());
+        Ok(StoredCommandOutcome::TreeReserved(reservation))
+    }
+
+    fn apply_release_tree(
+        &mut self,
+        request: crate::ReleaseProcessTreeRequest,
+    ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
+        validate_tree_root(self, &request.scope, request.root_process_id)?;
+        let Some(reservation) = self.tree_reservations.get_mut(&request.root_process_id) else {
+            return Ok(StoredCommandOutcome::TreeReleased);
+        };
+        if reservation
+            .released_processes
+            .contains(&request.idempotency_process_id)
+        {
+            return Ok(StoredCommandOutcome::TreeReleased);
+        }
+        if reservation.descendant_count < u64::from(request.delta) {
+            return Err(ProcessJournalStoreError::InvalidRequest(
+                "release delta exceeds current reservation count".to_string(),
+            ));
+        }
+        reservation
+            .released_processes
+            .insert(request.idempotency_process_id);
+        reservation.descendant_count -= u64::from(request.delta);
+        if reservation.descendant_count == 0 {
+            self.tree_reservations.remove(&request.root_process_id);
+        }
+        Ok(StoredCommandOutcome::TreeReleased)
+    }
+
+    fn apply_prune_tree(
+        &mut self,
+        request: crate::PruneReleasedProcessRequest,
+    ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
+        if !self.processes.contains_key(&request.root_process_id) {
+            return Ok(StoredCommandOutcome::TreePruned);
+        }
+        validate_tree_root(self, &request.scope, request.root_process_id)?;
+        if let Some(reservation) = self.tree_reservations.get_mut(&request.root_process_id) {
+            reservation.released_processes.remove(&request.process_id);
+        }
+        Ok(StoredCommandOutcome::TreePruned)
+    }
+
+    fn apply_checkpoint(
+        &mut self,
+        request: crate::RecordProcessCheckpointRequest,
+    ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
+        let snapshot = self.processes.get(&request.process_id).ok_or(
+            ProcessJournalStoreError::UnknownProcess {
+                process_id: request.process_id,
+            },
+        )?;
+        if !process_scope_visible(&snapshot.scope, &request.scope) {
+            return Err(ProcessJournalStoreError::UnknownProcess {
+                process_id: request.process_id,
+            });
+        }
+        let record = ProcessCheckpointRecord {
+            checkpoint_id: request.checkpoint_id.clone(),
+            process_id: request.process_id,
+            scope: request.scope,
+            state_ref: request.state_ref,
+            created_at: request.created_at,
+            metadata: request.metadata,
+        };
+        if let Some(existing) = self.checkpoints.get(&request.checkpoint_id) {
+            return if existing == &record {
+                Ok(StoredCommandOutcome::Checkpointed(existing.clone()))
+            } else {
+                Err(ProcessJournalStoreError::InvalidRequest(format!(
+                    "process checkpoint {} already exists",
+                    request.checkpoint_id.as_str()
+                )))
+            };
+        }
+        self.checkpoints
+            .insert(request.checkpoint_id, record.clone());
+        Ok(StoredCommandOutcome::Checkpointed(record))
+    }
+
     pub(super) fn next_cursor(&mut self) -> ProcessJournalCursor {
         let cursor = ProcessJournalCursor(self.next_cursor);
         self.next_cursor = self.next_cursor.saturating_add(1);

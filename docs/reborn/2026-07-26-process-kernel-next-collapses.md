@@ -8,27 +8,37 @@ The stress rerun establishes a prerequisite: first partition journal writes.
 Adding the state below to the current growing `state.json` would increase CAS
 conflicts and serialization cost.
 
-## Slice 0: partition process persistence
+## Slice 0: row-native process persistence
 
-Replace the one-document materialized journal with:
+Implemented on `process-journal-kernel-transition` as an append-authoritative
+command journal:
 
-- independently versioned process records keyed by `ProcessId`;
-- an immutable sequenced transition log;
-- indexed live-process, scope, gate, parent, and status projections;
-- an atomic scope-exclusivity reservation;
-- bounded retention/compaction for terminal journal history.
+- every process mutation is one immutable row under
+  `/processes/journal/records`;
+- the backend sequence is the total order used to resolve exclusivity, claims,
+  leases, tree capacity, checkpoints, and idempotency;
+- process snapshots, gates, parent/child views, and lifecycle entries are
+  deterministic projections over that log;
+- the old `state.json` is accepted only as one-time migration input.
 
-The process contract remains unchanged. This is a storage implementation
-change, not a return to turn-specific rows.
+This uses one authority instead of dual-writing mutable process rows and a
+transition log. In particular, libSQL does not expose the multi-key transaction
+needed to make that dual-write design safe across crashes.
 
 Acceptance:
 
 - zero store failures in both rerun matrices through c100;
-- cross-handle and cross-process CAS tests preserve every transition;
-- no unconditional-write fallback;
+- cross-handle and cross-process row-ordering tests preserve every transition;
+- no unconditional-write or non-event fallback;
 - terminal history does not make one unrelated process transition O(total
   historical processes);
 - restart projections reproduce live locks, gates, leases, and dependencies.
+
+The first two gates are complete. The 2026-07-26 rerun through c100 has no
+process-journal unavailable/storage failures; remaining failures are expected
+exclusive-thread admission. Bounded compaction and durable indexed projection
+checkpoints remain follow-up work before treating unbounded terminal-history
+soaks as complete.
 
 ## Slice 1: retire the second process lifecycle
 

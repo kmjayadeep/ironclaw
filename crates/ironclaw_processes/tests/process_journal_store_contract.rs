@@ -1,23 +1,27 @@
 use async_trait::async_trait;
 use chrono::Utc;
-use ironclaw_filesystem::{DiskFilesystem, FilesystemError, InMemoryBackend, ScopedFilesystem};
+use ironclaw_filesystem::{
+    CasExpectation, DiskFilesystem, Entry, FilesystemError, InMemoryBackend, LibSqlRootFilesystem,
+    ScopedFilesystem, SeqNo,
+};
 use ironclaw_host_api::{
     AgentId, HostPath, InvocationId, MountAlias, MountGrant, MountPermissions, MountView,
-    ProcessId, ProjectId, ResourceScope, TenantId, ThreadId, TurnGateRef, UserId, VirtualPath,
+    ProcessId, ProjectId, ResourceScope, ScopedPath, TenantId, ThreadId, TurnGateRef, UserId,
+    VirtualPath,
 };
 use ironclaw_processes::{
     CancelProcessRequest, ClaimProcessesRequest, GetProcessCheckpointRequest,
-    GetProcessSnapshotRequest, KillProcessRequest, ProcessCheckpointId, ProcessCheckpointPort,
-    ProcessCheckpointRef, ProcessConcurrencyClass, ProcessConcurrencyLimits, ProcessControlPort,
-    ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource, ProcessJournalCommit,
-    ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalObserverRegistry,
-    ProcessJournalSource, ProcessJournalStore, ProcessKind, ProcessLeaseRequest, ProcessLeaseToken,
-    ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupRequest,
-    ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
-    ProcessOperationId, ProcessStateTransitionRequest, ProcessSubmissionPort, ProcessSuspension,
-    ProcessSuspensionKind, ProcessTransitionPort, ProcessTreePort, ProcessWorkerId,
-    RecordProcessCheckpointRequest, ReleaseProcessTreeRequest, ResumeProcessRequest,
-    StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
+    GetProcessSnapshotRequest, JournaledProcessSnapshot, KillProcessRequest, ProcessCheckpointId,
+    ProcessCheckpointPort, ProcessCheckpointRef, ProcessConcurrencyClass, ProcessConcurrencyLimits,
+    ProcessControlPort, ProcessGateOwnerMatch, ProcessGateQuery, ProcessGateQuerySource,
+    ProcessJournalCommit, ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalEntry,
+    ProcessJournalKind, ProcessJournalObserverRegistry, ProcessJournalSource, ProcessJournalStore,
+    ProcessKind, ProcessLeaseRequest, ProcessLeaseToken, ProcessLifecycleLookupBatchRequest,
+    ProcessLifecycleLookupRequest, ProcessLifecycleLookupResult, ProcessLifecycleLookupSource,
+    ProcessLifecycleStatus, ProcessOperationId, ProcessStateTransitionRequest,
+    ProcessSubmissionPort, ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort,
+    ProcessTreePort, ProcessWorkerId, RecordProcessCheckpointRequest, ReleaseProcessTreeRequest,
+    ResumeProcessRequest, StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
 };
 use serde_json::json;
 use std::{
@@ -42,7 +46,7 @@ impl ProcessJournalCommitObserver for RecordingProcessObserver {
 }
 
 #[tokio::test]
-async fn process_journal_fails_closed_when_backend_lacks_versioned_cas() {
+async fn process_journal_fails_closed_when_backend_lacks_event_rows() {
     let storage = tempfile::tempdir().expect("temporary process journal directory");
     let mut backend = DiskFilesystem::new();
     backend
@@ -63,7 +67,7 @@ async fn process_journal_fails_closed_when_backend_lacks_versioned_cas() {
     )));
     let scope = scope();
 
-    store
+    let error = store
         .submit_process(SubmitProcessRequest {
             process_id: ProcessId::new(),
             process_kind: ProcessKind::Internal,
@@ -80,26 +84,7 @@ async fn process_journal_fails_closed_when_backend_lacks_versioned_cas() {
             metadata: serde_json::Value::Null,
         })
         .await
-        .expect("first write uses absent CAS");
-
-    let error = store
-        .submit_process(SubmitProcessRequest {
-            process_id: ProcessId::new(),
-            process_kind: ProcessKind::Internal,
-            scope: scope.clone(),
-            exclusive_within_scope: false,
-            operation_id: None,
-            owner_user_id: Some(scope.user_id),
-            concurrency_class: None,
-            parent_process_id: None,
-            root_process_id: None,
-            spawn_tree_descendant_cap: None,
-            checkpoint_ref: None,
-            created_at: Utc::now(),
-            metadata: serde_json::Value::Null,
-        })
-        .await
-        .expect_err("versioned write must not downgrade to an unconditional overwrite");
+        .expect_err("journal must require an append-capable backend");
     assert!(matches!(
         error,
         ironclaw_processes::ProcessJournalStoreError::Filesystem(
@@ -109,7 +94,7 @@ async fn process_journal_fails_closed_when_backend_lacks_versioned_cas() {
 }
 
 #[tokio::test]
-async fn process_journal_cas_serializes_concurrent_store_handles() {
+async fn process_journal_rows_serialize_concurrent_store_handles() {
     let filesystem = in_memory_backed_processes_filesystem();
     let first = Arc::new(ProcessJournalStore::new(Arc::clone(&filesystem)));
     let second = Arc::new(ProcessJournalStore::new(filesystem));
@@ -166,6 +151,156 @@ async fn process_journal_cas_serializes_concurrent_store_handles() {
         second.submit_process(exclusive_request(ProcessId::new())),
     );
     assert_ne!(first_result.is_ok(), second_result.is_ok());
+}
+
+#[tokio::test]
+async fn each_process_journal_command_is_an_individual_libsql_row() {
+    let storage = tempfile::tempdir().expect("temporary process journal database");
+    let database_path = storage.path().join("process-journal.db");
+    let database = Arc::new(
+        libsql::Builder::new_local(&database_path)
+            .build()
+            .await
+            .expect("build libsql database"),
+    );
+    let backend = Arc::new(LibSqlRootFilesystem::new(Arc::clone(&database)));
+    backend
+        .run_migrations()
+        .await
+        .expect("migrate libsql filesystem");
+    let filesystem = Arc::new(ScopedFilesystem::with_fixed_view(
+        backend,
+        MountView::new(vec![MountGrant::new(
+            MountAlias::new("/processes").expect("mount alias"),
+            VirtualPath::new("/engine/processes").expect("virtual path"),
+            MountPermissions::read_write_list_delete(),
+        )])
+        .expect("mount view"),
+    ));
+    let store = Arc::new(ProcessJournalStore::new(Arc::clone(&filesystem)));
+    let scope = scope();
+
+    let submissions = (0..32).map(|_| {
+        let store = Arc::clone(&store);
+        let scope = scope.clone();
+        async move { submit_internal_process(&store, &scope, ProcessId::new()).await }
+    });
+    let snapshots = futures::future::join_all(submissions).await;
+    assert_eq!(snapshots.len(), 32);
+
+    let page = store
+        .read_process_journal_log_after(None, 64)
+        .await
+        .expect("read process journal");
+    assert_eq!(page.entries.len(), 32);
+
+    let records = filesystem
+        .tail(
+            &ResourceScope::system(),
+            &ScopedPath::new("/processes/journal/records").expect("journal path"),
+            SeqNo::ZERO,
+        )
+        .await
+        .expect("tail journal records");
+    assert_eq!(records.len(), 32);
+
+    for record in records {
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&record.payload).expect("journal row is JSON");
+        assert_eq!(parsed["schema"], "v1");
+    }
+
+    let connection = database.connect().expect("connect to libsql");
+    let mut rows = connection
+        .query(
+            "SELECT COUNT(*) FROM root_filesystem_events WHERE path = ?1",
+            libsql::params!["/engine/processes/journal/records"],
+        )
+        .await
+        .expect("count journal rows");
+    let row = rows
+        .next()
+        .await
+        .expect("read count row")
+        .expect("count row exists");
+    let count: i64 = row.get(0).expect("read count");
+    assert_eq!(count, 32);
+}
+
+#[tokio::test]
+async fn legacy_materialized_state_imports_once_before_row_native_commands() {
+    let filesystem = in_memory_backed_processes_filesystem();
+    let scope = scope();
+    let process_id = ProcessId::new();
+    let cursor = ProcessJournalCursor(1);
+    let snapshot = JournaledProcessSnapshot {
+        process_id,
+        process_kind: ProcessKind::Internal,
+        scope: scope.clone(),
+        status: ProcessLifecycleStatus::Queued,
+        suspension: None,
+        checkpoint_ref: None,
+        failure: None,
+        journal_cursor: cursor,
+        lease: None,
+        created_at: Utc::now(),
+        owner_user_id: Some(scope.user_id.clone()),
+        concurrency_class: None,
+        parent_process_id: None,
+        root_process_id: None,
+        metadata: serde_json::Value::Null,
+    };
+    let entry = ProcessJournalEntry {
+        cursor,
+        process_id,
+        process_kind: ProcessKind::Internal,
+        scope: scope.clone(),
+        occurred_at: Some(snapshot.created_at),
+        owner_user_id: snapshot.owner_user_id.clone(),
+        status: ProcessLifecycleStatus::Queued,
+        kind: ProcessJournalKind::Submitted,
+        suspension: None,
+        sanitized_reason: None,
+        retryable: None,
+        detail: None,
+        metadata: serde_json::Value::Null,
+    };
+    let legacy = json!({
+        "next_cursor": 2,
+        "processes": { process_id.to_string(): snapshot },
+        "journal": [entry]
+    });
+    filesystem
+        .put(
+            &ResourceScope::system(),
+            &ScopedPath::new("/processes/journal/state.json").expect("legacy path"),
+            Entry::bytes(serde_json::to_vec(&legacy).expect("serialize legacy state")),
+            CasExpectation::Absent,
+        )
+        .await
+        .expect("seed legacy state");
+
+    let store = ProcessJournalStore::new(Arc::clone(&filesystem));
+    let imported = store
+        .get_process_snapshot(GetProcessSnapshotRequest {
+            scope: scope.clone(),
+            process_id,
+        })
+        .await
+        .expect("read imported process");
+    assert_eq!(imported.journal_cursor, cursor);
+    let next = submit_internal_process(&store, &scope, ProcessId::new()).await;
+    assert_eq!(next.journal_cursor, ProcessJournalCursor(2));
+
+    let records = filesystem
+        .tail(
+            &ResourceScope::system(),
+            &ScopedPath::new("/processes/journal/records").expect("journal path"),
+            SeqNo::ZERO,
+        )
+        .await
+        .expect("tail imported journal");
+    assert_eq!(records.len(), 2);
 }
 
 #[tokio::test]
@@ -557,6 +692,7 @@ async fn process_journal_store_completes_claimed_process() {
         .await
         .expect("claim process");
     let claim = claimed.pop().expect("claimed process");
+    assert!(claim.lease_token.as_str().len() <= 64);
     let completed = store
         .complete_process(ProcessStateTransitionRequest {
             lease: ProcessLeaseRequest {
@@ -883,11 +1019,14 @@ async fn exclusive_process_submission_uses_authoritative_live_projection() {
     assert_eq!(replacement.status, ProcessLifecycleStatus::Queued);
 }
 
-async fn submit_internal_process(
-    store: &ProcessJournalStore<InMemoryBackend>,
+async fn submit_internal_process<F>(
+    store: &ProcessJournalStore<F>,
     scope: &ResourceScope,
     process_id: ProcessId,
-) -> ironclaw_processes::JournaledProcessSnapshot {
+) -> ironclaw_processes::JournaledProcessSnapshot
+where
+    F: ironclaw_filesystem::RootFilesystem + Send + Sync + 'static,
+{
     store
         .submit_process(SubmitProcessRequest {
             process_id,
