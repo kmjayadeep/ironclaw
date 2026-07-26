@@ -12,6 +12,10 @@ use crate::builtin_capability_policy::BuiltinCapabilityPolicy;
 use crate::builtin_capability_policy::builtin_capability_policy;
 use crate::capability_authorization::{StoreApprovalSettingsProvider, capability_authorizer};
 use crate::deployment::TrafficPolicy;
+use crate::extension_host_assembly::{
+    BackendChannelPairingAssemblyBuilder, BackendChannelPairingAssemblyInput,
+    BackendExtensionHostAssemblyBuilder, BackendExtensionHostAssemblyInput,
+};
 #[cfg(any(test, feature = "test-support"))]
 use crate::filesystem_assembly::build_default_database_roots;
 #[cfg(test)]
@@ -78,18 +82,14 @@ use ironclaw_conversations::{
     AdapterInstallationId, AdapterKind, ConversationActorPairingService, ExternalActorRef,
 };
 use ironclaw_events::{DurableAuditLog, DurableEventLog};
-use ironclaw_extension_host::channel_host::ChannelWorkflowStateFactory;
-use ironclaw_extension_host::channel_pairing::{
-    ChannelPairingRegistry, ChannelPairingService, ChannelPairingServiceParts,
-    FilesystemChannelPairingStore,
-};
+use ironclaw_extension_host::channel_pairing::ChannelPairingRegistry;
 use ironclaw_extension_host::{
     ActiveExtensionPublisher, AdminConfigurationCatalogUse, AdminConfigurationService,
     AvailableExtensionCatalog, ChannelConfigService, ExtensionRemovalCleanupAdapter,
     ExtensionRemovalCleanupRegistry, FilesystemAdminConfigurationStore, FirstPartyRegistrarContext,
-    ProviderInstanceReadinessInput, boot_installation_records, first_party_reserved_extension_ids,
-    hosted_http_mcp_runtime, product_extension_host_api_contract_registry,
-    provider_instance_readiness_map, restore_extension_lifecycle_state,
+    ProviderInstanceReadinessInput, first_party_reserved_extension_ids, hosted_http_mcp_runtime,
+    product_extension_host_api_contract_registry, provider_instance_readiness_map,
+    restore_extension_lifecycle_state,
 };
 use ironclaw_extension_host::{
     admin_configuration::{
@@ -125,7 +125,6 @@ use ironclaw_filesystem::{
     BackendCapabilities, BackendKind, ContentKind, DiskFilesystem, IndexPolicy, StorageClass,
 };
 use ironclaw_filesystem::{CompositeRootFilesystem, LibSqlRootFilesystem, RootFilesystem};
-use ironclaw_host_api::ExtensionHostAssemblyConfig;
 use ironclaw_host_api::runtime_policy::{
     DeploymentMode, EffectiveRuntimePolicy, FilesystemBackendKind, NetworkMode, ProcessBackendKind,
     SecretMode,
@@ -4520,243 +4519,64 @@ async fn build_backend_production(
             })
             .map(|descriptor| descriptor.id.clone())
             .collect();
-        let channel_egress_credentials = Arc::new(
-            ironclaw_extension_host::channel_egress::ChannelConfigEgressCredentials::new(
-                Arc::clone(&admin_configuration_resolver_for_generic),
-            ),
-        );
-        #[cfg(feature = "test-support")]
-        let channel_egress_credentials = Arc::new(
-            ironclaw_extension_host::channel_egress::BridgedChannelEgressCredentials::new(
-                channel_egress_credentials,
-            ),
-        );
-        #[cfg(feature = "test-support")]
-        let channel_egress_credential_bridges = Arc::clone(&channel_egress_credentials);
-        let channel_egress_transport = host_runtime_http_egress.clone().map(|port| {
-            Arc::new(
-                ironclaw_extension_host::channel_egress::HostRuntimeChannelEgressTransport::new(
-                    port,
-                    channel_egress_credentials,
-                    channel_egress_scope.clone(),
-                ),
-            ) as Arc<dyn ironclaw_extension_host::egress::ChannelEgressTransport>
-        });
         let generic_installation_store = extension_management.installation_store_handle();
-        let pairing_installation_store = Arc::clone(&generic_installation_store);
-        let generic = ironclaw_extension_host::build_generic_extension_host(
-            ironclaw_extension_host::GenericExtensionHostParams {
+        let backend_extension_host =
+            BackendExtensionHostAssemblyBuilder::new(BackendExtensionHostAssemblyInput {
                 binder: services.extension_lane_tool_binder(),
                 native_factories: native_extension_factories,
-                channel_adapters: channel_extension_bindings
-                    .iter()
-                    .map(|binding| (binding.extension_id.clone(), Arc::clone(&binding.adapter)))
-                    .collect(),
-                installation_store: Arc::clone(&generic_installation_store),
-                boot_installations: boot_installation_records(
-                    &generic_installation_store,
-                    Some(&admin_configuration_resolver_for_generic),
-                )
-                .await
-                .map_err(|error| RebornBuildError::InvalidConfig {
-                    reason: format!(
-                        "extension boot installation records could not be built: {error}"
-                    ),
-                })?,
-                governor: Arc::clone(&resource_governor)
+                channel_bindings: channel_extension_bindings.clone(),
+                installation_store: generic_installation_store,
+                admin_configuration_resolver: Arc::clone(&admin_configuration_resolver_for_generic),
+                resource_governor: Arc::clone(&resource_governor)
                     as Arc<dyn ironclaw_resources::ResourceGovernor>,
-                assembly: ExtensionHostAssemblyConfig::new(
-                    reserved_capability_ids,
-                    ironclaw_extension_host::extension_ingress::reserved_fixed_ingress_routes(),
-                    std::time::Duration::from_secs(30),
-                ),
-                channel_egress_transport: channel_egress_transport.clone(),
-            },
-        )
-        .await;
-        extension_management.attach_generic_host(Arc::clone(&generic.host));
+                reserved_capability_ids,
+                host_runtime_http_egress,
+                channel_egress_scope: channel_egress_scope.clone(),
+                deployment_channels: Arc::clone(&deployment_channels),
+                filesystem: Arc::clone(&stores.filesystem),
+                outbound_state: Arc::clone(&outbound_stores.outbound_state)
+                    as Arc<dyn ironclaw_outbound::OutboundStateStorePort>,
+            })
+            .build()
+            .await?;
+        let pairing_installation_store = Arc::clone(&backend_extension_host.installation_store);
+        extension_management.attach_generic_host(Arc::clone(&backend_extension_host.generic_host));
         if let Some(ports) = services.product_auth_provider_runtime_ports() {
             extension_management.attach_discovery_runtime_ports(ports.clone());
         }
-        services.set_extension_tool_resolver(generic.resolver);
-        let ingress_parts = ironclaw_extension_host::extension_ingress::build_extension_ingress(
-            generic.host.snapshot_watch(),
-            Arc::clone(&deployment_channels),
-            Arc::new(ironclaw_extension_host::FilesystemReplyContextStore::new(
-                Arc::clone(&fold_filesystem),
-                channel_egress_scope.tenant_id.clone(),
-                channel_egress_scope.user_id.clone(),
-            )),
-        );
-        let channel_pairing_registry_built = {
-            let registry = Arc::new(ChannelPairingRegistry::default());
-            for descriptor in &account_setup_descriptors {
-                if !account_setups.declare(descriptor.clone()) {
-                    return Err(RebornBuildError::InvalidConfig {
-                        reason: format!(
-                            "duplicate account-setup descriptor for extension `{}`",
-                            descriptor.extension_id.as_str()
-                        ),
-                    });
-                }
-                if descriptor.connection_requirement.strategy
-                    != ironclaw_product::RebornChannelConnectStrategy::WebGeneratedCode
-                {
-                    continue;
-                }
-                let extension_id = descriptor.extension_id.clone();
-                let pairing_store = Arc::new(FilesystemChannelPairingStore::new(
-                    Arc::clone(&fold_filesystem),
-                    channel_egress_scope.tenant_id.clone(),
-                    channel_egress_scope.user_id.clone(),
-                    extension_id.clone(),
-                ));
-                let installation = Arc::new(
-                    ironclaw_extension_host::channel_pairing::StoredPairingInstallationSource::new(
-                        Arc::clone(&pairing_installation_store),
-                        extension_id.clone(),
-                    ),
-                );
-                let template_values = Arc::new(
-                    ironclaw_extension_host::channel_pairing::ChannelConfigPairingTemplateValues::new(
-                        Arc::clone(&admin_configuration_resolver_for_generic),
-                        extension_id.clone(),
-                        descriptor.pairing_deep_link_template.as_deref(),
-                    ),
-                );
-                let workflow_filesystem: Arc<dyn RootFilesystem> = stores.filesystem.clone();
-                let workflow_state_service =
-                    ironclaw_extension_host::channel_host::FilesystemChannelWorkflowStateFactory::new(
-                        workflow_filesystem,
-                    );
-                let workflow_roots =
-                    ironclaw_extension_host::channel_host::default_channel_workflow_storage_roots(
-                        &channel_egress_scope.tenant_id,
-                        extension_id.as_str(),
-                    )
-                    .map_err(|error| RebornBuildError::InvalidConfig { reason: error })?;
-                let workflow_state = workflow_state_service
-                    .build(&workflow_roots, channel_egress_scope.clone())
-                    .await
-                    .map_err(|error| RebornBuildError::InvalidConfig {
-                        reason: error.to_string(),
-                    })?;
-                // Pairing completions dispatch `LifecycleActivation` refs and
-                // must run the SAME lifecycle-wrapped continuation the OAuth
-                // paths use: readiness reconciliation (runtime publication)
-                // before the blocked-run fan-out. A bare turn-resume
-                // dispatcher here leaves a freshly paired channel extension
-                // stuck at setup_needed until an unrelated reconcile runs
-                // (#6520 live-repro: channel remove → install → pair).
-                let continuation = Arc::clone(&lifecycle_wrapped_auth_continuation);
-                let agent_id = match channel_egress_scope.agent_id.clone() {
-                    Some(agent_id) => agent_id,
-                    None => ironclaw_host_api::AgentId::new("reborn").map_err(|error| {
-                        RebornBuildError::InvalidConfig {
-                            reason: format!(
-                                "fallback channel pairing agent id is invalid: {error}"
-                            ),
-                        }
-                    })?,
-                };
-                let service = Arc::new(ChannelPairingService::new(ChannelPairingServiceParts {
-                    tenant_id: channel_egress_scope.tenant_id.clone(),
-                    agent_id,
-                    project_id: channel_egress_scope.project_id.clone(),
-                    extension_id: descriptor.extension_id.clone(),
-                    connection_notices: descriptor.connection_notices.clone(),
-                    deep_link_template: descriptor.pairing_deep_link_template.clone(),
-                    inbound_code_prefixes: descriptor.inbound_code_prefixes.clone(),
-                    store: pairing_store,
-                    installation,
-                    template_values,
-                    identity_bind: Arc::clone(&channel_identity_store)
-                        as Arc<dyn ironclaw_host_api::RebornUserIdentityBindingStore>,
-                    identity_lookup: Arc::clone(&channel_identity_store)
-                        as Arc<dyn ironclaw_host_api::RebornUserIdentityLookup>,
-                    identity_delete: Arc::clone(&channel_identity_store)
-                        as Arc<dyn ironclaw_host_api::RebornUserIdentityBindingDeleteStore>,
-                    continuation,
-                    conversation_actor_pairings: Arc::clone(&workflow_state.conversations)
-                        as Arc<dyn ironclaw_conversations::ConversationActorPairingService>,
-                    dm_targets: Arc::clone(&channel_dm_target_store),
-                }));
-                if !account_setups.connect(
-                    &descriptor.extension_id,
-                    Arc::clone(&service)
-                        as Arc<dyn ironclaw_product::AccountConnectionStatusSource>,
-                ) {
-                    return Err(RebornBuildError::InvalidConfig {
-                        reason: format!(
-                            "account-setup status source for `{}` was already connected",
-                            descriptor.extension_id.as_str()
-                        ),
-                    });
-                }
-                registry.register(service);
-            }
-            registry
-        };
-        channel_pairing_registry = Some(Arc::clone(&channel_pairing_registry_built));
-        // Fill the late-bound channel-connection facade slot here, where the
-        // pairing registry and every store it disconnects through already
-        // exist. `ExtensionManagementPort::remove` fails closed on an empty
-        // slot for channel extensions, so a factory-tier composition that can
-        // install a channel extension must also be able to remove it —
-        // runtime-backed builds previously filled this in
-        // `build_reborn_runtime` only, leaving factory-tier removal
-        // permanently unavailable. First write wins by `OnceLock` contract;
-        // the runtime's later fill of an equivalent facade (same stores) is a
-        // deliberate no-op.
-        let _ = channel_disconnect_slot.set(Arc::new(
-            ironclaw_extension_host::channel_connection::GenericChannelConnectionService::new(
-                channel_egress_scope.tenant_id.clone(),
-                Vec::new(),
-                Some(extension_management.installation_store_handle()),
-                Arc::clone(&channel_identity_store)
-                    as Arc<dyn ironclaw_host_api::RebornUserIdentityLookup>,
-                Arc::clone(&channel_identity_store)
-                    as Arc<dyn ironclaw_host_api::RebornUserIdentityBindingDeleteStore>,
-                Some(Arc::clone(&product_auth_services)
+        services.set_extension_tool_resolver(backend_extension_host.resolver);
+        let channel_pairing_registry_built =
+            BackendChannelPairingAssemblyBuilder::new(BackendChannelPairingAssemblyInput {
+                descriptors: account_setup_descriptors,
+                account_setups,
+                filesystem: Arc::clone(&fold_filesystem),
+                scope: channel_egress_scope.clone(),
+                installation_store: pairing_installation_store,
+                admin_configuration_resolver: Arc::clone(&admin_configuration_resolver_for_generic),
+                continuation: lifecycle_wrapped_auth_continuation,
+                identity_store: Arc::clone(&channel_identity_store),
+                dm_targets: Arc::clone(&channel_dm_target_store),
+                credential_cleanup: Arc::clone(&product_auth_services)
                     as Arc<
                         dyn ironclaw_extension_host::channel_connection::ChannelCredentialCleanup,
-                    >),
-                Some(Arc::clone(&product_auth_services)
+                    >,
+                account_status_reader: Arc::clone(&product_auth_services)
                     as Arc<
                         dyn ironclaw_extension_host::channel_connection::ChannelAccountStatusReader,
-                    >),
-                Some(Arc::clone(&channel_dm_target_store)),
-                Some(channel_pairing_registry_built),
-            ),
-        ));
-        let (delivery_coordinator, channel_delivery_resolver) = match channel_egress_transport {
-            Some(transport) => {
-                let resolver: Arc<dyn ironclaw_product::ChannelDeliveryResolver> = Arc::new(
-                    ironclaw_extension_host::SnapshotChannelDeliveryResolver::new(
-                        generic.host.snapshot_watch(),
-                        transport,
-                    )
-                    .with_deployment_channels(Arc::clone(&deployment_channels)),
-                );
-                let coordinator = Arc::new(ironclaw_product::DeliveryCoordinator::new(
-                    Arc::clone(&outbound_stores.outbound_state)
-                        as Arc<dyn ironclaw_outbound::OutboundStateStorePort>,
-                    Arc::clone(&resolver),
-                    Arc::new(ironclaw_extension_host::IngressReplyContextSource::new(
-                        Arc::clone(&ingress_parts.reply_context),
-                    )),
-                    ironclaw_product::DeliveryRetryPolicy::default(),
-                ));
-                (Some(coordinator), Some(resolver))
-            }
-            None => (None, None),
-        };
+                    >,
+                disconnect_slot: Arc::clone(&channel_disconnect_slot),
+            })
+            .build()
+            .await?;
+        channel_pairing_registry = Some(Arc::clone(&channel_pairing_registry_built));
         ChannelHostWiring {
-            extension_ingress: Some(ingress_parts),
-            delivery_coordinator,
-            channel_delivery_resolver,
+            extension_ingress: Some(backend_extension_host.ingress),
+            delivery_coordinator: backend_extension_host.delivery_coordinator,
+            channel_delivery_resolver: backend_extension_host.channel_delivery_resolver,
             #[cfg(feature = "test-support")]
-            channel_egress_credential_bridges: Some(channel_egress_credential_bridges),
+            channel_egress_credential_bridges: Some(
+                backend_extension_host.channel_egress_credential_bridges,
+            ),
         }
     };
     let shared_extension_registry = services.shared_extension_registry();
