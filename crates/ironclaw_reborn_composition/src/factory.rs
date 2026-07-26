@@ -9,7 +9,8 @@ use std::{
 
 use crate::backend_store_assembly::{
     ProductionStoreBundle, SecretCredentialStores, build_filesystem_secret_credential_stores,
-    resolve_explicit_or_keychain_master_key,
+    filesystem_resource_governor, owner_turn_state_filesystem, production_turn_state_store,
+    resolve_explicit_or_keychain_master_key, trigger_repository_for_durable_backend,
 };
 #[cfg(any(test, feature = "test-support"))]
 use crate::builtin_capability_policy::BuiltinCapabilityPolicy;
@@ -1420,56 +1421,6 @@ fn configured_runtime_owner_scope(
     )
 }
 
-fn owner_turn_state_filesystem<F>(
-    filesystem: Arc<F>,
-    owner_scope: &ResourceScope,
-) -> Result<Arc<ScopedFilesystem<F>>, ironclaw_host_api::HostApiError>
-where
-    F: RootFilesystem + 'static,
-{
-    let view = crate::invocation_mount_view(owner_scope)?;
-    Ok(Arc::new(ScopedFilesystem::with_fixed_view(
-        filesystem, view,
-    )))
-}
-
-fn production_turn_state_store<F>(
-    filesystem: Arc<ScopedFilesystem<F>>,
-    limits: ironclaw_turns::TurnStateStoreLimits,
-) -> TurnStateRowStore<F>
-where
-    F: RootFilesystem + 'static,
-{
-    TurnStateRowStore::new(filesystem).with_limits(limits)
-}
-
-async fn trigger_repository_for_durable_backend(
-    backend: &DurableBackend,
-) -> Result<Arc<dyn TriggerRepository>, RebornBuildError> {
-    match backend {
-        DurableBackend::LibSql(database) => {
-            let repository = ironclaw_triggers::LibSqlTriggerRepository::new(Arc::clone(database));
-            repository
-                .run_migrations()
-                .await
-                .map_err(|error| RebornBuildError::InvalidConfig {
-                    reason: format!("standalone trigger repository migrations failed: {error}"),
-                })?;
-            Ok(Arc::new(repository))
-        }
-        DurableBackend::Postgres(pool) => {
-            let repository = ironclaw_triggers::PostgresTriggerRepository::new(pool.clone());
-            repository
-                .run_migrations()
-                .await
-                .map_err(|error| RebornBuildError::InvalidConfig {
-                    reason: format!("PostgreSQL trigger repository migrations failed: {error}"),
-                })?;
-            Ok(Arc::new(repository))
-        }
-    }
-}
-
 /// Validate a per-trigger delivery target against the runtime's outbound
 /// delivery target registry: the id must resolve for the trigger creator (the
 /// same ownership check the delivery layer applies at fire time). Fails
@@ -1801,16 +1752,6 @@ fn build_budget_sinks() -> BudgetSinks {
         in_memory_budget_event_sink,
         broadcast_budget_event_sink,
     }
-}
-
-/// Single source for the resource-governor recipe every substrate build path
-/// uses: a `FilesystemResourceGovernor` over the invocation-scoped view of the
-/// composed root filesystem.
-fn filesystem_resource_governor<F>(filesystem: &Arc<F>) -> FilesystemResourceGovernor<F>
-where
-    F: RootFilesystem + 'static,
-{
-    FilesystemResourceGovernor::new(crate::wrap_scoped(Arc::clone(filesystem)))
 }
 
 /// The `HostRuntimeServices` wiring shared by the standalone and production

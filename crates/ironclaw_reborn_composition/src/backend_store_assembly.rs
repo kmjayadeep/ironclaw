@@ -3,12 +3,16 @@ use std::sync::Arc;
 use ironclaw_approvals::PersistentApprovalPolicyStore;
 use ironclaw_authorization::CapabilityLeaseStore;
 use ironclaw_filesystem::{CompositeRootFilesystem, RootFilesystem, ScopedFilesystem};
+use ironclaw_host_api::ResourceScope;
 use ironclaw_resources::FilesystemResourceGovernor;
 use ironclaw_secrets::{CredentialBroker, SecretStore};
+use ironclaw_triggers::TriggerRepository;
+use ironclaw_turns::{TurnStateRowStore, TurnStateStoreLimits};
 
 use crate::factory::{
     ComposedCapabilityLeaseStore, ComposedPersistentApprovalPolicyStore, ComposedResourceGovernor,
 };
+use crate::filesystem_assembly::DurableBackend;
 use crate::storage_catalog::validate_reborn_runtime_storage;
 use crate::{RebornBuildError, RebornCompositionError};
 
@@ -76,6 +80,66 @@ pub(crate) async fn resolve_explicit_or_keychain_master_key(
     } else {
         ironclaw_secrets::keychain::resolve_master_key_material().await
     }
+}
+
+pub(crate) fn owner_turn_state_filesystem<F>(
+    filesystem: Arc<F>,
+    owner_scope: &ResourceScope,
+) -> Result<Arc<ScopedFilesystem<F>>, ironclaw_host_api::HostApiError>
+where
+    F: RootFilesystem + 'static,
+{
+    let view = crate::invocation_mount_view(owner_scope)?;
+    Ok(Arc::new(ScopedFilesystem::with_fixed_view(
+        filesystem, view,
+    )))
+}
+
+pub(crate) fn production_turn_state_store<F>(
+    filesystem: Arc<ScopedFilesystem<F>>,
+    limits: TurnStateStoreLimits,
+) -> TurnStateRowStore<F>
+where
+    F: RootFilesystem + 'static,
+{
+    TurnStateRowStore::new(filesystem).with_limits(limits)
+}
+
+pub(crate) async fn trigger_repository_for_durable_backend(
+    backend: &DurableBackend,
+) -> Result<Arc<dyn TriggerRepository>, RebornBuildError> {
+    match backend {
+        DurableBackend::LibSql(database) => {
+            let repository = ironclaw_triggers::LibSqlTriggerRepository::new(Arc::clone(database));
+            repository
+                .run_migrations()
+                .await
+                .map_err(|error| RebornBuildError::InvalidConfig {
+                    reason: format!("standalone trigger repository migrations failed: {error}"),
+                })?;
+            Ok(Arc::new(repository))
+        }
+        DurableBackend::Postgres(pool) => {
+            let repository = ironclaw_triggers::PostgresTriggerRepository::new(pool.clone());
+            repository
+                .run_migrations()
+                .await
+                .map_err(|error| RebornBuildError::InvalidConfig {
+                    reason: format!("PostgreSQL trigger repository migrations failed: {error}"),
+                })?;
+            Ok(Arc::new(repository))
+        }
+    }
+}
+
+/// Single source for the resource-governor recipe every substrate build path
+/// uses: a `FilesystemResourceGovernor` over the invocation-scoped view of the
+/// composed root filesystem.
+pub(crate) fn filesystem_resource_governor<F>(filesystem: &Arc<F>) -> FilesystemResourceGovernor<F>
+where
+    F: RootFilesystem + 'static,
+{
+    FilesystemResourceGovernor::new(crate::wrap_scoped(Arc::clone(filesystem)))
 }
 
 /// Validated durable stores required before upper runtime assembly begins.
