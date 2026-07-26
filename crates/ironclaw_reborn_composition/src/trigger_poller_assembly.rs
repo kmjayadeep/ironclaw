@@ -52,12 +52,15 @@ where
         default_agent_id,
         authorizer,
     );
-    Ok(TriggerPollerServices {
+    let services = TriggerPollerServices {
         materializer,
         trusted_submitter,
         post_submit_hook_slot: Arc::new(OnceLock::new()),
         pairing_service,
-    })
+    };
+    #[cfg(not(any(test, feature = "test-support")))]
+    let _ = &services.pairing_service;
+    Ok(services)
 }
 
 fn trigger_poller_authorization_required_error() -> RebornRuntimeError {

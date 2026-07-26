@@ -423,13 +423,6 @@ impl<'a> ExtensionHostAssemblyBuilder<'a> {
         })
     }
 
-    pub(crate) fn from_source(source: ChannelHostAssemblySource) -> Self {
-        Self {
-            source,
-            services: None,
-        }
-    }
-
     /// Start the generic channel host reconcile loop. `None` means this
     /// composition has no generic host or ingress registry.
     pub(crate) fn start_channel_host(
@@ -583,5 +576,15 @@ impl<'a> ExtensionHostAssemblyBuilder<'a> {
         }
 
         assembly
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn extension_host_assembly_builder_from_source(
+    source: ChannelHostAssemblySource,
+) -> ExtensionHostAssemblyBuilder<'static> {
+    ExtensionHostAssemblyBuilder {
+        source,
+        services: None,
     }
 }

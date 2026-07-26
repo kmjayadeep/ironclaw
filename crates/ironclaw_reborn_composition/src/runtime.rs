@@ -1338,7 +1338,7 @@ impl RebornRuntime {
             identity,
             run_delivery_settings,
         } = wiring;
-        crate::extension_host_assembly::ExtensionHostAssemblyBuilder::from_source(
+        crate::extension_host_assembly::extension_host_assembly_builder_from_source(
             crate::extension_host_assembly::ChannelHostAssemblySource {
                 generic_host: self.extension_management.generic_host()?,
                 ingress_registry: Arc::clone(&self.extension_ingress.as_ref()?.registry),
