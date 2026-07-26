@@ -413,6 +413,8 @@ async fn process_claim_enforces_owner_and_class_concurrency_limits_atomically() 
         .claim_next_processes(ClaimProcessesRequest {
             worker_id: ProcessWorkerId::from_trusted("owner-worker"),
             scope_filter: None,
+            process_id_filter: None,
+            process_kind_filter: None,
             max_processes: 10,
         })
         .await
@@ -454,6 +456,8 @@ async fn process_claim_enforces_owner_and_class_concurrency_limits_atomically() 
         .claim_next_processes(ClaimProcessesRequest {
             worker_id: ProcessWorkerId::from_trusted("class-worker"),
             scope_filter: None,
+            process_id_filter: None,
+            process_kind_filter: None,
             max_processes: 10,
         })
         .await
@@ -559,6 +563,8 @@ async fn process_journal_store_owns_lifecycle_and_gate_projection() {
         .claim_next_processes(ClaimProcessesRequest {
             worker_id: worker_id.clone(),
             scope_filter: Some(scope.clone()),
+            process_id_filter: None,
+            process_kind_filter: None,
             max_processes: 1,
         })
         .await
@@ -687,6 +693,8 @@ async fn process_journal_store_completes_claimed_process() {
         .claim_next_processes(ClaimProcessesRequest {
             worker_id,
             scope_filter: Some(scope.clone()),
+            process_id_filter: None,
+            process_kind_filter: None,
             max_processes: 1,
         })
         .await
@@ -739,6 +747,8 @@ async fn process_journal_store_relinquishes_claim_with_fresh_reclaim_lease() {
         .claim_next_processes(ClaimProcessesRequest {
             worker_id: first_worker,
             scope_filter: Some(scope.clone()),
+            process_id_filter: None,
+            process_kind_filter: None,
             max_processes: 1,
         })
         .await
@@ -759,6 +769,8 @@ async fn process_journal_store_relinquishes_claim_with_fresh_reclaim_lease() {
         .claim_next_processes(ClaimProcessesRequest {
             worker_id: second_worker.clone(),
             scope_filter: Some(scope),
+            process_id_filter: None,
+            process_kind_filter: None,
             max_processes: 1,
         })
         .await
@@ -795,6 +807,8 @@ async fn process_journal_store_rejects_wrong_lease() {
         .claim_next_processes(ClaimProcessesRequest {
             worker_id: ProcessWorkerId::from_trusted(ProcessId::new().as_uuid().to_string()),
             scope_filter: Some(scope),
+            process_id_filter: None,
+            process_kind_filter: None,
             max_processes: 1,
         })
         .await
@@ -827,6 +841,8 @@ async fn process_control_is_scoped_atomic_and_process_kind_neutral() {
         .claim_next_processes(ClaimProcessesRequest {
             worker_id,
             scope_filter: Some(scope.clone()),
+            process_id_filter: None,
+            process_kind_filter: None,
             max_processes: 1,
         })
         .await
@@ -914,6 +930,8 @@ async fn process_control_is_scoped_atomic_and_process_kind_neutral() {
         .claim_next_processes(ClaimProcessesRequest {
             worker_id: ProcessWorkerId::from_trusted(ProcessId::new().as_uuid().to_string()),
             scope_filter: Some(scope.clone()),
+            process_id_filter: None,
+            process_kind_filter: None,
             max_processes: 1,
         })
         .await

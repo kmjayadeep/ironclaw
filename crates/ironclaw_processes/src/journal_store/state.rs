@@ -13,8 +13,9 @@ use super::{
 use crate::{
     ClaimedProcess, JournaledProcessSnapshot, ProcessCheckpointId, ProcessCheckpointRecord,
     ProcessControlResult, ProcessJournalCursor, ProcessJournalEntry, ProcessJournalKind,
-    ProcessJournalPage, ProcessLeaseSnapshot, ProcessLeaseToken, ProcessLifecycleStatus,
-    ProcessTreeReservation, RecoverExpiredProcessLeasesResponse, types::same_scope_owner,
+    ProcessJournalPage, ProcessKind, ProcessLeaseSnapshot, ProcessLeaseToken,
+    ProcessLifecycleStatus, ProcessTreeReservation, RecoverExpiredProcessLeasesResponse,
+    types::same_scope_owner,
 };
 
 const MAX_IDEMPOTENCY_RECORDS: usize = 4096;
@@ -253,7 +254,11 @@ impl ProcessJournalMaterializedState {
         limits: crate::ProcessConcurrencyLimits,
     ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
         let mut claimed = Vec::new();
-        let process_ids = self.claimable_process_ids(request.scope_filter.as_ref());
+        let process_ids = self.claimable_process_ids(
+            request.scope_filter.as_ref(),
+            request.process_id_filter,
+            request.process_kind_filter.as_ref(),
+        );
         for process_id in process_ids {
             if claimed.len() >= request.max_processes {
                 break;
@@ -331,7 +336,11 @@ impl ProcessJournalMaterializedState {
         &mut self,
         request: crate::RecoverExpiredProcessLeasesRequest,
     ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
-        let expired = self.expired_process_ids(request.scope_filter.as_ref(), request.now);
+        let expired = self.expired_process_ids(
+            request.scope_filter.as_ref(),
+            request.process_kind_filter.as_ref(),
+            request.now,
+        );
         let mut recovered = Vec::new();
         for process_id in expired {
             let cursor = self.next_cursor();
@@ -675,11 +684,19 @@ impl ProcessJournalMaterializedState {
     pub(super) fn claimable_process_ids(
         &self,
         scope_filter: Option<&ResourceScope>,
+        process_id_filter: Option<ProcessId>,
+        process_kind_filter: Option<&ProcessKind>,
     ) -> Vec<ProcessId> {
         let mut ids = self
             .processes
             .values()
             .filter(|snapshot| snapshot.status == ProcessLifecycleStatus::Queued)
+            .filter(|snapshot| {
+                process_id_filter.is_none_or(|process_id| snapshot.process_id == process_id)
+            })
+            .filter(|snapshot| {
+                process_kind_filter.is_none_or(|kind| snapshot.process_kind == *kind)
+            })
             .filter(|snapshot| {
                 scope_filter.is_none_or(|scope| same_scope_owner(&snapshot.scope, scope))
             })
@@ -689,9 +706,24 @@ impl ProcessJournalMaterializedState {
         ids.into_iter().map(|(_, process_id)| process_id).collect()
     }
 
+    pub(super) fn snapshots_for_scope(
+        &self,
+        scope: &ResourceScope,
+    ) -> Vec<JournaledProcessSnapshot> {
+        let mut snapshots = self
+            .processes
+            .values()
+            .filter(|snapshot| process_scope_visible(&snapshot.scope, scope))
+            .cloned()
+            .collect::<Vec<_>>();
+        snapshots.sort_by_key(|snapshot| snapshot.process_id.as_uuid());
+        snapshots
+    }
+
     pub(super) fn expired_process_ids(
         &self,
         scope_filter: Option<&ResourceScope>,
+        process_kind_filter: Option<&ProcessKind>,
         now: ironclaw_host_api::Timestamp,
     ) -> Vec<ProcessId> {
         self.processes
@@ -704,6 +736,9 @@ impl ProcessJournalMaterializedState {
             })
             .filter(|snapshot| {
                 scope_filter.is_none_or(|scope| same_scope_owner(&snapshot.scope, scope))
+            })
+            .filter(|snapshot| {
+                process_kind_filter.is_none_or(|kind| snapshot.process_kind == *kind)
             })
             .filter(|snapshot| {
                 snapshot

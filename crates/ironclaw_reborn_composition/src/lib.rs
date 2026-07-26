@@ -356,7 +356,7 @@ use ironclaw_host_api::{
     MountAlias, MountGrant, MountPermissions, MountView, ResourceScope, VirtualPath,
 };
 use ironclaw_host_runtime::{CapabilitySurfaceVersion, HostRuntimeServices};
-use ironclaw_processes::{ProcessResultStore, ProcessStore};
+use ironclaw_processes::{JournalProcessStore, ProcessResultStore};
 use ironclaw_reborn_event_store::RebornEventStoreConfig;
 use ironclaw_reborn_event_store::RebornEventStoreError;
 use ironclaw_resources::FilesystemResourceGovernor;
@@ -372,14 +372,14 @@ use thiserror::Error;
 pub type LibSqlProductionHostRuntimeServices = HostRuntimeServices<
     LibSqlRootFilesystem,
     FilesystemResourceGovernor<LibSqlRootFilesystem>,
-    ProcessStore<LibSqlRootFilesystem>,
+    JournalProcessStore<LibSqlRootFilesystem>,
     ProcessResultStore<LibSqlRootFilesystem>,
 >;
 
 pub type PostgresProductionHostRuntimeServices = HostRuntimeServices<
     PostgresRootFilesystem,
     FilesystemResourceGovernor<PostgresRootFilesystem>,
-    ProcessStore<PostgresRootFilesystem>,
+    JournalProcessStore<PostgresRootFilesystem>,
     ProcessResultStore<PostgresRootFilesystem>,
 >;
 

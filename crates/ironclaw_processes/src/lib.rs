@@ -12,24 +12,20 @@
 //! - [`cancellation`] — cooperative cancellation tokens + per-process registry
 //! - [`host`] — read/poll/await/cancel surface ([`ProcessHost`],
 //!   [`ProcessSubscription`])
-//! - [`process_store`] — the process `ProcessStorePort` / `ProcessResultStorePort`
-//!   (durable over libSQL/Postgres; in-memory-backed over `InMemoryBackend` in
-//!   tests, via the `test-support` helpers — arch-simplification §4.3)
-//! - [`wrappers`] — composable decorators ([`EventingProcessStore`],
-//!   [`ResourceManagedProcessStore`])
+//! - [`result_store`] — externalized process result metadata and output bodies
 //! - [`services`] — composition root ([`ProcessServices`]) and the
 //!   production [`BackgroundProcessManager`]
 
 mod cancellation;
 mod host;
 mod journal;
+mod journal_process_store;
 mod journal_store;
-mod process_store;
+mod result_store;
 mod services;
 #[cfg(any(test, feature = "test-support"))]
 mod test_support;
 mod types;
-mod wrappers;
 
 pub use cancellation::{ProcessCancellationRegistry, ProcessCancellationToken};
 pub use host::{ProcessHost, ProcessSubscription};
@@ -46,15 +42,17 @@ pub use journal::{
     ProcessKind, ProcessLeaseRequest, ProcessLeaseSnapshot, ProcessLeaseToken,
     ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupRequest,
     ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
-    ProcessOperationId, ProcessOutcome, ProcessStateTransitionRequest, ProcessSubmissionPort,
-    ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort, ProcessTreePort,
-    ProcessTreeReservation, ProcessWorkerId, PruneReleasedProcessRequest,
+    ProcessOperationId, ProcessOutcome, ProcessSnapshotSource, ProcessStateTransitionRequest,
+    ProcessSubmissionPort, ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort,
+    ProcessTreePort, ProcessTreeReservation, ProcessWorkerId, PruneReleasedProcessRequest,
     RecordProcessCheckpointRequest, RecoverExpiredProcessLeasesRequest,
     RecoverExpiredProcessLeasesResponse, ReleaseProcessTreeRequest, ReserveProcessTreeRequest,
     ResumeProcessRequest, StopProcessRequest, SubmitProcessRequest, SuspendProcessRequest,
 };
+pub use journal_process_store::JournalProcessStore;
 pub use journal_store::{ProcessJournalStore, ProcessJournalStoreError};
-pub use process_store::{ProcessResultStore, ProcessStore};
+pub type ProcessStore<F> = JournalProcessStore<F>;
+pub use result_store::ProcessResultStore;
 pub use services::{
     BackgroundErrorHandler, BackgroundFailure, BackgroundFailureStage, BackgroundProcessManager,
     ProcessServices,
@@ -69,7 +67,6 @@ pub use types::{
     ProcessExecutor, ProcessExit, ProcessManager, ProcessRecord, ProcessResultRecord,
     ProcessResultStorePort, ProcessStart, ProcessStatus, ProcessStorePort,
 };
-pub use wrappers::{EventingProcessStore, ResourceManagedProcessStore};
 
 /// Complete static-kernel process surface. Consumers should accept narrower
 /// ports; composition uses this trait to carry one journal implementation.
@@ -78,6 +75,7 @@ pub trait ProcessRuntimePort:
     + ProcessTransitionPort<Error = ProcessJournalStoreError>
     + ProcessControlPort<Error = ProcessJournalStoreError>
     + ProcessJournalSource<Error = ProcessJournalStoreError>
+    + ProcessSnapshotSource<Error = ProcessJournalStoreError>
     + ProcessLifecycleLookupSource<Error = ProcessJournalStoreError>
     + ProcessGateQuerySource<Error = ProcessJournalStoreError>
     + ProcessTreePort<Error = ProcessJournalStoreError>

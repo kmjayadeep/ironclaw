@@ -22,7 +22,8 @@ use ironclaw_host_api::{ProcessId, ResourceReservation, ResourceScope};
 
 use crate::cancellation::ProcessCancellationRegistry;
 use crate::host::ProcessHost;
-use crate::process_store::{ProcessResultStore, ProcessStore};
+use crate::journal_process_store::JournalProcessStore;
+use crate::result_store::ProcessResultStore;
 use crate::types::{
     ProcessError, ProcessExecutionRequest, ProcessExecutor, ProcessManager, ProcessRecord,
     ProcessResultStorePort, ProcessStart, ProcessStatus, ProcessStorePort,
@@ -137,13 +138,13 @@ where
     }
 }
 
-impl<F> ProcessServices<ProcessStore<F>, ProcessResultStore<F>>
+impl<F> ProcessServices<JournalProcessStore<F>, ProcessResultStore<F>>
 where
-    F: RootFilesystem + 'static,
+    F: RootFilesystem + Send + Sync + 'static,
 {
     pub fn filesystem(filesystem: Arc<ScopedFilesystem<F>>) -> Self {
         Self::new(
-            Arc::new(ProcessStore::from_arc(Arc::clone(&filesystem))),
+            Arc::new(JournalProcessStore::from_arc(Arc::clone(&filesystem))),
             Arc::new(ProcessResultStore::from_arc(filesystem)),
         )
     }
@@ -152,7 +153,7 @@ where
 #[cfg(any(test, feature = "test-support"))]
 impl
     ProcessServices<
-        ProcessStore<ironclaw_filesystem::InMemoryBackend>,
+        JournalProcessStore<ironclaw_filesystem::InMemoryBackend>,
         ProcessResultStore<ironclaw_filesystem::InMemoryBackend>,
     >
 {

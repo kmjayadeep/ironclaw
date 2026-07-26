@@ -361,21 +361,6 @@ impl ProcessKey {
     }
 }
 
-pub(crate) fn ensure_status_transition(
-    process_id: ProcessId,
-    from: ProcessStatus,
-    to: ProcessStatus,
-) -> Result<(), ProcessError> {
-    if from != ProcessStatus::Running {
-        return Err(ProcessError::InvalidTransition {
-            process_id,
-            from,
-            to,
-        });
-    }
-    Ok(())
-}
-
 pub(crate) fn same_scope_owner(left: &ResourceScope, right: &ResourceScope) -> bool {
     left.tenant_id == right.tenant_id
         && left.user_id == right.user_id

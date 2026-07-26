@@ -423,6 +423,22 @@ where
 }
 
 #[async_trait]
+impl<F> crate::ProcessSnapshotSource for ProcessJournalStore<F>
+where
+    F: RootFilesystem + Send + Sync + 'static,
+{
+    type Error = ProcessJournalStoreError;
+
+    async fn process_snapshots(
+        &self,
+        scope: &ResourceScope,
+    ) -> Result<Vec<JournaledProcessSnapshot>, Self::Error> {
+        let projection = self.load_state().await?;
+        Ok(projection.snapshots_for_scope(scope))
+    }
+}
+
+#[async_trait]
 impl<F> ProcessTransitionPort for ProcessJournalStore<F>
 where
     F: RootFilesystem + Send + Sync + 'static,

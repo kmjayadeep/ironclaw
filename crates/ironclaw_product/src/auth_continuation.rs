@@ -472,8 +472,8 @@ mod tests {
         TurnGateRef, UserId,
     };
     use ironclaw_processes::{
-        ClaimProcessesRequest, ProcessCheckpointRef, ProcessSuspension, ProcessSuspensionKind,
-        ProcessWorkerId, SuspendProcessRequest,
+        ClaimProcessesRequest, ProcessCheckpointRef, ProcessKind, ProcessSuspension,
+        ProcessSuspensionKind, ProcessWorkerId, SuspendProcessRequest,
     };
     use ironclaw_turns::test_support::in_memory_agent_turn_process_system;
     use ironclaw_turns::{
@@ -979,6 +979,8 @@ mod tests {
             .claim_next_processes(ClaimProcessesRequest {
                 worker_id,
                 scope_filter: None,
+                process_id_filter: None,
+                process_kind_filter: Some(ProcessKind::AgentTurn),
                 max_processes: 1,
             })
             .await

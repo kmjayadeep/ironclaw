@@ -7,7 +7,7 @@ use chrono::{TimeZone, Utc};
 use ironclaw_host_api::{
     AgentId, Blocked, CapabilityId, ProjectId, Resolution, RuntimeKind, TenantId, ThreadId, UserId,
 };
-use ironclaw_processes::{ClaimProcessesRequest, ProcessWorkerId};
+use ironclaw_processes::{ClaimProcessesRequest, ProcessKind, ProcessWorkerId};
 use ironclaw_turns::test_support::in_memory_agent_turn_process_system;
 use ironclaw_turns::{
     AcceptedMessageRef, AgentLoopDriver, AgentLoopDriverDescriptor, AgentLoopDriverError,
@@ -3450,6 +3450,8 @@ async fn claimed_run_context() -> LoopRunContext {
         .claim_next_processes(ClaimProcessesRequest {
             worker_id: ProcessWorkerId::from_trusted(runner_id.as_uuid().to_string()),
             scope_filter: Some(scope.to_resource_scope()),
+            process_id_filter: None,
+            process_kind_filter: Some(ProcessKind::AgentTurn),
             max_processes: 1,
         })
         .await

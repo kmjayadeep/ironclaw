@@ -14,8 +14,8 @@ use ironclaw_host_api::{
     RuntimeHttpEgressRequest, RuntimeHttpEgressResponse, TenantId, ThreadId, UserId,
 };
 use ironclaw_processes::{
-    ClaimProcessesRequest, ProcessCheckpointRef, ProcessSuspension, ProcessSuspensionKind,
-    ProcessTransitionPort, ProcessWorkerId, SuspendProcessRequest,
+    ClaimProcessesRequest, ProcessCheckpointRef, ProcessKind, ProcessSuspension,
+    ProcessSuspensionKind, ProcessTransitionPort, ProcessWorkerId, SuspendProcessRequest,
 };
 use ironclaw_product::ProductAuthTurnGateResumeDispatcher;
 use ironclaw_secrets::SecretStore;
@@ -863,6 +863,8 @@ async fn suspend_auth_process(
         .claim_next_processes(ClaimProcessesRequest {
             worker_id: worker_id.clone(),
             scope_filter: Some(scope.to_resource_scope()),
+            process_id_filter: None,
+            process_kind_filter: Some(ProcessKind::AgentTurn),
             max_processes: 1,
         })
         .await

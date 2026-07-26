@@ -251,6 +251,10 @@ pub struct ClaimProcessesRequest {
     pub worker_id: ProcessWorkerId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope_filter: Option<ResourceScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_id_filter: Option<ProcessId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_kind_filter: Option<ProcessKind>,
     pub max_processes: usize,
 }
 
@@ -586,6 +590,16 @@ pub trait ProcessJournalSource: Send + Sync {
 }
 
 #[async_trait]
+pub trait ProcessSnapshotSource: Send + Sync {
+    type Error: Send + Sync + 'static;
+
+    async fn process_snapshots(
+        &self,
+        scope: &ResourceScope,
+    ) -> Result<Vec<JournaledProcessSnapshot>, Self::Error>;
+}
+
+#[async_trait]
 pub trait ProcessSubmissionPort: Send + Sync {
     type Error: Send + Sync + 'static;
 
@@ -727,6 +741,8 @@ pub struct RecoverExpiredProcessLeasesRequest {
     pub now: Timestamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope_filter: Option<ResourceScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_kind_filter: Option<ProcessKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

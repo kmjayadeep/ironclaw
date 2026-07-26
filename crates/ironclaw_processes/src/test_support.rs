@@ -26,7 +26,7 @@ use std::sync::Arc;
 use ironclaw_filesystem::{InMemoryBackend, ScopedFilesystem};
 use ironclaw_host_api::{MountAlias, MountGrant, MountPermissions, MountView, VirtualPath};
 
-use crate::{ProcessResultStore, ProcessServices, ProcessStore};
+use crate::{JournalProcessStore, ProcessResultStore, ProcessServices, ProcessStore};
 
 /// A fresh, volatile `ScopedFilesystem<InMemoryBackend>` mounted at `/processes`
 /// — the in-memory backend seam every process store uses in tests.
@@ -61,6 +61,6 @@ pub fn in_memory_backed_process_result_store() -> ProcessResultStore<InMemoryBac
 /// helpers) when a test starts a process and reads back its result, since both
 /// stores must resolve against the same backend.
 pub fn in_memory_backed_process_services()
--> ProcessServices<ProcessStore<InMemoryBackend>, ProcessResultStore<InMemoryBackend>> {
+-> ProcessServices<JournalProcessStore<InMemoryBackend>, ProcessResultStore<InMemoryBackend>> {
     ProcessServices::filesystem(in_memory_backed_processes_filesystem())
 }

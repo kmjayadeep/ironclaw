@@ -7,7 +7,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use ironclaw_filesystem::{DiskFilesystem, InMemoryBackend, RootFilesystem, ScopedFilesystem};
+use ironclaw_filesystem::{InMemoryBackend, RootFilesystem, ScopedFilesystem};
 use ironclaw_host_api::*;
 use ironclaw_processes::*;
 use serde_json::json;
@@ -82,7 +82,7 @@ async fn process_services_share_cancellation_registry_between_host_and_manager()
 
 #[tokio::test]
 async fn filesystem_process_services_store_output_refs() {
-    let services = ProcessServices::filesystem(engine_filesystem());
+    let services = in_mem_process_services();
     let manager = services.background_manager(Arc::new(SuccessExecutor));
     let invocation_id = InvocationId::new();
     let process_id = ProcessId::new();
@@ -270,20 +270,6 @@ fn process_start(
     }
 }
 
-fn engine_filesystem() -> Arc<ScopedFilesystem<DiskFilesystem>> {
-    let storage = tempfile::tempdir().unwrap().keep();
-    let mut fs = DiskFilesystem::new();
-    fs.mount_local(
-        VirtualPath::new("/engine").unwrap(),
-        HostPath::from_path_buf(storage),
-    )
-    .unwrap();
-    scoped_processes_filesystem(
-        Arc::new(fs),
-        "/engine/tenants/tenant1/users/user1/processes",
-    )
-}
-
 fn scoped_processes_filesystem<F>(backend: Arc<F>, target_root: &str) -> Arc<ScopedFilesystem<F>>
 where
     F: RootFilesystem,
@@ -310,7 +296,7 @@ fn sample_scope(invocation_id: InvocationId, tenant: &str, user: &str) -> Resour
 }
 
 fn in_mem_process_services()
--> ProcessServices<ProcessStore<InMemoryBackend>, ProcessResultStore<InMemoryBackend>> {
+-> ProcessServices<JournalProcessStore<InMemoryBackend>, ProcessResultStore<InMemoryBackend>> {
     ProcessServices::filesystem(scoped_processes_filesystem(
         Arc::new(InMemoryBackend::new()),
         "/engine/tenants/tenant1/users/user1/processes",

@@ -8,7 +8,7 @@ use futures_util::FutureExt;
 use ironclaw_host_api::ProcessId;
 use ironclaw_observability::live_latency_started_at;
 use ironclaw_processes::{
-    ClaimProcessesRequest, FailProcessRequest, ProcessLeaseRequest, ProcessLeaseToken,
+    ClaimProcessesRequest, FailProcessRequest, ProcessKind, ProcessLeaseRequest, ProcessLeaseToken,
     ProcessTransitionPort, ProcessWorkerId, RecoverExpiredProcessLeasesRequest,
 };
 use ironclaw_turns::{
@@ -644,6 +644,8 @@ async fn drain_queued_runs(
             .claim_next_processes(ClaimProcessesRequest {
                 worker_id: process_worker_id_from_turn_runner_id(context.runner_id),
                 scope_filter: scope_filter.clone().map(|scope| scope.to_resource_scope()),
+                process_id_filter: None,
+                process_kind_filter: Some(ProcessKind::AgentTurn),
                 max_processes: permits.len(),
             })
             .await;
@@ -1089,6 +1091,7 @@ async fn recover_expired_leases(transitions: Arc<dyn ProcessTransitionPort<Error
             // Scheduler currently owns one global worker pool; if composition
             // introduces per-tenant schedulers, thread that scope filter here.
             scope_filter: None,
+            process_kind_filter: Some(ProcessKind::AgentTurn),
         })
         .await;
     match result {

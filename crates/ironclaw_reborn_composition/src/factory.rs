@@ -3906,7 +3906,7 @@ fn planned_run_profile_resolver() -> Result<Arc<InMemoryRunProfileResolver>, Reb
 type FilesystemProductionHostRuntimeServices<F> = HostRuntimeServices<
     F,
     FilesystemResourceGovernor<F>,
-    ironclaw_processes::ProcessStore<F>,
+    ironclaw_processes::JournalProcessStore<F>,
     ironclaw_processes::ProcessResultStore<F>,
 >;
 

@@ -20,9 +20,9 @@ use ironclaw_llm::{
     build_static_provider_chain, resolve_llm_config_from_env,
 };
 use ironclaw_processes::{
-    ClaimProcessesRequest, ProcessCheckpointRef, ProcessJournalStore, ProcessLeaseRequest,
-    ProcessStateTransitionRequest, ProcessSuspension, ProcessSuspensionKind, ProcessTransitionPort,
-    ProcessWorkerId, SuspendProcessRequest,
+    ClaimProcessesRequest, ProcessCheckpointRef, ProcessJournalStore, ProcessKind,
+    ProcessLeaseRequest, ProcessStateTransitionRequest, ProcessSuspension, ProcessSuspensionKind,
+    ProcessTransitionPort, ProcessWorkerId, SuspendProcessRequest,
 };
 use ironclaw_resources::{ResourceError, ResourceGovernor};
 use ironclaw_threads::{
@@ -71,6 +71,8 @@ impl StressProcessSystem {
             .claim_next_processes(ClaimProcessesRequest {
                 worker_id,
                 scope_filter,
+                process_id_filter: None,
+                process_kind_filter: Some(ProcessKind::AgentTurn),
                 max_processes: 1,
             })
             .await?

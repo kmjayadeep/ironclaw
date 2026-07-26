@@ -61,6 +61,8 @@ async fn claim_process(
         .claim_next_processes(ClaimProcessesRequest {
             worker_id,
             scope_filter: None,
+            process_id_filter: None,
+            process_kind_filter: None,
             max_processes: 1,
         })
         .await
