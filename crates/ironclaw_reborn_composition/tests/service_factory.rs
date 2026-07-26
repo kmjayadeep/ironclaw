@@ -1268,7 +1268,7 @@ async fn standalone_secret_store_falls_through_suppressed_keychain_to_dotfile() 
     );
 
     let mut composite = ironclaw_filesystem::CompositeRootFilesystem::new();
-    ironclaw_reborn_composition::test_support::build_default_local_dev_database_roots_for_test(
+    ironclaw_reborn_composition::test_support::build_default_database_roots_for_test(
         root,
         &mut composite,
     )

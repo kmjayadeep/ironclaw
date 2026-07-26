@@ -1,0 +1,346 @@
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use ironclaw_filesystem::{
+    BackendCapabilities, BackendId, BackendKind, CompositeRootFilesystem, ContentKind,
+    DiskFilesystem, IndexPolicy, LibSqlRootFilesystem, MountDescriptor, PostgresRootFilesystem,
+    RootFilesystem, StorageClass,
+};
+use ironclaw_host_api::{HostPath, VirtualPath};
+
+use crate::RebornBuildError;
+
+/// Compatibility filename for the embedded standalone database.
+///
+/// Existing installations already persist this path, so the legacy filename is
+/// intentionally stable even though the code-level profile terminology is not.
+pub(crate) const STANDALONE_DB_FILENAME: &str = "reborn-local-dev.db";
+
+pub fn standalone_db_path(root: &Path) -> PathBuf {
+    root.join(STANDALONE_DB_FILENAME)
+}
+
+pub(crate) struct FilesystemAssembly {
+    pub(crate) filesystem: Arc<CompositeRootFilesystem>,
+    pub(crate) durable_backend: DurableBackend,
+}
+
+pub(crate) enum DurableBackend {
+    LibSql(Arc<libsql::Database>),
+    Postgres(deadpool_postgres::Pool),
+}
+
+pub(crate) enum DurableStorageInput {
+    EmbeddedLibsql,
+    Postgres(deadpool_postgres::Pool),
+}
+
+pub(crate) struct HostHomeRoot {
+    canonical_root: PathBuf,
+    raw_alias: PathBuf,
+}
+
+impl HostHomeRoot {
+    pub(crate) fn new(canonical_root: PathBuf, raw_alias: PathBuf) -> Self {
+        Self {
+            canonical_root,
+            raw_alias,
+        }
+    }
+
+    pub(crate) fn canonical_root(&self) -> &Path {
+        &self.canonical_root
+    }
+
+    pub(crate) fn aliases(&self) -> Vec<&Path> {
+        vec![self.raw_alias.as_path(), self.canonical_root.as_path()]
+    }
+}
+
+/// Builds the storage substrate selected by already-resolved configuration.
+///
+/// The builder owns concrete filesystem/database initialization. Callers own
+/// profile selection and pass only the resulting roots and durable-storage
+/// choice.
+pub(crate) struct FilesystemAssemblyBuilder<'a> {
+    storage_root: &'a Path,
+    workspace_root: &'a Path,
+    host_home_root: Option<&'a HostHomeRoot>,
+    durable_storage: DurableStorageInput,
+}
+
+impl<'a> FilesystemAssemblyBuilder<'a> {
+    pub(crate) fn new(
+        storage_root: &'a Path,
+        workspace_root: &'a Path,
+        durable_storage: DurableStorageInput,
+    ) -> Self {
+        Self {
+            storage_root,
+            workspace_root,
+            host_home_root: None,
+            durable_storage,
+        }
+    }
+
+    pub(crate) fn with_host_home_root(mut self, host_home_root: Option<&'a HostHomeRoot>) -> Self {
+        self.host_home_root = host_home_root;
+        self
+    }
+
+    pub(crate) async fn build(self) -> Result<FilesystemAssembly, RebornBuildError> {
+        let disk = Arc::new(host_disk_filesystem(
+            self.storage_root,
+            self.workspace_root,
+            self.host_home_root,
+        )?);
+        let mut composite = CompositeRootFilesystem::new();
+        let durable_backend = match self.durable_storage {
+            DurableStorageInput::Postgres(pool) => {
+                let database = Arc::new(PostgresRootFilesystem::new(pool.clone()));
+                database.run_migrations().await?;
+                mount_database_roots(&mut composite, database)?;
+                DurableBackend::Postgres(pool)
+            }
+            DurableStorageInput::EmbeddedLibsql => {
+                build_default_database_roots(self.storage_root, &mut composite).await?
+            }
+        };
+        mount_host_disk_roots(&mut composite, disk)?;
+        Ok(FilesystemAssembly {
+            filesystem: Arc::new(composite),
+            durable_backend,
+        })
+    }
+}
+
+/// Open the compatibility-path embedded database without mounting it.
+pub(crate) async fn open_standalone_libsql_database(
+    root: &Path,
+) -> Result<Arc<libsql::Database>, RebornBuildError> {
+    let db_path = standalone_db_path(root);
+    Ok(Arc::new(
+        libsql::Builder::new_local(&db_path)
+            .build()
+            .await
+            .map_err(|error| RebornBuildError::InvalidConfig {
+                reason: format!("standalone libSQL database could not be opened: {error}"),
+            })?,
+    ))
+}
+
+pub(crate) async fn build_default_database_roots(
+    root: &Path,
+    composite: &mut CompositeRootFilesystem,
+) -> Result<DurableBackend, RebornBuildError> {
+    let db = open_standalone_libsql_database(root).await?;
+    let database = Arc::new(LibSqlRootFilesystem::new(Arc::clone(&db)));
+    database.run_migrations().await?;
+    mount_database_roots(composite, database)?;
+    Ok(DurableBackend::LibSql(db))
+}
+
+fn host_disk_filesystem(
+    root: &Path,
+    workspace_root: &Path,
+    host_home_root: Option<&HostHomeRoot>,
+) -> Result<DiskFilesystem, RebornBuildError> {
+    let mut filesystem = DiskFilesystem::new();
+    filesystem.mount_local(
+        VirtualPath::new("/projects")?,
+        HostPath::from_path_buf(root.to_path_buf()),
+    )?;
+    filesystem.mount_local(
+        VirtualPath::new("/projects/workspace")?,
+        HostPath::from_path_buf(workspace_root.to_path_buf()),
+    )?;
+    filesystem.mount_local(
+        VirtualPath::new("/system/extensions")?,
+        HostPath::from_path_buf(root.join("system/extensions")),
+    )?;
+    filesystem.mount_local(
+        VirtualPath::new("/system/skills")?,
+        HostPath::from_path_buf(root.join("system/skills")),
+    )?;
+    if let Some(host_home_root) = host_home_root {
+        filesystem.mount_local(
+            VirtualPath::new("/projects/host")?,
+            HostPath::from_path_buf(host_home_root.canonical_root().to_path_buf()),
+        )?;
+    }
+    Ok(filesystem)
+}
+
+fn mount_memory_root<F>(
+    root: &mut CompositeRootFilesystem,
+    backend: Arc<F>,
+) -> Result<(), RebornBuildError>
+where
+    F: RootFilesystem + 'static,
+{
+    root.mount(
+        mount_descriptor(
+            "/memory",
+            "standalone-memory",
+            BackendKind::MemoryDocuments,
+            StorageClass::StructuredRecords,
+            ContentKind::MemoryDocument,
+            IndexPolicy::FullTextAndVector,
+            backend.capabilities(),
+        )?,
+        backend,
+    )?;
+    Ok(())
+}
+
+pub(crate) fn mount_database_roots<F>(
+    root: &mut CompositeRootFilesystem,
+    database: Arc<F>,
+) -> Result<(), RebornBuildError>
+where
+    F: RootFilesystem + 'static,
+{
+    for (virtual_root, backend_id, content_kind, index_policy) in [
+        (
+            "/tenants",
+            "standalone-reborn-state",
+            ContentKind::StructuredRecord,
+            IndexPolicy::NotIndexed,
+        ),
+        (
+            "/system/extensions/.installations",
+            "standalone-extension-installation-state",
+            ContentKind::SystemState,
+            IndexPolicy::BackendDefined,
+        ),
+        (
+            "/system/settings",
+            "standalone-system-settings",
+            ContentKind::SystemState,
+            IndexPolicy::BackendDefined,
+        ),
+    ] {
+        root.mount(
+            mount_descriptor(
+                virtual_root,
+                backend_id,
+                BackendKind::DatabaseFilesystem,
+                StorageClass::StructuredRecords,
+                content_kind,
+                index_policy,
+                database.capabilities(),
+            )?,
+            Arc::clone(&database),
+        )?;
+    }
+    mount_memory_root(root, Arc::clone(&database))?;
+    root.mount(
+        mount_descriptor(
+            "/events",
+            "standalone-events",
+            BackendKind::DatabaseFilesystem,
+            StorageClass::StructuredRecords,
+            ContentKind::StructuredRecord,
+            IndexPolicy::NotIndexed,
+            database.capabilities(),
+        )?,
+        database,
+    )?;
+    Ok(())
+}
+
+pub(crate) fn production_database_root_filesystem<F>(
+    backend: Arc<F>,
+    backend_id: &str,
+) -> Result<Arc<CompositeRootFilesystem>, RebornBuildError>
+where
+    F: RootFilesystem + 'static,
+{
+    let mut root = CompositeRootFilesystem::new();
+    for virtual_root in [
+        "/tenants",
+        "/events",
+        "/memory",
+        "/projects",
+        "/system/extensions",
+        "/system/settings",
+        "/system/skills",
+    ] {
+        let mount_id = format!(
+            "{backend_id}-{}",
+            virtual_root
+                .trim_start_matches('/')
+                .replace(['/', '.'], "-")
+        );
+        root.mount(
+            mount_descriptor(
+                virtual_root,
+                &mount_id,
+                BackendKind::DatabaseFilesystem,
+                StorageClass::StructuredRecords,
+                ContentKind::StructuredRecord,
+                IndexPolicy::BackendDefined,
+                backend.capabilities(),
+            )?,
+            Arc::clone(&backend),
+        )?;
+    }
+    Ok(Arc::new(root))
+}
+
+fn mount_host_disk_roots(
+    root: &mut CompositeRootFilesystem,
+    disk: Arc<DiskFilesystem>,
+) -> Result<(), RebornBuildError> {
+    for (virtual_root, backend_id, content_kind) in [
+        (
+            "/projects",
+            "standalone-project-files",
+            ContentKind::ProjectFile,
+        ),
+        (
+            "/system/extensions",
+            "standalone-system-extensions",
+            ContentKind::ExtensionPackage,
+        ),
+        (
+            "/system/skills",
+            "standalone-system-skills",
+            ContentKind::GenericFile,
+        ),
+    ] {
+        root.mount(
+            mount_descriptor(
+                virtual_root,
+                backend_id,
+                BackendKind::DiskFilesystem,
+                StorageClass::FileContent,
+                content_kind,
+                IndexPolicy::NotIndexed,
+                BackendCapabilities::bytes_only(),
+            )?,
+            Arc::clone(&disk),
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn mount_descriptor(
+    virtual_root: &str,
+    backend_id: &str,
+    backend_kind: BackendKind,
+    storage_class: StorageClass,
+    content_kind: ContentKind,
+    index_policy: IndexPolicy,
+    capabilities: BackendCapabilities,
+) -> Result<MountDescriptor, RebornBuildError> {
+    Ok(MountDescriptor {
+        virtual_root: VirtualPath::new(virtual_root)?,
+        backend_id: BackendId::new(backend_id)?,
+        backend_kind,
+        storage_class,
+        content_kind,
+        index_policy,
+        capabilities,
+    })
+}

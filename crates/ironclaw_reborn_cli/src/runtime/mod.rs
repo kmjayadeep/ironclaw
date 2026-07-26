@@ -866,7 +866,7 @@ fn google_oauth_client_secret_from_store(
     let storage_root = local_runtime_storage_root(config, config.profile());
     // Boot may open/migrate local runtime state, but it can still avoid all
     // keychain/filesystem writes when no store exists yet.
-    if !ironclaw_reborn_composition::local_dev_db_path(&storage_root).exists() {
+    if !ironclaw_reborn_composition::standalone_db_path(&storage_root).exists() {
         return Ok(None);
     }
     block_on_cli(async move {

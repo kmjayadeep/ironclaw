@@ -14,8 +14,8 @@
 //!    `build_google_oauth_product_auth_for_test` — real store / real client /
 //!    scripted HTTP egress for OAuth connect, refresh, and error-path tests.
 //! 3. [`local_dev_boot`] — `build_approval_gate_evidence_for_test`,
-//!    `build_default_local_dev_database_roots_for_test`,
-//!    `mount_local_dev_database_roots_for_test`,
+//!    `build_default_database_roots_for_test`,
+//!    `mount_database_roots_for_test`,
 //!    `build_secret_store_for_test` — mirror the production
 //!    local-dev boot sequence so the integration-test harness
 //!    (`tests/support/reborn/`) drives the real local-dev composition paths
@@ -131,12 +131,12 @@ pub use result_read::{RESULT_READ_CAPABILITY_ID, wrap_result_read_capability_for
 pub use skill_activation::{
     SKILL_ACTIVATE_CAPABILITY_ID, SkillActivationTestSource, build_skill_context_source_for_test,
 };
-pub use standalone_boot::LOCAL_DEV_DB_FILENAME;
+pub use standalone_boot::STANDALONE_DB_FILENAME;
 pub use standalone_boot::build_secret_store_for_test;
 #[cfg(feature = "test-support")]
 pub use standalone_boot::{
-    build_approval_gate_evidence_for_test, build_default_local_dev_database_roots_for_test,
-    mount_local_dev_database_roots_for_test,
+    build_approval_gate_evidence_for_test, build_default_database_roots_for_test,
+    mount_database_roots_for_test,
 };
 #[cfg(feature = "test-support")]
 pub use trace_capture::trace_capture_turn_event_sink_for_test;

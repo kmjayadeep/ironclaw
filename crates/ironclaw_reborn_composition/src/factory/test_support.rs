@@ -806,18 +806,18 @@ pub struct RebornApprovalTestParts {
     pub replay_payload_store: Arc<dyn ironclaw_capabilities::ReplayPayloadStorePort>,
 }
 
-/// Thin void wrapper over [`build_default_local_dev_database_roots`] for
+/// Thin void wrapper over [`build_default_database_roots`] for
 /// `#[cfg(feature = "test-support")]` callers that need to mount the local-dev
 /// database roots but don't need the opaque `DurableBackend` handle
 /// (which is private to this module).
 ///
-/// Used by `test_support::build_default_local_dev_database_roots_for_test`.
+/// Used by `test_support::build_default_database_roots_for_test`.
 #[cfg(feature = "test-support")]
-pub(crate) async fn mount_default_local_dev_database_roots(
+pub(crate) async fn mount_default_database_roots(
     root: &Path,
     composite: &mut CompositeRootFilesystem,
 ) -> Result<(), RebornBuildError> {
-    build_default_local_dev_database_roots(root, composite)
+    build_default_database_roots(root, composite)
         .await
         .map(|_| ())
 }
@@ -826,7 +826,7 @@ pub(crate) async fn mount_default_local_dev_database_roots(
 /// filesystem at an existing `storage_root`, for reconstructing the generic
 /// channel-identity store the way production boot does
 /// (`build_runtime_substrate` → `FilesystemChannelIdentityStore::new` over the
-/// composed root). `libsql`-only: the `LocalDefault` non-libsql
+/// composed root). `libsql`-only: the `EmbeddedLibsql` non-libsql
 /// arm mounts a fresh `InMemoryBackend`, which could only ever report
 /// absence. Tests only; zero bytes in production.
 #[cfg(feature = "test-support")]
@@ -834,12 +834,12 @@ pub(crate) async fn open_local_dev_root_filesystem_for_test(
     storage_root: &Path,
 ) -> Result<Arc<dyn RootFilesystem>, RebornBuildError> {
     let workspace_root = storage_root.join("workspace");
-    let bundle = build_local_runtime_root_filesystem(
+    let bundle = FilesystemAssemblyBuilder::new(
         storage_root,
         &workspace_root,
-        None,
-        StorageBackendInput::LocalDefault,
+        DurableStorageInput::EmbeddedLibsql,
     )
+    .build()
     .await?;
     Ok(bundle.filesystem)
 }
@@ -848,7 +848,7 @@ pub(crate) async fn open_local_dev_root_filesystem_for_test(
 /// [`ExtensionInstallationStore`] at an existing local-dev `storage_root`,
 /// paralleling how `assert_reply_persists_after_reopen` opens a fresh libsql
 /// handle rather than reusing the live one. Reuses the production
-/// [`build_local_runtime_root_filesystem`] mounts and
+/// [`build_standalone_root_filesystem`] mounts and
 /// [`ExtensionInstallationStore::default_state_path`] so the reopen
 /// reads the exact durable `/system/extensions/.installations` state the
 /// running harness wrote while extension package files still live on disk
@@ -861,12 +861,12 @@ pub(crate) async fn open_local_dev_extension_installation_store_for_test(
     storage_root: &Path,
 ) -> Result<Arc<dyn ironclaw_extensions::ExtensionInstallationStorePort>, RebornBuildError> {
     let workspace_root = storage_root.join("workspace");
-    let bundle = build_local_runtime_root_filesystem(
+    let bundle = FilesystemAssemblyBuilder::new(
         storage_root,
         &workspace_root,
-        None,
-        StorageBackendInput::LocalDefault,
+        DurableStorageInput::EmbeddedLibsql,
     )
+    .build()
     .await?;
     let filesystem: Arc<dyn RootFilesystem> = bundle.filesystem;
     let state_path = ExtensionInstallationStore::default_state_path().map_err(|error| {
@@ -897,7 +897,7 @@ pub(crate) async fn open_local_dev_extension_installation_store_for_test(
 /// [`ironclaw_run_state::ApprovalRequestStore`] at an existing local-dev
 /// `storage_root`, paralleling [`open_local_dev_extension_installation_store_for_test`]
 /// (same on-disk root; a sibling capability store). Reuses
-/// [`mount_default_local_dev_database_roots`] + the production [`crate::wrap_scoped`]
+/// [`mount_default_database_roots`] + the production [`crate::wrap_scoped`]
 /// so the reopen mounts + scopes the SAME way `build_local_runtime` does when it
 /// first builds `approval_requests` — the reopen path never drifts from
 /// production. Tests only; zero bytes in production builds.
@@ -906,7 +906,7 @@ pub(crate) async fn open_local_dev_approval_request_store_for_test(
     storage_root: &Path,
 ) -> Result<Arc<dyn ironclaw_run_state::ApprovalRequestStorePort>, RebornBuildError> {
     let mut composite = CompositeRootFilesystem::new();
-    mount_default_local_dev_database_roots(storage_root, &mut composite).await?;
+    mount_default_database_roots(storage_root, &mut composite).await?;
     let scoped = crate::wrap_scoped(Arc::new(composite));
     Ok(Arc::new(ApprovalRequestStore::new(scoped)))
 }
@@ -922,7 +922,7 @@ pub(crate) async fn open_local_dev_outbound_preferences_store_for_test(
     storage_root: &Path,
 ) -> Result<Arc<dyn CommunicationPreferenceRepository>, RebornBuildError> {
     let mut composite = CompositeRootFilesystem::new();
-    mount_default_local_dev_database_roots(storage_root, &mut composite).await?;
+    mount_default_database_roots(storage_root, &mut composite).await?;
     Ok(local_dev_outbound_store(Arc::new(composite)).outbound_preferences)
 }
 
@@ -932,7 +932,7 @@ pub(crate) async fn open_local_dev_outbound_preferences_store_for_test(
 /// [`ironclaw_approvals::PersistentApprovalPolicyStore`] handles at an
 /// existing local-dev `storage_root`, paralleling
 /// [`open_local_dev_approval_request_store_for_test`] (same on-disk root;
-/// sibling capability stores). Reuses [`mount_default_local_dev_database_roots`]
+/// sibling capability stores). Reuses [`mount_default_database_roots`]
 /// plus the production [`crate::wrap_scoped`] so the reopen mounts and scopes
 /// the SAME way `build_runtime_stores` does when it first builds
 /// `tool_permission_overrides` / `auto_approve_settings` /
@@ -950,7 +950,7 @@ pub(crate) async fn open_local_dev_approval_settings_stores_for_test(
     RebornBuildError,
 > {
     let mut composite = CompositeRootFilesystem::new();
-    mount_default_local_dev_database_roots(storage_root, &mut composite).await?;
+    mount_default_database_roots(storage_root, &mut composite).await?;
     let scoped = crate::wrap_scoped(Arc::new(composite));
     let tool_permission_overrides: Arc<dyn ironclaw_approvals::ToolPermissionOverrideStorePort> =
         Arc::new(ComposedToolPermissionOverrideStore::new(Arc::clone(
@@ -971,7 +971,7 @@ pub(crate) async fn open_local_dev_approval_settings_stores_for_test(
 /// Test-only (C-DURABLE seam): open a FRESH, independent
 /// [`ironclaw_triggers::TriggerRepository`] at an existing local-dev
 /// `storage_root`, paralleling [`open_local_dev_extension_installation_store_for_test`].
-/// Reuses [`open_local_dev_libsql_database`] (the same libSQL-open sequence
+/// Reuses [`open_standalone_libsql_database`] (the same libSQL-open sequence
 /// production uses) AND delegates to [`local_dev_trigger_repository`] for
 /// repository construction + migrations, so the reopen path shares the SAME
 /// construction code as production local-dev wiring — never a second place to
@@ -981,6 +981,6 @@ pub(crate) async fn open_local_dev_approval_settings_stores_for_test(
 pub(crate) async fn open_local_dev_trigger_repository_for_test(
     storage_root: &Path,
 ) -> Result<Arc<dyn TriggerRepository>, RebornBuildError> {
-    let db = open_local_dev_libsql_database(storage_root).await?;
+    let db = open_standalone_libsql_database(storage_root).await?;
     local_dev_trigger_repository(&DurableBackend::LibSql(db)).await
 }

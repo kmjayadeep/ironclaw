@@ -12,6 +12,14 @@ use crate::builtin_capability_policy::BuiltinCapabilityPolicy;
 use crate::builtin_capability_policy::builtin_capability_policy;
 use crate::capability_authorization::{StoreApprovalSettingsProvider, capability_authorizer};
 use crate::deployment::TrafficPolicy;
+#[cfg(any(test, feature = "test-support"))]
+use crate::filesystem_assembly::build_default_database_roots;
+#[cfg(test)]
+use crate::filesystem_assembly::mount_descriptor;
+use crate::filesystem_assembly::{
+    DurableBackend, DurableStorageInput, FilesystemAssemblyBuilder, HostHomeRoot,
+    open_standalone_libsql_database, production_database_root_filesystem, standalone_db_path,
+};
 use crate::input::{
     LibsqlConnectionConfig, OAuthDcrCallbackConfig, OAuthProviderBackendConfig, PostgresPoolSource,
     RebornLocalRuntimeIdentity, RebornRuntimeProcessBinding, RebornStorageInput,
@@ -104,22 +112,21 @@ use ironclaw_extensions::{
     ExtensionInstallationStore, ExtensionInstallationStorePort, ExtensionLifecycleService,
     ExtensionRegistry, SharedExtensionRegistry,
 };
-use ironclaw_filesystem::LibSqlRootFilesystem;
-use ironclaw_filesystem::PostgresRootFilesystem;
+use ironclaw_filesystem::ScopedFilesystem;
+#[cfg(test)]
 use ironclaw_filesystem::{
-    BackendCapabilities, BackendId, BackendKind, CompositeRootFilesystem, ContentKind, IndexPolicy,
-    MountDescriptor, RootFilesystem, StorageClass,
+    BackendCapabilities, BackendKind, ContentKind, DiskFilesystem, IndexPolicy, StorageClass,
 };
-use ironclaw_filesystem::{DiskFilesystem, ScopedFilesystem};
+use ironclaw_filesystem::{CompositeRootFilesystem, LibSqlRootFilesystem, RootFilesystem};
 use ironclaw_host_api::ExtensionHostAssemblyConfig;
 use ironclaw_host_api::runtime_policy::{
     DeploymentMode, EffectiveRuntimePolicy, FilesystemBackendKind, NetworkMode, ProcessBackendKind,
     SecretMode,
 };
 use ironclaw_host_api::{
-    CapabilitySet, CorrelationId, CredentialStageError, ExtensionId, HostApiError, HostPath,
-    InvocationId, MountAlias, MountGrant, MountPermissions, MountView, NetworkPolicy, Obligation,
-    PackageId, RecipeClientCredentials, ResourceEstimate, ResourceScope, RunId, RuntimeHttpEgress,
+    CapabilitySet, CorrelationId, CredentialStageError, ExtensionId, HostApiError, InvocationId,
+    MountAlias, MountGrant, MountPermissions, MountView, NetworkPolicy, Obligation, PackageId,
+    RecipeClientCredentials, ResourceEstimate, ResourceScope, RunId, RuntimeHttpEgress,
     RuntimeHttpEgressError, RuntimeHttpEgressRequest, RuntimeHttpEgressResponse, RuntimeKind,
     TrustClass, UserId, VendorId, VirtualPath, sha256_digest_token,
 };
@@ -781,30 +788,6 @@ impl RebornAuthContinuationDispatcher for AuthContinuationFromProduct {
     }
 }
 
-/// Output of [`build_local_runtime_root_filesystem`]: the composed local-dev
-/// root filesystem and, when libSQL is the substrate, a clone of the raw
-/// libSQL handle. The handle backs both the local-dev trigger repository
-/// and the canonical Reborn identity store, so each rides the same
-/// `reborn-local-dev.db` rather than opening a second handle to the file
-/// (see `RebornRuntime::open_reborn_identity_resolver`).
-struct RootFilesystemBundle {
-    filesystem: Arc<CompositeRootFilesystem>,
-    durable_backend: DurableBackend,
-}
-
-// `pub(crate)` to match `build_default_local_dev_database_roots` (also
-// `pub(crate)` for the `test_support` accessor): a `pub(crate)` fn returning a
-// private enum trips `private_interfaces`. The enum stays crate-internal.
-pub(crate) enum DurableBackend {
-    LibSql(Arc<libsql::Database>),
-    Postgres(deadpool_postgres::Pool),
-}
-
-enum StorageBackendInput {
-    LocalDefault,
-    Postgres(deadpool_postgres::Pool),
-}
-
 type WorkspaceFilesystems = (
     Arc<ScopedFilesystem<CompositeRootFilesystem>>,
     Arc<ScopedFilesystem<CompositeRootFilesystem>>,
@@ -909,7 +892,7 @@ fn local_dev_process_port_for_policy(
     .with_workdir_alias("/workspace", workspace_root);
     if let Some(host_home_root) = host_home_root {
         process_port =
-            process_port.with_workdir_alias("/host", host_home_root.canonical_root.clone());
+            process_port.with_workdir_alias("/host", host_home_root.canonical_root().to_path_buf());
         for alias in host_home_root.aliases() {
             let alias_str = match alias.to_str() {
                 Some(s) => s,
@@ -1197,7 +1180,7 @@ pub use test_support::{AttachmentTestSupport, ChannelHostAssemblyTestWiring};
 
 #[cfg(feature = "test-support")]
 pub(crate) use test_support::{
-    mount_default_local_dev_database_roots, open_local_dev_approval_request_store_for_test,
+    mount_default_database_roots, open_local_dev_approval_request_store_for_test,
     open_local_dev_approval_settings_stores_for_test,
     open_local_dev_extension_installation_store_for_test,
     open_local_dev_outbound_preferences_store_for_test, open_local_dev_root_filesystem_for_test,
@@ -1900,68 +1883,6 @@ macro_rules! with_shared_host_runtime_wiring {
     };
 }
 
-async fn build_local_runtime_root_filesystem(
-    root: &Path,
-    workspace_root: &Path,
-    host_home_root: Option<&HostHomeRoot>,
-    storage_backend_input: StorageBackendInput,
-) -> Result<RootFilesystemBundle, RebornBuildError> {
-    let local = Arc::new(local_dev_project_filesystem(
-        root,
-        workspace_root,
-        host_home_root,
-    )?);
-    let mut composite = CompositeRootFilesystem::new();
-    let durable_backend = match storage_backend_input {
-        StorageBackendInput::Postgres(pool) => {
-            let database = Arc::new(PostgresRootFilesystem::new(pool.clone()));
-            database.run_migrations().await?;
-            mount_local_dev_database_roots(&mut composite, database)?;
-            DurableBackend::Postgres(pool)
-        }
-        StorageBackendInput::LocalDefault => {
-            build_default_local_dev_database_roots(root, &mut composite).await?
-        }
-    };
-    mount_local_dev_project_roots(&mut composite, local)?;
-    Ok(RootFilesystemBundle {
-        filesystem: Arc::new(composite),
-        durable_backend,
-    })
-}
-
-/// Filename of the local-dev libSQL database within the per-user root directory.
-/// One owner for the string — production factory, integration-test framework, and
-/// any on-disk path assertion all derive from this constant.
-pub(crate) const LOCAL_DEV_DB_FILENAME: &str = "reborn-local-dev.db";
-
-/// Full path to the local-dev libSQL database file within `root`. The single
-/// public accessor for [`LOCAL_DEV_DB_FILENAME`]; callers outside this crate
-/// (`ironclaw_reborn_cli`) must use this instead of hardcoding the filename.
-pub fn local_dev_db_path(root: &Path) -> PathBuf {
-    root.join(LOCAL_DEV_DB_FILENAME)
-}
-
-/// Open (or create) the local-dev libSQL database file at `root` — just the
-/// connection, no migrations/mount. One owner for the `libsql::Builder::new_local`
-/// sequence: [`build_default_local_dev_database_roots`] (production) and the
-/// C-DURABLE test-support trigger-repository reopen
-/// (`open_local_dev_trigger_repository_for_test`) both call this rather than
-/// each opening their own connection to the same file.
-async fn open_local_dev_libsql_database(
-    root: &Path,
-) -> Result<Arc<libsql::Database>, RebornBuildError> {
-    let db_path = local_dev_db_path(root);
-    Ok(Arc::new(
-        libsql::Builder::new_local(&db_path)
-            .build()
-            .await
-            .map_err(|error| RebornBuildError::InvalidConfig {
-                reason: format!("local-dev libSQL database could not be opened: {error}"),
-            })?,
-    ))
-}
-
 /// Open a PostgreSQL pool from a build-time [`PostgresPoolSource`] (Phase B).
 ///
 /// Production (`*_from_config_and_env`) carries `Config` and the pool is opened
@@ -2027,223 +1948,6 @@ fn is_remote_libsql_target(path_or_url: &str) -> bool {
         || scheme.eq_ignore_ascii_case("http")
 }
 
-// `pub(crate)` so the `test_support` accessor
-// (`build_default_local_dev_database_roots_for_test`) can call this
-// without duplicating the 4-step libSQL setup sequence (Builder →
-// LibSqlRootFilesystem → run_migrations → mount). Production callers
-// stay inside this module (`build_local_runtime_root_filesystem`).
-pub(crate) async fn build_default_local_dev_database_roots(
-    root: &Path,
-    composite: &mut CompositeRootFilesystem,
-) -> Result<DurableBackend, RebornBuildError> {
-    {
-        let db = open_local_dev_libsql_database(root).await?;
-        let database = Arc::new(LibSqlRootFilesystem::new(Arc::clone(&db)));
-        database.run_migrations().await?;
-        mount_local_dev_database_roots(composite, database)?;
-        Ok(DurableBackend::LibSql(db))
-    }
-}
-
-fn local_dev_project_filesystem(
-    root: &Path,
-    workspace_root: &Path,
-    host_home_root: Option<&HostHomeRoot>,
-) -> Result<DiskFilesystem, RebornBuildError> {
-    let mut filesystem = DiskFilesystem::new();
-    filesystem.mount_local(
-        VirtualPath::new("/projects")?,
-        HostPath::from_path_buf(root.to_path_buf()),
-    )?;
-    filesystem.mount_local(
-        VirtualPath::new("/projects/workspace")?,
-        HostPath::from_path_buf(workspace_root.to_path_buf()),
-    )?;
-    filesystem.mount_local(
-        VirtualPath::new("/system/extensions")?,
-        HostPath::from_path_buf(root.join("system/extensions")),
-    )?;
-    filesystem.mount_local(
-        VirtualPath::new("/system/skills")?,
-        HostPath::from_path_buf(root.join("system/skills")),
-    )?;
-    if let Some(host_home_root) = host_home_root {
-        filesystem.mount_local(
-            VirtualPath::new("/projects/host")?,
-            HostPath::from_path_buf(host_home_root.canonical_root.clone()),
-        )?;
-    }
-    Ok(filesystem)
-}
-
-fn mount_local_dev_memory_root<F>(
-    root: &mut CompositeRootFilesystem,
-    backend: Arc<F>,
-) -> Result<(), RebornBuildError>
-where
-    F: RootFilesystem + 'static,
-{
-    root.mount(
-        local_dev_mount_descriptor(
-            "/memory",
-            "local-dev-memory",
-            BackendKind::MemoryDocuments,
-            StorageClass::StructuredRecords,
-            ContentKind::MemoryDocument,
-            IndexPolicy::FullTextAndVector,
-            backend.capabilities(),
-        )?,
-        backend,
-    )?;
-    Ok(())
-}
-
-// `pub(crate)` (not private) so the `test_support` accessor
-// (`mount_local_dev_database_roots_for_test`) can forward to it across the
-// crate boundary for downstream integration tests without a second copy of the
-// mount truth. Production callers stay inside this module
-// (`build_local_runtime_root_filesystem` / `build_default_local_dev_database_roots`).
-pub(crate) fn mount_local_dev_database_roots<F>(
-    root: &mut CompositeRootFilesystem,
-    database: Arc<F>,
-) -> Result<(), RebornBuildError>
-where
-    F: RootFilesystem + 'static,
-{
-    root.mount(
-        local_dev_mount_descriptor(
-            "/tenants",
-            "local-dev-reborn-state",
-            BackendKind::DatabaseFilesystem,
-            StorageClass::StructuredRecords,
-            ContentKind::StructuredRecord,
-            IndexPolicy::NotIndexed,
-            database.capabilities(),
-        )?,
-        Arc::clone(&database),
-    )?;
-    root.mount(
-        local_dev_mount_descriptor(
-            "/system/extensions/.installations",
-            "local-dev-extension-installation-state",
-            BackendKind::DatabaseFilesystem,
-            StorageClass::StructuredRecords,
-            ContentKind::SystemState,
-            IndexPolicy::BackendDefined,
-            database.capabilities(),
-        )?,
-        Arc::clone(&database),
-    )?;
-    root.mount(
-        local_dev_mount_descriptor(
-            "/system/settings",
-            "local-dev-system-settings",
-            BackendKind::DatabaseFilesystem,
-            StorageClass::StructuredRecords,
-            ContentKind::SystemState,
-            IndexPolicy::BackendDefined,
-            database.capabilities(),
-        )?,
-        Arc::clone(&database),
-    )?;
-    mount_local_dev_memory_root(root, Arc::clone(&database))?;
-    root.mount(
-        local_dev_mount_descriptor(
-            "/events",
-            "local-dev-events",
-            BackendKind::DatabaseFilesystem,
-            StorageClass::StructuredRecords,
-            ContentKind::StructuredRecord,
-            IndexPolicy::NotIndexed,
-            database.capabilities(),
-        )?,
-        database,
-    )?;
-    Ok(())
-}
-
-fn production_database_root_filesystem<F>(
-    backend: Arc<F>,
-    backend_id: &str,
-) -> Result<Arc<CompositeRootFilesystem>, RebornBuildError>
-where
-    F: RootFilesystem + 'static,
-{
-    let mut root = CompositeRootFilesystem::new();
-    for virtual_root in [
-        "/tenants",
-        "/events",
-        "/memory",
-        "/projects",
-        "/system/extensions",
-        "/system/settings",
-        "/system/skills",
-    ] {
-        let mount_id = format!(
-            "{backend_id}-{}",
-            virtual_root
-                .trim_start_matches('/')
-                .replace(['/', '.'], "-")
-        );
-        root.mount(
-            local_dev_mount_descriptor(
-                virtual_root,
-                &mount_id,
-                BackendKind::DatabaseFilesystem,
-                StorageClass::StructuredRecords,
-                ContentKind::StructuredRecord,
-                IndexPolicy::BackendDefined,
-                backend.capabilities(),
-            )?,
-            Arc::clone(&backend),
-        )?;
-    }
-    Ok(Arc::new(root))
-}
-
-fn mount_local_dev_project_roots(
-    root: &mut CompositeRootFilesystem,
-    local: Arc<DiskFilesystem>,
-) -> Result<(), RebornBuildError> {
-    root.mount(
-        local_dev_mount_descriptor(
-            "/projects",
-            "local-dev-project-files",
-            BackendKind::DiskFilesystem,
-            StorageClass::FileContent,
-            ContentKind::ProjectFile,
-            IndexPolicy::NotIndexed,
-            BackendCapabilities::bytes_only(),
-        )?,
-        Arc::clone(&local),
-    )?;
-    root.mount(
-        local_dev_mount_descriptor(
-            "/system/extensions",
-            "local-dev-system-extensions",
-            BackendKind::DiskFilesystem,
-            StorageClass::FileContent,
-            ContentKind::ExtensionPackage,
-            IndexPolicy::NotIndexed,
-            BackendCapabilities::bytes_only(),
-        )?,
-        Arc::clone(&local),
-    )?;
-    root.mount(
-        local_dev_mount_descriptor(
-            "/system/skills",
-            "local-dev-system-skills",
-            BackendKind::DiskFilesystem,
-            StorageClass::FileContent,
-            ContentKind::GenericFile,
-            IndexPolicy::NotIndexed,
-            BackendCapabilities::bytes_only(),
-        )?,
-        local,
-    )?;
-    Ok(())
-}
-
 pub(crate) async fn build_secret_store<F>(
     root: &Path,
     scoped_filesystem: Arc<ScopedFilesystem<F>>,
@@ -2274,7 +1978,7 @@ where
 ///   and reconstructing the whole composite just to reach one mount is
 ///   heavy and risks silently diverging from `serve`'s copy.
 /// - `/secrets`'s physical backing is the same local-dev libSQL file
-///   `build_local_runtime_root_filesystem` opens for `/tenants` in production —
+///   `build_standalone_root_filesystem` opens for `/tenants` in production —
 ///   a key written here is immediately visible to `serve`, no extra
 ///   coordination needed.
 /// - Uses the same resolver chain as production (env -> cached dotfile ->
@@ -2284,7 +1988,7 @@ where
 pub async fn open_standalone_secret_store(
     root: &Path,
 ) -> Result<Arc<dyn SecretStorePort>, RebornBuildError> {
-    let db = open_local_dev_libsql_database(root).await?;
+    let db = open_standalone_libsql_database(root).await?;
     let filesystem = Arc::new(LibSqlRootFilesystem::new(db));
     filesystem.run_migrations().await?;
     let scoped = crate::wrap_scoped(filesystem);
@@ -2598,28 +2302,6 @@ pub async fn provision_standalone_keychain_master_key() -> KeychainMasterKeyOutc
     }
 }
 
-// Intentionally uncfg'd: called from both libsql and no-libsql local-dev root
-// filesystem paths.
-fn local_dev_mount_descriptor(
-    virtual_root: &str,
-    backend_id: &str,
-    backend_kind: BackendKind,
-    storage_class: StorageClass,
-    content_kind: ContentKind,
-    index_policy: IndexPolicy,
-    capabilities: BackendCapabilities,
-) -> Result<MountDescriptor, RebornBuildError> {
-    Ok(MountDescriptor {
-        virtual_root: VirtualPath::new(virtual_root)?,
-        backend_id: BackendId::new(backend_id)?,
-        backend_kind,
-        storage_class,
-        content_kind,
-        index_policy,
-        capabilities,
-    })
-}
-
 fn local_dev_scoped_filesystem(
     filesystem: Arc<CompositeRootFilesystem>,
 ) -> Arc<ScopedFilesystem<CompositeRootFilesystem>> {
@@ -2706,17 +2388,6 @@ fn canonicalize_local_dev_path(path: &Path, label: &str) -> Result<PathBuf, Rebo
     std::fs::canonicalize(path).map_err(|_| RebornBuildError::InvalidConfig {
         reason: format!("local-dev {label} could not be resolved"),
     })
-}
-
-struct HostHomeRoot {
-    canonical_root: PathBuf,
-    raw_alias: PathBuf,
-}
-
-impl HostHomeRoot {
-    fn aliases(&self) -> Vec<&Path> {
-        vec![self.raw_alias.as_path(), self.canonical_root.as_path()]
-    }
 }
 
 /// Build the two ScopedFilesystem views used by local-dev: a read-only workspace view
@@ -3355,7 +3026,7 @@ async fn build_production_shaped(
                     root,
                     workspace_root,
                     host_home_root,
-                    storage_backend_input: StorageBackendInput::LocalDefault,
+                    storage_backend_input: DurableStorageInput::EmbeddedLibsql,
                     explicit_secret_master_key: None,
                     runtime_policy_for_local_process,
                     postgres_resource_governor_singleton: None,
@@ -3416,7 +3087,7 @@ async fn build_production_shaped(
                     root,
                     workspace_root,
                     host_home_root,
-                    storage_backend_input: StorageBackendInput::Postgres(pool),
+                    storage_backend_input: DurableStorageInput::Postgres(pool),
                     explicit_secret_master_key: Some(secret_master_key),
                     runtime_policy_for_local_process,
                     postgres_resource_governor_singleton: Some(
@@ -3569,7 +3240,7 @@ struct LocalStorageProductionInput {
     root: PathBuf,
     workspace_root: Option<PathBuf>,
     host_home_root: Option<PathBuf>,
-    storage_backend_input: StorageBackendInput,
+    storage_backend_input: DurableStorageInput,
     explicit_secret_master_key: Option<ironclaw_secrets::SecretMaterial>,
     runtime_policy_for_local_process: Option<EffectiveRuntimePolicy>,
     postgres_resource_governor_singleton: Option<bool>,
@@ -3608,10 +3279,10 @@ async fn build_local_storage_production_shaped(
             policy.filesystem_backend == FilesystemBackendKind::HostWorkspaceAndHome
         });
     let host_home_root = match (include_host_home, host_home_root) {
-        (true, Some(path)) => Some(HostHomeRoot {
-            canonical_root: canonicalize_local_dev_host_home_root(&path)?,
-            raw_alias: path,
-        }),
+        (true, Some(path)) => Some(HostHomeRoot::new(
+            canonicalize_local_dev_host_home_root(&path)?,
+            path,
+        )),
         (true, None) => {
             return Err(RebornBuildError::InvalidConfig {
                 reason: "local-dev-yolo host home access requires a confirmed host home root"
@@ -3654,13 +3325,11 @@ async fn build_local_storage_production_shaped(
         &workspace_root,
         host_home_root.as_ref(),
     );
-    let filesystem_bundle = build_local_runtime_root_filesystem(
-        &root,
-        &workspace_root,
-        host_home_root.as_ref(),
-        storage_backend_input,
-    )
-    .await?;
+    let filesystem_bundle =
+        FilesystemAssemblyBuilder::new(&root, &workspace_root, storage_backend_input)
+            .with_host_home_root(host_home_root.as_ref())
+            .build()
+            .await?;
     let trigger_repository =
         local_dev_trigger_repository(&filesystem_bundle.durable_backend).await?;
     let refresh_lock_pool = match &filesystem_bundle.durable_backend {
@@ -3669,7 +3338,7 @@ async fn build_local_storage_production_shaped(
     };
     let event_store = match &filesystem_bundle.durable_backend {
         DurableBackend::LibSql(_) => ironclaw_reborn_event_store::RebornEventStoreConfig::Libsql {
-            path_or_url: local_dev_db_path(&root).to_string_lossy().into_owned(),
+            path_or_url: standalone_db_path(&root).to_string_lossy().into_owned(),
             auth_token: None,
         },
         DurableBackend::Postgres(pool) => {

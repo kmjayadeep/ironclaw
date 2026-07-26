@@ -402,7 +402,7 @@ fn failing_trigger_conversation_filesystem() -> Arc<ScopedFilesystem<CompositeRo
     let mut failing_root = CompositeRootFilesystem::new();
     failing_root
         .mount(
-            local_dev_mount_descriptor(
+            mount_descriptor(
                 "/conversations",
                 "failing-conversation-state",
                 BackendKind::Custom("test".to_string()),
@@ -720,12 +720,12 @@ async fn local_dev_default_product_auth_preserves_manual_token_across_rebuilds()
         .expect("manual-token account should survive local-dev rebuild");
     assert_eq!(rebuilt_account.access_secret.as_ref(), Some(&access_secret));
 
-    let rebuilt_filesystem = build_local_runtime_root_filesystem(
+    let rebuilt_filesystem = FilesystemAssemblyBuilder::new(
         &local_dev_root,
         &local_dev_root.join("workspace"),
-        None,
-        StorageBackendInput::LocalDefault,
+        DurableStorageInput::EmbeddedLibsql,
     )
+    .build()
     .await
     .expect("local-dev filesystem rebuild")
     .filesystem;
