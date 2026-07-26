@@ -6,7 +6,7 @@ use ironclaw_approvals::ApprovalRequestStore;
 use ironclaw_approvals::PersistentApprovalPolicyStore;
 use ironclaw_authorization::CapabilityLeaseStore;
 use ironclaw_filesystem::InMemoryBackend;
-use ironclaw_processes::{ProcessResultStore, ProcessStore};
+use ironclaw_processes::{ProcessJournalStore, ProcessResultStore};
 
 use super::{
     DiskFilesystem, DurableAuditSink, DurableEventSink, EmptyWasmRuntimeCredentials,
@@ -321,7 +321,7 @@ fn classify_component_type_id(type_id: TypeId) -> ProductionImplementationReadin
             // behind the one production `FilesystemProcess*Store<F>`
             // (arch-simplification §4.3). A store backed by `InMemoryBackend` is
             // still local-only; libSQL/Postgres monomorphizations are distinct.
-            || type_id == TypeId::of::<ProcessStore<InMemoryBackend>>()
+            || type_id == TypeId::of::<ProcessJournalStore<InMemoryBackend>>()
             || type_id == TypeId::of::<ProcessResultStore<InMemoryBackend>>()
             || is_local_only_test_component(type_id)
             // Approval requests use one filesystem-backed store. The process

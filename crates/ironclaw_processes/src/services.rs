@@ -30,8 +30,8 @@ use crate::types::{
     ProcessResultStorePort, ProcessStart, ProcessStatus, ProcessStorePort,
 };
 use crate::{
-    ClaimedProcess, GetProcessInputRequest, JournalProcessExecutor, JournalProcessStore,
-    ProcessExecutorFailure, ProcessKind, ProcessRuntimePort, ProcessSupervisor,
+    ClaimedProcess, GetProcessInputRequest, JournalProcessExecutor, ProcessExecutorFailure,
+    ProcessJournalStore, ProcessKind, ProcessRuntimePort, ProcessSupervisor,
     ProcessSupervisorConfig, ProcessSupervisorHandle,
 };
 
@@ -158,7 +158,7 @@ impl ProcessServices {
         F: RootFilesystem + Send + Sync + 'static,
     {
         Self::new(
-            Arc::new(JournalProcessStore::new(Arc::clone(&filesystem))),
+            Arc::new(ProcessJournalStore::new(Arc::clone(&filesystem))),
             Arc::new(ProcessResultStore::from_arc(filesystem)),
         )
     }

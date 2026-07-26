@@ -44,7 +44,7 @@ use ironclaw_processes::{
     BackgroundProcessManager, ProcessError, ProcessHost, ProcessInvocationError,
     ProcessInvocationRecord, ProcessInvocationStart, ProcessInvocationStatePort,
     ProcessInvocationStatus, ProcessJournalStore, ProcessManager, ProcessResultStore,
-    ProcessRuntimePort, ProcessStatus, ProcessStore, ProcessStorePort,
+    ProcessRuntimePort, ProcessStatus, ProcessStorePort,
 };
 use ironclaw_reborn_event_store::{
     RebornEventStoreConfig, RebornEventStoreError, RebornProfile, build_reborn_event_stores,
@@ -2291,7 +2291,7 @@ async fn host_runtime_services_jsonl_approval_audit_projection_rejects_foreign_c
 async fn process_lifecycle_projects_through_durable_replay_without_output_leaks() {
     let event_log = Arc::new(InMemoryDurableEventLog::new());
     let processes_filesystem = ironclaw_processes::in_memory_backed_processes_filesystem();
-    let inner_process_store = Arc::new(ProcessStore::new(Arc::clone(&processes_filesystem)));
+    let inner_process_store = Arc::new(ProcessJournalStore::new(Arc::clone(&processes_filesystem)));
     let obligation_services = BuiltinObligationServices::new(
         Arc::new(InMemoryAuditSink::new()),
         Arc::new(SecretStore::ephemeral()),

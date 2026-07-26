@@ -9,7 +9,7 @@
 //! `ScopedFilesystem<InMemoryBackend>` mounted at `/processes` — so tests
 //! instantiate the same store a deployment runs.
 //!
-//! Note on sub-scope isolation: `ProcessStore` encodes
+//! Note on sub-scope isolation: `ProcessJournalStore` encodes
 //! agent/project/mission/thread in the path (structural under any mount), while
 //! tenant/user isolation lives in the `MountView`. The single fixed mount below
 //! therefore isolates by agent/project/mission/thread but not by tenant/user —
@@ -36,8 +36,8 @@ use ironclaw_host_api::{
 use crate::types::same_scope_owner;
 use crate::{
     ProcessInvocationError, ProcessInvocationRecord, ProcessInvocationStart,
-    ProcessInvocationStatePort, ProcessInvocationStatus, ProcessResultStore, ProcessServices,
-    ProcessStore,
+    ProcessInvocationStatePort, ProcessInvocationStatus, ProcessJournalStore, ProcessResultStore,
+    ProcessServices,
 };
 
 /// Minimal process-invocation projection for caller-level tests.
@@ -211,8 +211,8 @@ pub fn in_memory_backed_processes_filesystem() -> Arc<ScopedFilesystem<InMemoryB
 
 /// The production process store over a fresh in-memory backend — the drop-in
 /// replacement for the deleted `InMemoryProcessStore`.
-pub fn in_memory_backed_process_store() -> ProcessStore<InMemoryBackend> {
-    ProcessStore::new(in_memory_backed_processes_filesystem())
+pub fn in_memory_backed_process_store() -> ProcessJournalStore<InMemoryBackend> {
+    ProcessJournalStore::new(in_memory_backed_processes_filesystem())
 }
 
 pub fn in_memory_backed_process_invocation_state_store()

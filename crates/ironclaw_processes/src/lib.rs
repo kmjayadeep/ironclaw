@@ -63,8 +63,6 @@ pub use journal::{
     SuspendProcessRequest,
 };
 pub use journal_store::{ProcessJournalStore, ProcessJournalStoreError};
-pub type JournalProcessStore<F> = ProcessJournalStore<F>;
-pub type ProcessStore<F> = ProcessJournalStore<F>;
 pub use result_store::ProcessResultStore;
 pub use services::{
     BackgroundErrorHandler, BackgroundFailure, BackgroundFailureStage, BackgroundProcessManager,

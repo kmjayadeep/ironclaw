@@ -51,7 +51,7 @@ use ironclaw_processes::{
     BackgroundFailureStage, BackgroundProcessManager, ProcessError, ProcessExecutionRequest,
     ProcessExecutionResult, ProcessExecutor, ProcessInvocationError, ProcessInvocationRecord,
     ProcessInvocationStart, ProcessInvocationStatePort, ProcessInvocationStatus,
-    ProcessResultStore, ProcessResultStorePort, ProcessStart, ProcessStatus, ProcessStore,
+    ProcessJournalStore, ProcessResultStore, ProcessResultStorePort, ProcessStart, ProcessStatus,
     ProcessStorePort,
 };
 use ironclaw_resources::{
@@ -1246,7 +1246,7 @@ pub(crate) fn result_store_failing_writes() -> (
     (store, backend)
 }
 
-/// Real `ProcessStore` over a [`FaultInjecting`] backend armed to
+/// Real `ProcessJournalStore` over a [`FaultInjecting`] backend armed to
 /// fail the terminal status transition's journal append, replacing the whole-trait
 /// `FailingTerminalProcessStore` fake. Submission appends `Submitted` with its
 /// private input, then the supervisor appends `Claimed`. Projection refresh
@@ -1255,7 +1255,7 @@ pub(crate) fn result_store_failing_writes() -> (
 /// process-journal append and is faulted, surfacing as `ProcessError::Filesystem`. `get` /
 /// `records_for_scope` still read the live `Running` record.
 pub(crate) fn terminal_failing_process_store() -> (
-    Arc<ProcessStore<FaultInjecting<InMemoryBackend>>>,
+    Arc<ProcessJournalStore<FaultInjecting<InMemoryBackend>>>,
     Arc<FaultInjecting<InMemoryBackend>>,
 ) {
     let backend = Arc::new(
@@ -1266,7 +1266,9 @@ pub(crate) fn terminal_failing_process_store() -> (
                 .backend("injected terminal transition write failure"),
         ),
     );
-    let store = Arc::new(ProcessStore::new(scoped_processes_fs(backend.clone())));
+    let store = Arc::new(ProcessJournalStore::new(scoped_processes_fs(
+        backend.clone(),
+    )));
     (store, backend)
 }
 

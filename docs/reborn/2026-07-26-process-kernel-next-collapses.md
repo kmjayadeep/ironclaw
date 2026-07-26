@@ -223,7 +223,8 @@ projection used by capability and host-runtime callers. It no longer schedules
 or owns lifecycle state; callers can move incrementally to journal-native
 snapshots and ports before the adapter is removed.
 
-There is no longer a second `JournalProcessStore` object: `ProcessServices`
+There is no longer a second `JournalProcessStore` object or a `ProcessStore`
+type alias: `ProcessServices`
 holds the authoritative `ProcessJournalStore` directly, and the legacy
 `ProcessStorePort` methods are a compatibility implementation on that same
 shared store.

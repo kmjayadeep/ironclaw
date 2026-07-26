@@ -379,6 +379,6 @@ fn processes_test_fs() -> Arc<ScopedFilesystem<InMemoryBackend>> {
     processes_fs_over(Arc::new(InMemoryBackend::new()))
 }
 
-fn in_mem_process_store() -> ProcessStore<InMemoryBackend> {
-    ProcessStore::new(processes_test_fs())
+fn in_mem_process_store() -> ProcessJournalStore<InMemoryBackend> {
+    ProcessJournalStore::new(processes_test_fs())
 }

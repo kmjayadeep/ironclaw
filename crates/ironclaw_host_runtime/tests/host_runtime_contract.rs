@@ -33,8 +33,8 @@ use ironclaw_host_runtime::{
 };
 use ironclaw_processes::{
     ProcessCancellationRegistry, ProcessInvocationError, ProcessInvocationRecord,
-    ProcessInvocationStart, ProcessInvocationStatePort, ProcessResultStore, ProcessResultStorePort,
-    ProcessStart, ProcessStatus, ProcessStore, ProcessStorePort,
+    ProcessInvocationStart, ProcessInvocationStatePort, ProcessJournalStore, ProcessResultStore,
+    ProcessResultStorePort, ProcessStart, ProcessStatus, ProcessStorePort,
 };
 use ironclaw_trust::{
     AdminConfig, AdminEntry, AuthorityCeiling, EffectiveTrustClass, HostTrustAssignment,
@@ -487,7 +487,7 @@ async fn default_runtime_status_redacts_process_filesystem_errors() {
     )])
     .unwrap();
     let scoped = Arc::new(ScopedFilesystem::with_fixed_view(backend, mounts));
-    let process_store: Arc<dyn ProcessStorePort> = Arc::new(ProcessStore::new(scoped));
+    let process_store: Arc<dyn ProcessStorePort> = Arc::new(ProcessJournalStore::new(scoped));
     let runtime = DefaultHostRuntime::new(
         registry,
         dispatcher,
@@ -891,7 +891,7 @@ async fn default_runtime_cancel_writes_killed_process_result_record() {
     let dispatcher = Arc::new(TestDispatcher::ok(dispatch_result()));
     let authorizer: Arc<dyn TrustAwareCapabilityDispatchAuthorizer> = Arc::new(GrantAuthorizer);
     let processes_filesystem = ironclaw_processes::in_memory_backed_processes_filesystem();
-    let process_store = Arc::new(ProcessStore::new(Arc::clone(&processes_filesystem)));
+    let process_store = Arc::new(ProcessJournalStore::new(Arc::clone(&processes_filesystem)));
     let result_store = Arc::new(ProcessResultStore::new(processes_filesystem));
     let cancellation_registry = Arc::new(ProcessCancellationRegistry::new());
     let runtime = DefaultHostRuntime::new(
