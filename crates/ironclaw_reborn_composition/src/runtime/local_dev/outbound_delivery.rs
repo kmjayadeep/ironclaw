@@ -913,7 +913,7 @@ mod tests {
         let outcome =
             outbound_delivery_outcome(service_error(ProductSurfaceErrorCode::InvalidRequest))
                 .expect("invalid request must be a model-visible failure, not terminal");
-        assert_recoverable_failure(&outcome, ironclaw_host_api::FailureKind::InvalidInput);
+        assert_recoverable_failure(&outcome, ironclaw_host_api::FailureKind::InputEncode);
         LoopSafeSummary::new(recoverable_summary(&outcome))
             .expect("safe summary must satisfy the loop validator");
     }
@@ -922,7 +922,7 @@ mod tests {
     fn not_found_is_a_recoverable_tool_failure_not_terminal() {
         let outcome = outbound_delivery_outcome(service_error(ProductSurfaceErrorCode::NotFound))
             .expect("not found must be a model-visible failure, not terminal");
-        assert_recoverable_failure(&outcome, ironclaw_host_api::FailureKind::InvalidInput);
+        assert_recoverable_failure(&outcome, ironclaw_host_api::FailureKind::InputEncode);
     }
 
     #[test]

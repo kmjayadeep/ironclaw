@@ -100,10 +100,10 @@ impl<'de> serde::Deserialize<'de> for SanitizedStrategySummary {
     }
 }
 
-/// Sanitized capability error — unified [`FailureKind`] + safe summary string
-/// + opaque diagnostic ref. Strategies never see raw provider errors, host
-/// paths, or secrets; sanitization happens at the host port boundary before
-/// recovery strategy code runs.
+/// Sanitized capability error — the unified [`FailureKind`] plus a safe
+/// summary string and an opaque diagnostic ref. Strategies never see raw
+/// provider errors, host paths, or secrets; sanitization happens at the host
+/// port boundary before recovery strategy code runs.
 ///
 /// The retired loop-private `CapabilityErrorClass` re-declared the
 /// recoverability domain beside the host's; the summary now carries the

@@ -1328,10 +1328,11 @@ async fn local_dev_web_access_installs_activates_and_dispatches_through_host_run
     assert_eq!(failure.capability_id.as_str(), "web-access.search");
     // A capability the model named with no registered first-party handler
     // is a model-fixable, model-visible failure (#5389 reclassified the
-    // missing-handler dispatch failure from Backend to InvalidInput so it
-    // does not burn the retry budget on a call that can never resolve). The
-    // capability still fails closed — only the disposition changed.
-    assert_eq!(failure.kind, FailureKind::InputEncode);
+    // missing-handler dispatch failure from Backend so it does not burn the
+    // retry budget on a call that can never resolve; the unified FailureKind
+    // now names the precise cause). The capability still fails closed — the
+    // disposition is unchanged (ModelVisible fate).
+    assert_eq!(failure.kind, FailureKind::UndeclaredCapability);
 }
 
 fn nearai_bootstrap_input_with_base(
@@ -2289,7 +2290,10 @@ async fn local_dev_workspace_mounts_do_not_authorize_skill_writes() {
     .await
     .expect_err("workspace tool cannot write skill root");
 
-    assert_eq!(failure, FailureKind::Authorization);
+    // The unified FailureKind names the precise policy cause (filesystem
+    // path refused) where the retired vocabulary coarsened it to
+    // Authorization; same ModelVisible fate and policy-denied bucket.
+    assert_eq!(failure, FailureKind::FilesystemDenied);
     assert!(
         !storage_root
             .join("tenants/default/users/local-dev-test-user/skills/blocked/SKILL.md")

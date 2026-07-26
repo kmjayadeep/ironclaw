@@ -312,7 +312,7 @@ mod tests {
             ironclaw_host_api::Resolution::Done(outcome) => assert_eq!(
                 outcome.verdict,
                 ironclaw_host_api::ToolVerdict::recoverable_failure(
-                    ironclaw_host_api::FailureKind::InvalidInput
+                    ironclaw_host_api::FailureKind::InputEncode
                 )
             ),
             other => panic!("expected Resolution::Done recoverable failure, got {other:?}"),

@@ -19,10 +19,9 @@ use ironclaw_turns::{
     LoopGateRef,
     run_profile::{
         AgentLoopHostError, AgentLoopHostErrorKind, CapabilityCallCandidate,
-        CapabilityDescriptorView, CapabilityFailureKind, CapabilityInputRef,
-        CapabilitySurfaceVersion, ConcurrencyHint, LoopCapabilityPort, LoopRequest,
-        LoopRequestBatch, ProviderToolCallReplay, ProviderToolDefinition, VisibleCapabilityRequest,
-        VisibleCapabilitySurface, resolution,
+        CapabilityDescriptorView, CapabilityInputRef, CapabilitySurfaceVersion, ConcurrencyHint,
+        LoopCapabilityPort, LoopRequest, LoopRequestBatch, ProviderToolCallReplay,
+        ProviderToolDefinition, VisibleCapabilityRequest, VisibleCapabilitySurface, resolution,
     },
 };
 use serde_json::json;
@@ -281,7 +280,7 @@ impl LoopCapabilityPort for RecordingTestCapabilityPort {
             && self.approval_calls.fetch_add(1, Ordering::SeqCst) == 0
         {
             return Ok(resolution::failed(
-                CapabilityFailureKind::InvalidInput,
+                ironclaw_host_api::FailureKind::InputEncode,
                 "capability input failed validation".to_string(),
                 None,
             ));

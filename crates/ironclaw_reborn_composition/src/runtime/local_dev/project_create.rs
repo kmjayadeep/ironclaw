@@ -287,7 +287,7 @@ mod tests {
         })
         .expect("invalid input must be a model-visible failure, not terminal");
 
-        assert_recoverable_failure(&outcome, ironclaw_host_api::FailureKind::InvalidInput);
+        assert_recoverable_failure(&outcome, ironclaw_host_api::FailureKind::InputEncode);
     }
 
     #[test]
