@@ -135,7 +135,7 @@ async fn build_timeline_runtime(root: &tempfile::TempDir) -> RebornRuntime {
         },
     )
     .expect("local-yolo runtime input")
-    .with_local_dev_confirmed_host_home_root(host_home_root);
+    .with_local_runtime_confirmed_host_home_root(host_home_root);
 
     let input = RebornRuntimeInput::from_build_input(input)
         .with_identity(RebornRuntimeIdentity {

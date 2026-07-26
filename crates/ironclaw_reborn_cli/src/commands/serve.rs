@@ -1584,7 +1584,7 @@ slack_user_id = "U123"
     async fn webui_serve_wires_product_auth_callback_into_runtime_services() {
         let dir = tempfile::tempdir().expect("tempdir");
         let services_input = with_product_auth_callback_origin(
-            ironclaw_reborn_composition::local_dev_build_input(
+            ironclaw_reborn_composition::local_filesystem_build_input(
                 "oauth-owner",
                 dir.path().join("local-dev"),
             ),
@@ -1611,7 +1611,7 @@ slack_user_id = "U123"
     async fn webui_serve_wires_product_auth_callback_with_canonical_host_origin() {
         let dir = tempfile::tempdir().expect("tempdir");
         let services_input = with_product_auth_callback_origin(
-            ironclaw_reborn_composition::local_dev_build_input(
+            ironclaw_reborn_composition::local_filesystem_build_input(
                 "oauth-owner",
                 dir.path().join("local-dev"),
             ),
@@ -1661,7 +1661,7 @@ slack_user_id = "U123"
 
         let dir = tempfile::tempdir().expect("tempdir");
         let services_input = with_product_auth_callback_origin(
-            ironclaw_reborn_composition::local_dev_build_input(
+            ironclaw_reborn_composition::local_filesystem_build_input(
                 "oauth-owner",
                 dir.path().join("local-dev"),
             ),

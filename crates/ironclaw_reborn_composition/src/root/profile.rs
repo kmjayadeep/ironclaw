@@ -44,8 +44,8 @@ impl RebornCompositionProfile {
         crate::deployment::DeploymentConfig::for_profile(self, false)
     }
 
-    pub fn uses_local_dev_storage_input(self) -> bool {
-        self.deployment().uses_local_dev_storage_input()
+    pub fn uses_local_filesystem_storage(self) -> bool {
+        self.deployment().uses_local_filesystem_storage()
     }
 
     pub fn starts_live_runtime(self) -> bool {

@@ -20,7 +20,7 @@ use ironclaw_extension_host::extension_lifecycle_capabilities::EXTENSION_ACTIVAT
 #[tokio::test]
 async fn local_dev_extension_activate_accepts_manual_token_from_webui_gate_scope() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let services = build_runtime_substrate(crate::deployment::local_dev_build_input(
+    let services = build_runtime_substrate(crate::deployment::local_filesystem_build_input(
         "3eee560a-7fe5-474c-965a-67cb69df3d04",
         dir.path().join("local-dev"),
     ))
@@ -139,7 +139,7 @@ async fn local_dev_extension_activate_accepts_manual_token_from_webui_gate_scope
 async fn local_dev_nearai_runtime_selection_falls_back_to_host_managed_account_for_sso_user() {
     let dir = tempfile::tempdir().expect("tempdir");
     let owner_id = "3eee560a-7fe5-474c-965a-67cb69df3d04";
-    let services = build_runtime_substrate(crate::deployment::local_dev_build_input(
+    let services = build_runtime_substrate(crate::deployment::local_filesystem_build_input(
         owner_id,
         dir.path().join("local-dev"),
     ))

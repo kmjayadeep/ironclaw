@@ -168,7 +168,7 @@ impl RuntimeHttpEgress for RecordingOAuthEgress {
 async fn local_dev_oauth_turn_gate_callback_resumes_default_turn_coordinator() {
     let dir = tempfile::tempdir().expect("tempdir");
     let services = build_runtime_substrate(
-        crate::deployment::local_dev_build_input(
+        crate::deployment::local_filesystem_build_input(
             "local-dev-auth-owner",
             dir.path().join("local-dev"),
         )
@@ -295,7 +295,7 @@ async fn local_dev_oauth_turn_gate_callback_resumes_default_turn_coordinator() {
 async fn local_dev_google_oauth_backend_builds_with_host_provider_config() {
     let dir = tempfile::tempdir().expect("tempdir");
     let services = build_runtime_substrate(
-        crate::deployment::local_dev_build_input(
+        crate::deployment::local_filesystem_build_input(
             "local-dev-google-oauth-owner",
             dir.path().join("local-dev"),
         )
@@ -470,7 +470,7 @@ async fn production_libsql_oauth_callback_fans_out_to_all_owner_provider_blocked
 async fn local_dev_notion_oauth_backend_builds_with_host_provider_config() {
     let dir = tempfile::tempdir().expect("tempdir");
     let services = build_runtime_substrate(
-        crate::deployment::local_dev_build_input(
+        crate::deployment::local_filesystem_build_input(
             "local-dev-notion-oauth-owner",
             dir.path().join("local-dev"),
         )
@@ -504,7 +504,7 @@ async fn local_dev_notion_oauth_backend_builds_with_host_provider_config() {
 async fn local_dev_dcr_oauth_callback_builds_and_wires_challenge_provider() {
     let dir = tempfile::tempdir().expect("tempdir");
     let services = build_runtime_substrate(
-        crate::deployment::local_dev_build_input(
+        crate::deployment::local_filesystem_build_input(
             "local-dev-notion-dcr-oauth-owner",
             dir.path().join("local-dev"),
         )
@@ -622,7 +622,7 @@ async fn oauth_callback_exchanges_vendor_recipe_through_reborn_product_auth_boun
 async fn local_dev_google_oauth_backend_accepts_optional_client_secret_config() {
     let dir = tempfile::tempdir().expect("tempdir");
     let services = build_runtime_substrate(
-        crate::deployment::local_dev_build_input(
+        crate::deployment::local_filesystem_build_input(
             "local-dev-google-oauth-secret-owner",
             dir.path().join("local-dev"),
         )
@@ -646,7 +646,7 @@ async fn local_dev_google_oauth_backend_accepts_optional_client_secret_config() 
 async fn oauth_callback_with_stale_gate_converges_without_resuming() {
     let dir = tempfile::tempdir().expect("tempdir");
     let services = build_runtime_substrate(
-        crate::deployment::local_dev_build_input(
+        crate::deployment::local_filesystem_build_input(
             "local-dev-auth-stale-owner",
             dir.path().join("local-dev"),
         )
@@ -712,7 +712,7 @@ async fn oauth_callback_with_stale_gate_converges_without_resuming() {
 async fn oauth_callback_with_lifecycle_activation_returns_ok_without_resume() {
     let dir = tempfile::tempdir().expect("tempdir");
     let services = build_runtime_substrate(
-        crate::deployment::local_dev_build_input(
+        crate::deployment::local_filesystem_build_input(
             "local-dev-auth-lifecycle-owner",
             dir.path().join("local-dev"),
         )

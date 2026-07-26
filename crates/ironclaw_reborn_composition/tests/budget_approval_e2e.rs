@@ -138,7 +138,7 @@ async fn build_runtime_with_pause_inducing_setup(
 ) -> (RebornRuntime, Arc<BudgetTestGateway>) {
     let gateway = Arc::new(BudgetTestGateway::with_constant("ok", 5, 5));
     let input = RebornRuntimeInput::from_build_input(
-        ironclaw_reborn_composition::local_dev_build_input(format!("{tag}-owner"), root)
+        ironclaw_reborn_composition::local_filesystem_build_input(format!("{tag}-owner"), root)
             .with_runtime_policy(local_dev_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {

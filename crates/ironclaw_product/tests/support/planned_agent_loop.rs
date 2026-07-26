@@ -260,7 +260,7 @@ impl ProductLiveAgentLoopHarness {
             .map(|_| tempfile::tempdir().expect("host runtime harness tempdir"));
         let host_runtime_services = if let Some(root) = &host_runtime_root {
             let services = build_runtime(RebornRuntimeInput::from_build_input(
-                ironclaw_reborn_composition::local_dev_build_input(
+                ironclaw_reborn_composition::local_filesystem_build_input(
                     "planned-harness-host-runtime",
                     root.path().join("local-dev"),
                 ),

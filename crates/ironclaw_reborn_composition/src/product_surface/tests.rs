@@ -346,10 +346,11 @@ impl ExtensionInstallationStorePort for OwnerReadFailingStore {
 async fn runtime_product_surface_wires_lifecycle_owner_identity() {
     let dir = tempfile::tempdir().expect("tempdir");
     let input = crate::RebornRuntimeInput::from_build_input(
-        crate::deployment::local_dev_build_input("runtime-owner", dir.path().join("local-dev"))
-            .with_runtime_policy(
-                crate::local_dev_runtime_policy().expect("local-dev policy resolves"),
-            ),
+        crate::deployment::local_filesystem_build_input(
+            "runtime-owner",
+            dir.path().join("local-dev"),
+        )
+        .with_runtime_policy(crate::local_dev_runtime_policy().expect("local-dev policy resolves")),
     )
     .with_identity(crate::RebornRuntimeIdentity {
         tenant_id: "tenant-alpha".to_string(),
@@ -384,7 +385,7 @@ async fn runtime_product_surface_wires_lifecycle_owner_identity() {
 async fn product_surface_extension_lifecycle_remove_succeeds_after_activation() {
     let dir = tempfile::tempdir().expect("tempdir");
     let input = crate::RebornRuntimeInput::from_build_input(
-        crate::deployment::local_dev_build_input(
+        crate::deployment::local_filesystem_build_input(
             "product-surface-extension-owner",
             dir.path().join("local-dev"),
         )
@@ -832,7 +833,7 @@ fn skill_content(name: &str, description: &str) -> String {
 async fn product_surface_channel_extension_remove_deletes_the_durable_membership() {
     let dir = tempfile::tempdir().expect("tempdir");
     let input = crate::RebornRuntimeInput::from_build_input(
-        crate::deployment::local_dev_build_input(
+        crate::deployment::local_filesystem_build_input(
             "channel-remove-owner",
             dir.path().join("local-dev"),
         )

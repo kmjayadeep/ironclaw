@@ -690,7 +690,7 @@ async fn build_harness_at_with_runtime_owner_auth_user_and_google_oauth_backend(
     google_oauth_backend: Option<OAuthClientConfig>,
 ) -> Harness {
     let mut build_input =
-        ironclaw_reborn_composition::local_dev_build_input(runtime_owner_id, storage_root)
+        ironclaw_reborn_composition::local_filesystem_build_input(runtime_owner_id, storage_root)
             .with_runtime_policy(policy)
             .with_bundled_first_party_for_test();
     if let Some(google_oauth_backend) = google_oauth_backend {
@@ -761,7 +761,7 @@ async fn build_two_user_harness(
     let root = tempfile::tempdir().expect("tempdir");
     let storage_root = root.path().join("local-dev");
     let input = RebornRuntimeInput::from_build_input(
-        ironclaw_reborn_composition::local_dev_build_input(USER, storage_root)
+        ironclaw_reborn_composition::local_filesystem_build_input(USER, storage_root)
             .with_runtime_policy(policy)
             .with_bundled_first_party_for_test(),
     )
@@ -1973,7 +1973,7 @@ mod operator_llm_config {
 
         let gateway = Arc::new(ToolCallingGateway::default());
         let input = RebornRuntimeInput::from_build_input(
-            ironclaw_reborn_composition::local_dev_build_input(USER, storage_root)
+            ironclaw_reborn_composition::local_filesystem_build_input(USER, storage_root)
                 .with_runtime_policy(local_dev_effective_policy())
                 .with_bundled_first_party_for_test(),
         )

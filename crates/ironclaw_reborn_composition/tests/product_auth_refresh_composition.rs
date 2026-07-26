@@ -37,7 +37,7 @@ use ironclaw_reborn_composition::{RebornRuntimeInput, build_reborn_runtime};
 async fn local_dev_product_auth_refresh_is_provider_backed_not_stub() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = build_reborn_runtime(RebornRuntimeInput::from_build_input(
-        ironclaw_reborn_composition::local_dev_build_input(
+        ironclaw_reborn_composition::local_filesystem_build_input(
             "refresh-composition-owner",
             dir.path().to_path_buf(),
         ),

@@ -3269,7 +3269,7 @@ async fn build_production_shaped(
     let memory_service_resolver = {
         let mut memory_provider_connection = memory_provider_connection;
         if memory_provider_connection.app_id.is_none()
-            && let crate::input::RebornStorageInput::LocalDev { root, .. } = &storage
+            && let crate::input::RebornStorageInput::LocalFilesystem { root, .. } = &storage
         {
             use std::hash::{DefaultHasher, Hash, Hasher};
             let mut hasher = DefaultHasher::new();
@@ -3307,7 +3307,7 @@ async fn build_production_shaped(
                 profile
             ),
         }),
-        RebornStorageInput::LocalDev {
+        RebornStorageInput::LocalFilesystem {
             root,
             workspace_root,
             host_home_root,

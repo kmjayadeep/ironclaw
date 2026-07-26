@@ -72,8 +72,8 @@ async fn local_dev_yolo_shell_translates_workspace_workdir_without_scoped_mounts
             },
         )
         .expect("local yolo input")
-        .with_local_dev_workspace_root(workspace_root)
-        .with_local_dev_confirmed_host_home_root(host_home),
+        .with_local_runtime_workspace_root(workspace_root)
+        .with_local_runtime_confirmed_host_home_root(host_home),
     )
     .await
     .expect("local-dev services build");

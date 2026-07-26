@@ -93,7 +93,7 @@ pub enum RuntimeSubstrate {
 
 /// Which storage handle shape a deployment is assembled from.
 ///
-/// Replaces the `uses_local_dev_storage_input` predicate *and* the
+/// Replaces the `uses_local_filesystem_storage` predicate *and* the
 /// `profile == HostedSingleTenant` pairing checks that guarded
 /// `RebornStorageInput` variants: the question "does this deployment take a
 /// filesystem root, a hosted single-tenant pool, or an operator-supplied
@@ -102,8 +102,8 @@ pub enum RuntimeSubstrate {
 pub enum StorageShape {
     /// No storage is assembled.
     None,
-    /// A local filesystem root (`RebornStorageInput::LocalDev`).
-    LocalDevRoot,
+    /// A local filesystem root (`RebornStorageInput::LocalFilesystem`).
+    LocalFilesystemRoot,
     /// A hosted single-tenant PostgreSQL pool plus a workspace root.
     HostedSingleTenantPool,
     /// An operator-supplied durable store (libSQL or PostgreSQL).
@@ -317,7 +317,7 @@ impl DeploymentConfig {
             },
             event_store_profile: RebornProfile::LocalDev,
             hosted_extension_installation_state: false,
-            storage_shape: StorageShape::LocalDevRoot,
+            storage_shape: StorageShape::LocalFilesystemRoot,
             required_runtime_backends: Vec::new(),
             require_runtime_http_egress: false,
             require_wasm_credentials: false,
@@ -413,7 +413,7 @@ impl DeploymentConfig {
                 diagnostics: vec![RebornReadinessDiagnostic::hosted_single_tenant_volume()],
             },
             hosted_extension_installation_state: true,
-            storage_shape: StorageShape::LocalDevRoot,
+            storage_shape: StorageShape::LocalFilesystemRoot,
             ..Self::hosted_single_tenant()
         }
     }
@@ -521,8 +521,8 @@ impl DeploymentConfig {
         self.storage_shape == StorageShape::OperatorSupplied
     }
 
-    pub(crate) fn uses_local_dev_storage_input(&self) -> bool {
-        self.storage_shape == StorageShape::LocalDevRoot
+    pub(crate) fn uses_local_filesystem_storage(&self) -> bool {
+        self.storage_shape == StorageShape::LocalFilesystemRoot
     }
 
     /// Resolve this deployment's runtime-policy request through the sanctioned
@@ -570,11 +570,11 @@ pub(crate) fn deployment_config_for_profile(
     options: RebornRuntimeProfileOptions,
 ) -> Result<DeploymentConfig, RebornRuntimeProfileError> {
     let config = DeploymentConfig::for_profile(profile, options.confirm_host_access);
-    // This module builds the *local-dev storage input* shape (a filesystem
-    // root). Deployments that take an operator-supplied pool or assemble no
+    // This module builds the local-filesystem storage input shape. Deployments
+    // that take an operator-supplied pool or assemble no
     // runtime are not its business — expressed as the config axis rather than
     // a second list of profile names.
-    if !config.uses_local_dev_storage_input() {
+    if !config.uses_local_filesystem_storage() {
         return Err(RebornRuntimeProfileError::UnsupportedProfile { profile });
     }
     Ok(config)
@@ -615,7 +615,7 @@ pub fn local_runtime_build_input_with_options(
         .resolve()?
         .ok_or(RebornRuntimeProfileError::MissingPolicyRequest { profile })?;
     Ok(
-        RebornHostBindings::local_dev_from_deployment(deployment, owner_id, root)
+        RebornHostBindings::local_filesystem_from_deployment(deployment, owner_id, root)
             .with_runtime_policy(policy),
     )
 }
@@ -628,7 +628,7 @@ pub(crate) fn hosted_single_tenant_volume_build_input(
 ) -> Result<RebornHostBindings, RebornRuntimeProfileError> {
     let policy =
         hosted_single_tenant_volume_runtime_policy().map_err(RebornRuntimeProfileError::Policy)?;
-    Ok(RebornHostBindings::local_dev_from_deployment(
+    Ok(RebornHostBindings::local_filesystem_from_deployment(
         DeploymentConfig::for_profile(RebornCompositionProfile::HostedSingleTenantVolume, false),
         owner_id,
         root,
@@ -636,16 +636,16 @@ pub(crate) fn hosted_single_tenant_volume_build_input(
     .with_runtime_policy(policy))
 }
 
-/// Test-support constructor for a local-dev-shaped build input.
+/// Test-support constructor for a local-filesystem build input.
 ///
-/// Replaces the removed `RebornHostBindings::local_dev` associated
-/// constructor: a local-dev deployment is *data* (`DeploymentConfig::local_dev`)
-/// plus generic bindings, not a bindings-typed constructor. Behaviour is
-/// identical to the former method — it builds the local-dev deployment and
-/// resolves its runtime policy through `local_dev_from_deployment`.
+/// The deployment profile remains configuration data; the bindings constructor
+/// describes only the concrete filesystem substrate it receives.
 #[cfg(any(test, feature = "test-support"))]
-pub fn local_dev_build_input(owner_id: impl Into<String>, root: PathBuf) -> RebornHostBindings {
-    let bindings = RebornHostBindings::local_dev_from_deployment(
+pub fn local_filesystem_build_input(
+    owner_id: impl Into<String>,
+    root: PathBuf,
+) -> RebornHostBindings {
+    let bindings = RebornHostBindings::local_filesystem_from_deployment(
         DeploymentConfig::local_dev(),
         owner_id,
         root,
@@ -662,21 +662,20 @@ pub fn local_dev_build_input(owner_id: impl Into<String>, root: PathBuf) -> Rebo
     bindings
 }
 
-/// Test-support constructor for a local-dev-shaped build input on a specific
-/// profile (e.g. `LocalDevYolo`, `HostedSingleTenantVolume`). Replaces the
-/// removed `RebornHostBindings::local_dev_with_profile` associated constructor.
+/// Test-support constructor for a local-filesystem build input on a specific
+/// configured profile.
 #[cfg(any(test, feature = "test-support"))]
-pub fn local_dev_build_input_with_profile(
+pub fn local_filesystem_build_input_with_profile(
     profile: RebornCompositionProfile,
     owner_id: impl Into<String>,
     root: PathBuf,
 ) -> RebornHostBindings {
-    let bindings = RebornHostBindings::local_dev_from_deployment(
+    let bindings = RebornHostBindings::local_filesystem_from_deployment(
         DeploymentConfig::for_profile(profile, false),
         owner_id,
         root,
     );
-    // See `local_dev_build_input`: inject the production first-party surface for
+    // See `local_filesystem_build_input`: inject the production first-party surface for
     // composition's own unit tests (dev-dependency), absent in `test-support`.
     #[cfg(test)]
     let bindings = bindings.with_bundled_first_party_for_test();
@@ -849,8 +848,8 @@ mod tests {
             );
             assert_eq!(profile.starts_live_runtime(), starts_live);
             assert_eq!(
-                profile.uses_local_dev_storage_input(),
-                config.uses_local_dev_storage_input()
+                profile.uses_local_filesystem_storage(),
+                config.uses_local_filesystem_storage()
             );
             assert_eq!(
                 profile.uses_hosted_extension_installation_state(),

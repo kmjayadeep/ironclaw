@@ -187,8 +187,11 @@ fn runtime_input(
 ) -> RebornRuntimeInput {
     let gateway = Arc::new(RecordingGateway { requests });
     RebornRuntimeInput::from_build_input(
-        crate::deployment::local_dev_build_input("runtime-system-prompt-owner", storage_root)
-            .with_runtime_policy(local_dev_runtime_policy()),
+        crate::deployment::local_filesystem_build_input(
+            "runtime-system-prompt-owner",
+            storage_root,
+        )
+        .with_runtime_policy(local_dev_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: "runtime-system-prompt-tenant".to_string(),

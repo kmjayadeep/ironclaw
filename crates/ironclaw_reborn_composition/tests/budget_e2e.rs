@@ -144,8 +144,11 @@ fn build_input(
     budget_defaults: BudgetDefaults,
 ) -> RebornRuntimeInput {
     RebornRuntimeInput::from_build_input(
-        ironclaw_reborn_composition::local_dev_build_input(format!("{tenant}-owner"), owner_root)
-            .with_runtime_policy(local_dev_runtime_policy()),
+        ironclaw_reborn_composition::local_filesystem_build_input(
+            format!("{tenant}-owner"),
+            owner_root,
+        )
+        .with_runtime_policy(local_dev_runtime_policy()),
     )
     .with_identity(RebornRuntimeIdentity {
         tenant_id: format!("{tenant}-tenant"),

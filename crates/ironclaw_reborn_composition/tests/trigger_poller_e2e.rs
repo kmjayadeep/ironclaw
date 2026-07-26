@@ -551,7 +551,7 @@ async fn build_runtime_with<G: HostManagedModelGateway + 'static>(
         },
     )
     .expect("local-yolo runtime input")
-    .with_local_dev_confirmed_host_home_root(host_home_root);
+    .with_local_runtime_confirmed_host_home_root(host_home_root);
 
     let input = RebornRuntimeInput::from_build_input(input)
         .with_identity(RebornRuntimeIdentity {
@@ -583,7 +583,7 @@ async fn build_runtime_with_slack_delivery(
         },
     )
     .expect("local-yolo runtime input")
-    .with_local_dev_confirmed_host_home_root(host_home_root)
+    .with_local_runtime_confirmed_host_home_root(host_home_root)
     .with_bundled_first_party_for_test()
     .with_network_http_egress_for_test(slack_provider)
     .with_channel_extension_bindings(vec![ChannelExtensionBinding {
@@ -857,7 +857,7 @@ async fn build_runtime_with_tool_disclosure<G: HostManagedModelGateway + 'static
         },
     )
     .expect("local-yolo runtime input")
-    .with_local_dev_confirmed_host_home_root(host_home_root);
+    .with_local_runtime_confirmed_host_home_root(host_home_root);
 
     let input = RebornRuntimeInput::from_build_input(input)
         .with_identity(RebornRuntimeIdentity {

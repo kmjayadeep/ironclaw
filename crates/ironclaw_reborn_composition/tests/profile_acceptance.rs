@@ -77,13 +77,13 @@ fn profile_parse_accepts_kebab_and_snake_case() {
 
 #[test]
 fn profile_predicates_capture_storage_contract() {
-    assert!(!RebornCompositionProfile::Disabled.uses_local_dev_storage_input());
-    assert!(RebornCompositionProfile::LocalDev.uses_local_dev_storage_input());
-    assert!(RebornCompositionProfile::LocalDevYolo.uses_local_dev_storage_input());
-    assert!(!RebornCompositionProfile::HostedSingleTenant.uses_local_dev_storage_input());
-    assert!(RebornCompositionProfile::HostedSingleTenantVolume.uses_local_dev_storage_input());
-    assert!(!RebornCompositionProfile::Production.uses_local_dev_storage_input());
-    assert!(!RebornCompositionProfile::MigrationDryRun.uses_local_dev_storage_input());
+    assert!(!RebornCompositionProfile::Disabled.uses_local_filesystem_storage());
+    assert!(RebornCompositionProfile::LocalDev.uses_local_filesystem_storage());
+    assert!(RebornCompositionProfile::LocalDevYolo.uses_local_filesystem_storage());
+    assert!(!RebornCompositionProfile::HostedSingleTenant.uses_local_filesystem_storage());
+    assert!(RebornCompositionProfile::HostedSingleTenantVolume.uses_local_filesystem_storage());
+    assert!(!RebornCompositionProfile::Production.uses_local_filesystem_storage());
+    assert!(!RebornCompositionProfile::MigrationDryRun.uses_local_filesystem_storage());
 
     assert!(!RebornCompositionProfile::Disabled.uses_hosted_extension_installation_state());
     assert!(!RebornCompositionProfile::LocalDev.uses_hosted_extension_installation_state());
@@ -497,7 +497,7 @@ async fn local_dev_yolo_factory_readiness_includes_non_production_diagnostic() {
         },
     )
     .unwrap()
-    .with_local_dev_confirmed_host_home_root(dir.path().to_path_buf());
+    .with_local_runtime_confirmed_host_home_root(dir.path().to_path_buf());
     let runtime = build_runtime_for_test(input).await;
     let readiness = runtime.readiness();
 

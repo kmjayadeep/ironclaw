@@ -153,7 +153,7 @@ pub use deployment::{
     local_runtime_build_input_with_options,
 };
 #[cfg(any(test, feature = "test-support"))]
-pub use deployment::{local_dev_build_input, local_dev_build_input_with_profile};
+pub use deployment::{local_filesystem_build_input, local_filesystem_build_input_with_profile};
 pub use ironclaw_extension_host::provider_identity::ProviderIdentityActorResolver;
 pub use ironclaw_host_api::{
     RebornIdentityProviderId, RebornIdentityProviderUserId, RebornUserIdentityBinding,
