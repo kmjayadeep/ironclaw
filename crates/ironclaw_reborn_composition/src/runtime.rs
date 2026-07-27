@@ -771,6 +771,12 @@ pub struct RebornRuntime {
     turn_tree_store: Arc<dyn TurnSpawnTreeStateStore>,
     thread_service: Arc<dyn SessionThreadService>,
     thread_scope: ThreadScope,
+    /// The resolved bound memory provider, kept so tests/benchmarks can seed or
+    /// inspect memory through the same `MemoryService` the runtime itself uses.
+    /// `None` for a disabled binding or a third-party binding whose provider
+    /// failed closed.
+    #[cfg(any(test, feature = "test-support"))]
+    resolved_memory_document_store: Option<Arc<dyn ironclaw_memory::MemoryService>>,
     turn_scheduler: RuntimeTurnScheduler,
     trigger_poller_handle: Option<TriggerPollerRuntimeHandle>,
     credential_refresh_worker_handle: Option<ironclaw_auth::KeepaliveSweepHandle>,
@@ -2190,6 +2196,22 @@ impl RebornRuntime {
     #[cfg(any(test, feature = "test-support"))]
     pub fn session_thread_service(&self) -> Arc<dyn ironclaw_threads::SessionThreadService> {
         Arc::clone(&self.thread_service)
+    }
+
+    /// Test-only accessor for the resolved bound memory provider — the same
+    /// `MemoryService` the prompt-context lane and after-turn writer use.
+    ///
+    /// Exists so a benchmark can seed memory directly through the bound provider
+    /// (via `record_interaction`) instead of replaying turns through the model,
+    /// which would cost one LLM call per trajectory step. Writes made through it
+    /// are visible to every runtime path, and it honours whichever provider the
+    /// `[memory]` binding selected, so a harness can compare backends without
+    /// knowing which one is bound.
+    ///
+    /// `None` when memory is disabled or a third-party binding failed closed.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn memory_document_store(&self) -> Option<Arc<dyn ironclaw_memory::MemoryService>> {
+        self.resolved_memory_document_store.clone()
     }
 
     pub(crate) fn product_turn_coordinator(&self) -> Arc<dyn TurnCoordinator> {
@@ -4127,6 +4149,11 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
                 None,
             )
     });
+    // Snapshot for the test-only `memory_document_store()` accessor before the
+    // value moves into `after_turn_memory_writer` below. Gated so the production
+    // path is byte-identical (an `Option<Arc>` clone is a refcount bump anyway).
+    #[cfg(any(test, feature = "test-support"))]
+    let resolved_memory_document_store_for_test = resolved_memory_document_store.clone();
 
     // Deferred bind (§ await-edge resolver ordering note above,
     // `RuntimeStoreParts`'s doc comment): the resolver was assembled inside
@@ -4736,6 +4763,8 @@ pub async fn build_runtime(input: RebornRuntimeInput) -> Result<RebornRuntime, R
     }
 
     let runtime = RebornRuntime {
+        #[cfg(any(test, feature = "test-support"))]
+        resolved_memory_document_store: resolved_memory_document_store_for_test,
         host_runtime: services.host_runtime.clone(),
         product_auth: services.product_auth.clone(),
         readiness: services.readiness.clone(),
