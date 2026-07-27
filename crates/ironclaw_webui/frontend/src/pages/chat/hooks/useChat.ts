@@ -1113,11 +1113,13 @@ export function useChat(threadId) {
         appendNotice(renderCommandResultMarkdown(response));
         return response;
       } catch (error) {
-        appendNotice(failureMessageForRequestError(error));
+        // `failureMessageForRequestError` localizes client-side failures via
+        // `t`; omitting it throws inside this very catch handler.
+        appendNotice(failureMessageForRequestError(error, t));
         return null;
       }
     },
-    [threadId, setMessages],
+    [threadId, setMessages, t],
   );
 
   return {
