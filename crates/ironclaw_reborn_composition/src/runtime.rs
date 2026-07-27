@@ -2214,6 +2214,31 @@ impl RebornRuntime {
         self.resolved_memory_document_store.clone()
     }
 
+    /// Test-only owner scope for direct `MemoryService` calls.
+    ///
+    /// Built from the same `thread_scope` + actor user id the runtime's own memory
+    /// paths use, so memory written through [`Self::memory_document_store`] lands in
+    /// the scope the tools and the prompt-context lane later READ from. Constructing
+    /// a scope by hand outside the runtime is the failure mode this exists to
+    /// prevent: a mismatched user/agent/project axis silently writes to a different
+    /// document, and retrieval then finds nothing — indistinguishable from a memory
+    /// backend that simply forgot.
+    ///
+    /// `thread_id`/`mission_id` are left `None` so writes land in the durable
+    /// long-term lane rather than per-thread scratch.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn memory_owner_scope(&self) -> ResourceScope {
+        ResourceScope {
+            tenant_id: self.thread_scope.tenant_id.clone(),
+            user_id: self.actor_user_id.clone(),
+            agent_id: Some(self.thread_scope.agent_id.clone()),
+            project_id: self.thread_scope.project_id.clone(),
+            mission_id: None,
+            thread_id: None,
+            invocation_id: InvocationId::new(),
+        }
+    }
+
     pub(crate) fn product_turn_coordinator(&self) -> Arc<dyn TurnCoordinator> {
         self.turn_coordinator.clone()
     }
