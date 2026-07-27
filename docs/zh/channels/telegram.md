@@ -37,7 +37,13 @@ ironclaw serve
 
 <Step title="连接频道">
 
-在 [Web 界面](/using/webui)中进入 **Extensions → Channels**，启动 Telegram 设置流程。按提示粘贴机器人令牌，令牌会被加密存储，Webhook 也会自动向 Telegram 注册。
+在 [Web 界面](/using/webui)中打开 **Extensions**，切换到 **Channels** 标签页，并**向下滚动到 Built-in 面板底部**，在 Telegram 卡片上点击 **Configure**，然后粘贴机器人令牌。
+
+<Warning>
+不要在 **Registry** 标签页中对 Telegram 点击 **Configure**。该按钮打开的是配对面板，在机器人尚未配置时只会报错 *"An administrator must configure the Telegram bot first."* —— 这并非权限问题，请改用 Channels 标签页。
+</Warning>
+
+令牌会被加密存储，Webhook 也会自动向 Telegram 注册。
 
 Telegram 会将更新投递到：
 
@@ -47,9 +53,9 @@ https://your-host/webhooks/extensions/telegram/updates
 
 </Step>
 
-<Step title="配对您的账号">
+<Step title="配对您的账号（每位用户各自完成）">
 
-设置流程包含配对步骤，用于确定哪个 Telegram 用户对应哪个 IronClaw 用户。与您的机器人开始对话，并按照配对提示操作。
+配置机器人并不等于把**您**连接上去。配对是独立的一步，用于确定哪个 Telegram 用户对应哪个 IronClaw 用户。与您的机器人开始对话，并按照配对提示操作。
 
 配对可以防止陌生人找到您的机器人后，以您的身份与智能体对话。
 
@@ -91,6 +97,14 @@ Telegram 通过 Webhook 投递更新，因此您的实例必须可通过 HTTPS �
 
 <Accordion title="私信可用但群聊不可用">
 请直接提及机器人，或通过 BotFather 关闭隐私模式（`/setprivacy`），使其能够看到全部群消息。
+</Accordion>
+
+<Accordion title='出现 "An administrator must configure the Telegram bot first"'>
+说明实例级的机器人令牌尚未设置，或您是从 Registry 标签页进入了配对面板。请打开 **Extensions → Channels**，滚动到 Built-in 面板底部，在 Telegram 卡片上点击 **Configure**。
+</Accordion>
+
+<Accordion title="我让智能体连接 Telegram，它说做不到">
+连接频道属于运维操作，有意不交由智能体执行。请按上文步骤在 Web 界面中自行完成。
 </Accordion>
 
 <Accordion title="有其他人给我的机器人发消息">

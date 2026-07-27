@@ -11,6 +11,16 @@ after you close your terminal and starts again when you log in. The installed un
 - **macOS** — a launchd user agent labelled `com.ironclaw.reborn` in `~/Library/LaunchAgents`
 - **Linux** — a systemd user unit in `~/.config/systemd/user`
 
+<Warning>
+This page does not apply to a **NEAR AI hosted instance**. `ironclaw service` talks to a
+user service manager (`systemctl --user`), which a hosted instance doesn't provide, so
+every `service` subcommand fails there — including `restart`.
+
+On a hosted instance the agent is already running and is managed for you. Start, stop, and
+restart it from the [Agent Dashboard](https://agent.near.ai/). SSH is for running
+`ironclaw config` and other read-only commands, not for lifecycle control.
+</Warning>
+
 [Onboarding](/onboard) offers to do this for you in an interactive session. You can also
 manage it directly.
 
@@ -60,8 +70,12 @@ The service runs `serve` with your configured host and port, so the web interfac
 `http://127.0.0.1:3000` unless you changed it. Set the port in your configuration file
 rather than on the command line, since the unit doesn't take flags:
 
+```toml
+[webui]
+listen_port = 3100
+```
+
 ```bash
-ironclaw config set webui.listen_port 3100
 ironclaw service restart
 ```
 

@@ -69,12 +69,61 @@ Read and write individual keys with dot-separated paths:
 ```bash
 ironclaw config list
 ironclaw config get llm.default.provider_id
-ironclaw config set runner.poll_interval_ms 500
 ```
 
-`config set` routes each key to the right destination based on what it is — the
-configuration file, the encrypted secret store, or the web token file. You don't have to
-know which.
+`list` and `get` read every key. `set` is deliberately narrower — it accepts only the keys
+that have a routing destination:
+
+| Key | Destination |
+| --- | --- |
+| `<provider>.api_key` | Encrypted secret store (prompts, hidden) |
+| `google.client_id`, `google.redirect_uri` | `config.toml` |
+| `google.client_secret` | Encrypted secret store (prompts, hidden) |
+| `slack.enabled` | `config.toml` |
+| `webui.token --rotate` | Web token file |
+
+```bash
+ironclaw config set google.client_id <your-client-id>
+```
+
+Everything else — `runner.*`, `webui.listen_port`, `budget.*`, `[llm.default]` — is edited
+in `config.toml` directly. `config set` rejects an unsupported key rather than silently
+doing nothing.
+
+Secret-destination keys (`<provider>.api_key`, `google.client_secret`) reject a value on
+the command line and always prompt with input hidden, so the secret never reaches your
+shell history.
+
+### Applying a Change
+
+`config set` never restarts anything. It writes the value and prints the step you still
+have to run:
+
+```
+  to apply: ironclaw service restart
+```
+
+Until you do, a running instance keeps serving the old value.
+
+<Tabs>
+  <Tab title="NEAR AI hosted instance">
+    `ironclaw service` commands do **not** work on a NEAR AI hosted instance — there is no
+    user service manager for them to talk to, so `service restart` fails rather than
+    restarting anything.
+
+    SSH in only to run the `ironclaw config` commands, then restart the agent from the
+    [Agent Dashboard](https://agent.near.ai/). That is the only way to restart a hosted
+    instance.
+  </Tab>
+
+  <Tab title="Self-hosted">
+    ```bash
+    ironclaw service restart
+    ```
+
+    Or stop and restart `ironclaw serve` if you're running it in the foreground.
+  </Tab>
+</Tabs>
 
 ---
 

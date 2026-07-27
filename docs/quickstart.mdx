@@ -183,7 +183,9 @@ ironclaw run -m "Summarize my last three emails"
 <Step title="Keep It Running">
 
 To have IronClaw start automatically in the background, install it as a system service
-(launchd on macOS, systemd on Linux).
+(launchd on macOS, systemd on Linux). Skip this step on a NEAR AI hosted instance — the
+agent already runs for you, and `ironclaw service` does not work there. Use the
+[Agent Dashboard](https://agent.near.ai/) to start, stop, or restart it.
 
 <Warning>
 Stop the foreground `ironclaw serve` first. The service runs `serve` too, so starting it

@@ -82,6 +82,13 @@ installed unit runs `ironclaw serve`.
 Skip it with `--no-service`, or manage it later with `ironclaw service install`,
 `start`, `stop`, `restart`, `status`, and `uninstall`.
 
+<Note>
+Decline this on a **NEAR AI hosted instance**, or pass `--no-service`. The agent already
+runs there, and `ironclaw service` has no user service manager to talk to, so every
+`service` subcommand fails. Start, stop, and restart a hosted agent from the
+[Agent Dashboard](https://agent.near.ai/).
+</Note>
+
 </Step>
 
 </Steps>
@@ -150,6 +157,30 @@ ironclaw doctor
 
 `doctor` reports your home directory, active profile, whether configuration files were
 found, and whether each driver initialized.
+
+---
+
+## What Onboarding Doesn't Set Up
+
+Onboarding covers the runtime: home directory, configuration, master key, inference
+provider, web token, and optionally the OS service. It does **not** connect messaging
+channels.
+
+Slack and Telegram are connected afterwards, in the web interface:
+
+**Extensions → Channels tab → scroll to the bottom of the Built-in section → Configure**
+
+Two things trip people up here:
+
+- **Extensions opens on the Registry tab**, which is not where channels are connected.
+  Using **Configure** from Registry on Telegram opens the pairing panel, which can only
+  report *"An administrator must configure the Telegram bot first."* That is not a
+  permissions problem — you're on the wrong tab.
+- **Asking the agent to connect a channel doesn't work.** Connecting a channel is an
+  operator action, kept out of the tools the agent can drive. It may tell you it can't
+  help; do it yourself in the web interface.
+
+See [Channels](/channels/overview) for the full walkthrough.
 
 <CardGroup cols={2}>
   <Card title="Configuration" icon="sliders" href="/capabilities/configuration">

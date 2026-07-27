@@ -39,13 +39,21 @@ ironclaw serve
 
 </Step>
 
-<Step title="Connect the channel">
+<Step title="Enter the bot token (operator, once per instance)">
 
-In the [web interface](/using/webui), go to **Extensions → Channels** and start the
-Telegram setup. Paste the bot token when prompted. It is stored in the encrypted secret
-store, and the webhook is registered with Telegram for you.
+In the [web interface](/using/webui), open **Extensions**, switch to the **Channels** tab,
+and scroll to the **bottom of the Built-in section**. Use **Configure** on the Telegram
+card and paste the bot token.
 
-Telegram delivers updates to:
+<Warning>
+Do not use **Configure** on Telegram from the **Registry** tab. That button opens the
+pairing panel, which assumes the bot is already configured, so it can only fail with
+*"An administrator must configure the Telegram bot first."* The message sounds like a
+permissions problem; it isn't. Use the Channels tab.
+</Warning>
+
+The token is stored in the encrypted secret store, and the webhook is registered with
+Telegram for you. Telegram delivers updates to:
 
 ```
 https://your-host/webhooks/extensions/telegram/updates
@@ -53,10 +61,11 @@ https://your-host/webhooks/extensions/telegram/updates
 
 </Step>
 
-<Step title="Pair your account">
+<Step title="Pair your account (each person)">
 
-The setup flow includes a pairing step so IronClaw knows which Telegram user corresponds
-to which IronClaw user. Start a chat with your bot and follow the pairing prompt.
+Configuring the bot does not connect *you* to it. Pairing is a separate step that tells
+IronClaw which Telegram user corresponds to which IronClaw user. Start a chat with your
+bot and follow the pairing prompt.
 
 Pairing is what stops a stranger who finds your bot from talking to your agent as you.
 
@@ -109,6 +118,17 @@ Either mention the bot directly, or turn off privacy mode through BotFather
 Anyone who knows the bot's username can start a chat with it. Unpaired users are not
 treated as you — complete pairing so your agent only acts on your behalf for your own
 account.
+</Accordion>
+
+<Accordion title='"An administrator must configure the Telegram bot first"'>
+The instance-wide bot token has not been set, or you reached the pairing panel from the
+Registry tab before it was. Open **Extensions → Channels**, scroll to the bottom of the
+Built-in section, and use **Configure** on the Telegram card there.
+</Accordion>
+
+<Accordion title="I asked the agent to connect Telegram and it said it couldn't">
+Connecting a channel is an operator action and is deliberately not something the agent can
+do for you. Follow the steps above in the web interface.
 </Accordion>
 
 </AccordionGroup>

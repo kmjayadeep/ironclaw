@@ -24,9 +24,8 @@ A channel is one capability surface of an extension. Installing the Slack or Tel
 extension gives your agent the ability to receive and send messages there; the extension's
 manifest declares the channel surface alongside any tools it provides.
 
-Setup happens in the [web interface](/using/webui) under **Extensions → Channels**. Start
-the server, connect the channel, and the setup flow walks you through the credentials it
-needs and stores them encrypted.
+Setup happens in the [web interface](/using/webui). Start the server, connect the channel,
+and the setup flow walks you through the credentials it needs and stores them encrypted.
 
 ```bash
 ironclaw serve
@@ -37,6 +36,82 @@ Channel credentials are stored in the encrypted secret store, not in `config.tom
 configuration file names the environment variables that hold them, never the values
 themselves. See [Security](/security).
 </Note>
+
+---
+
+## Where Channel Setup Lives
+
+This is the single most common thing to get stuck on, so it's worth being precise.
+
+<Steps>
+
+<Step title="Open Extensions, then switch to the Channels tab">
+
+In the sidebar, open **Extensions**. It opens on the **Registry** tab.
+
+<Warning>
+Registry is *not* where channels are set up. Click across to the **Channels** tab. Using
+**Configure** on a channel from the Registry tab leads to a dead end — see below.
+</Warning>
+
+</Step>
+
+<Step title="Scroll to the bottom of the Built-in section">
+
+The Channels tab opens with a **Built-in** panel. The Slack and Telegram connect cards are
+at the **bottom of that panel**, below the rows for the web and terminal channels. They're
+easy to miss on a short window — scroll.
+
+</Step>
+
+<Step title="Use Configure on the channel's card">
+
+That card is the real setup surface. For Telegram it's where an operator enters the bot
+token; for Slack it's where the app credentials go.
+
+</Step>
+
+</Steps>
+
+### Two Dead Ends to Know About
+
+<AccordionGroup>
+
+<Accordion title="Configure on the Registry tab errors instead of setting up">
+
+Telegram appears in the Registry tab, and its **Configure** button opens the *pairing*
+panel. Pairing assumes the bot is already configured, so if it isn't, the only thing that
+surface can do is report:
+
+```
+An administrator must configure the Telegram bot first.
+```
+
+That message is accurate but misleading — it reads like you lack permission. Nothing is
+wrong with your account. Go to the **Channels** tab and use the card at the bottom of the
+Built-in section instead.
+
+</Accordion>
+
+<Accordion title="Asking the agent to connect a channel doesn't work">
+
+"Connect Slack" or "set up Telegram" in chat will not get you connected. The agent can
+install and use *tool* extensions on your behalf, but the channel connection is
+deliberately kept out of the tools it can drive — connecting a channel is an operator
+action, so it stays in the web interface where you can see what you're authorizing.
+
+The agent may tell you it can't help. Do it yourself using the path above.
+
+</Accordion>
+
+</AccordionGroup>
+
+<Info>
+Telegram has **two** setup steps that are easy to confuse: an operator configures the bot
+token once for the whole instance, and then each person pairs their own Telegram account
+to their IronClaw user. The "administrator must configure" error means step one hasn't
+happened yet.
+</Info>
 
 ---
 

@@ -48,14 +48,19 @@ driver initialized.
 
 ```bash
 ironclaw config get llm.default.provider_id
-ironclaw config set runner.poll_interval_ms 500
+ironclaw config set google.client_id <your-client-id>
 ```
 
 `config init` refuses to overwrite existing files unless you pass `--force`.
 
-`config set` routes each key to the right destination — the configuration file, the
-encrypted secret store, or the web token file — based on what the key is. See
-[Configuration](/capabilities/configuration).
+`config list` and `config get` read every key. `config set` is narrower: it accepts only
+`<provider>.api_key`, `google.client_id`, `google.client_secret`, `google.redirect_uri`,
+`slack.enabled`, and `webui.token --rotate`, routing each to the configuration file, the
+encrypted secret store, or the web token file. Everything else is edited in `config.toml`
+directly.
+
+`config set` does not restart the running instance — it prints `to apply: ironclaw service
+restart`. See [Configuration](/capabilities/configuration).
 
 ---
 
@@ -113,6 +118,12 @@ For service logs, read the files directly — see [Run as a Service](/using/serv
 | `ironclaw service uninstall` | Remove the service and its unit file |
 
 See [Run as a Service](/using/service).
+
+<Note>
+`service` subcommands do not work on a NEAR AI hosted instance — there is no user service
+manager for them to drive. Restart a hosted agent from the
+[Agent Dashboard](https://agent.near.ai/) instead.
+</Note>
 
 ---
 

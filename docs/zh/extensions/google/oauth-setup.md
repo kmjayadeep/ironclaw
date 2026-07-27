@@ -27,11 +27,35 @@ description: "IronClaw 中所有 Google 扩展的一次性 OAuth 配置"
 3. 设置名称（例如 `ironclaw`）
 4. 在 **Authorized redirect URIs** 中点击 **+ Add URI**，填写：
 
+   **回环（loopback）流程** —— 浏览器回调到固定的本地端口。适用于在运行 IronClaw 的机器上授权，或通过下文的 SSH 隧道完成授权：
+
    ```
    http://127.0.0.1:9876/callback
    ```
 
+   **服务端托管流程** —— 浏览器回调到您正在运行的实例。适用于已可通过 HTTPS 访问的部署：
+
+   ```
+   https://your-host/api/reborn/product-auth/oauth/google/callback
+   ```
+
+   两个都添加也没有问题；如果不确定，这是最省事的做法。
+
 5. 点击 **Create**，复制生成的 **Client ID** 与 **Client Secret**
+
+<Warning>
+Google 对重定向 URI 进行**完全匹配** —— 协议、主机、端口、路径都必须一致。不匹配时会在同意页出现之前直接报 `redirect_uri_mismatch`。回环地址用 `http`、托管实例用 `https` 都是正确的，请不要把回环地址改成 HTTPS。
+</Warning>
+
+若使用服务端托管流程，请同时告知 IronClaw 相同的值，使两侧保持一致：
+
+```bash
+export IRONCLAW_REBORN_GOOGLE_OAUTH_REDIRECT_URI=https://your-host/api/reborn/product-auth/oauth/google/callback
+export IRONCLAW_REBORN_GOOGLE_CLIENT_ID=...
+export IRONCLAW_REBORN_GOOGLE_CLIENT_SECRET=...
+```
+
+这些也可以写在 `config.toml` 的 `[google]` 小节中（`google.redirect_uri`、`google.client_id`）。客户端密钥应存放在加密的密钥存储中，而不是配置文件里。
 
 </Step>
 
@@ -70,14 +94,62 @@ ssh -p 15222 -L 9876:127.0.0.1:9876 liquid-zebra@agent4.near.ai
 
 </Step>
 
-<Step title="设置环境变量">
+<Step title="将凭据写入 IronClaw">
 
-连接服务器后，导出 OAuth 凭证：
+使用 `ironclaw config` 保存客户端 ID、重定向 URI 与客户端密钥。请在运行 IronClaw 的机器上执行 —— 远程或托管实例请先通过 SSH 登录。
 
 ```bash
-export GOOGLE_OAUTH_CLIENT_ID=<your-client-id>
-export GOOGLE_OAUTH_CLIENT_SECRET=<your-client-secret>
+ironclaw config set google.client_id <your-client-id>
+ironclaw config set google.redirect_uri https://<your-instance-host>/api/reborn/product-auth/oauth/google/callback
+ironclaw config set google.client_secret
 ```
+
+<Note>
+`google.client_secret` 不接受在命令行上直接传值。它始终以隐藏输入的方式提示录入，因此密钥不会进入 shell 历史或进程列表。客户端 ID 与重定向 URI 不是密钥，可以正常传参。
+</Note>
+
+确认已写入的内容：
+
+```bash
+ironclaw config get google.client_id
+ironclaw config get google.redirect_uri
+```
+
+如果您更希望在服务单元或容器中配置，也可以使用环境变量：
+
+```bash
+export IRONCLAW_REBORN_GOOGLE_CLIENT_ID=<your-client-id>
+export IRONCLAW_REBORN_GOOGLE_CLIENT_SECRET=<your-client-secret>
+export IRONCLAW_REBORN_GOOGLE_OAUTH_REDIRECT_URI=https://<your-instance-host>/api/reborn/product-auth/oauth/google/callback
+```
+
+</Step>
+
+<Step title="重启以使配置生效">
+
+`ironclaw config set` 不会自动重启任何进程 —— 它只写入值，并提示：
+
+```
+  to apply: ironclaw service restart
+```
+
+在重启之前，正在运行的实例仍会使用旧配置，Google OAuth 会持续失败。
+
+<Tabs>
+  <Tab title="NEAR AI 托管实例">
+    在 NEAR AI 托管实例上，`ironclaw service` 系列命令**无法使用** —— 实例中没有可供其调用的用户级服务管理器，`service restart` 只会报错，并不会真正重启。
+
+    SSH 仅用于执行上面的 `ironclaw config` 命令；执行完成后，请前往 [Agent Dashboard](https://agent.near.ai/) 重启该 agent。这是重启托管实例的唯一方式。
+  </Tab>
+
+  <Tab title="自托管">
+    ```bash
+    ironclaw service restart
+    ```
+
+    如果您是在前台运行 `ironclaw serve`，请停止后重新启动。
+  </Tab>
+</Tabs>
 
 </Step>
 
