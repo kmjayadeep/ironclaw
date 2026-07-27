@@ -1658,8 +1658,8 @@ impl GeminiOauthProvider {
     /// [`Self::from_gemini_response`] parses, plus the per-response metadata.
     ///
     /// `response` is `None` only when the stream said nothing usable at all —
-    /// no content and no terminal finish reason — which the caller reports as
-    /// an invalid response.
+    /// no content, no terminal finish reason, and no prompt-level block —
+    /// which the caller reports as an invalid response.
     fn aggregate_cloud_code_sse(body_str: &str) -> CloudCodeSseAggregate {
         let mut combined_text = String::new();
         // Only what a candidate actually reported. Defaulting to
@@ -1793,12 +1793,19 @@ impl GeminiOauthProvider {
             total_token_count,
         };
 
-        // Log prompt feedback if request was blocked
-        if let Some(ref pf) = prompt_feedback
-            && let Some(reason) = pf.get("blockReason").and_then(|r| r.as_str())
-        {
+        // Gemini blocks in two different places. `candidates[].finishReason`
+        // means the *output* was cut off mid-generation; `promptFeedback.
+        // blockReason` means the *input* was rejected before generation, and
+        // then the response carries no candidates at all — no content and no
+        // finish reason. Both are blocks and both must reach the caller.
+        let prompt_block_reason = prompt_feedback
+            .as_ref()
+            .and_then(|pf| pf.get("blockReason"))
+            .and_then(|r| r.as_str())
+            .map(|r| r.to_string());
+        if let Some(ref reason) = prompt_block_reason {
             warn!(
-                block_reason = reason,
+                block_reason = reason.as_str(),
                 "Gemini API blocked the request via promptFeedback"
             );
         }
@@ -1821,29 +1828,36 @@ impl GeminiOauthProvider {
             .and_then(map_gemini_finish_reason)
             .is_some_and(|reason| reason != FinishReason::Stop);
 
-        let response = (has_content || terminal_failure).then(|| {
-            let mut response_parts = Vec::new();
-            if !combined_text.is_empty() {
-                response_parts.push(serde_json::json!({"text": combined_text}));
-            }
-            response_parts.extend(tool_calls_parts);
-
-            let mut candidate = serde_json::json!({
-                "content": { "parts": response_parts }
-            });
-            // Absent stays absent: `from_gemini_response` falls back to
-            // shape inference only when the provider said nothing.
-            if let Some(finish_reason) = finish_reason {
-                candidate["finishReason"] = serde_json::Value::String(finish_reason);
-            }
-            serde_json::json!({
-                "candidates": [candidate],
-                "usageMetadata": {
-                    "promptTokenCount": prompt_tokens,
-                    "candidatesTokenCount": candidates_tokens
+        let response =
+            (has_content || terminal_failure || prompt_block_reason.is_some()).then(|| {
+                let mut response_parts = Vec::new();
+                if !combined_text.is_empty() {
+                    response_parts.push(serde_json::json!({"text": combined_text}));
                 }
-            })
-        });
+                response_parts.extend(tool_calls_parts);
+
+                let mut candidate = serde_json::json!({
+                    "content": { "parts": response_parts }
+                });
+                // Absent stays absent: `from_gemini_response` falls back to
+                // shape inference only when the provider said nothing. A
+                // candidate's own reason wins; a prompt-level block reason stands
+                // in only when no candidate reported one, and it speaks the same
+                // vocabulary (`SAFETY`, `BLOCKLIST`, `PROHIBITED_CONTENT`,
+                // `IMAGE_SAFETY`, `MODEL_ARMOR` → content filter; `OTHER` and
+                // `BLOCK_REASON_UNSPECIFIED` → unknown), so the shared table in
+                // `provider::map_provider_finish_token` classifies both.
+                if let Some(finish_reason) = finish_reason.or(prompt_block_reason) {
+                    candidate["finishReason"] = serde_json::Value::String(finish_reason);
+                }
+                serde_json::json!({
+                    "candidates": [candidate],
+                    "usageMetadata": {
+                        "promptTokenCount": prompt_tokens,
+                        "candidatesTokenCount": candidates_tokens
+                    }
+                })
+            });
 
         CloudCodeSseAggregate { response, meta }
     }
@@ -2475,6 +2489,33 @@ mod tests {
                 r#"data: {"response":{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}}"#
             ),
             Some(FinishReason::Stop),
+        );
+
+        // A prompt-level block is Gemini's *other* block mechanism: the input
+        // was rejected before generation, so the stream carries
+        // `promptFeedback.blockReason` and no candidates at all — no content
+        // and no candidate `finishReason`. That must still surface as the
+        // block it is, not as an invalid response.
+        assert_eq!(
+            finish_reason_for(
+                r#"data: {"response":{"promptFeedback":{"blockReason":"SAFETY"},"usageMetadata":{"promptTokenCount":9}}}"#
+            ),
+            Some(FinishReason::ContentFilter),
+            "a blocked prompt must report the block, not vanish",
+        );
+        // …and a block reason we cannot classify is `Unknown`, never a
+        // silent clean stop.
+        assert_eq!(
+            finish_reason_for(r#"data: {"response":{"promptFeedback":{"blockReason":"OTHER"}}}"#),
+            Some(FinishReason::Unknown),
+        );
+        // `promptFeedback` without a block reason is ordinary safety-rating
+        // telemetry and blocks nothing.
+        assert_eq!(
+            finish_reason_for(
+                r#"data: {"response":{"promptFeedback":{"safetyRatings":[]},"candidates":[]}}"#
+            ),
+            None,
         );
 
         // A stream with neither content nor a finish reason stays "nothing
