@@ -188,6 +188,7 @@ use ironclaw_turns::{GetRunStateRequest, InMemoryRunProfileResolver, TurnScope, 
 use secrecy::SecretString;
 
 mod auth_engine_assembly;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) use auth_engine_assembly::auth_continuation_dispatcher;
 use auth_engine_assembly::{
     AdminConfigurationCredentialSlot, AuthContinuationFromProduct,

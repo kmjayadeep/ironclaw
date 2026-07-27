@@ -406,12 +406,13 @@ fn check_production_scheduler_wake_wiring(
 
 mod approval;
 mod approval_interaction_assembly;
+use approval_interaction_assembly::ApprovalRequestGateEvidence;
+#[cfg(feature = "test-support")]
+pub(crate) use approval_interaction_assembly::build_approval_gate_evidence_for_test;
+pub(crate) use approval_interaction_assembly::build_approval_interaction_service;
+#[cfg(any(test, feature = "test-support"))]
 use approval_interaction_assembly::{
-    ApprovalRequestGateEvidence, RegistryPersistentApprovalGranteeResolver,
-    SnapshotApprovalTurnRunLocator,
-};
-pub(crate) use approval_interaction_assembly::{
-    build_approval_gate_evidence_for_test, build_approval_interaction_service,
+    RegistryPersistentApprovalGranteeResolver, SnapshotApprovalTurnRunLocator,
 };
 mod auth_interaction;
 #[cfg(test)]
