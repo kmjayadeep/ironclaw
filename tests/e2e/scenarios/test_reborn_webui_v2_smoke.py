@@ -567,11 +567,17 @@ async def test_reborn_v2_appearance_theme_selection_persists(reborn_v2_page):
     await expect(
         reborn_v2_page.locator(SEL_V2["settings_search_input"])
     ).to_be_visible(timeout=15000)
+    await reborn_v2_page.wait_for_function(
+        'localStorage.getItem("ironclaw:v2-theme") === "dark"'
+    )
     await reborn_v2_page.locator(SEL_V2["nav_settings_appearance"]).first.click()
     dark_option = reborn_v2_page.locator(SEL_V2["appearance_theme_dark"])
     await expect(dark_option).to_be_checked(timeout=15000)
     await expect(reborn_v2_page.locator("html")).to_have_attribute(
         "data-theme", "dark"
+    )
+    await reborn_v2_page.wait_for_function(
+        'localStorage.getItem("ironclaw:v2-theme") === "dark"'
     )
 
     await reborn_v2_page.reload()
