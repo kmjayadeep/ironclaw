@@ -105,23 +105,53 @@ async def _assert_readable(locator, label: str) -> dict[str, list[float]]:
     return colors
 
 
-async def _typography_metrics(locator) -> dict:
-    return await locator.evaluate(
-        """element => {
-          const style = getComputedStyle(element);
-          const rect = element.getBoundingClientRect();
+async def _typography_metrics(page, selectors: dict[str, str]) -> dict:
+    return await page.evaluate(
+        """selectors => {
+          const semanticSize = getComputedStyle(document.documentElement)
+            .getPropertyValue("--text-ui").trim();
+          if (!semanticSize) {
+            throw new Error("Semantic typography token --text-ui is not defined");
+          }
+          const probe = document.createElement("span");
+          probe.style.cssText =
+            "position:absolute;visibility:hidden;font-size:var(--text-ui)";
+          document.body.append(probe);
+          const expectedFontSize = getComputedStyle(probe).fontSize;
+          probe.remove();
+
+          const controls = Object.fromEntries(
+            Object.entries(selectors).map(([name, selector]) => {
+              const element = document.querySelector(selector);
+              if (!element) {
+                throw new Error(`Typography target not found: ${name} (${selector})`);
+              }
+              const style = getComputedStyle(element);
+              const rect = element.getBoundingClientRect();
+              return [name, {
+                className: element.className,
+                clientHeight: element.clientHeight,
+                clientWidth: element.clientWidth,
+                expectedFontSize,
+                fontFamily: style.fontFamily,
+                fontSize: style.fontSize,
+                height: rect.height,
+                semanticSize,
+                scrollHeight: element.scrollHeight,
+                scrollWidth: element.scrollWidth,
+              }];
+            })
+          );
           return {
-            className: element.className,
-            clientHeight: element.clientHeight,
-            clientWidth: element.clientWidth,
-            fontFamily: style.fontFamily,
-            fontSize: style.fontSize,
-            height: rect.height,
-            scrollHeight: element.scrollHeight,
-            scrollWidth: element.scrollWidth,
-            semanticSize: style.getPropertyValue("--text-ui"),
+            controls,
+            rootFontSize: getComputedStyle(document.documentElement).fontSize,
+            viewport: {
+              documentWidth: document.documentElement.scrollWidth,
+              viewportWidth: window.innerWidth,
+            },
           };
-        }"""
+        }""",
+        selectors,
     )
 
 
@@ -131,8 +161,9 @@ def _assert_control_typography(
     *,
     expected_height: float | None = None,
 ) -> None:
-    assert metrics["fontSize"] == "13px", (
-        f"{label} font size was {metrics['fontSize']}: {metrics}"
+    assert metrics["fontSize"] == metrics["expectedFontSize"], (
+        f"{label} font size was {metrics['fontSize']}, "
+        f"expected semantic --text-ui size {metrics['expectedFontSize']}: {metrics}"
     )
     assert metrics["scrollWidth"] <= metrics["clientWidth"] + 1, (
         f"{label} clipped horizontally: {metrics}"
@@ -306,7 +337,6 @@ async def test_reborn_v2_shared_control_typography_is_stable(
             ),
         )
 
-    await page.route("**/api/webchat/v2/settings/tools", handle_tools)
     try:
         await page.goto(f"{reborn_v2_server}/")
         token_input = page.locator(SEL_V2["login_token"])
@@ -319,33 +349,59 @@ async def test_reborn_v2_shared_control_typography_is_stable(
         )
 
         expected_height = 44 if width < 768 else 50
+        login_page_metrics = await _typography_metrics(
+            page,
+            {
+                "tokenInput": SEL_V2["login_token"],
+                "connectButton": "form button[type='submit']",
+                "tokenLabel": "label[for='v2-token']",
+            },
+        )
+        login_metrics = login_page_metrics["controls"]
         _assert_control_typography(
-            await _typography_metrics(token_input),
+            login_metrics["tokenInput"],
             f"{locale} token input at {width}px",
             expected_height=expected_height,
         )
         _assert_control_typography(
-            await _typography_metrics(connect_button),
+            login_metrics["connectButton"],
             f"{locale} connect button at {width}px",
             expected_height=expected_height,
         )
         _assert_control_typography(
-            await _typography_metrics(token_label),
+            login_metrics["tokenLabel"],
             f"{locale} token label at {width}px",
         )
-        assert await page.locator("html").evaluate(
-            "element => getComputedStyle(element).fontSize"
-        ) == "16px"
+        assert login_page_metrics["rootFontSize"] == "16px"
 
-        await page.goto(
-            f"{reborn_v2_server}/settings/tools"
-            f"?token={REBORN_V2_AUTH_TOKEN}"
-        )
-        permission = page.locator(
-            SEL_V2["settings_tool_row_for"].format(name="typography_check")
-        ).locator(SEL_V2["settings_tool_permission"])
-        await expect(permission).to_be_visible(timeout=15000)
-        permission_metrics = await _typography_metrics(permission)
+        tools_route = "**/api/webchat/v2/settings/tools"
+        await page.route(tools_route, handle_tools)
+        try:
+            await page.goto(
+                f"{reborn_v2_server}/settings/tools"
+                f"?token={REBORN_V2_AUTH_TOKEN}"
+            )
+            tool_row_selector = SEL_V2["settings_tool_row_for"].format(
+                name="typography_check"
+            )
+            permission = page.locator(tool_row_selector).locator(
+                SEL_V2["settings_tool_permission"]
+            )
+            await expect(permission).to_be_visible(timeout=15000)
+            permission_metrics = (
+                await _typography_metrics(
+                    page,
+                    {
+                        "permission": (
+                            f"{tool_row_selector} "
+                            f"{SEL_V2['settings_tool_permission']}"
+                        )
+                    },
+                )
+            )["controls"]["permission"]
+        finally:
+            await page.unroute(tools_route, handle_tools)
+
         _assert_control_typography(
             permission_metrics,
             f"{locale} SelectMenu at {width}px",
@@ -360,17 +416,16 @@ async def test_reborn_v2_shared_control_typography_is_stable(
         )
         skill_content = page.locator("textarea").first
         await expect(skill_content).to_be_visible(timeout=15000)
+        skills_metrics = await _typography_metrics(
+            page,
+            {"skillContent": "textarea"},
+        )
         _assert_control_typography(
-            await _typography_metrics(skill_content),
+            skills_metrics["controls"]["skillContent"],
             f"{locale} textarea at {width}px",
         )
 
-        viewport_metrics = await page.evaluate(
-            """() => ({
-              documentWidth: document.documentElement.scrollWidth,
-              viewportWidth: window.innerWidth,
-            })"""
-        )
+        viewport_metrics = skills_metrics["viewport"]
         assert viewport_metrics["documentWidth"] <= viewport_metrics["viewportWidth"], (
             f"{locale} layout overflowed at {width}px: {viewport_metrics}"
         )
