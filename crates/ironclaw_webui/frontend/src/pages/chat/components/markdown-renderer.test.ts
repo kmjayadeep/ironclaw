@@ -12,6 +12,10 @@ const appCssSource = readFileSync(
   new URL("../../../styles/app.css", import.meta.url),
   "utf8",
 );
+const highlighterSource = readFileSync(
+  new URL("../../../lib/syntax-highlighting.ts", import.meta.url),
+  "utf8",
+);
 
 function rendererEnhancerSourceForTest() {
   const lines = [];
@@ -158,15 +162,50 @@ function translator(prefix) {
     })[key] || key;
 }
 
-test("markdown code blocks are passed through highlight.js when available", () => {
-  assert.ok(
-    rendererSource.includes('import hljs from "highlight.js/lib/common"'),
-    "highlight.js should be bundled through npm rather than loaded from a window global",
+test("markdown and syntax highlighting stay out of the synchronous chat chunk", () => {
+  assert.doesNotMatch(
+    rendererSource,
+    /^import .*["'](?:highlight\.js|\.\.\/\.\.\/\.\.\/lib\/markdown)["'];?$/m,
+    "expensive markdown dependencies should not be statically imported by the chat renderer",
   );
   assert.match(
     rendererSource,
-    /hljs\.highlightElement\(codeEl\)/,
-    "markdown code blocks should be enhanced by highlight.js after rendering",
+    /import\("\.\.\/\.\.\/\.\.\/lib\/markdown"\)/,
+    "the sanitized markdown pipeline should load only for stable non-empty content",
+  );
+  assert.match(
+    rendererSource,
+    /root\?\.querySelector\("pre code"\)[\s\S]*import\("\.\.\/\.\.\/\.\.\/lib\/syntax-highlighting"\)/,
+    "syntax highlighting should load only after rendered code is present",
+  );
+  assert.doesNotMatch(
+    highlighterSource,
+    /highlight\.js\/lib\/common/,
+    "the broad highlight.js common bundle must not return",
+  );
+  assert.match(
+    highlighterSource,
+    /highlight\.js\/lib\/core/,
+    "the lazy highlighter should start from highlight.js core",
+  );
+  for (const language of ["bash", "javascript", "json", "python", "rust", "typescript"]) {
+    assert.ok(
+      highlighterSource.includes(`highlight.js/lib/languages/${language}`),
+      `expected the explicit highlighter language set to include ${language}`,
+    );
+  }
+});
+
+test("streaming markdown stays on the escaped text path until completion", () => {
+  assert.match(
+    rendererSource,
+    /if \(streaming \|\| !normalizedContent\) \{[\s\S]*setRendered\(null\)/,
+    "streaming updates should not invoke marked or DOMPurify",
+  );
+  assert.match(
+    rendererSource,
+    /if \(renderedHtml === null\) \{[\s\S]*\{normalizedContent\}[\s\S]*dangerouslySetInnerHTML=\{\{ __html: renderedHtml \}\}/,
+    "only the completed sanitized result may be passed to innerHTML",
   );
 });
 

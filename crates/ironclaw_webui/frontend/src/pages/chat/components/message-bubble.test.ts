@@ -12,8 +12,16 @@ import {
 vi.mock("./markdown-renderer", async () => {
   const { createElement } = await import("react");
   return {
-    MarkdownRenderer: ({ content, className }) =>
-      createElement("div", { className, "data-testid": "markdown" }, content),
+    MarkdownRenderer: ({ content, className, streaming }) =>
+      createElement(
+        "div",
+        {
+          className,
+          "data-testid": "markdown",
+          "data-streaming": String(Boolean(streaming)),
+        },
+        content,
+      ),
   };
 });
 
@@ -91,6 +99,24 @@ test("assistant bubbles expose final reply state for live QA", () => {
     /data-final-reply=\{finalReplyState\}/,
     "live QA should be able to distinguish streaming text from the final answer",
   );
+});
+
+test("assistant bubbles keep streaming projections off the full markdown path", async () => {
+  const { MessageBubble } = await import("./message-bubble");
+  const render = (isFinalReply: boolean) =>
+    renderToStaticMarkup(
+      React.createElement(MessageBubble, {
+        message: {
+          id: "assistant-stream",
+          role: CHAT_MESSAGE_ROLES.ASSISTANT,
+          content: '<img src=x onerror="alert(1)">',
+          isFinalReply,
+        },
+      }),
+    );
+
+  assert.match(render(false), /data-streaming="true"/);
+  assert.match(render(true), /data-streaming="false"/);
 });
 
 test("only final assistant replies expose the run artifact download", async () => {

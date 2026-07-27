@@ -83,6 +83,9 @@ function MessageBubbleImpl({ message, onRetry, threadId }: MessageBubbleProps) {
     typeof message.isFinalReply === "boolean"
       ? String(message.isFinalReply)
       : undefined;
+  const isStreamingAssistantReply =
+    role === CHAT_MESSAGE_ROLES.ASSISTANT &&
+    message.isFinalReply === false;
   const failureCategory =
     role === CHAT_MESSAGE_ROLES.ERROR &&
     typeof message.failureCategory === "string"
@@ -225,7 +228,7 @@ function MessageBubbleImpl({ message, onRetry, threadId }: MessageBubbleProps) {
           {role === CHAT_MESSAGE_ROLES.ASSISTANT ||
           role === CHAT_MESSAGE_ROLES.SYSTEM ||
           role === CHAT_MESSAGE_ROLES.ERROR
-            ? (<div className={contentOpacityClass}><MarkdownRenderer content={content} /></div>)
+            ? (<div className={contentOpacityClass}><MarkdownRenderer content={content} streaming={isStreamingAssistantReply} /></div>)
             : (<div className="v2-wrap-anywhere whitespace-pre-wrap break-words"><span className={contentOpacityClass}>{content}</span></div>)}
 
           {status === "error" && (

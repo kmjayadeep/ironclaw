@@ -1,7 +1,5 @@
 // @ts-nocheck
-import hljs from "highlight.js/lib/common";
 import React from "react";
-import { renderMarkdown } from "../../../lib/markdown";
 import { toast } from "../../../lib/toast";
 import { useT } from "../../../lib/i18n";
 
@@ -34,13 +32,6 @@ function enhanceCodeBlocks(root, t) {
     pre.dataset.wrapped = "0";
 
     const codeEl = pre.querySelector("code");
-    if (codeEl) {
-      try {
-        hljs.highlightElement(codeEl);
-      } catch {
-        // highlight failure is non-fatal
-      }
-    }
 
     const wrap = document.createElement("div");
     wrap.className = "markdown-code-frame";
@@ -144,29 +135,87 @@ function syncCodeBlockLabels(pre, labels) {
   }
 }
 
-function MarkdownRendererImpl({ content, className = "" }) {
+function MarkdownRendererImpl({ content, className = "", streaming = false }) {
   const t = useT();
   const ref = React.useRef(null);
+  const normalizedContent = typeof content === "string" ? content : "";
+  const [rendered, setRendered] = React.useState(null);
+  const renderedHtml =
+    !streaming && rendered?.source === normalizedContent
+      ? rendered.html
+      : null;
 
-  // marked.parse + DOMPurify.sanitize are expensive; only re-run when
-  // the source content actually changes, not on every parent render
-  // (during streaming the message list re-renders on every token).
-  const rendered = React.useMemo(() => renderMarkdown(content), [content]);
+  // Streaming projections update for every chunk. Keep that hot path as
+  // escaped React text and defer the full marked + DOMPurify pipeline until
+  // the reply stabilizes. The loading fallback is also text, so markdown can
+  // never reach innerHTML before sanitization completes.
+  React.useEffect(() => {
+    let active = true;
+    if (streaming || !normalizedContent) {
+      setRendered(null);
+      return () => {
+        active = false;
+      };
+    }
+
+    setRendered(null);
+    import("../../../lib/markdown")
+      .then(({ renderMarkdown }) => {
+        if (active) {
+          setRendered({
+            source: normalizedContent,
+            html: renderMarkdown(normalizedContent),
+          });
+        }
+      })
+      .catch(() => {
+        if (active) setRendered(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [normalizedContent, streaming]);
 
   React.useEffect(() => {
+    if (renderedHtml === null) return undefined;
     enhanceCodeBlocks(ref.current, t);
-  }, [rendered, t]);
+    const root = ref.current;
+    if (!root?.querySelector("pre code")) return undefined;
+
+    let active = true;
+    import("../../../lib/syntax-highlighting")
+      .then(({ highlightCodeBlocks }) => {
+        if (active && ref.current === root) highlightCodeBlocks(root);
+      })
+      .catch(() => {
+        // Syntax highlighting is an optional enhancement.
+      });
+    return () => {
+      active = false;
+    };
+  }, [renderedHtml, t]);
+
+  if (renderedHtml === null) {
+    return (
+      <div
+        ref={ref}
+        className={["markdown-body", "whitespace-pre-wrap", className].join(" ")}
+      >
+        {normalizedContent}
+      </div>
+    );
+  }
 
   return (
     <div
       ref={ref}
       className={["markdown-body", className].join(" ")}
-      dangerouslySetInnerHTML={{ __html: rendered }}
+      dangerouslySetInnerHTML={{ __html: renderedHtml }}
     />
   );
 }
 
-// Memoized so a bubble whose `content`/`className` are unchanged skips
+// Memoized so a bubble whose `content`/`className`/`streaming` are unchanged skips
 // re-rendering when sibling messages update (e.g. a new streaming chunk
 // elsewhere in the list).
 export const MarkdownRenderer = React.memo(MarkdownRendererImpl);
