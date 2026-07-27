@@ -852,12 +852,20 @@ impl CodexChatGptProvider {
                     entry.arguments = arguments.to_string();
                 }
             }
+            // The Responses API streams a policy refusal on its own channel.
+            "response.refusal.delta" | "response.refusal.done" => {
+                result.saw_refusal = true;
+            }
             "response.output_item.done" => {
                 if let Some(item) = parsed.get("item").or_else(|| parsed.get("output")) {
                     Self::merge_completed_output_item(result, item, result.text.is_empty());
                 }
             }
-            "response.completed" => {
+            // Both terminal events. `response.incomplete` used to fall through
+            // to `_ => {}`, so the stream ran dry and a `max_output_tokens`
+            // truncation surfaced as "stream ended before response.completed"
+            // with the partial answer discarded.
+            "response.completed" | "response.incomplete" => {
                 if let Some(response) = parsed.get("response")
                     && let Some(usage) = response.get("usage")
                 {
@@ -872,13 +880,25 @@ impl CodexChatGptProvider {
                 }
                 if let Some(response) = parsed.get("response") {
                     Self::merge_completed_response_output(result, response);
+                    // The provider states why it stopped; a refusal part is a
+                    // content block even when `status` reads "completed".
+                    result.finish_reason = Self::map_responses_status(response).or({
+                        if result.saw_refusal {
+                            Some(FinishReason::ContentFilter)
+                        } else {
+                            None
+                        }
+                    });
+                } else if result.saw_refusal {
+                    result.finish_reason = Some(FinishReason::ContentFilter);
                 }
                 tracing::debug!(
                     content_bytes = result.text.len(),
                     tool_call_count = result.pending_tool_calls.len(),
                     input_tokens = result.input_tokens,
                     output_tokens = result.output_tokens,
-                    "Codex ChatGPT: parsed completed response"
+                    finish_reason = ?result.finish_reason,
+                    "Codex ChatGPT: parsed terminal response"
                 );
                 return Ok(true);
             }
@@ -950,8 +970,13 @@ impl CodexChatGptProvider {
         allow_text_fallback: bool,
     ) {
         match item.get("type").and_then(|value| value.as_str()) {
-            Some("message") if allow_text_fallback => {
-                Self::append_output_message_text(&mut result.text, item);
+            Some("message") => {
+                if Self::output_message_has_refusal(item) {
+                    result.saw_refusal = true;
+                }
+                if allow_text_fallback {
+                    Self::append_output_message_text(&mut result.text, item);
+                }
             }
             Some("function_call") => {
                 let item_id = item
@@ -1002,6 +1027,43 @@ impl CodexChatGptProvider {
         }
     }
 
+    /// Map the Responses API's own terminal `status` / `incomplete_details`
+    /// to a finish reason.
+    ///
+    /// Returns `None` when the response completed normally (or states nothing
+    /// at all), leaving the response shape to decide between `Stop` and
+    /// `ToolUse`. An `incomplete` status with a reason we do not recognize is
+    /// `Unknown` — never `Stop`.
+    fn map_responses_status(response: &Value) -> Option<FinishReason> {
+        let status = response
+            .get("status")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let incomplete_reason = response
+            .get("incomplete_details")
+            .and_then(|details| details.get("reason"))
+            .and_then(|reason| reason.as_str());
+
+        match (status, incomplete_reason) {
+            (_, Some("max_output_tokens")) => Some(FinishReason::Length),
+            (_, Some("content_filter")) => Some(FinishReason::ContentFilter),
+            (_, Some(_)) => Some(FinishReason::Unknown),
+            ("completed", None) | ("", None) => None,
+            (_, None) => Some(FinishReason::Unknown),
+        }
+    }
+
+    fn output_message_has_refusal(item: &Value) -> bool {
+        item.get("content")
+            .and_then(|value| value.as_array())
+            .is_some_and(|content| {
+                content.iter().any(|part| {
+                    part.get("type").and_then(|value| value.as_str()) == Some("refusal")
+                        || part.get("refusal").is_some()
+                })
+            })
+    }
+
     fn append_output_message_text(output: &mut String, item: &Value) {
         let Some(content) = item.get("content").and_then(|value| value.as_array()) else {
             return;
@@ -1024,6 +1086,11 @@ struct ResponsesResult {
     pending_tool_calls: std::collections::HashMap<String, PendingToolCall>,
     input_tokens: u32,
     output_tokens: u32,
+    /// What the provider said about why it stopped. `None` means it reported a
+    /// normal completion (or reported nothing), so the response shape decides.
+    finish_reason: Option<FinishReason>,
+    /// A policy refusal was streamed or present in the output.
+    saw_refusal: bool,
 }
 
 #[derive(Debug)]
@@ -1060,7 +1127,7 @@ impl LlmProvider for CodexChatGptProvider {
             content: result.text,
             input_tokens: result.input_tokens,
             output_tokens: result.output_tokens,
-            finish_reason: FinishReason::Stop,
+            finish_reason: crate::provider::resolve_finish_reason(result.finish_reason, false),
             reasoning: crate::responses_reasoning::finish_summary(result.reasoning),
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
@@ -1114,11 +1181,8 @@ impl LlmProvider for CodexChatGptProvider {
             crate::tool_schema::PlaceholderStrippingMode::NullAndEmptyStrings,
         );
 
-        let finish_reason = if tool_calls.is_empty() {
-            FinishReason::Stop
-        } else {
-            FinishReason::ToolUse
-        };
+        let finish_reason =
+            crate::provider::resolve_finish_reason(result.finish_reason, !tool_calls.is_empty());
 
         Ok(ToolCompletionResponse {
             content: if result.text.is_empty() {
@@ -1910,6 +1974,149 @@ data: {"response":{"usage":{"input_tokens":5,"output_tokens":5}}}
         assert_eq!(
             response.tool_calls[0].arguments,
             json!({ "required_arg": "x" })
+        );
+    }
+
+    /// Conformance matrix for the Codex ChatGPT (OpenAI Responses API)
+    /// adapter — #6284 item 8, contract clause (e).
+    ///
+    /// `complete` hardcoded `FinishReason::Stop` and `complete_with_tools`
+    /// guessed from the tool-call shape, while the terminal event's own
+    /// `status` / `incomplete_details.reason` were never read. A response cut
+    /// off at `max_output_tokens` and a policy refusal both reported success.
+    ///
+    /// Each case is the Responses API's own terminal payload, driven through
+    /// the public `complete` entry point over a real loopback HTTP boundary.
+    #[tokio::test]
+    async fn codex_finish_reason_conformance_matrix() {
+        async fn finish_reason_for(sse: &'static str) -> FinishReason {
+            let base_url = responses_api_test_server::spawn(sse).await;
+            let provider = CodexChatGptProvider::new(&base_url, "test-key", "gpt-4o");
+            provider
+                .complete(CompletionRequest::new(vec![ChatMessage::user("hi")]))
+                .await
+                .expect("provider returns the terminal response")
+                .finish_reason
+        }
+
+        // status = completed → a clean stop.
+        assert_eq!(
+            finish_reason_for(
+                r#"data: {"type":"response.output_text.delta","delta":"done"}
+
+data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}
+
+"#
+            )
+            .await,
+            FinishReason::Stop,
+        );
+
+        // status = incomplete, reason = max_output_tokens → truncation.
+        assert_eq!(
+            finish_reason_for(
+                r#"data: {"type":"response.output_text.delta","delta":"half an ans"}
+
+data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1,"output_tokens":1}}}
+
+"#
+            )
+            .await,
+            FinishReason::Length,
+            "a max_output_tokens truncation must not be reported as a clean stop",
+        );
+
+        // status = incomplete, reason = content_filter → policy block.
+        assert_eq!(
+            finish_reason_for(
+                r#"data: {"type":"response.output_text.delta","delta":"I can't"}
+
+data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"content_filter"},"usage":{"input_tokens":1,"output_tokens":1}}}
+
+"#
+            )
+            .await,
+            FinishReason::ContentFilter,
+        );
+
+        // A refusal content part on an otherwise "completed" response.
+        assert_eq!(
+            finish_reason_for(
+                r#"data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"refusal","refusal":"I'm sorry, I can't help with that."}]}],"usage":{"input_tokens":1,"output_tokens":1}}}
+
+"#
+            )
+            .await,
+            FinishReason::ContentFilter,
+            "a Responses API refusal part is a content block, not a clean stop",
+        );
+
+        // status = incomplete with a reason we do not recognize → Unknown,
+        // never Stop.
+        assert_eq!(
+            finish_reason_for(
+                r#"data: {"type":"response.output_text.delta","delta":"partial"}
+
+data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"teapot"},"usage":{"input_tokens":1,"output_tokens":1}}}
+
+"#
+            )
+            .await,
+            FinishReason::Unknown,
+        );
+
+        // status absent entirely (older/proxied server) → documented fallback:
+        // the terminal event arrived, so a text-only body is a clean stop.
+        assert_eq!(
+            finish_reason_for(
+                r#"data: {"type":"response.output_text.delta","delta":"done"}
+
+data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}
+
+"#
+            )
+            .await,
+            FinishReason::Stop,
+        );
+    }
+
+    /// Test through the caller on the tool-capable path: a response truncated
+    /// at `max_output_tokens` that still emitted a function call must report
+    /// `Length`, not `ToolUse` — the arguments may be cut off mid-JSON.
+    #[tokio::test]
+    async fn complete_with_tools_reports_codex_truncation_over_tool_call_shape() {
+        let base_url = responses_api_test_server::spawn(
+            r#"event: response.output_item.added
+data: {"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"builtin_echo"}}
+
+event: response.function_call_arguments.delta
+data: {"item_id":"fc_1","delta":"{\"message\":\"hel"}
+
+event: response.incomplete
+data: {"response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":3,"output_tokens":2}}}
+
+"#,
+        )
+        .await;
+        let provider = CodexChatGptProvider::new(&base_url, "test-key", "gpt-4o");
+        let request = ToolCompletionRequest::new(
+            vec![ChatMessage::user("use echo")],
+            vec![ToolDefinition {
+                name: "builtin.echo".to_string(),
+                description: "Echo input".to_string(),
+                parameters: json!({"type": "object"}),
+            }],
+        );
+
+        let response = provider
+            .complete_with_tools(request)
+            .await
+            .expect("provider returns the terminal response");
+
+        assert_eq!(
+            response.finish_reason,
+            FinishReason::Length,
+            "a truncated tool call must not be laundered into ToolUse",
         );
     }
 

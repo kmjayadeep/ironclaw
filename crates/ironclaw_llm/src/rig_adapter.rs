@@ -32,8 +32,8 @@ use crate::provider::{
     ChatMessage, CompletionRequest, CompletionResponse, CompletionStreamSink, FinishReason,
     LlmProvider, ReasoningDetail as IronReasoningDetail, ReasoningDetails as IronReasoningDetails,
     ToolCall as IronToolCall, ToolCompletionRequest, ToolCompletionResponse,
-    ToolDefinition as IronToolDefinition, strip_unsupported_completion_params,
-    strip_unsupported_tool_params,
+    ToolDefinition as IronToolDefinition, resolve_finish_reason,
+    strip_unsupported_completion_params, strip_unsupported_tool_params,
 };
 use crate::tool_schema::{ToolSchemaPolicy, shape_tool_schema};
 #[cfg(test)]
@@ -993,30 +993,6 @@ fn map_provider_finish_token(token: &str) -> Option<FinishReason> {
         // Anthropic `pause_turn`, Ollama `load`/`unload`, and anything new.
         _ => FinishReason::Unknown,
     })
-}
-
-/// Combine what the provider reported with what the response body looks like.
-///
-/// The provider's own word wins. `Length` and `ContentFilter` win even when
-/// tool calls were parsed — truncated tool arguments must not be executed, and
-/// `ironclaw_runner`'s model gateway only forwards provider tool calls when the
-/// finish reason is `ToolUse` or `Stop`, so reporting the truth here is what
-/// turns a silently-truncated run into a surfaced failure.
-///
-/// Shape inference survives only in two places: as the documented fallback
-/// when the provider stated nothing (`None`), and to refine `Stop`/`Unknown`
-/// into `ToolUse` when structurally complete tool calls are present.
-fn resolve_finish_reason(provider: Option<FinishReason>, has_tool_calls: bool) -> FinishReason {
-    match provider {
-        Some(FinishReason::ToolUse) => FinishReason::ToolUse,
-        Some(FinishReason::Length) => FinishReason::Length,
-        Some(FinishReason::ContentFilter) => FinishReason::ContentFilter,
-        Some(FinishReason::Stop) | Some(FinishReason::Unknown) | None if has_tool_calls => {
-            FinishReason::ToolUse
-        }
-        Some(other) => other,
-        None => FinishReason::Stop,
-    }
 }
 
 /// Merge default additional parameters into the rig-core request.
