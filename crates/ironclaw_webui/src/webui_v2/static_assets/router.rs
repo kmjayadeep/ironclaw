@@ -14,13 +14,14 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path as AxumPath, State};
-use axum::http::{HeaderValue, StatusCode, Uri, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 use rand::RngExt as _;
 use thiserror::Error;
+use tower_http::compression::CompressionLayer;
 
-use super::assets::{self, INDEX_HTML_TEMPLATE};
+use super::assets::{self, Asset, INDEX_HTML_TEMPLATE};
 
 /// Placeholder substituted with the per-request CSP nonce. The
 /// fork's `index.html` already declares it; we just replace it.
@@ -192,6 +193,9 @@ pub fn static_router_with_config(config: StaticRouterConfig) -> Router {
             get(serve_configured_wildcard).fallback(|| async { StatusCode::NOT_FOUND }),
         )
         .with_state(state)
+        // This layer is deliberately scoped to the static router. API routes,
+        // especially SSE and WebSocket transports, never pass through it.
+        .layer(CompressionLayer::new().br(true).gzip(true))
 }
 
 /// Redirect a legacy `/v2` URL to its root-mounted equivalent.
@@ -240,7 +244,7 @@ pub async fn serve_wallet_connect() -> Response {
     let Some(asset) = assets::lookup("wallet-connect.html") else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let mut response = asset_response(asset.bytes, asset.content_type);
+    let mut response = asset_response(asset, None);
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -279,17 +283,26 @@ pub async fn serve_root() -> Response {
 /// path that has no file extension), 404 for unknown asset paths
 /// that do look like asset requests.
 pub async fn serve_wildcard(AxumPath(path): AxumPath<String>) -> Response {
-    serve_for_path(&path, DEFAULT_RESERVED_ROOT_NAMESPACES)
+    serve_for_path(&path, DEFAULT_RESERVED_ROOT_NAMESPACES, None)
 }
 
 async fn serve_configured_wildcard(
     State(state): State<StaticRouterState>,
     AxumPath(path): AxumPath<String>,
+    headers: HeaderMap,
 ) -> Response {
-    serve_for_path(&path, &state.reserved_root_namespaces)
+    serve_for_path(
+        &path,
+        &state.reserved_root_namespaces,
+        headers.get(header::IF_NONE_MATCH),
+    )
 }
 
-fn serve_for_path<T>(path: &str, reserved_root_namespaces: &[T]) -> Response
+fn serve_for_path<T>(
+    path: &str,
+    reserved_root_namespaces: &[T],
+    if_none_match: Option<&HeaderValue>,
+) -> Response
 where
     T: AsRef<str>,
 {
@@ -329,7 +342,7 @@ where
     }
 
     if let Some(asset) = assets::lookup(path) {
-        return asset_response(asset.bytes, asset.content_type);
+        return asset_response(asset, if_none_match);
     }
 
     // Unknown path that does not look like a real asset request
@@ -409,15 +422,43 @@ fn render_index_with_nonce() -> Response {
     response
 }
 
-fn asset_response(bytes: &'static [u8], content_type: &'static str) -> Response {
-    let mut response = Response::new(Body::from(bytes));
+fn asset_response(asset: &'static Asset, if_none_match: Option<&HeaderValue>) -> Response {
+    let not_modified = if_none_match.is_some_and(|candidate| etag_matches(candidate, asset.etag));
+    let mut response = if not_modified {
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::NOT_MODIFIED;
+        response
+    } else {
+        let mut response = Response::new(Body::from(asset.bytes));
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            // content_type strings come from build.rs and are static
+            // ASCII; from_static cannot panic on the values we emit.
+            HeaderValue::from_static(asset.content_type),
+        );
+        response
+    };
+    response
+        .headers_mut()
+        .insert(header::ETAG, HeaderValue::from_static(asset.etag));
     response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        // content_type strings come from build.rs and are static
-        // ASCII; from_static cannot panic on the values we emit.
-        HeaderValue::from_static(content_type),
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(asset.cache_control),
     );
     response
+}
+
+fn etag_matches(candidate: &HeaderValue, current: &str) -> bool {
+    let Ok(candidate) = candidate.to_str() else {
+        return false;
+    };
+    candidate.split(',').map(str::trim).any(|tag| {
+        tag == "*"
+            || tag
+                .strip_prefix("W/")
+                .unwrap_or(tag)
+                .eq(current.strip_prefix("W/").unwrap_or(current))
+    })
 }
 
 fn generate_nonce() -> String {
@@ -467,6 +508,13 @@ mod tests {
             .await
             .expect("oneshot");
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store"),
+        );
         let body = body_string(response).await;
         assert!(body.contains("v2-root"));
         assert!(!body.contains("__IRONCLAW_CSP_NONCE__"));
@@ -554,12 +602,128 @@ mod tests {
             .await
             .expect("oneshot");
         assert_eq!(response.status(), StatusCode::OK);
-        let ct = response
-            .headers()
+        let headers = response.headers();
+        let ct = headers
             .get(header::CONTENT_TYPE)
             .map(|v| v.to_str().unwrap().to_string())
             .unwrap_or_default();
         assert!(ct.starts_with("text/css"), "got `{ct}`");
+        assert_eq!(
+            headers
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("public, max-age=31536000, immutable"),
+        );
+        assert!(
+            headers
+                .get(header::ETAG)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("W/\"")),
+            "fingerprinted asset must carry a weak ETag",
+        );
+    }
+
+    #[tokio::test]
+    async fn nonfingerprinted_assets_revalidate_with_etag() {
+        let app = static_router();
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/assets/site.webmanifest")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(
+            first
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("public, max-age=0, must-revalidate"),
+        );
+        let etag = first
+            .headers()
+            .get(header::ETAG)
+            .expect("ETag on nonfingerprinted asset")
+            .clone();
+
+        let not_modified = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/assets/site.webmanifest")
+                    .header(header::IF_NONE_MATCH, etag.clone())
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(not_modified.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(not_modified.headers().get(header::ETAG), Some(&etag));
+        assert_eq!(
+            not_modified
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("public, max-age=0, must-revalidate"),
+        );
+        assert!(
+            to_bytes(not_modified.into_body(), 1)
+                .await
+                .expect("304 body")
+                .is_empty(),
+        );
+    }
+
+    #[tokio::test]
+    async fn text_assets_negotiate_brotli_and_gzip() {
+        let app = static_router();
+        let css_path = asset_path_with("assets/app-", ".css");
+        let uncompressed_len = assets::lookup(css_path)
+            .expect("fingerprinted stylesheet is embedded")
+            .bytes
+            .len();
+        for encoding in ["br", "gzip"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::GET)
+                        .uri(format!("/{css_path}"))
+                        .header(header::ACCEPT_ENCODING, encoding)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("oneshot");
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::CONTENT_ENCODING)
+                    .and_then(|value| value.to_str().ok()),
+                Some(encoding),
+            );
+            assert!(
+                response
+                    .headers()
+                    .get(header::VARY)
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| value.eq_ignore_ascii_case("accept-encoding")),
+                "compressed asset must vary on Accept-Encoding",
+            );
+            let compressed = to_bytes(response.into_body(), 512 * 1024)
+                .await
+                .expect("compressed body");
+            assert!(
+                compressed.len() < uncompressed_len,
+                "{encoding} body must be smaller than the embedded stylesheet",
+            );
+        }
     }
 
     #[tokio::test]
@@ -1089,7 +1253,9 @@ mod tests {
         for required in [
             "wallet-connect.js",
             "wallet-connect.html",
-            "assets/favicon.svg",
+            "assets/favicon-96x96.png",
+            "assets/favicon.ico",
+            "assets/logo.png",
             "vendor/fonts/fonts.css",
         ] {
             assert!(
@@ -1097,6 +1263,54 @@ mod tests {
                 "expected `{required}` in the embedded asset table",
             );
         }
+        assert!(
+            assets::lookup("assets/favicon.svg").is_none(),
+            "the oversized data-URI SVG favicon must not be embedded",
+        );
+    }
+
+    #[test]
+    fn embedded_image_assets_meet_size_and_mime_contracts() {
+        let image_paths = [
+            "assets/favicon-96x96.png",
+            "assets/favicon.ico",
+            "assets/apple-touch-icon.png",
+            "assets/web-app-manifest-192x192.png",
+            "assets/web-app-manifest-512x512.png",
+            "assets/logo.png",
+        ];
+        let total_bytes = image_paths
+            .iter()
+            .map(|path| {
+                assets::lookup(path)
+                    .unwrap_or_else(|| panic!("{path} is embedded"))
+                    .bytes
+                    .len()
+            })
+            .sum::<usize>();
+        assert!(
+            total_bytes <= 200_000,
+            "embedded WebUI images must stay within the 200 KB aggregate budget; got {total_bytes}",
+        );
+
+        for path in [
+            "assets/favicon-96x96.png",
+            "assets/favicon.ico",
+            "assets/logo.png",
+        ] {
+            let size = assets::lookup(path)
+                .unwrap_or_else(|| panic!("{path} is embedded"))
+                .bytes
+                .len();
+            assert!(size <= 30_000, "{path} exceeds the 30 KB budget: {size}");
+        }
+
+        let logo = assets::lookup("assets/logo.png").expect("logo is embedded");
+        assert_eq!(logo.content_type, "image/png");
+        assert!(
+            logo.bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+            "logo extension, content type, and bytes must all be PNG",
+        );
     }
 
     #[test]
