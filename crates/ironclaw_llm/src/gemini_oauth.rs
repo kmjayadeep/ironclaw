@@ -1281,6 +1281,9 @@ impl GeminiOauthProvider {
             let mut success = false;
             if self.uses_cloud_code_api() {
                 let aggregate = Self::aggregate_cloud_code_sse(&body_str);
+                // silent-ok: caching `last_response_meta` is best-effort
+                // telemetry; a poisoned lock must not fail an otherwise-good
+                // response.
                 if let Ok(mut meta) = self.last_response_meta.lock() {
                     *meta = aggregate.meta;
                 }
