@@ -119,6 +119,46 @@ test("assistant bubbles keep streaming projections off the full markdown path", 
   assert.match(render(true), /data-streaming="false"/);
 });
 
+test("thinking bubbles defer Markdown only for the active run", async () => {
+  const { MessageBubble } = await import("./message-bubble");
+  const render = (activeRunId: string | null) =>
+    renderToStaticMarkup(
+      React.createElement(MessageBubble, {
+        message: {
+          id: "thinking-run-1",
+          role: CHAT_MESSAGE_ROLES.THINKING,
+          content: "Working on **this**.",
+          turnRunId: "run-1",
+        },
+        activeRunId,
+      }),
+    );
+
+  assert.match(render("run-1"), /data-streaming="true"/);
+  assert.match(render(null), /data-streaming="false"/);
+});
+
+test("active reasoning in an activity run defers Markdown", async () => {
+  const { ActivityRun } = await import("./activity-run");
+  const render = (activeRunId: string | null) =>
+    renderToStaticMarkup(
+      React.createElement(ActivityRun, {
+        activeRunId,
+        activity: [
+          {
+            id: "thinking-run-1",
+            role: CHAT_MESSAGE_ROLES.THINKING,
+            content: "Working on **this**.",
+            turnRunId: "run-1",
+          },
+        ],
+      }),
+    );
+
+  assert.match(render("run-1"), /data-streaming="true"/);
+  assert.match(render(null), /data-streaming="false"/);
+});
+
 test("only final assistant replies expose the run artifact download", async () => {
   const { MessageBubble } = await import("./message-bubble");
   const render = (isFinalReply: boolean) =>

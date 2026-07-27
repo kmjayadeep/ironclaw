@@ -358,6 +358,7 @@ export function Chat({
             onLoadMore={loadMore}
             onRetryMessage={retryMessage}
             threadId={activeThreadId}
+            activeRunId={activeRunId}
             logsPath={logsPath}
             pending={activeThreadIsProcessing}
           >

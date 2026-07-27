@@ -5,7 +5,7 @@ import { summarizeActivity } from "../lib/activity-summary";
 import { MarkdownRenderer } from "./markdown-renderer";
 import { ToolActivity } from "./tool-activity";
 
-export function ActivityRun({ activity }) {
+export function ActivityRun({ activity, activeRunId }) {
   const t = useT();
   const summary = React.useMemo(() => summarizeActivity(activity, t), [activity, t]);
   const shouldAutoExpand = shouldExpandActivityRun(activity);
@@ -44,6 +44,7 @@ export function ActivityRun({ activity }) {
             <ActivityItem
               key={item.id || `${item.role || "activity"}-${index}`}
               item={item}
+              activeRunId={activeRunId}
             />
           ))}
         </div>
@@ -52,9 +53,14 @@ export function ActivityRun({ activity }) {
   );
 }
 
-function ActivityItem({ item }) {
+function ActivityItem({ item, activeRunId }) {
   if (item.role === "thinking") {
-    return (<ReasoningItem content={item.content} />);
+    return (
+      <ReasoningItem
+        content={item.content}
+        streaming={item.turnRunId === activeRunId}
+      />
+    );
   }
 
   if (item.role === "tool_activity" || hasToolCalls(item)) {
@@ -67,7 +73,7 @@ function ActivityItem({ item }) {
   return null;
 }
 
-function ReasoningItem({ content }) {
+function ReasoningItem({ content, streaming = false }) {
   if (!content) return null;
   return (
     <div className="flex min-w-0 gap-3">
@@ -77,7 +83,11 @@ function ReasoningItem({ content }) {
         <Icon name="spark" className="h-4 w-4" />
       </div>
       <div className="min-w-0 flex-1 border-l-2 border-white/10 pl-3 text-iron-300 v2-chat-readable-width">
-        <MarkdownRenderer content={content} className="text-[13px]" />
+        <MarkdownRenderer
+          content={content}
+          className="text-[13px]"
+          streaming={streaming}
+        />
       </div>
     </div>
   );
