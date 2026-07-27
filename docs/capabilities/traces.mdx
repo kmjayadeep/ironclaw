@@ -1,0 +1,135 @@
+---
+title: "Trace Commons"
+description: "Optionally contribute redacted agent traces and earn credit"
+icon: layers
+---
+
+Trace Commons is an opt-in program for contributing redacted traces of your agent's runs.
+Contributions earn credit, and you can withdraw anything you've submitted.
+
+<Info>
+Contribution is off by default. Nothing leaves your machine until you explicitly opt in,
+and every envelope is redacted locally before it is eligible to be sent.
+</Info>
+
+---
+
+## Opting In
+
+Check where you stand, then turn it on:
+
+```bash
+ironclaw traces status
+ironclaw traces opt-in
+```
+
+To turn it off again:
+
+```bash
+ironclaw traces opt-out
+```
+
+Bare `opt-out` is the full off switch — it disables the instance-level policy and your
+owner scope together.
+
+You can also manage participation from **Settings → Trace Commons** in the
+[web interface](/using/webui).
+
+---
+
+## Contributing a Trace
+
+Preview first. `preview` builds the redacted envelope from a recorded trace file so you
+can see exactly what would be sent:
+
+```bash
+ironclaw traces preview <trace-file>
+```
+
+Once you're satisfied, submit it directly or queue it for the next flush:
+
+<CodeGroup>
+
+```bash Submit now
+ironclaw traces submit
+```
+
+```bash Queue for later
+ironclaw traces enqueue
+ironclaw traces flush-queue
+```
+
+</CodeGroup>
+
+`flush-queue` submits every eligible queued envelope using your standing opt-in policy.
+Inspect the queue at any time:
+
+```bash
+ironclaw traces queue-status
+```
+
+---
+
+## Reviewing and Withdrawing
+
+```bash
+ironclaw traces list-submissions
+ironclaw traces revoke <submission-id>
+```
+
+`revoke` removes the contribution locally and, optionally, at the ingestion service.
+
+Check your earned credit and where it came from:
+
+```bash
+ironclaw traces credit
+```
+
+---
+
+## Instance Enrollment
+
+Operators can enroll an entire deployment with an invite link, so every user without a
+personal enrollment inherits it. This requires shell access to the instance host.
+
+```bash
+ironclaw traces enroll-instance <invite-link>
+```
+
+Each inherited user is attributed through a salted per-user pseudonym rather than their
+real identity.
+
+To exclude one user from an instance-wide enrollment without disabling it for everyone:
+
+```bash
+ironclaw traces opt-out --user-scope <tenant-id>/<user-id>
+```
+
+<Warning>
+Bare `ironclaw traces opt-out` on an enrolled instance disables the whole instance
+enrollment, not just your own participation. Use `--user-scope` to exclude a single user.
+</Warning>
+
+---
+
+## Public Profile
+
+A second, separate opt-in publishes a community profile alongside your contributions:
+
+```bash
+ironclaw traces profile set
+ironclaw traces profile withdraw
+```
+
+`ironclaw traces profile token` mints a short-lived token for the Trace Commons web
+profile page.
+
+---
+
+## Checking the Service
+
+```bash
+ironclaw traces ingest-health <url>
+```
+
+Reports whether an ingestion service is reachable and healthy.
