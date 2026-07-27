@@ -953,7 +953,17 @@ fn extract_finish_reason<T: Serialize>(raw: &T) -> Option<FinishReason> {
 ///   `deepseek`, `openrouter`): `choices[0].finish_reason`
 /// - Anthropic-by-key: `stop_reason`
 /// - Ollama: `done_reason`
-/// - Gemini by API key: `candidates[0].finishReason`
+/// - Gemini by API key: `candidates[0].finishReason`, falling back to
+///   `promptFeedback.blockReason`
+///
+/// Gemini blocks in two different places. A candidate's `finishReason` means
+/// the *output* was cut off mid-generation. `promptFeedback.blockReason` means
+/// the *input* prompt was rejected before generation, and rig's own
+/// `GenerateContentResponse` documents the consequence: it returns no
+/// candidates at all only when something was wrong with the prompt. Reading
+/// just the candidate path therefore found nothing for a blocked prompt and
+/// left the caller to infer a clean `Stop` from the response shape. The
+/// candidate's own reason still wins when both are present.
 fn provider_finish_token(value: &serde_json::Value) -> Option<&str> {
     let openai = value
         .get("choices")
@@ -970,11 +980,24 @@ fn provider_finish_token(value: &serde_json::Value) -> Option<&str> {
     if let Some(ollama) = value.get("done_reason").and_then(|r| r.as_str()) {
         return Some(ollama);
     }
-    value
+    let gemini_candidate = value
         .get("candidates")
         .and_then(|candidates| candidates.as_array())
         .and_then(|candidates| candidates.first())
         .and_then(|candidate| candidate.get("finishReason"))
+        .and_then(|reason| reason.as_str());
+    if gemini_candidate.is_some() {
+        return gemini_candidate;
+    }
+    // `blockReason` speaks the same `SCREAMING_SNAKE_CASE` vocabulary as
+    // `finishReason`, so the shared table classifies it without a second
+    // mapping: `SAFETY` / `BLOCKLIST` / `PROHIBITED_CONTENT` / `IMAGE_SAFETY` /
+    // `MODEL_ARMOR` are content blocks, `OTHER` and `BLOCK_REASON_UNSPECIFIED`
+    // are unknown. An absent `blockReason` still means the provider said
+    // nothing, which is the documented shape-inference fallback.
+    value
+        .get("promptFeedback")
+        .and_then(|feedback| feedback.get("blockReason"))
         .and_then(|reason| reason.as_str())
 }
 
@@ -3117,6 +3140,16 @@ mod tests {
                 "candidates": [{"content": null, "finishReason": finish}],
             })
         }
+        // Gemini's *other* block mechanism. rig's own docs on
+        // `GenerateContentResponse`: "Returns no candidates at all only if
+        // there was something wrong with the prompt (check promptFeedback)."
+        fn gemini_prompt_blocked(block: serde_json::Value) -> serde_json::Value {
+            serde_json::json!({
+                "responseId": "resp_1",
+                "candidates": [],
+                "promptFeedback": {"blockReason": block},
+            })
+        }
 
         // (adapter family, provider's own token, expected FinishReason)
         let cases: Vec<(&str, serde_json::Value, Option<FinishReason>)> = vec![
@@ -3272,6 +3305,55 @@ mod tests {
                 gemini_shaped(serde_json::Value::Null),
                 None,
             ),
+            // -- Gemini by API key, prompt-level block. The input was
+            //    rejected before generation, so there are no candidates at
+            //    all and the reason lives at promptFeedback.blockReason.
+            //    Falling through to shape inference reported this as a clean
+            //    `Stop`.
+            (
+                "gemini/promptFeedback-SAFETY",
+                gemini_prompt_blocked("SAFETY".into()),
+                Some(FinishReason::ContentFilter),
+            ),
+            (
+                "gemini/promptFeedback-PROHIBITED_CONTENT",
+                gemini_prompt_blocked("PROHIBITED_CONTENT".into()),
+                Some(FinishReason::ContentFilter),
+            ),
+            (
+                // Recognized as a block we cannot classify — never a clean stop.
+                "gemini/promptFeedback-OTHER",
+                gemini_prompt_blocked("OTHER".into()),
+                Some(FinishReason::Unknown),
+            ),
+            (
+                // A candidate's own reason still wins when both are present.
+                "gemini/candidate-outranks-promptFeedback",
+                serde_json::json!({
+                    "responseId": "resp_1",
+                    "candidates": [{"content": null, "finishReason": "STOP"}],
+                    "promptFeedback": {"blockReason": "SAFETY"},
+                }),
+                Some(FinishReason::Stop),
+            ),
+            (
+                // Preserved: promptFeedback carrying only safety ratings
+                // blocks nothing, so the provider still said nothing.
+                "gemini/promptFeedback-without-blockReason",
+                serde_json::json!({
+                    "responseId": "resp_1",
+                    "candidates": [],
+                    "promptFeedback": {"safetyRatings": []},
+                }),
+                None,
+            ),
+            (
+                // Preserved: no candidates and nothing blocked stays "the
+                // provider said nothing", not a filter.
+                "gemini/no-candidates-unblocked",
+                serde_json::json!({"responseId": "resp_1", "candidates": []}),
+                None,
+            ),
             // -- A provider shape we do not recognize at all.
             (
                 "unrecognized-shape",
@@ -3361,6 +3443,26 @@ mod tests {
             extract_finish_reason(&gemini),
             Some(FinishReason::ContentFilter),
             "rig's Gemini response must still expose candidates[].finishReason",
+        );
+
+        // The prompt-block path, pinned against rig's own serde derives:
+        // `GenerateContentResponse` and `PromptFeedback` are both
+        // `rename_all = "camelCase"` and `BlockReason` is
+        // `SCREAMING_SNAKE_CASE`, so the reason reaches the extractor at
+        // `promptFeedback.blockReason` in the vocabulary the shared table
+        // already speaks. If rig renames either, this fails instead of
+        // silently reporting a blocked prompt as a clean stop.
+        let gemini_blocked: rig::providers::gemini::completion::gemini_api_types::GenerateContentResponse =
+            serde_json::from_value(serde_json::json!({
+                "responseId": "resp_1",
+                "candidates": [],
+                "promptFeedback": {"blockReason": "SAFETY"},
+            }))
+            .expect("gemini prompt-block fixture must parse into rig's GenerateContentResponse");
+        assert_eq!(
+            extract_finish_reason(&gemini_blocked),
+            Some(FinishReason::ContentFilter),
+            "rig's Gemini response must still expose promptFeedback.blockReason",
         );
     }
 
