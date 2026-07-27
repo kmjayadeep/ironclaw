@@ -926,7 +926,22 @@ fn extract_cache_creation<T: Serialize>(raw: &T) -> u32 {
 /// (unknown or older provider shape); callers then fall back to inferring it
 /// from the response shape. See [`resolve_finish_reason`].
 fn extract_finish_reason<T: Serialize>(raw: &T) -> Option<FinishReason> {
-    let value = serde_json::to_value(raw).ok()?;
+    // silent-ok: serializing `raw` — a body rig already deserialized from the
+    // provider — cannot fail in practice. If it ever does, shape inference is
+    // the documented fallback rather than failing an otherwise-good response,
+    // but the branch is logged because it silently re-enables the guess this
+    // function removes: a truncated response would then report `Stop`.
+    let value = match serde_json::to_value(raw) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::debug!(
+                %error,
+                "provider finish reason unavailable (raw response would not serialize); \
+                 falling back to response-shape inference"
+            );
+            return None;
+        }
+    };
     let token = provider_finish_token(&value)?;
     map_provider_finish_token(token)
 }
