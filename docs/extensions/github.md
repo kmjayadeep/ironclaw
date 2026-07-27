@@ -17,7 +17,7 @@ The GitHub extension allows your agent to interact with GitHub repositories, iss
 To install the GitHub extension, run:
 
 ```bash
-ironclaw registry install github
+ironclaw extension install github
 ```
 
 </Step>
@@ -37,10 +37,10 @@ export GITHUB_OAUTH_CLIENT_SECRET=...
 Now authenticate:
 
 ```bash
-ironclaw tool auth github
+ironclaw extension activate github
 ```
 
-IronClaw will open the browser OAuth flow and store the resulting `github_token`.
+Complete the GitHub OAuth flow from **Extensions** in the [web interface](/using/webui). The resulting token is stored encrypted.
 
 </Step>
 
@@ -124,7 +124,7 @@ On the agent's GitHub account, go to [Settings -> Developer settings -> Personal
 Now that you have either OAuth app credentials or a PAT, authenticate the GitHub extension:
 
 ```bash
-ironclaw tool auth github
+ironclaw extension activate github
 ```
 
 If `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` are set, IronClaw

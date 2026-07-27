@@ -29,7 +29,7 @@ As of the time of writing, Brave Search API offers 5$ of free credits per month 
 To install the Web Search extension, run the following command in your terminal:
 
 ```bash
-ironclaw registry install web-search
+ironclaw extension install web-search
 ```
 
 </Step>
@@ -39,10 +39,10 @@ ironclaw registry install web-search
 After installing the extension, you need to configure your Brave Search API key in IronClaw. You can do this by running:
 
 ```bash
-ironclaw tool auth web-search
+ironclaw extension activate web-search
 ```
 
-Then follow the prompts to enter your API key.
+Then supply your API key from **Extensions** in the [web interface](/using/webui). It is stored in the encrypted secret store.
 
 </Step>
 

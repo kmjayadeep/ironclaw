@@ -86,7 +86,6 @@
                       },
                       "capabilities/skills",
                       "capabilities/sandboxed-tools",
-                      "capabilities/mcp",
                       "capabilities/traces"
                     ]
                   }
@@ -311,5 +310,39 @@
       "github": "https://github.com/nearai",
       "linkedin": "https://linkedin.com/company/near-ai"
     }
-  }
+  },
+  "redirects": [
+    {
+      "source": "/capabilities/mcp",
+      "destination": "/extensions/mcp"
+    },
+    {
+      "source": "/tunnel",
+      "destination": "/using/webui"
+    },
+    {
+      "source": "/channels/discord",
+      "destination": "/channels/overview"
+    },
+    {
+      "source": "/channels/signal",
+      "destination": "/channels/overview"
+    },
+    {
+      "source": "/channels/wechat",
+      "destination": "/channels/overview"
+    },
+    {
+      "source": "/channels/wecom",
+      "destination": "/channels/overview"
+    },
+    {
+      "source": "/channels/local",
+      "destination": "/channels/overview"
+    },
+    {
+      "source": "/channels/webhook",
+      "destination": "/channels/overview"
+    }
+  ]
 }
