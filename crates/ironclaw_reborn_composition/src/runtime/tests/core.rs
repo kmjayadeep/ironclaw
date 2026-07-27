@@ -2463,6 +2463,7 @@ async fn env_trace_recording_attaches_recorder_factory_only_when_enabled() {
 /// the real caller (`build_reborn_runtime`) instead.
 #[tokio::test]
 async fn provider_factory_runs_during_production_boot() {
+    let _env_guard = RuntimeEnvGuard::with([("NEARAI_BASE_URL", None)]).await;
     let root = tempfile::tempdir().expect("tempdir");
     let session_dir = tempfile::tempdir().expect("session tempdir");
     let standalone_root = root.path().join("standalone");
