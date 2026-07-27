@@ -577,6 +577,21 @@ mod tests {
     /// `NetworkContainerLookup for Docker` impl, not just the fake seam
     /// above. Follows this crate's existing gated-real-Docker convention
     /// (see this test module's `docker_gate` declaration above).
+    ///
+    /// Connects via `super::super::connect_docker()` — the same
+    /// local-defaults-then-`unix_socket_candidates()` (`~/.colima/...`,
+    /// `~/.rd/...`, etc.) fallback production uses — rather than
+    /// `Docker::connect_with_local_defaults()` directly. `docker_gate::
+    /// docker_available()` shells out to the `docker` CLI, which resolves
+    /// the daemon through whatever context is active (Colima, Docker
+    /// Desktop, a remote host); `connect_with_local_defaults()` alone only
+    /// honors `DOCKER_HOST` or the hardcoded `/var/run/docker.sock`, so the
+    /// CLI gate could report "available" while that direct connect still
+    /// fails on any machine using a non-default socket. Reusing
+    /// `connect_docker()` makes "available" mean the same thing to the gate
+    /// and the connection, and — since even that broader fallback can't
+    /// cover every possible context (e.g. a genuinely remote `DOCKER_HOST`)
+    /// — a failure here is still a `SKIP`, never a panic/unwrap.
     #[tokio::test]
     async fn real_docker_resolves_a_live_container_on_the_egress_network() {
         if !docker_gate::docker_available() {
@@ -586,7 +601,19 @@ mod tests {
             return;
         }
 
-        let docker = Docker::connect_with_local_defaults().expect("docker client connects");
+        let docker = match super::super::connect_docker().await {
+            Ok(docker) => docker,
+            Err(error) => {
+                eprintln!(
+                    "SKIP: docker_available() reported a reachable daemon via the `docker` CLI \
+                     (context-aware), but connect_docker()'s local-defaults + known-socket \
+                     fallback could not reach it ({error}) — \
+                     real_docker_resolves_a_live_container_on_the_egress_network requires a \
+                     daemon reachable at one of those paths (CI/hosted Docker lane only)"
+                );
+                return;
+            }
+        };
         let network_name = format!("ironclaw-test-attribution-{}", uuid::Uuid::new_v4());
         let tenant = TenantId::new("attribution-tenant").unwrap();
         let user = UserId::new("attribution-user").unwrap();
