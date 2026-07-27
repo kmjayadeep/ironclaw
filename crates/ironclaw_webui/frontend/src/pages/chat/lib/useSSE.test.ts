@@ -200,16 +200,19 @@ test("useSSE resumes delivery after returning to a hidden tab", () => {
   resumed.readyState = context.EventSource.CONNECTING;
   resumed.onerror({});
 
-  assert.equal(resumed.closeCalls, 0);
-  assert.equal(timers.filter((timer) => timer.delay === 10_000).length, 1);
+  assert.equal(resumed.closeCalls, 1);
+  const reconnectTimer = timers.find((timer) => timer.delay === 2000);
+  assert.ok(reconnectTimer);
+  reconnectTimer.handler();
 
-  resumed.readyState = context.EventSource.OPEN;
-  resumed.listener("projection_update")({
+  const replacement = streams[2];
+  replacement.readyState = context.EventSource.OPEN;
+  replacement.listener("projection_update")({
     data: JSON.stringify({ type: "projection_update", state: { items: [] } }),
     lastEventId: "after-tab-resume",
   });
 
-  assert.equal(streams.length, 2);
+  assert.equal(streams.length, 3);
   assert.equal(events.length, 1);
   assert.deepEqual(statuses, [
     "connecting",
@@ -217,35 +220,55 @@ test("useSSE resumes delivery after returning to a hidden tab", () => {
     "paused",
     "connecting",
     "reconnecting",
+    "reconnecting",
     "connected",
   ]);
 });
 
-test("useSSE lets EventSource recover transient failures natively", () => {
+test("useSSE replaces a short successful stream with a newer generation", () => {
   const { context, statuses, streams, timers } = createHarness();
 
   assert.deepEqual(statuses, ["connecting"]);
   const stream = streams[0];
+  stream.readyState = context.EventSource.OPEN;
+  stream.onopen();
   stream.readyState = context.EventSource.CONNECTING;
   stream.onerror({});
 
-  assert.deepEqual(statuses, ["connecting", "reconnecting"]);
-  assert.equal(stream.closeCalls, 0);
+  assert.deepEqual(statuses, [
+    "connecting",
+    "connected",
+    "reconnecting",
+  ]);
+  assert.equal(stream.closeCalls, 1);
   assert.equal(timers.length, 1);
-  assert.equal(timers[0].delay, 10_000);
+  assert.equal(timers[0].delay, 2000);
 
-  stream.readyState = context.EventSource.OPEN;
-  stream.listener("keep_alive")({
+  timers[0].handler();
+  const replacement = streams[1];
+  assert.equal(replacement.args.connectionGeneration, 2);
+
+  replacement.readyState = context.EventSource.OPEN;
+  replacement.listener("keep_alive")({
     data: JSON.stringify({ type: "keep_alive" }),
     lastEventId: "resume-cursor",
   });
 
-  assert.equal(timers[0].cleared, true);
-  assert.equal(streams.length, 1);
-  assert.deepEqual(statuses, ["connecting", "reconnecting", "connected"]);
+  assert.equal(
+    timers.find((timer) => timer.delay === 10_000)?.cleared,
+    true,
+  );
+  assert.equal(streams.length, 2);
+  assert.deepEqual(statuses, [
+    "connecting",
+    "connected",
+    "reconnecting",
+    "reconnecting",
+    "connected",
+  ]);
 });
 
-test("useSSE keeps one watchdog across repeated native errors", () => {
+test("useSSE schedules one replacement across duplicate transport errors", () => {
   const { context, statuses, streams, timers } = createHarness();
 
   const stream = streams[0];
@@ -254,19 +277,19 @@ test("useSSE keeps one watchdog across repeated native errors", () => {
   stream.onerror({});
 
   assert.equal(timers.length, 1);
-  assert.equal(timers[0].delay, 10_000);
-  assert.equal(stream.closeCalls, 0);
-  assert.deepEqual(statuses, ["connecting", "reconnecting", "reconnecting"]);
+  assert.equal(timers[0].delay, 2000);
+  assert.equal(stream.closeCalls, 1);
+  assert.deepEqual(statuses, ["connecting", "reconnecting"]);
 });
 
-test("useSSE falls back to app reconnect timer for closed streams", () => {
+test("useSSE uses the controlled reconnect path for closed streams", () => {
   const { context, statuses, streams, timers } = createHarness();
 
   const stream = streams[0];
   stream.readyState = context.EventSource.CLOSED;
   stream.onerror({});
 
-  assert.deepEqual(statuses, ["connecting", "disconnected"]);
+  assert.deepEqual(statuses, ["connecting", "reconnecting"]);
   assert.equal(stream.closeCalls, 1);
   assert.equal(timers.length, 1);
   assert.equal(timers[0].delay, 2000);
@@ -274,7 +297,7 @@ test("useSSE falls back to app reconnect timer for closed streams", () => {
   timers[0].handler();
 
   assert.equal(streams.length, 2);
-  assert.deepEqual(statuses, ["connecting", "disconnected", "reconnecting"]);
+  assert.deepEqual(statuses, ["connecting", "reconnecting", "reconnecting"]);
 });
 
 test("useSSE replaces a reconnect attempt that never finishes opening", () => {
@@ -283,10 +306,6 @@ test("useSSE replaces a reconnect attempt that never finishes opening", () => {
   const first = streams[0];
   first.readyState = context.EventSource.CONNECTING;
   first.onerror({});
-
-  const nativeWatchdog = timers.find((timer) => timer.delay === 10_000);
-  assert.ok(nativeWatchdog);
-  nativeWatchdog.handler();
 
   const reconnectTimer = timers.find((timer) => timer.delay === 2000);
   assert.ok(reconnectTimer);
@@ -308,7 +327,6 @@ test("useSSE replaces a reconnect attempt that never finishes opening", () => {
   );
   assert.deepEqual(statuses, [
     "connecting",
-    "reconnecting",
     "reconnecting",
     "reconnecting",
     "reconnecting",

@@ -30,7 +30,6 @@ const V2_EVENT_NAMES = [
   "stream_error",
 ];
 
-const EVENT_SOURCE_CLOSED = 2;
 const EVENT_SOURCE_OPEN = 1;
 const SSE_CONNECTION_STORAGE_KEY = "ironclaw:v2-sse-connection";
 
@@ -82,13 +81,6 @@ function eventSourceReadyStateConstant(staticValue: unknown, fallback: number) {
   return typeof staticValue === "number" ? staticValue : fallback;
 }
 
-function isEventSourceClosed(source) {
-  const closedState = typeof EventSource === "function"
-    ? eventSourceReadyStateConstant(EventSource.CLOSED, EVENT_SOURCE_CLOSED)
-    : EVENT_SOURCE_CLOSED;
-  return source?.readyState === closedState;
-}
-
 function isEventSourceOpen(source) {
   const openState = typeof EventSource === "function"
     ? eventSourceReadyStateConstant(EventSource.OPEN, EVENT_SOURCE_OPEN)
@@ -119,9 +111,8 @@ export function useSSE({ threadId, onEvent, enabled }) {
     let terminalErrorReceived = false;
     // This cursor belongs to this mounted route only. A route remount must
     // hydrate current state from the projection origin because the composite
-    // cursor contains a process-local live rail. Native EventSource retries
-    // still carry Last-Event-ID automatically, and explicit retries within
-    // this effect may resume from the latest frame observed here.
+    // cursor contains a process-local live rail. Controlled retries within this
+    // effect resume from the latest frame observed here.
     let lastEventId = null;
     const maxReconnectDelay = 30_000;
     const reconnectOpenDeadline = 10_000;
@@ -195,9 +186,9 @@ export function useSSE({ threadId, onEvent, enabled }) {
 
       // A replacement EventSource can remain in CONNECTING forever without
       // firing either callback when a proxy accepts the HTTP request but does
-      // not establish the event stream. Bound reconnect attempts explicitly;
-      // the initial connection remains browser-managed, while every recovery
-      // attempt must prove it opened within this deadline.
+      // not establish the event stream. Bound every recovery attempt
+      // explicitly; the initial attempt still reports its native failure
+      // through `onerror`.
       if (reconnectAttempts > 0) scheduleOpenWatchdog(source);
 
       source.onopen = () => {
@@ -275,17 +266,13 @@ export function useSSE({ threadId, onEvent, enabled }) {
           dispatchFrame(event, "error");
           return;
         }
-        // Preserve EventSource's native retry for transient failures. Closing
-        // it immediately creates a fresh HTTP stream for every error, which can
-        // race server-side slot release behind a proxy and strand the client in
-        // a reconnect loop. The watchdog below remains the bounded fallback if
-        // native recovery never opens or delivers another frame.
-        if (!isEventSourceClosed(source)) {
-          setStatus(CONNECTION_STATUS.RECONNECTING);
-          scheduleOpenWatchdog(source);
-          return;
-        }
-        reconnectWithTimer();
+        // Native EventSource retries reuse the original URL and therefore the
+        // same connection generation. A proxy can deliver one of those retries
+        // late, allowing equal-generation requests to supersede each other and
+        // repeatedly end as short 200 responses. Close the native retry state
+        // machine and schedule exactly one app-owned replacement; `connect()`
+        // gives it a newer generation that stale requests cannot cancel.
+        reconnectWithTimer(CONNECTION_STATUS.RECONNECTING);
       };
 
       // Cover anything emitted without an `event:` field — defensive

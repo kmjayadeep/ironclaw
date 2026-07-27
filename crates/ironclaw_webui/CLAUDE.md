@@ -136,11 +136,17 @@ route (tenant/user-scoped tool-approval settings), not an operator route.
   frame immediately after admission. Browser connection state uses that frame
   as proof that the projection tail is ready instead of waiting for a model
   delta or the periodic transport keep-alive.
+- The SPA owns transport recovery: a native EventSource error closes that
+  object and schedules one generation-ordered replacement through the bounded
+  backoff/watchdog path. Browser-native retries and app retries must not run
+  concurrently because native retries reuse their original connection
+  generation; visibility changes are lifecycle hints, not a recovery
+  requirement.
 - `after_cursor` is retained only within one mounted Chat route (including
-  native EventSource retries and visibility recovery). A route/thread remount
-  starts at the projection origin so the server returns durable state plus the
-  compacted current live state; it does not persist process-local live cursors
-  across SPA navigation.
+  controlled EventSource replacements and visibility recovery). A route/thread
+  remount starts at the projection origin so the server returns durable state
+  plus the compacted current live state; it does not persist process-local live
+  cursors across SPA navigation.
 - Every stream is closed after a max lifetime (5 min) and every `socket.send` /
   drain await is `timeout`-bounded, so a back-pressuring client or a stalled
   facade cannot pin a slot past the budget. Slots are RAII (`SseSlot`), released
