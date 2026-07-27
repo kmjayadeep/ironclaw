@@ -104,8 +104,8 @@ PROVIDER_FAULT_CASES = (
     # perform the write the scope existed to prevent.
     #
     # This is the only credential-lifecycle profile that belongs in this
-    # matrix. `missing_credential` and `expired_credential` return 401, which
-    # the GitHub extension classifies as `auth_required`
+    # matrix. `expired_credential` returns 401, which the GitHub extension
+    # classifies as `auth_required`
     # (assets/github/wasm-src/src/lib.rs), and the host turns that into a
     # re-auth gate and a blocked turn rather than a failed capability. They
     # need a gate-shaped journey, not this test's `status == "failed"` shape —
