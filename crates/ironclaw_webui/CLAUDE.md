@@ -124,14 +124,14 @@ route (tenant/user-scoped tool-approval settings), not an operator route.
   (default 3 concurrent; override via `WebUiV2State::with_sse_concurrency_limit`)
   — a caller cannot bypass the cap by mixing SSE and WS. Exhaustion returns
   `429` with `retryable: true`.
-- The SPA also sends a bounded, random `connection_id` that is stable for one
-  loaded browser tab plus a monotonically increasing `connection_generation`
-  for each EventSource it creates. A same-caller, same-id stream supersedes its
-  prior generation without consuming another slot; a delayed older generation
+- The SPA also sends a bounded, random `connection_id` that is persisted in
+  per-tab `sessionStorage` together with a monotonically increasing
+  `connection_generation`. A same-caller, same-id stream supersedes its prior
+  generation without consuming another slot; a delayed older generation
   receives `204` and cannot cancel the current stream. This prevents
-  proxy-reordered closes/opens during thread navigation from stranding the
-  replacement stream behind the cap; distinct tabs still consume distinct
-  slots.
+  proxy-reordered closes/opens during thread navigation or full-page reload
+  from stranding the replacement stream behind the cap; distinct tabs still
+  consume distinct slots.
 - A successful facade subscription emits an application-level `keep_alive`
   frame immediately after admission. Browser connection state uses that frame
   as proof that the projection tail is ready instead of waiting for a model

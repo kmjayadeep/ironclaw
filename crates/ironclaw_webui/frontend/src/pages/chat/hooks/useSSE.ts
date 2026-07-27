@@ -32,18 +32,50 @@ const V2_EVENT_NAMES = [
 
 const EVENT_SOURCE_CLOSED = 2;
 const EVENT_SOURCE_OPEN = 1;
-// Stable for this browser tab's loaded SPA. Reusing it across Chat route
-// mounts lets the server supersede a proxy-held stream from the prior thread
-// instead of rejecting the replacement against the per-user connection cap.
-const SSE_CONNECTION_ID = clientActionId();
-let nextConnectionGeneration = 0;
+const SSE_CONNECTION_STORAGE_KEY = "ironclaw:v2-sse-connection";
+
+function newConnectionState() {
+  return { connectionId: clientActionId(), generation: 0 };
+}
+
+function loadConnectionState() {
+  try {
+    const raw = globalThis.sessionStorage?.getItem(SSE_CONNECTION_STORAGE_KEY);
+    if (!raw) return newConnectionState();
+    const parsed = JSON.parse(raw);
+    const validConnectionId =
+      typeof parsed?.connectionId === "string" &&
+      /^[A-Za-z0-9_-]{1,64}$/.test(parsed.connectionId);
+    const validGeneration =
+      Number.isSafeInteger(parsed?.generation) && parsed.generation >= 0;
+    if (validConnectionId && validGeneration) return parsed;
+  } catch (_) {
+    // Storage may be unavailable or contain stale data. A fresh identity still
+    // gives this document a usable stream; the server's max lifetime bounds
+    // any proxy-held stream that cannot be superseded.
+  }
+  return newConnectionState();
+}
+
+// sessionStorage survives a reload but is scoped to the browser tab. Persisting
+// both values lets a reloaded document supersede the proxy-held stream from its
+// predecessor without allowing an older generation to cancel the replacement.
+const sseConnectionState = loadConnectionState();
 
 function connectionGeneration() {
-  nextConnectionGeneration =
-    nextConnectionGeneration >= Number.MAX_SAFE_INTEGER
-      ? 1
-      : nextConnectionGeneration + 1;
-  return nextConnectionGeneration;
+  sseConnectionState.generation = Math.min(
+    Number.MAX_SAFE_INTEGER,
+    sseConnectionState.generation + 1,
+  );
+  try {
+    globalThis.sessionStorage?.setItem(
+      SSE_CONNECTION_STORAGE_KEY,
+      JSON.stringify(sseConnectionState),
+    );
+  } catch (_) {
+    // Best effort. The in-memory identity still covers SPA route switches.
+  }
+  return sseConnectionState.generation;
 }
 
 function eventSourceReadyStateConstant(staticValue: unknown, fallback: number) {
@@ -156,7 +188,7 @@ export function useSSE({ threadId, onEvent, enabled }) {
       es = openEventStream({
         threadId,
         afterCursor: lastEventId || undefined,
-        connectionId: SSE_CONNECTION_ID,
+        connectionId: sseConnectionState.connectionId,
         connectionGeneration: connectionGeneration(),
       });
       const source = es;

@@ -199,7 +199,7 @@ function createReactStub({
   return react;
 }
 
-test("useChat: disconnected SSE rewrites an active driver_unavailable error", () => {
+test("useChat: reconnecting SSE rewrites an active driver_unavailable error", () => {
   const threadId = "thread-1";
   const setCalls = [];
   let renderedMessages = [
@@ -261,13 +261,13 @@ test("useChat: disconnected SSE rewrites an active driver_unavailable error", ()
           typeof updater === "function" ? updater(renderedMessages) : updater;
       },
     }),
-    useSSE: () => ({ status: CONNECTION_STATUS.DISCONNECTED }),
+    useSSE: () => ({ status: CONNECTION_STATUS.RECONNECTING }),
   };
 
   runUseChatSource(context);
   const chat = context.globalThis.__testExports.useChat(threadId);
 
-  assert.equal(chat.sseStatus, CONNECTION_STATUS.DISCONNECTED);
+  assert.equal(chat.sseStatus, CONNECTION_STATUS.RECONNECTING);
   assert.equal(renderedMessages.length, 1);
   assert.equal(renderedMessages[0].content, CONNECTION_LOST_RUN_FAILURE_MESSAGE);
   assert.equal(
@@ -520,7 +520,10 @@ test("useChat.send: accepted ref reconciles pending message on timeline reload",
   );
 });
 
-function createSendCaptureContext() {
+function createSendCaptureContext({
+  ReactStub = createReactStub(),
+  sseStatus = CONNECTION_STATUS.IDLE,
+} = {}) {
   let sentBody = null;
   let renderedMessages = [];
   const context = {
@@ -529,7 +532,7 @@ function createSendCaptureContext() {
     Error,
     Map,
     Math,
-    React: createReactStub(),
+    React: ReactStub,
     addPending,
     toRenderAttachment,
     toWireAttachment,
@@ -576,7 +579,7 @@ function createSendCaptureContext() {
           typeof updater === "function" ? updater(renderedMessages) : updater;
       },
     }),
-    useSSE: () => ({ status: CONNECTION_STATUS.IDLE }),
+    useSSE: () => ({ status: sseStatus }),
   };
   return {
     context,
@@ -584,6 +587,34 @@ function createSendCaptureContext() {
     renderedMessages: () => renderedMessages,
   };
 }
+
+test("useChat.send: reconnecting stream releases stale run admission before sending", async () => {
+  const threadId = "thread-1";
+  const ReactStub = createReactStub({
+    initialByIndex: new Map([
+      [STATE_SLOT.activeRun, { runId: "stale-run", threadId, status: "running" }],
+      [STATE_SLOT.isProcessing, true],
+    ]),
+    runEffects: true,
+  });
+  const { context, sentBody } = createSendCaptureContext({
+    ReactStub,
+    sseStatus: CONNECTION_STATUS.RECONNECTING,
+  });
+
+  runUseChatSource(context);
+  const renderChat = () => {
+    ReactStub.__beginRender();
+    return context.globalThis.__testExports.useChat(threadId);
+  };
+
+  renderChat();
+  const chatAfterConnectionLoss = renderChat();
+  await chatAfterConnectionLoss.send("send despite stale stream state");
+
+  assert.equal(sentBody()?.content, "send despite stale stream state");
+  assert.equal(sentBody()?.threadId, threadId);
+});
 
 test("useChat.send: forwards staged attachments to sendMessage in wire shape", async () => {
   const threadId = "thread-1";

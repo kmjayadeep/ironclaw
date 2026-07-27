@@ -28,6 +28,8 @@ function createHarness({
   online = true,
   visibilityState = "visible",
   onEvent = () => {},
+  sessionStorage = createSessionStorage(),
+  connectionId = "browser-tab-connection",
 } = {}) {
   const statuses = [];
   const streams = [];
@@ -46,12 +48,13 @@ function createHarness({
   const context = {
     CONNECTION_STATUS,
     authScope: () => "tenant:user",
-    clientActionId: () => "browser-tab-connection",
+    clientActionId: () => connectionId,
     EventSource,
     JSON,
     Math,
     globalThis: {
-      crypto: { randomUUID: () => "browser-tab-connection" },
+      crypto: { randomUUID: () => connectionId },
+      sessionStorage,
     },
     openEventStream: (args) => {
       const listeners = new Map();
@@ -137,6 +140,15 @@ function createHarness({
     streams,
     timers,
     windowListeners,
+  };
+}
+
+function createSessionStorage(initial = {}) {
+  const values = new Map(Object.entries(initial));
+  return {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, String(value)),
+    removeItem: (key) => values.delete(key),
   };
 }
 
@@ -396,6 +408,35 @@ test("useSSE discards a volatile live cursor when the chat page remounts", () =>
   assert.equal(streams[1].args.connectionGeneration, 2);
 
   cleanup();
+});
+
+test("useSSE preserves connection identity and generation across a document reload", () => {
+  const sessionStorage = createSessionStorage();
+  const firstDocument = createHarness({
+    sessionStorage,
+    connectionId: "first-document-id",
+  });
+
+  assert.equal(firstDocument.streams[0].args.connectionId, "first-document-id");
+  assert.equal(firstDocument.streams[0].args.connectionGeneration, 1);
+  firstDocument.cleanup();
+
+  const reloadedDocument = createHarness({
+    sessionStorage,
+    connectionId: "new-id-must-not-be-used",
+  });
+
+  assert.equal(
+    reloadedDocument.streams[0].args.connectionId,
+    "first-document-id",
+    "a reload must address the same server slot as the proxy-held predecessor",
+  );
+  assert.equal(
+    reloadedDocument.streams[0].args.connectionGeneration,
+    2,
+    "a reload must supersede rather than be rejected as a stale generation",
+  );
+  reloadedDocument.cleanup();
 });
 
 test("useSSE ignores callbacks from a stream disposed by a thread switch", () => {

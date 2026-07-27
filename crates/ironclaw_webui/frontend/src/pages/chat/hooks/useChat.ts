@@ -452,7 +452,7 @@ export function useChat(threadId) {
 
   React.useEffect(() => {
     connectionStatusRef.current = sseStatus;
-    if (sseStatus !== CONNECTION_STATUS.DISCONNECTED) return;
+    if (!isConnectionLostStatus(sseStatus)) return;
     const wasProcessing = isProcessingRef.current;
     if (!wasProcessing) return;
     const runId = activeRunRef.current?.runId || null;
