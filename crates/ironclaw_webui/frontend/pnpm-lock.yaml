@@ -7,6 +7,7 @@ settings:
 overrides:
   ws: '>=8.21.1'
   uuid: '>=11.1.1'
+  '@sentry/minimal': file:./vendor/sentry-minimal-noop
 
 importers:
 
@@ -282,22 +283,6 @@ packages:
 
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
-
-  '@sentry/hub@6.19.7':
-    resolution: {integrity: sha512-y3OtbYFAqKHCWezF0EGGr5lcyI2KbaXW2Ik7Xp8Mu9TxbSTuwTe4rTntwg8ngPjUQU3SUHzgjqVB8qjiGqFXCA==}
-    engines: {node: '>=6'}
-
-  '@sentry/minimal@6.19.7':
-    resolution: {integrity: sha512-wcYmSJOdvk6VAPx8IcmZgN08XTXRwRtB1aOLZm+MVHjIZIhHoBGZJYTVQS/BWjldsamj2cX3YGbGXNunaCfYJQ==}
-    engines: {node: '>=6'}
-
-  '@sentry/types@6.19.7':
-    resolution: {integrity: sha512-jH84pDYE+hHIbVnab3Hr+ZXr1v8QABfhx39KknxqKWr2l0oEItzepV0URvbEhB446lk/S/59230dlUUIBGsXbg==}
-    engines: {node: '>=6'}
-
-  '@sentry/utils@6.19.7':
-    resolution: {integrity: sha512-z95ECmE3i9pbWoXQrD/7PgkBAzJYR+iXtPuTkpBjDKs86O3mT+PXOT3BAn79w2wkn7/i3vOGD2xVr1uiMl26dA==}
-    engines: {node: '>=6'}
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
@@ -815,6 +800,9 @@ packages:
     engines: {node: '>=10'}
     hasBin: true
 
+  sentry-minimal-noop@file:vendor/sentry-minimal-noop:
+    resolution: {directory: vendor/sentry-minimal-noop, type: directory}
+
   set-blocking@2.0.0:
     resolution: {integrity: sha512-KiKBS8AnWGEyLzofFfmvKwpdPzqiy16LvQfK3yv/fVH7Bj13/wl3JSR1J+rfgRE9q7xUJK4qvgS8raSOeLUehw==}
 
@@ -863,9 +851,6 @@ packages:
   tinyrainbow@3.1.0:
     resolution: {integrity: sha512-Bf+ILmBgretUrdJxzXM0SgXLZ3XfiaUuOj/IKQHuTXip+05Xn+uyEYdVg0kYDipTBcLrCVyUzAPz7QmArb0mmw==}
     engines: {node: '>=14.0.0'}
-
-  tslib@1.14.1:
-    resolution: {integrity: sha512-Xni35NKzjgMrwevysHTCArtLDpPvye8zV/0E4EyYn43P7/7qvQwPh9BGkHewbMulVntbigmcT7rdX3BNo9wRJg==}
 
   tslib@2.7.0:
     resolution: {integrity: sha512-gLXCKdN1/j47AiHiOkJN69hJmcbGTHI0ImLmbYLHykhgeN0jVGola9yVjFgzCUklsZQMW55o+dW7IXv3RCXDzA==}
@@ -1090,7 +1075,7 @@ snapshots:
   '@ledgerhq/device-management-kit@1.7.1(rxjs@7.8.2)':
     dependencies:
       '@noble/hashes': 1.8.0
-      '@sentry/minimal': 6.19.7
+      '@sentry/minimal': sentry-minimal-noop@file:vendor/sentry-minimal-noop
       inversify: 7.5.1(reflect-metadata@0.2.2)
       isomorphic-ws: 5.0.0(ws@8.21.1)
       purify-ts: 2.1.0
@@ -1122,7 +1107,7 @@ snapshots:
   '@ledgerhq/device-transport-kit-web-hid@1.2.4(@ledgerhq/device-management-kit@1.7.1(rxjs@7.8.2))(rxjs@7.8.2)':
     dependencies:
       '@ledgerhq/device-management-kit': 1.7.1(rxjs@7.8.2)
-      '@sentry/minimal': 6.19.7
+      '@sentry/minimal': sentry-minimal-noop@file:vendor/sentry-minimal-noop
       purify-ts: 2.1.0
       rxjs: 7.8.2
       uuid: 14.0.1
@@ -1199,25 +1184,6 @@ snapshots:
     optional: true
 
   '@rolldown/pluginutils@1.0.1': {}
-
-  '@sentry/hub@6.19.7':
-    dependencies:
-      '@sentry/types': 6.19.7
-      '@sentry/utils': 6.19.7
-      tslib: 1.14.1
-
-  '@sentry/minimal@6.19.7':
-    dependencies:
-      '@sentry/hub': 6.19.7
-      '@sentry/types': 6.19.7
-      tslib: 1.14.1
-
-  '@sentry/types@6.19.7': {}
-
-  '@sentry/utils@6.19.7':
-    dependencies:
-      '@sentry/types': 6.19.7
-      tslib: 1.14.1
 
   '@standard-schema/spec@1.1.0': {}
 
@@ -1656,6 +1622,8 @@ snapshots:
 
   semver@7.7.2: {}
 
+  sentry-minimal-noop@file:vendor/sentry-minimal-noop: {}
+
   set-blocking@2.0.0: {}
 
   set-cookie-parser@2.7.2: {}
@@ -1692,8 +1660,6 @@ snapshots:
       picomatch: 4.0.5
 
   tinyrainbow@3.1.0: {}
-
-  tslib@1.14.1: {}
 
   tslib@2.7.0: {}
 

@@ -27,14 +27,20 @@ export function webHidSupported(navigatorLike = globalThis.navigator) {
  * Returning `null` rather than throwing keeps the caller on the ordinary
  * outcome path: a browser without WebHID is an expected condition to render,
  * not an exception to catch.
+ *
+ * The DMK adapter is imported dynamically so its weight lives in the review
+ * route's chunk and never loads for ordinary chat users. A failure to load it
+ * is also `null` — a bundle that did not arrive is not a reason to pretend a
+ * device is reachable.
  */
-export function createDevicePort(navigatorLike = globalThis.navigator) {
+export async function createDevicePort(navigatorLike = globalThis.navigator, options = {}) {
   if (!webHidSupported(navigatorLike)) {
     return null;
   }
-  // The DMK adapter lands here. It must implement exactly the four port
-  // methods (connect / status / signTransaction / disconnect) and hold no
-  // policy of its own — every rule about what may be signed lives in the
-  // ceremony, deliberately outside the vendor SDK.
-  return null;
+  try {
+    const { createDmkDevicePort } = await import("./dmk-adapter");
+    return await createDmkDevicePort(options);
+  } catch (_) {
+    return null;
+  }
 }

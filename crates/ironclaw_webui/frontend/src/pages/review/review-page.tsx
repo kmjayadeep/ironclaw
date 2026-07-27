@@ -214,7 +214,8 @@ export function ReviewPage() {
   const runDeviceCeremony = React.useCallback(async () => {
     setCeremony({ running: true, outcome: null });
     const result = await runCeremony({
-      device: createDevicePort(),
+      // Async: the adapter is a dynamic import so DMK never loads for chat.
+      device: await createDevicePort(undefined, { intentId }),
       intent: state.status === "ready" ? state.intent : null,
       // The backend's answer, never a local guess.
       clearSigningAvailable: signingContext.status === "available",
