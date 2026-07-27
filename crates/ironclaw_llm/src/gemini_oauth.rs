@@ -1867,14 +1867,69 @@ impl GeminiOauthProvider {
 
     /// Parsed Gemini response: (completion, tool_calls, thought_signatures_by_call_id).
     fn from_gemini_response(body: serde_json::Value) -> Result<GeminiParsedResponse, LlmError> {
+        let usage = body.get("usageMetadata");
+        let input_tokens = usage
+            .and_then(|u| u.get("promptTokenCount"))
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0) as u32;
+        let output_tokens = usage
+            .and_then(|u| u.get("candidatesTokenCount"))
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0) as u32;
+        let cached_content_tokens = usage
+            .and_then(|u| u.get("cachedContentTokenCount"))
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0) as u32;
+
+        // Gemini's *other* block mechanism: `promptFeedback.blockReason` means
+        // the input was rejected before generation, and the body then carries
+        // no candidates at all.
+        let prompt_block_reason = body
+            .get("promptFeedback")
+            .and_then(|pf| pf.get("blockReason"))
+            .and_then(|r| r.as_str());
+        if let Some(reason) = prompt_block_reason {
+            warn!(
+                block_reason = reason,
+                "Gemini API blocked the request via promptFeedback"
+            );
+        }
+
         let candidate = body
             .get("candidates")
             .and_then(|c| c.as_array())
-            .and_then(|c| c.first())
-            .ok_or_else(|| LlmError::RequestFailed {
+            .and_then(|c| c.first());
+
+        let Some(candidate) = candidate else {
+            // No candidates. If the prompt was blocked, that is the answer —
+            // report the block through the same shared table every other
+            // finish reason uses, rather than a generic request failure that
+            // hides which policy fired.
+            //
+            // Without a block reason this stays an error: a body with no
+            // candidates and nothing blocked is malformed, and turning it into
+            // an empty successful answer would hide the anomaly.
+            let reason = prompt_block_reason.ok_or_else(|| LlmError::RequestFailed {
                 provider: "gemini_oauth".to_string(),
                 reason: "Response missing 'candidates[0]'".to_string(),
             })?;
+            return Ok((
+                CompletionResponse {
+                    content: String::new(),
+                    finish_reason: crate::provider::resolve_finish_reason(
+                        map_gemini_finish_reason(reason),
+                        false,
+                    ),
+                    input_tokens,
+                    output_tokens,
+                    reasoning: None,
+                    cache_read_input_tokens: cached_content_tokens,
+                    cache_creation_input_tokens: 0,
+                },
+                Vec::new(),
+                HashMap::new(),
+            ));
+        };
 
         let parts = candidate
             .get("content")
@@ -1961,38 +2016,13 @@ impl GeminiOauthProvider {
             !tool_calls.is_empty(),
         );
 
-        let usage = body.get("usageMetadata");
-        let input_tokens = usage
-            .and_then(|u| u.get("promptTokenCount"))
-            .and_then(|c| c.as_u64())
-            .unwrap_or(0) as u32;
-        let output_tokens = usage
-            .and_then(|u| u.get("candidatesTokenCount"))
-            .and_then(|c| c.as_u64())
-            .unwrap_or(0) as u32;
-        let cached_content_tokens = usage
-            .and_then(|u| u.get("cachedContentTokenCount"))
-            .and_then(|c| c.as_u64())
-            .unwrap_or(0) as u32;
-
         // Extract additional metadata from non-SSE (legacy) responses.
         let _model_version = body
             .get("modelVersion")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let _prompt_feedback = body.get("promptFeedback").cloned();
         let _grounding_metadata = candidate.get("groundingMetadata").cloned();
         let _citation_metadata = candidate.get("citationMetadata").cloned();
-
-        // Log prompt feedback if present
-        if let Some(ref pf) = _prompt_feedback
-            && let Some(reason) = pf.get("blockReason").and_then(|r| r.as_str())
-        {
-            warn!(
-                block_reason = reason,
-                "Gemini API blocked the request via promptFeedback"
-            );
-        }
 
         Ok((
             CompletionResponse {
@@ -2442,6 +2472,47 @@ mod tests {
             finish_for(serde_json::Value::Null, true),
             FinishReason::ToolUse
         );
+
+        // A prompt-level block on the plain-JSON path. Gemini rejects the
+        // *input* before generation, so the body carries
+        // `promptFeedback.blockReason` and no candidates at all — the parser
+        // used to bail with "missing 'candidates[0]'" and report a generic
+        // request failure instead of the block the provider stated.
+        fn parse(body: serde_json::Value) -> Result<FinishReason, LlmError> {
+            GeminiOauthProvider::from_gemini_response(body).map(|(resp, ..)| resp.finish_reason)
+        }
+
+        let blocked = parse(serde_json::json!({
+            "promptFeedback": {"blockReason": "SAFETY"},
+            "usageMetadata": {"promptTokenCount": 11}
+        }))
+        .expect("a blocked prompt is a reportable outcome, not a parse failure");
+        assert_eq!(
+            blocked,
+            FinishReason::ContentFilter,
+            "a blocked prompt must report the block, not a generic request failure",
+        );
+
+        // A block reason we cannot classify is `Unknown`, never a clean stop.
+        assert_eq!(
+            parse(serde_json::json!({"promptFeedback": {"blockReason": "OTHER"}})).ok(),
+            Some(FinishReason::Unknown),
+        );
+
+        // Preserved: no candidates AND no block reason is still an error. It
+        // must not become a success, and it must not become a filter either.
+        assert!(
+            matches!(
+                parse(serde_json::json!({"usageMetadata": {"promptTokenCount": 3}})),
+                Err(LlmError::RequestFailed { .. })
+            ),
+            "an unblocked response with no candidates is still a failure",
+        );
+        // `promptFeedback` without a block reason blocks nothing.
+        assert!(matches!(
+            parse(serde_json::json!({"promptFeedback": {"safetyRatings": []}})),
+            Err(LlmError::RequestFailed { .. })
+        ));
     }
 
     /// A blocked Cloud Code stream carries a terminal `finishReason` and no
