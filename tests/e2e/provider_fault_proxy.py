@@ -107,6 +107,47 @@ PROVIDER_FAULT_PROFILES = {
         body=_json_error(503, "Service Unavailable"),
         headers={"Retry-After": "1"},
     ),
+    # Credential-lifecycle faults. A bare http_401 says only "rejected"; a real
+    # provider distinguishes *why* in the RFC 6750 challenge, and that is the
+    # only signal a client can use to tell "re-authenticate the user" from
+    # "refresh the token" from "this token will never be allowed to do this".
+    # Keeping them as named profiles means a journey asks for the condition it
+    # means rather than hand-rolling a status code per test.
+    "missing_credential": ProviderFaultProfile(
+        name="missing_credential",
+        action="respond",
+        status=401,
+        body=_json_error(401, "Requires authentication"),
+        headers={"WWW-Authenticate": 'Bearer realm="provider"'},
+    ),
+    "expired_credential": ProviderFaultProfile(
+        name="expired_credential",
+        action="respond",
+        status=401,
+        body=_json_error(401, "Bad credentials"),
+        headers={
+            "WWW-Authenticate": (
+                'Bearer realm="provider", error="invalid_token", '
+                'error_description="The access token expired"'
+            )
+        },
+    ),
+    # Authenticated, but not for this operation. The scope headers mirror what
+    # GitHub returns, so a client can see both what it has and what it needed.
+    "wrong_scope": ProviderFaultProfile(
+        name="wrong_scope",
+        action="respond",
+        status=403,
+        body=_json_error(403, "Resource not accessible by integration"),
+        headers={
+            "WWW-Authenticate": (
+                'Bearer realm="provider", error="insufficient_scope", '
+                'scope="repo"'
+            ),
+            "X-Accepted-OAuth-Scopes": "repo",
+            "X-OAuth-Scopes": "read:user",
+        },
+    ),
     "timeout": ProviderFaultProfile(
         name="timeout",
         action="delay_before_disconnect",

@@ -127,6 +127,9 @@ async def test_provider_fault_proxy_preserves_compressed_responses(fault_proxy):
         "http_503",
         "malformed_json",
         "missing_field",
+        "missing_credential",
+        "expired_credential",
+        "wrong_scope",
     ),
 )
 async def test_response_fault_profiles_do_not_reach_provider(
@@ -144,6 +147,113 @@ async def test_response_fault_profiles_do_not_reach_provider(
     assert response.text == profile.body
     assert upstream_requests == []
     assert proxy.state["requests"][0]["forwarded"] is False
+
+
+"""Profiles whose behaviour is pinned by a dedicated test below.
+
+Response profiles are covered by the parametrized case above; these four are
+not response-shaped and each has its own test.
+"""
+_NON_RESPONSE_PROFILES_UNDER_TEST = frozenset(
+    {
+        "timeout",
+        "connection_reset",
+        "truncated_response",
+        "lost_acknowledgement",
+    }
+)
+
+
+def test_every_published_profile_has_a_self_test():
+    """A profile nobody exercises is a profile nobody can trust.
+
+    The catalogue is the reusable vocabulary journeys pick from, so a profile
+    added without coverage would ship as an available option whose behaviour
+    has never been observed. Fails the moment one is added here without a test.
+    """
+    covered = (
+        set(
+            test_response_fault_profiles_do_not_reach_provider.pytestmark[0].args[1]
+        )
+        | _NON_RESPONSE_PROFILES_UNDER_TEST
+    )
+    assert covered == set(PROVIDER_FAULT_PROFILES), {
+        "untested": sorted(set(PROVIDER_FAULT_PROFILES) - covered),
+        "stale": sorted(covered - set(PROVIDER_FAULT_PROFILES)),
+    }
+
+
+@pytest.mark.parametrize(
+    ("profile_name", "status", "challenge_contains"),
+    (
+        ("missing_credential", 401, 'Bearer realm='),
+        ("expired_credential", 401, 'error="invalid_token"'),
+        ("wrong_scope", 403, 'error="insufficient_scope"'),
+    ),
+)
+def test_credential_lifecycle_profiles_state_their_condition(
+    profile_name,
+    status,
+    challenge_contains,
+):
+    """Each credential-lifecycle fault names its condition in the challenge.
+
+    The point of these profiles is that they are *not* interchangeable with a
+    bare `http_401`/`http_403`. A provider distinguishes "you sent nothing",
+    "your token expired", and "your token lacks the scope" in the RFC 6750
+    `WWW-Authenticate` challenge, and that is the only signal a client can key
+    credential-lifecycle handling on. A profile that dropped the challenge
+    would still be a 401 and would still look like a passing fault case, so
+    assert the discriminator itself.
+    """
+    profile = PROVIDER_FAULT_PROFILES[profile_name]
+    challenge = profile.headers.get("WWW-Authenticate", "")
+
+    assert profile.status == status
+    assert challenge_contains in challenge, challenge
+
+
+def test_credential_lifecycle_profiles_are_not_aliases_of_generic_faults():
+    """The generic status profiles carry no challenge, so the pair differ."""
+    for generic_name in ("http_401", "http_403"):
+        assert "WWW-Authenticate" not in PROVIDER_FAULT_PROFILES[generic_name].headers
+
+    challenges = {
+        name: PROVIDER_FAULT_PROFILES[name].headers["WWW-Authenticate"]
+        for name in ("missing_credential", "expired_credential", "wrong_scope")
+    }
+    assert len(set(challenges.values())) == 3, challenges
+
+
+async def test_credential_lifecycle_faults_never_reach_the_provider(fault_proxy):
+    """A rejected credential must not let the request through.
+
+    Weaker than it sounds and worth pinning: `wrong_scope` is the one of the
+    three that a proxy could plausibly forward — the caller *is* authenticated,
+    just not for this operation — and forwarding it would perform the very
+    side effect the scope was meant to prevent.
+    """
+    proxy, upstream_requests = fault_proxy
+    proxy.arm(
+        PROVIDER_FAULT_PROFILES["wrong_scope"],
+        method="POST",
+        path="/objects",
+    )
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{proxy.url}/objects",
+            headers={"Authorization": "Bearer scoped-too-narrowly"},
+            json={"name": "never-created"},
+        )
+
+    assert response.status_code == 403
+    assert 'error="insufficient_scope"' in response.headers["WWW-Authenticate"]
+    assert upstream_requests == []
+    request = proxy.state["requests"][0]
+    assert request["fault"] == "wrong_scope"
+    assert request["forwarded"] is False
+    assert "scoped-too-narrowly" not in str(proxy.state)
 
 
 async def test_timeout_profile_never_forwards_after_caller_times_out(fault_proxy):
