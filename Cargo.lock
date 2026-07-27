@@ -3960,6 +3960,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironclaw_memory_ama_agent"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "ironclaw_filesystem",
+ "ironclaw_host_api",
+ "ironclaw_llm",
+ "ironclaw_memory",
+ "ironclaw_memory_ama_agent",
+ "reqwest 0.12.28",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "ironclaw_memory_mem0"
 version = "0.1.0"
 dependencies = [
@@ -4226,6 +4245,7 @@ dependencies = [
  "ironclaw_loop_host",
  "ironclaw_mcp",
  "ironclaw_memory",
+ "ironclaw_memory_ama_agent",
  "ironclaw_memory_mem0",
  "ironclaw_memory_native",
  "ironclaw_network",
