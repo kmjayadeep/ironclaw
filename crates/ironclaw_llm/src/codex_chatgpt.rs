@@ -79,6 +79,11 @@ fn parse_codex_cli_version(output: &str) -> Option<String> {
 /// wedged or slow binary stalling provider construction.
 const CODEX_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// The Responses API's terminal event for a response that did *not* complete.
+/// Named because the event type is itself a finish-reason signal: it proves
+/// the response was incomplete even when the payload elaborates nothing.
+const RESPONSES_INCOMPLETE_EVENT: &str = "response.incomplete";
+
 /// Query the installed `codex` binary for its version (e.g. `0.137.0`).
 ///
 /// Returns `None` if the binary is absent, times out, exits non-zero, or its
@@ -865,7 +870,7 @@ impl CodexChatGptProvider {
             // to `_ => {}`, so the stream ran dry and a `max_output_tokens`
             // truncation surfaced as "stream ended before response.completed"
             // with the partial answer discarded.
-            "response.completed" | "response.incomplete" => {
+            "response.completed" | RESPONSES_INCOMPLETE_EVENT => {
                 if let Some(response) = parsed.get("response")
                     && let Some(usage) = response.get("usage")
                 {
@@ -882,7 +887,7 @@ impl CodexChatGptProvider {
                     Self::merge_completed_response_output(result, response);
                     // The provider states why it stopped; a refusal part is a
                     // content block even when `status` reads "completed".
-                    result.finish_reason = Self::map_responses_status(response).or({
+                    result.finish_reason = Self::map_responses_status(response, event_type).or({
                         if result.saw_refusal {
                             Some(FinishReason::ContentFilter)
                         } else {
@@ -891,6 +896,10 @@ impl CodexChatGptProvider {
                     });
                 } else if result.saw_refusal {
                     result.finish_reason = Some(FinishReason::ContentFilter);
+                } else if event_type == RESPONSES_INCOMPLETE_EVENT {
+                    // No `response` object at all, but the event type still
+                    // says the response did not complete.
+                    result.finish_reason = Some(FinishReason::Unknown);
                 }
                 tracing::debug!(
                     content_bytes = result.text.len(),
@@ -1027,29 +1036,41 @@ impl CodexChatGptProvider {
         }
     }
 
-    /// Map the Responses API's own terminal `status` / `incomplete_details`
-    /// to a finish reason.
+    /// Map the Responses API's own terminal event to a finish reason.
     ///
-    /// Returns `None` when the response completed normally (or states nothing
-    /// at all), leaving the response shape to decide between `Stop` and
-    /// `ToolUse`. An `incomplete` status with a reason we do not recognize is
-    /// `Unknown` — never `Stop`.
-    fn map_responses_status(response: &Value) -> Option<FinishReason> {
-        let status = response
-            .get("status")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        let incomplete_reason = response
+    /// Three signals, in order of authority:
+    ///
+    /// 1. `incomplete_details.reason` — the provider's own token, translated
+    ///    by the one shared table, [`crate::provider::map_provider_finish_token`].
+    ///    A second hand-maintained table here is how `max_output_tokens` ends
+    ///    up classified one way by Codex and another way everywhere else. A
+    ///    reason present but unrecognized (or blank) is `Unknown`, never `Stop`.
+    /// 2. `status` — `incomplete` is a failure even when nothing elaborates it.
+    /// 3. The event type itself — an explicit `response.incomplete` from an
+    ///    older or proxied endpoint proves the response was incomplete even
+    ///    when it carries neither field. The absent-status clean fallback
+    ///    belongs to `response.completed` alone.
+    ///
+    /// Returns `None` only when the response completed normally, leaving the
+    /// response shape to decide between `Stop` and `ToolUse`.
+    fn map_responses_status(response: &Value, event_type: &str) -> Option<FinishReason> {
+        if let Some(reason) = response
             .get("incomplete_details")
             .and_then(|details| details.get("reason"))
-            .and_then(|reason| reason.as_str());
+            .and_then(|reason| reason.as_str())
+        {
+            return crate::provider::map_provider_finish_token(reason)
+                .or(Some(FinishReason::Unknown));
+        }
 
-        match (status, incomplete_reason) {
-            (_, Some("max_output_tokens")) => Some(FinishReason::Length),
-            (_, Some("content_filter")) => Some(FinishReason::ContentFilter),
-            (_, Some(_)) => Some(FinishReason::Unknown),
-            ("completed", None) | ("", None) => None,
-            (_, None) => Some(FinishReason::Unknown),
+        match response
+            .get("status")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+        {
+            "completed" => None,
+            "" if event_type != RESPONSES_INCOMPLETE_EVENT => None,
+            _ => Some(FinishReason::Unknown),
         }
     }
 
@@ -2101,6 +2122,57 @@ data: {"type":"response.incomplete","response":{"status":"incomplete","incomplet
             )
             .await,
             FinishReason::Unknown,
+        );
+
+        // status = incomplete with `incomplete_details` absent entirely. This
+        // is the branch that keeps an incomplete response carrying partial
+        // output from falling back to a clean Stop.
+        assert_eq!(
+            finish_reason_for(
+                r#"data: {"type":"response.output_text.delta","delta":"partial"}
+
+data: {"type":"response.incomplete","response":{"status":"incomplete","usage":{"input_tokens":1,"output_tokens":1}}}
+
+"#
+            )
+            .await,
+            FinishReason::Unknown,
+            "an incomplete status states a failure even when it says nothing more",
+        );
+
+        // An explicit `response.incomplete` event that omits both `status` and
+        // `incomplete_details` (older or proxied endpoint). The event type
+        // alone proves the response was incomplete, so the absent-status clean
+        // fallback must not apply here.
+        assert_eq!(
+            finish_reason_for(
+                r#"data: {"type":"response.output_text.delta","delta":"partial"}
+
+data: {"type":"response.incomplete","response":{"usage":{"input_tokens":1,"output_tokens":1}}}
+
+"#
+            )
+            .await,
+            FinishReason::Unknown,
+            "an explicit response.incomplete event is a failure signal even unelaborated",
+        );
+
+        // The Responses API also streams a policy refusal on its own channel,
+        // with no refusal part in the terminal payload at all. The dedicated
+        // `response.refusal.*` events are the only evidence there is.
+        assert_eq!(
+            finish_reason_for(
+                r#"data: {"type":"response.refusal.delta","delta":"I'm sorry, "}
+
+data: {"type":"response.refusal.done","refusal":"I'm sorry, I can't help with that."}
+
+data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}
+
+"#
+            )
+            .await,
+            FinishReason::ContentFilter,
+            "a refusal streamed on its own channel is a content block, not a clean stop",
         );
 
         // status absent entirely (older/proxied server) → documented fallback:
