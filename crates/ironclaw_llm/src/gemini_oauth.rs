@@ -2352,6 +2352,8 @@ mod tests {
             "SPII",
             "IMAGE_SAFETY",
             "LANGUAGE",
+            // Blocked by Model Armor, Google's separate policy screen.
+            "MODEL_ARMOR",
         ] {
             assert_eq!(
                 finish_for(blocked.into(), false),

@@ -424,9 +424,11 @@ pub(crate) fn map_provider_finish_token(token: &str) -> Option<FinishReason> {
         "length" | "max_tokens" | "max_output_tokens" | "model_length" => FinishReason::Length,
         // The model asked for tools.
         "tool_calls" | "function_call" | "tool_use" => FinishReason::ToolUse,
-        // Blocked by the provider's content policy.
+        // Blocked by the provider's content policy. `model_armor` is Gemini's
+        // token for a response blocked by Model Armor, Google's separate
+        // policy screen — a content block like any other.
         "content_filter" | "refusal" | "safety" | "recitation" | "blocklist"
-        | "prohibited_content" | "spii" | "image_safety" | "language" => {
+        | "prohibited_content" | "spii" | "image_safety" | "language" | "model_armor" => {
             FinishReason::ContentFilter
         }
         // Recognized, but not a clean stop and not classifiable:

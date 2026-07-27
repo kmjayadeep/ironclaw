@@ -3237,6 +3237,12 @@ mod tests {
                 Some(FinishReason::ContentFilter),
             ),
             (
+                // Gemini's token for a response blocked by Model Armor.
+                "gemini/MODEL_ARMOR",
+                gemini_shaped("MODEL_ARMOR".into()),
+                Some(FinishReason::ContentFilter),
+            ),
+            (
                 "gemini/MALFORMED_FUNCTION_CALL",
                 gemini_shaped("MALFORMED_FUNCTION_CALL".into()),
                 Some(FinishReason::Unknown),
