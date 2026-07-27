@@ -106,7 +106,7 @@ IronClaw 的 Web 网关默认绑定到 `127.0.0.1:3000`，即默认仅限本地�
 如果您有意直接暴露网关（通常不推荐），则必须：
 
 1. 设置 `GATEWAY_HOST=0.0.0.0`（如果端口不是 `3000`，可选设置 `GATEWAY_PORT=<端口>`）
-2. 设置 `GATEWAY_AUTH_TOKEN=<强随机令牌>`
+2. 设置 `IRONCLAW_REBORN_WEBUI_TOKEN=<强随机令牌>`
 3. 为该网关端口添加防火墙规则，最好限制为受信任的来源 IP
 
 如果通过 SSH 隧道或 VPN 访问，保持 `GATEWAY_HOST` 为默认值（`127.0.0.1`），不要在 GCE 防火墙中开放网关端口。
@@ -177,7 +177,8 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/nearai/ironclaw/release
 然后启动 IronClaw 并按照提示完成配置：
 
 ```bash
-ironclaw
+ironclaw onboard
+ironclaw serve
 ```
 
 <Tip>

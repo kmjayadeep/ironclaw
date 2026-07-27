@@ -208,8 +208,8 @@ cargo build --release --target wasm32-wasip2
 ## 8. 安装并测试
 
 ```bash
-ironclaw tool install ./target/wasm32-wasip2/release/weather_tool.wasm
-ironclaw tool list
+ironclaw extension install ./target/wasm32-wasip2/release/weather_tool.wasm
+ironclaw extension search
 ```
 
 然后在聊天中测试：

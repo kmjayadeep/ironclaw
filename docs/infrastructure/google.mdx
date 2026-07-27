@@ -107,7 +107,7 @@ If you run a reverse proxy (recommended for public web access), also allow:
 If you intentionally expose the gateway directly (generally not recommended), you must:
 
 1. Set `GATEWAY_HOST=0.0.0.0` (and optionally `GATEWAY_PORT=<port>` if not `3000`)
-2. Set `GATEWAY_AUTH_TOKEN=<strong-random-token>`
+2. Set `IRONCLAW_REBORN_WEBUI_TOKEN=<strong-random-token>`
 3. Add a firewall rule for that gateway port, ideally restricted to trusted source IPs
 
 With SSH tunnel or VPN access, keep `GATEWAY_HOST` at the default (`127.0.0.1`) and do not open the gateway port in GCE firewall.
@@ -175,10 +175,24 @@ With the server hardened, install IronClaw and start it up:
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/nearai/ironclaw/releases/latest/download/ironclaw-installer.sh | sh
 ```
 
-Then start IronClaw and follow the prompts to complete the setup:
+Run the one-time setup, then start the agent:
 
 ```bash
-ironclaw
+ironclaw onboard
+ironclaw serve
+```
+
+`onboard` prints a login link for the web interface. On a remote host, forward the port
+from your own machine rather than exposing it:
+
+```bash
+ssh -N -L 3000:127.0.0.1:3000 <user>@<IP_ADDRESS>
+```
+
+To keep it running after you disconnect, install it as a service:
+
+```bash
+ironclaw service install && ironclaw service start
 ```
 
 <Tip>
