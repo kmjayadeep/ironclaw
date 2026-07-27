@@ -145,13 +145,13 @@ function MarkdownRendererImpl({ content, className = "", streaming = false }) {
   const latestStreamingRef = React.useRef(streaming);
   const mountedRef = React.useRef(true);
   const renderInFlightRef = React.useRef(false);
+  const markdownLoadFailedRef = React.useRef(false);
   const lastRenderAtRef = React.useRef(0);
+  const lastRenderedSourceRef = React.useRef(null);
   const renderTimerRef = React.useRef(null);
   const requestRenderRef = React.useRef(() => false);
   const scheduleStreamingRenderRef = React.useRef(() => {});
 
-  latestContentRef.current = normalizedContent;
-  latestStreamingRef.current = streaming;
   const renderedHtml =
     normalizedContent && rendered &&
     (streaming || rendered.source === normalizedContent)
@@ -159,19 +159,27 @@ function MarkdownRendererImpl({ content, className = "", streaming = false }) {
       : null;
 
   requestRenderRef.current = () => {
-    if (!latestContentRef.current || renderInFlightRef.current) return false;
+    if (
+      !latestContentRef.current ||
+      renderInFlightRef.current ||
+      markdownLoadFailedRef.current
+    ) {
+      return false;
+    }
     renderInFlightRef.current = true;
     import("../../../lib/markdown")
       .then(({ renderMarkdown }) => {
         const currentContent = latestContentRef.current;
         if (!mountedRef.current || !currentContent) return;
         lastRenderAtRef.current = Date.now();
+        lastRenderedSourceRef.current = currentContent;
         setRendered({
           source: currentContent,
           html: renderMarkdown(currentContent),
         });
       })
       .catch(() => {
+        markdownLoadFailedRef.current = true;
         if (mountedRef.current) setRendered(null);
       })
       .finally(() => {
@@ -187,6 +195,8 @@ function MarkdownRendererImpl({ content, className = "", streaming = false }) {
     if (
       renderTimerRef.current !== null ||
       renderInFlightRef.current ||
+      markdownLoadFailedRef.current ||
+      latestContentRef.current === lastRenderedSourceRef.current ||
       !latestContentRef.current
     ) {
       return;
@@ -203,12 +213,20 @@ function MarkdownRendererImpl({ content, className = "", streaming = false }) {
   // at a bounded cadence so Markdown remains legible while avoiding the full
   // marked + DOMPurify pipeline for every projection. The first snapshot
   // safely falls back to escaped React text while the lazy module loads.
+  // Keep the latest snapshot commit-scoped so a discarded concurrent render
+  // cannot leak its content into an async Markdown render.
+  React.useEffect(() => {
+    latestContentRef.current = normalizedContent;
+    latestStreamingRef.current = streaming;
+  }, [normalizedContent, streaming]);
+
   React.useEffect(() => {
     if (!normalizedContent) {
       if (renderTimerRef.current !== null) {
         clearTimeout(renderTimerRef.current);
         renderTimerRef.current = null;
       }
+      lastRenderedSourceRef.current = null;
       setRendered(null);
       return;
     }

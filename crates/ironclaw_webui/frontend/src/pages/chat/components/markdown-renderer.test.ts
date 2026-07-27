@@ -222,6 +222,16 @@ test("streaming markdown renders sanitized snapshots at a bounded cadence", () =
     /if \(renderedHtml === null\) \{[\s\S]*\{normalizedContent\}[\s\S]*dangerouslySetInnerHTML=\{\{ __html: renderedHtml \}\}/,
     "only the completed sanitized result may be passed to innerHTML",
   );
+  assert.match(
+    rendererSource,
+    /React\.useEffect\(\(\) => \{\s*latestContentRef\.current = normalizedContent;\s*latestStreamingRef\.current = streaming;/,
+    "async rendering should only observe committed stream snapshots",
+  );
+  assert.match(
+    rendererSource,
+    /markdownLoadFailedRef\.current = true[\s\S]*markdownLoadFailedRef\.current/,
+    "a failed Markdown chunk should stop repeated stream retries",
+  );
 });
 
 test("markdown code block controls use resynced labels after language changes", async () => {
