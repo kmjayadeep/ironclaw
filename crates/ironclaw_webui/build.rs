@@ -63,15 +63,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let content_type = content_type_for(abs_path);
         let bytes = fs::read(abs_path)?;
         let etag = weak_etag(&bytes);
-        let cache_control = cache_control_for(rel_url, abs_path);
         let include_path = abs_path.to_string_lossy();
         src.push_str(&format!(
-            "    (\"{}\", Asset {{ bytes: include_bytes!(r\"{}\"), content_type: {:?}, etag: {:?}, cache_control: {:?} }}),\n",
+            "    (\"{}\", Asset {{ bytes: include_bytes!(r\"{}\"), content_type: {:?}, etag: {:?} }}),\n",
             escape_url(rel_url),
             include_path,
             content_type,
             etag,
-            cache_control,
         ));
     }
     src.push_str("];\n\n");
@@ -269,32 +267,6 @@ fn content_type_for(path: &Path) -> &'static str {
         Some("txt") | Some("md") => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     }
-}
-
-fn cache_control_for(url_path: &str, path: &Path) -> &'static str {
-    if path.extension().and_then(|extension| extension.to_str()) == Some("html") {
-        return "no-store";
-    }
-    if is_fingerprinted_script_or_style(url_path) {
-        return "public, max-age=31536000, immutable";
-    }
-    "public, max-age=0, must-revalidate"
-}
-
-fn is_fingerprinted_script_or_style(url_path: &str) -> bool {
-    let Some((stem, extension)) = url_path.rsplit_once('.') else {
-        return false;
-    };
-    if !matches!(extension, "js" | "css") {
-        return false;
-    }
-    let Some((_, hash)) = stem.rsplit_once('-') else {
-        return false;
-    };
-    hash.len() >= 8
-        && hash
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
 fn weak_etag(bytes: &[u8]) -> String {

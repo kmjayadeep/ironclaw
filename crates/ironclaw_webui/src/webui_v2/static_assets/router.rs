@@ -244,10 +244,7 @@ pub async fn serve_wallet_connect() -> Response {
     let Some(asset) = assets::lookup("wallet-connect.html") else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let mut response = asset_response(asset, None);
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    let mut response = asset_response("wallet-connect.html", asset, None);
     // Wallet connectors load remote executor code into sandboxed iframes and
     // reach a range of wallet relays + NEAR RPC endpoints that vary per wallet,
     // so script/connect/frame sources can't be pinned to a fixed allow-list
@@ -342,7 +339,7 @@ where
     }
 
     if let Some(asset) = assets::lookup(path) {
-        return asset_response(asset, if_none_match);
+        return asset_response(path, asset, if_none_match);
     }
 
     // Unknown path that does not look like a real asset request
@@ -422,8 +419,13 @@ fn render_index_with_nonce() -> Response {
     response
 }
 
-fn asset_response(asset: &'static Asset, if_none_match: Option<&HeaderValue>) -> Response {
-    let not_modified = if_none_match.is_some_and(|candidate| etag_matches(candidate, asset.etag));
+fn asset_response(
+    path: &str,
+    asset: &'static Asset,
+    if_none_match: Option<&HeaderValue>,
+) -> Response {
+    let not_modified =
+        if_none_match.is_some_and(|candidate| weak_etag_matches(candidate, asset.etag));
     let mut response = if not_modified {
         let mut response = Response::new(Body::empty());
         *response.status_mut() = StatusCode::NOT_MODIFIED;
@@ -443,12 +445,44 @@ fn asset_response(asset: &'static Asset, if_none_match: Option<&HeaderValue>) ->
         .insert(header::ETAG, HeaderValue::from_static(asset.etag));
     response.headers_mut().insert(
         header::CACHE_CONTROL,
-        HeaderValue::from_static(asset.cache_control),
+        HeaderValue::from_static(cache_control_for_asset(path)),
     );
     response
 }
 
-fn etag_matches(candidate: &HeaderValue, current: &str) -> bool {
+fn cache_control_for_asset(path: &str) -> &'static str {
+    if path.ends_with(".html") {
+        return "no-store";
+    }
+    if is_vite_fingerprinted_script_or_style(path) {
+        return "public, max-age=31536000, immutable";
+    }
+    "public, max-age=0, must-revalidate"
+}
+
+fn is_vite_fingerprinted_script_or_style(path: &str) -> bool {
+    let Some((stem, extension)) = path.rsplit_once('.') else {
+        return false;
+    };
+    if !matches!(extension, "js" | "css") {
+        return false;
+    }
+    let Some((_, hash)) = stem.rsplit_once('-') else {
+        return false;
+    };
+    // `assets::lookup` accepts only exact rows generated from Vite's build
+    // output, never an arbitrary request path. Vite's content-addressed
+    // JS/CSS names use this `[name]-[hash]` form; if that output convention
+    // changes, update this predicate and its route-contract coverage.
+    hash.len() >= 8
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn weak_etag_matches(candidate: &HeaderValue, current: &str) -> bool {
+    // This is RFC 9110 weak comparison for `If-None-Match`; do not reuse it
+    // for a strong-validator operation such as byte-range handling.
     let Ok(candidate) = candidate.to_str() else {
         return false;
     };
@@ -1267,6 +1301,36 @@ mod tests {
             assets::lookup("assets/favicon.svg").is_none(),
             "the oversized data-URI SVG favicon must not be embedded",
         );
+    }
+
+    #[test]
+    fn cache_policy_is_selected_at_response_time() {
+        assert_eq!(cache_control_for_asset("wallet-connect.html"), "no-store");
+        assert_eq!(
+            cache_control_for_asset("assets/app-deadbeef.css"),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            cache_control_for_asset("assets/site.webmanifest"),
+            "public, max-age=0, must-revalidate"
+        );
+    }
+
+    #[test]
+    fn weak_etag_matching_uses_weak_comparison_for_conditional_gets() {
+        let current = "W/\"asset\"";
+        assert!(weak_etag_matches(
+            &HeaderValue::from_static("W/\"asset\""),
+            current
+        ));
+        assert!(weak_etag_matches(
+            &HeaderValue::from_static("\"asset\""),
+            current
+        ));
+        assert!(!weak_etag_matches(
+            &HeaderValue::from_static("W/\"other\""),
+            current
+        ));
     }
 
     #[test]
