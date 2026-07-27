@@ -80,7 +80,7 @@ export function ProviderDialog({
               onChange={(value) => formState.update("adapter", value)}
               ariaLabel={t("llm.adapter")}
               className="w-full"
-              buttonClassName="h-[44px] rounded-[14px] border-[var(--v2-panel-border)] bg-[var(--v2-input-bg)] px-3.5 font-sans text-[13px] text-[var(--v2-text-strong)] md:h-[50px] md:rounded-[16px] md:px-4 md:text-sm"
+              buttonClassName="h-[44px] rounded-[14px] border-[var(--v2-panel-border)] bg-[var(--v2-input-bg)] px-3.5 text-[var(--v2-text-strong)] md:h-[50px] md:rounded-[16px] md:px-4"
             />
           </div>
           </>
@@ -121,7 +121,7 @@ export function ProviderDialog({
             onChange={(value) => formState.update("model", value)}
             ariaLabel={t("llm.defaultModel")}
             className="w-full"
-            buttonClassName="h-[44px] rounded-[14px] border-[var(--v2-panel-border)] bg-[var(--v2-input-bg)] px-3.5 font-sans text-[13px] text-[var(--v2-text-strong)] md:h-[50px] md:rounded-[16px] md:px-4 md:text-sm"
+            buttonClassName="h-[44px] rounded-[14px] border-[var(--v2-panel-border)] bg-[var(--v2-input-bg)] px-3.5 text-[var(--v2-text-strong)] md:h-[50px] md:rounded-[16px] md:px-4"
             menuClassName="!top-auto bottom-[calc(100%+0.35rem)] max-h-64 overflow-y-auto"
           />
         )}
