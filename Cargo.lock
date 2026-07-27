@@ -3370,7 +3370,9 @@ name = "ironclaw_architecture"
 version = "0.1.0"
 dependencies = [
  "ironclaw_host_api",
+ "proc-macro2",
  "serde_json",
+ "syn 2.0.117",
  "tempfile",
  "toml 1.1.2+spec-1.1.0",
 ]
@@ -4113,15 +4115,9 @@ dependencies = [
 name = "ironclaw_process_sandbox"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "ironclaw_host_api",
- "ironclaw_processes",
- "secrecy",
  "serde",
- "serde_json",
- "tempfile",
  "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]
@@ -4619,6 +4615,7 @@ version = "0.2.2"
 dependencies = [
  "aho-corasick",
  "criterion",
+ "ironclaw_secrets",
  "regex",
  "serde_json",
  "thiserror 2.0.18",
