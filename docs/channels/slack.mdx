@@ -1,0 +1,124 @@
+---
+title: "Slack"
+description: "Talk to your agent in Slack channels and direct messages"
+icon: slack
+---
+
+Connect IronClaw to a Slack workspace so your agent can read and reply to messages in
+channels and DMs.
+
+## Prerequisites
+
+- A Slack workspace where you can install apps
+- An IronClaw instance reachable from Slack over HTTPS
+
+---
+
+## Setup
+
+<Steps>
+
+<Step title="Create a Slack app">
+
+Create an app at [api.slack.com/apps](https://api.slack.com/apps) from scratch and select
+your workspace.
+
+Under **OAuth & Permissions**, add the bot token scopes your agent needs — at minimum the
+ability to read messages in the conversations you'll use and post replies. Install the app
+to the workspace and copy the bot token.
+
+From **Basic Information**, copy the signing secret. IronClaw uses it to verify that
+incoming requests really came from Slack.
+
+</Step>
+
+<Step title="Start IronClaw">
+
+```bash
+ironclaw serve
+```
+
+</Step>
+
+<Step title="Connect the channel">
+
+In the [web interface](/using/webui), go to **Extensions → Channels** and start the Slack
+setup. Provide the app id, bot token, and signing secret when prompted. They are written
+to the encrypted secret store.
+
+</Step>
+
+<Step title="Point Slack at your instance">
+
+Back in your Slack app, enable **Event Subscriptions** and set the request URL to your
+instance:
+
+```
+https://your-host/webhooks/extensions/slack/events
+```
+
+Slack sends a verification challenge to that URL, so IronClaw must already be running and
+reachable when you save it. Subscribe to the message events for the conversations you
+want the agent to see, then reinstall the app if Slack asks you to.
+
+</Step>
+
+<Step title="Talk to it">
+
+Invite the bot to a channel and mention it, or send it a direct message.
+
+</Step>
+
+</Steps>
+
+---
+
+## Configuration
+
+Slack settings live under `[slack]` in your configuration file. Set them through the web
+interface rather than by hand — the tokens belong in the secret store, and the file only
+names the variables that hold them.
+
+```toml
+[slack]
+enabled = true
+```
+
+| Key | Purpose |
+| --- | --- |
+| `slack.enabled` | Turn the Slack route on |
+| `slack.api_app_id` | Your Slack app id |
+| `slack.bot_token_env` | Name of the variable holding the bot token |
+| `slack.signing_secret_env` | Name of the variable holding the signing secret |
+| `slack.team_id` | Workspace the app is installed in |
+| `slack.channel_routes` | Which conversations map to which agent scope |
+
+Check what's currently set:
+
+```bash
+ironclaw config list | grep slack
+```
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+
+<Accordion title="Slack can't verify the request URL">
+IronClaw has to be running and publicly reachable before you save the URL. Confirm the
+instance answers from outside your network, and that you used the full
+`/webhooks/extensions/slack/events` path.
+</Accordion>
+
+<Accordion title="The bot doesn't respond in a channel">
+Invite the bot to that channel, and make sure you subscribed to the matching message
+event. A bot only sees conversations it belongs to.
+</Accordion>
+
+<Accordion title="Requests are rejected">
+A wrong or missing signing secret makes IronClaw reject every incoming request. Re-enter
+it through the setup flow, then restart the server.
+</Accordion>
+
+</AccordionGroup>
