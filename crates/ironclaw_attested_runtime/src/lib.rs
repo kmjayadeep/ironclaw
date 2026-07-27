@@ -53,6 +53,8 @@ mod alpaca_supervisor;
 mod alpaca_uds;
 mod binding;
 mod clear_signing;
+#[cfg(feature = "clear-signing-http")]
+mod clear_signing_http;
 mod device_signature;
 mod driver;
 mod intent_signer;
@@ -85,6 +87,11 @@ pub use binding::{
 pub use clear_signing::{
     DescriptorKey, DescriptorLookup, DescriptorSource, TtlDescriptorCache,
     UnconfiguredDescriptorSource,
+};
+#[cfg(feature = "clear-signing-http")]
+pub use clear_signing_http::{
+    ALLOWED_UPSTREAM_HOSTS, CLEAR_SIGNING_UPSTREAM_ENV, HttpDescriptorSource, LEDGER_CAL_BASE_URL,
+    UpstreamConfigError, validate_upstream,
 };
 pub use device_signature::{DeviceSignatureError, signable_digest, verify_device_signature};
 pub use driver::{

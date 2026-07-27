@@ -546,6 +546,35 @@ impl From<DefaultPlannedRuntimeBuildError> for RebornRuntimeError {
 /// `RebornRuntime` is the single user-facing handle returned by
 /// [`build_reborn_runtime`]. Downstream code never reaches into the substrate
 /// or worker machinery: it talks to the runtime through task-level methods.
+/// Choose the descriptor source for this deployment.
+///
+/// Unconfigured means every Ledger ceremony blocks, which is the correct
+/// default: clear signing is something a deployment turns ON. A configured but
+/// *invalid* upstream is loud — it is logged at error and still blocks, so an
+/// operator who meant to enable this is not left believing they did.
+#[cfg(feature = "clear-signing-http")]
+fn clear_signing_source() -> Arc<dyn ironclaw_attested_runtime::DescriptorSource> {
+    match ironclaw_attested_runtime::HttpDescriptorSource::from_env() {
+        Ok(Some(source)) => Arc::new(source),
+        Ok(None) => Arc::new(ironclaw_attested_runtime::UnconfiguredDescriptorSource),
+        Err(error) => {
+            tracing::error!(
+                target: "ironclaw::attested::clear_signing",
+                %error,
+                env = ironclaw_attested_runtime::CLEAR_SIGNING_UPSTREAM_ENV,
+                "clear-signing upstream is misconfigured; every Ledger ceremony will block"
+            );
+            Arc::new(ironclaw_attested_runtime::UnconfiguredDescriptorSource)
+        }
+    }
+}
+
+/// Without the fetcher compiled in there is nothing to configure.
+#[cfg(not(feature = "clear-signing-http"))]
+fn clear_signing_source() -> Arc<dyn ironclaw_attested_runtime::DescriptorSource> {
+    Arc::new(ironclaw_attested_runtime::UnconfiguredDescriptorSource)
+}
+
 /// Positive-descriptor TTL: descriptors change rarely, so an hour keeps the
 /// context service quiet without pinning a stale document for long.
 const DESCRIPTOR_HIT_TTL_MS: i64 = 60 * 60 * 1000;
@@ -1342,8 +1371,7 @@ impl RebornRuntime {
     > {
         self.clear_signing_descriptors.get_or_init(|| {
             Arc::new(ironclaw_attested_runtime::TtlDescriptorCache::new(
-                Arc::new(ironclaw_attested_runtime::UnconfiguredDescriptorSource)
-                    as Arc<dyn ironclaw_attested_runtime::DescriptorSource>,
+                clear_signing_source(),
                 DESCRIPTOR_HIT_TTL_MS,
                 DESCRIPTOR_MISS_TTL_MS,
             ))

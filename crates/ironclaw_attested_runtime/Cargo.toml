@@ -18,6 +18,12 @@ layer = "kernel"
 dist = false
 
 [features]
+# The upstream ERC-7730 descriptor fetcher. Optional because a deployment
+# without it simply blocks every Ledger ceremony (the fail-closed default), and
+# because it is the crate's only outbound-HTTP surface. rustls-only, no
+# default-tls, to keep the attested-signing substrate openssl-free (see the
+# architecture test `workspace_graph_is_openssl_free`).
+clear-signing-http = ["dep:reqwest"]
 # Opt-in escape hatch for the `AlwaysTrustNearAccessKeyVerifier` stub, which
 # bypasses the on-chain NEAR access-key check. Compiled out of production builds
 # by default so the privilege-escalation stub cannot be wired by accident; only
@@ -94,6 +100,9 @@ zeroize = "1"
 # (`DecryptedSecret` wraps a String), so raw key bytes cannot pass through it.
 # Mirrors `ironclaw_chain_signing`'s custodial keystore.
 hex = "0.4"
+
+# rustls-only; see the `clear-signing-http` feature note.
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["rustls-tls-native-roots"] }
 
 [dev-dependencies]
 async-trait = "0.1"
