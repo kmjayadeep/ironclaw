@@ -203,7 +203,6 @@ struct CloudCodeSseAggregate {
 // unused after `gemini_oauth` was made `pub(crate)`. Kept to preserve the
 // move's no-behavior-change guarantee; delete in a follow-up if no caller
 // emerges.
-
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub(crate) struct GeminiResponseMeta {
