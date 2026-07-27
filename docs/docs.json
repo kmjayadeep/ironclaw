@@ -100,7 +100,6 @@
                   {
                     "group": "Built-in Channels",
                     "pages": [
-                      "tunnel",
                       "channels/local",
                       "channels/telegram",
                       "channels/signal",
@@ -240,7 +239,6 @@
                   {
                     "group": "内置渠道",
                     "pages": [
-                      "zh/tunnel",
                       "zh/channels/local",
                       "zh/channels/telegram",
                       "zh/channels/signal",

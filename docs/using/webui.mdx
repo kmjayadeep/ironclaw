@@ -141,7 +141,14 @@ a shared bearer token on an open port is a full compromise of the agent and ever
 credential it holds.
 </Warning>
 
-For a safer path that doesn't open a port, see [Tunnels](/tunnel).
+A safer path that opens no port at all is an SSH tunnel from the machine you're browsing
+from:
+
+```bash
+ssh -N -L 3000:127.0.0.1:3000 you@your-host
+```
+
+Then open `http://127.0.0.1:3000` locally.
 
 <CardGroup cols={2}>
   <Card title="CLI Reference" icon="terminal" href="/using/cli">
