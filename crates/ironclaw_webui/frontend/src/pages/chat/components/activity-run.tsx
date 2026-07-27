@@ -2,10 +2,26 @@ import { Icon } from "../../../design-system/icons";
 import React from "react";
 import { useT } from "../../../lib/i18n";
 import { summarizeActivity } from "../lib/activity-summary";
+import type { ChatMessage } from "../lib/message-types";
 import { MarkdownRenderer } from "./markdown-renderer";
 import { ToolActivity } from "./tool-activity";
 
-export function ActivityRun({ activity, activeRunId = null }) {
+type ActivityRunProps = {
+  activity: ChatMessage[];
+  activeRunId?: string | null;
+};
+
+type ActivityItemProps = {
+  item: ChatMessage;
+  activeRunId: string | null;
+};
+
+type ReasoningItemProps = {
+  content?: string;
+  streaming?: boolean;
+};
+
+export function ActivityRun({ activity, activeRunId = null }: ActivityRunProps) {
   const t = useT();
   const summary = React.useMemo(() => summarizeActivity(activity, t), [activity, t]);
   const shouldAutoExpand = shouldExpandActivityRun(activity);
@@ -53,7 +69,7 @@ export function ActivityRun({ activity, activeRunId = null }) {
   );
 }
 
-function ActivityItem({ item, activeRunId }) {
+function ActivityItem({ item, activeRunId }: ActivityItemProps) {
   if (item.role === "thinking") {
     const isStreaming =
       typeof activeRunId === "string" &&
@@ -76,7 +92,7 @@ function ActivityItem({ item, activeRunId }) {
   return null;
 }
 
-function ReasoningItem({ content, streaming = false }) {
+function ReasoningItem({ content, streaming = false }: ReasoningItemProps) {
   if (!content) return null;
   return (
     <div className="flex min-w-0 gap-3">
