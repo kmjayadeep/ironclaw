@@ -2461,6 +2461,16 @@ mod tests {
                 FinishReason::Unknown,
                 "{unclear} must not be reported as a clean stop",
             );
+            // …and the tool-call shape must not launder it into `ToolUse`.
+            // MALFORMED_FUNCTION_CALL / UNEXPECTED_TOOL_CALL are exactly the
+            // reasons that arrive *with* a `functionCall` part: the model
+            // emitted a call the provider rejected. Refining to `ToolUse`
+            // would let the model gateway dispatch it.
+            assert_eq!(
+                finish_for(unclear.into(), true),
+                FinishReason::Unknown,
+                "{unclear} carrying a functionCall part must stay Unknown",
+            );
         }
         // Absent: the documented fallback is shape inference, not a
         // hardcoded "STOP".

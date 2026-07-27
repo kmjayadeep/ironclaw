@@ -3506,11 +3506,12 @@ mod tests {
             finish_of(&with_tool_call, Some(FinishReason::Stop)),
             FinishReason::ToolUse,
         );
-        // Same for a token we could not classify — the parsed tool calls are
-        // structurally complete, so the gateway must still see them.
+        // An unclassifiable token is an explicit provider failure and is never
+        // refined, however complete the parsed tool calls look: Gemini's
+        // MALFORMED_FUNCTION_CALL maps here and does carry function-call parts.
         assert_eq!(
             finish_of(&with_tool_call, Some(FinishReason::Unknown)),
-            FinishReason::ToolUse,
+            FinishReason::Unknown,
         );
         // An unclassifiable token with no tool calls stays honest.
         assert_eq!(

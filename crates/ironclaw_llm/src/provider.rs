@@ -447,20 +447,25 @@ pub(crate) fn map_provider_finish_token(token: &str) -> Option<FinishReason> {
 /// turns a silently-truncated run into a surfaced failure.
 ///
 /// Shape inference survives only in two places: as the documented fallback
-/// when the provider stated nothing (`None`), and to refine `Stop`/`Unknown`
-/// into `ToolUse` when structurally complete tool calls are present.
+/// when the provider stated nothing (`None`), and to refine an explicit clean
+/// stop into `ToolUse`. The latter is not a guess — Gemini reports
+/// `finishReason: "STOP"` on responses whose parts are `functionCall`s, and
+/// several OpenAI-compatible endpoints report `stop` alongside `tool_calls`.
+///
+/// `Unknown` is deliberately **not** refined. It is what an explicit provider
+/// failure maps to — Gemini's `MALFORMED_FUNCTION_CALL` and
+/// `UNEXPECTED_TOOL_CALL` say the model emitted a *broken* call, and those
+/// responses still carry function-call-shaped parts. Promoting them to
+/// `ToolUse` would hand the gateway a call the provider itself rejected and
+/// let it execute. Failing closed here costs a retry; refining costs a
+/// dispatch that should never have happened.
 pub(crate) fn resolve_finish_reason(
     provider: Option<FinishReason>,
     has_tool_calls: bool,
 ) -> FinishReason {
     match provider {
-        Some(FinishReason::ToolUse) => FinishReason::ToolUse,
-        Some(FinishReason::Length) => FinishReason::Length,
-        Some(FinishReason::ContentFilter) => FinishReason::ContentFilter,
-        Some(FinishReason::Stop) | Some(FinishReason::Unknown) | None if has_tool_calls => {
-            FinishReason::ToolUse
-        }
-        Some(other) => other,
+        Some(FinishReason::Stop) | None if has_tool_calls => FinishReason::ToolUse,
+        Some(reported) => reported,
         None => FinishReason::Stop,
     }
 }
@@ -1090,6 +1095,60 @@ mod tests {
                  but duplicate ID '{id}' found for seeds ({a}, {b})"
             );
         }
+    }
+
+    #[test]
+    fn explicit_unknown_is_never_refined_into_tool_use() {
+        // Gemini reports MALFORMED_FUNCTION_CALL / UNEXPECTED_TOOL_CALL as an
+        // explicit failure, and such a response routinely still carries
+        // function-call-shaped content. Refining it to `ToolUse` would let the
+        // model gateway dispatch a call the provider itself rejected.
+        for token in ["MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL", "OTHER"] {
+            let provider = map_provider_finish_token(token);
+            assert_eq!(
+                provider,
+                Some(FinishReason::Unknown),
+                "{token} must map to Unknown"
+            );
+            assert_eq!(
+                resolve_finish_reason(provider, true),
+                FinishReason::Unknown,
+                "{token} with tool-call-shaped content must stay Unknown"
+            );
+            assert_eq!(
+                resolve_finish_reason(provider, false),
+                FinishReason::Unknown
+            );
+        }
+    }
+
+    #[test]
+    fn shape_inference_survives_for_absent_and_clean_stop_reasons() {
+        // Absent reason: the documented fallback.
+        assert_eq!(resolve_finish_reason(None, true), FinishReason::ToolUse);
+        assert_eq!(resolve_finish_reason(None, false), FinishReason::Stop);
+        // Gemini reports `STOP` on responses whose parts are `functionCall`s,
+        // so a clean stop alongside real tool calls is still refined.
+        assert_eq!(
+            resolve_finish_reason(Some(FinishReason::Stop), true),
+            FinishReason::ToolUse
+        );
+        assert_eq!(
+            resolve_finish_reason(Some(FinishReason::Stop), false),
+            FinishReason::Stop
+        );
+    }
+
+    #[test]
+    fn explicit_failure_reasons_win_over_response_shape() {
+        for reason in [FinishReason::Length, FinishReason::ContentFilter] {
+            assert_eq!(resolve_finish_reason(Some(reason), true), reason);
+            assert_eq!(resolve_finish_reason(Some(reason), false), reason);
+        }
+        assert_eq!(
+            resolve_finish_reason(Some(FinishReason::ToolUse), false),
+            FinishReason::ToolUse
+        );
     }
 
     #[test]
