@@ -83,5 +83,9 @@ ironclaw doctor
 ironclaw serve
 ```
 
-Common causes are a port already in use, a missing inference provider credential, or a
-master key that can't be read because the keychain is locked.
+The most common cause is a foreground `ironclaw serve` still holding the port — the
+service runs `serve` itself, so only one of them can bind at a time. Stop the foreground
+process and start the service again.
+
+Other causes are a missing inference provider credential, or a master key that can't be
+read because the keychain is locked.

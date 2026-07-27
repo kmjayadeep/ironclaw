@@ -11,8 +11,11 @@ drafts/
 # docs site. Everything below must stay unpublished — architecture contracts,
 # implementation plans, and QA maps are internal-only.
 #
-# Nothing in docs/ is public unless it is listed in docs.json navigation. If you
-# add a new internal directory here, add it to this list too.
+# Omission from docs.json navigation is NOT a publication boundary. A page left
+# out of navigation is only hidden from the sidebar — it stays reachable by URL
+# and can still be indexed. This file is the only thing that stops Mintlify from
+# processing and serving a page. Any new internal directory under docs/ must be
+# added to the list below before it is committed.
 plans/
 internal/
 reborn/

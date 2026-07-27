@@ -183,9 +183,15 @@ ironclaw run -m "Summarize my last three emails"
 <Step title="Keep It Running">
 
 To have IronClaw start automatically in the background, install it as a system service
-(launchd on macOS, systemd on Linux):
+(launchd on macOS, systemd on Linux).
+
+<Warning>
+Stop the foreground `ironclaw serve` first. The service runs `serve` too, so starting it
+while your terminal still holds the port fails with an address-already-in-use error.
+</Warning>
 
 ```bash
+# Ctrl-C the foreground server, then:
 ironclaw service install
 ironclaw service start
 ironclaw service status

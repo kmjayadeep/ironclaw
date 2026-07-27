@@ -157,18 +157,22 @@ Each tool directory must contain:
 ## Installing WASM Tools
 
 ```bash
-# Install from a local file
-ironclaw extension install ./my-tool.wasm
+# Find an available package
+ironclaw extension search my-tool
 
-# Install from a URL
-ironclaw extension install https://example.com/tools/my-tool.wasm
-
-# List installed tools
+# List every package the install knows about
 ironclaw extension search
+
+# Install one by id
+ironclaw extension install my-tool
 ```
 
-Or via the `extension_install` tool in chat:
-> "Install the tool from https://example.com/tools/my-tool.wasm"
+`extension install` takes an **extension id** from `extension search` — not a file path or
+a URL. To install a package you built yourself, place it in one of the tool directories
+above so `search` can find it, then install it by id.
+
+To import a packaged extension archive directly, use **Extensions** in the
+[web interface](/using/webui).
 
 ---
 

@@ -46,11 +46,10 @@ Complete the GitHub OAuth flow from **Extensions** in the [web interface](/using
 
 <Step title="Configure a PAT (Fallback)">
 
-If you do not want to run a GitHub OAuth app, you can still use a Personal Access Token:
-
-```bash
-ironclaw secret set github_token YOUR_TOKEN
-```
+If you do not want to run a GitHub OAuth app, you can still use a Personal Access Token.
+Supply it in the GitHub extension's setup flow under **Extensions** in the
+[web interface](/using/webui) instead of the OAuth sign-in. It is stored in the encrypted
+secret store.
 
 <Warning>
 Be sure to create a fine-grained personal access token with only the necessary permissions for your use case. When in doubt, choose the least permissive options, you can always create new tokens with different permissions later on

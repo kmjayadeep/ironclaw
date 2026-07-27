@@ -343,6 +343,42 @@
     {
       "source": "/channels/webhook",
       "destination": "/channels/overview"
+    },
+    {
+      "source": "/zh/channels/discord",
+      "destination": "/zh/channels/overview"
+    },
+    {
+      "source": "/zh/channels/signal",
+      "destination": "/zh/channels/overview"
+    },
+    {
+      "source": "/zh/channels/wechat",
+      "destination": "/zh/channels/overview"
+    },
+    {
+      "source": "/zh/channels/wecom",
+      "destination": "/zh/channels/overview"
+    },
+    {
+      "source": "/zh/channels/local",
+      "destination": "/zh/channels/overview"
+    },
+    {
+      "source": "/zh/channels/webhook",
+      "destination": "/zh/channels/overview"
+    },
+    {
+      "source": "/zh/tunnel",
+      "destination": "/zh/index"
+    },
+    {
+      "source": "/zh/capabilities/jobs",
+      "destination": "/zh/capabilities/jobs/jobs"
+    },
+    {
+      "source": "/zh/extensions/google-calendar",
+      "destination": "/zh/extensions/google/calendar"
     }
   ]
 }

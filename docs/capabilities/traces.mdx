@@ -77,7 +77,20 @@ ironclaw traces list-submissions
 ironclaw traces revoke <submission-id>
 ```
 
-`revoke` removes the contribution locally and, optionally, at the ingestion service.
+`revoke` always removes the contribution from your local submission records. To also
+request deletion at the ingestion service, pass its revocation endpoint:
+
+```bash
+ironclaw traces revoke <submission-id> --endpoint https://traces.example.com/v1/revoke
+```
+
+The bearer token is read from `IRONCLAW_TRACE_SUBMIT_TOKEN`; override the variable name
+with `--bearer-token-env`.
+
+<Warning>
+Without `--endpoint`, revocation is local only. A copy the ingestion service already
+accepted is not deleted, and removing your local record does not recall it.
+</Warning>
 
 Check your earned credit and where it came from:
 

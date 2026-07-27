@@ -259,18 +259,33 @@ Set `BEDROCK_CROSS_REGION` to route requests across AWS regions for capacity:
 
 ## OpenAI-Compatible Endpoints
 
-All providers below use `LLM_BACKEND=openai_compatible`. Set `LLM_BASE_URL` to the
-provider's OpenAI-compatible endpoint and `LLM_API_KEY` to your API key.
+OpenRouter, Together AI, Fireworks and the rest now have their own `provider_id` entries — use those directly rather than the generic adapter.
+
+Reach for `openai_compatible` when your endpoint has no dedicated entry: vLLM, LiteLLM, LM Studio, or an internal gateway. It needs a `base_url`, because the generic adapter has no default host of its own:
+
+```toml
+[llm.default]
+provider_id = "openai_compatible"
+base_url    = "http://localhost:8000/v1"
+model       = "meta-llama/Llama-3.3-70B-Instruct"
+api_key_env = "LLM_API_KEY"
+```
+
+Omitting `base_url` leaves the slot pointing nowhere and model resolution fails. `base_url` also works on any other provider when you need to route it through a proxy or a regional endpoint.
+
+The sections below list model ids for popular hosts. Each is reachable through its own `provider_id`; set `model` to the id you want.
+
+Several examples on this page use the `LLM_BACKEND` / `LLM_MODEL` / `LLM_BASE_URL` / `LLM_API_KEY` environment variables instead of a TOML slot. Both work: the environment form is the fallback IronClaw uses when `[llm.default]` is not configured. Prefer the TOML slot for a permanent install, and the environment form for one-off runs and containers.
 
 ### OpenRouter
 
 [OpenRouter](https://openrouter.ai) routes to 300+ models from a single API key.
 
-```env
-LLM_BACKEND=openai_compatible
-LLM_BASE_URL=https://openrouter.ai/api/v1
-LLM_API_KEY=sk-or-...
-LLM_MODEL=anthropic/claude-sonnet-4
+```toml
+[llm.default]
+provider_id = "openrouter"
+model       = "anthropic/claude-sonnet-4"
+api_key_env = "OPENROUTER_API_KEY"
 ```
 
 Popular OpenRouter model IDs:
