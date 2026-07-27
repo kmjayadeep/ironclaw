@@ -25,6 +25,36 @@ use crate::entrypoint::{BindContext, BindError, ExtensionBindings, ExtensionEntr
 use crate::lifecycle::{DrainController, EgressFactory, HookError};
 use crate::loaders::{ExtensionLoader, LoadContext, LoadedExtension};
 
+#[cfg(feature = "test-support")]
+pub mod first_party_registrars;
+
+/// Opaque test-support handle carrying the Reborn local extension-management
+/// port without forcing composition harness structs to define extension-host
+/// wrapper types locally.
+#[cfg(feature = "test-support")]
+pub struct ExtensionManagementTestHandle {
+    extension_management: Arc<crate::extension_lifecycle::RebornLocalExtensionManagementPort>,
+}
+
+#[cfg(feature = "test-support")]
+impl ExtensionManagementTestHandle {
+    /// Build a test-support handle over the local extension-management port.
+    pub fn new(
+        extension_management: Arc<crate::extension_lifecycle::RebornLocalExtensionManagementPort>,
+    ) -> Self {
+        Self {
+            extension_management,
+        }
+    }
+
+    /// Return the wrapped local extension-management port.
+    pub fn extension_management(
+        &self,
+    ) -> Arc<crate::extension_lifecycle::RebornLocalExtensionManagementPort> {
+        self.extension_management.clone()
+    }
+}
+
 const MCP_MANIFEST: &str = r#"
 schema_version = "reborn.extension_manifest.v3"
 id = "acme-tools"
@@ -429,16 +459,16 @@ impl RestrictedEgress for DenyAllEgress {
 /// that the observer is a trait; shared so the sink contract tests and the
 /// composition-side pairing-service tests assert against one implementation.
 pub struct RecordingPairingOutcomeObserver {
-    pub outcomes: Arc<std::sync::Mutex<Vec<crate::ingress::pairing::ChannelPairingConsumeOutcome>>>,
+    pub outcomes: Arc<std::sync::Mutex<Vec<crate::channel_pairing::ChannelPairingConsumeOutcome>>>,
 }
 
 #[async_trait]
-impl crate::ingress::sink::ChannelPairingOutcomeObserver for RecordingPairingOutcomeObserver {
+impl crate::extension_ingress::ChannelPairingOutcomeObserver for RecordingPairingOutcomeObserver {
     async fn observe_pairing_outcome(
         &self,
         _conversation: ironclaw_product::ExternalConversationRef,
         _event_id: ironclaw_product::ExternalEventId,
-        outcome: crate::ingress::pairing::ChannelPairingConsumeOutcome,
+        outcome: crate::channel_pairing::ChannelPairingConsumeOutcome,
     ) {
         match self.outcomes.lock() {
             Ok(mut outcomes) => outcomes.push(outcome),

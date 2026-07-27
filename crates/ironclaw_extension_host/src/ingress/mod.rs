@@ -30,6 +30,3 @@ pub use verifier::{
     IngressHeaders, MAX_VERIFICATION_CANDIDATES, VerificationCandidate, VerificationFailure,
     VerifiedInstallation, verify_recipe,
 };
-
-pub mod pairing;
-pub mod sink;
