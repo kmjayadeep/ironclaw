@@ -1,3 +1,9 @@
+---
+type: "Reference"
+title: "Architecture Overview"
+openwiki_generated: true
+---
+
 # Architecture Overview
 
 This page explains IronClaw's system design, the four-layer model, dependency structure, and where to build new features.
@@ -23,7 +29,7 @@ IronClaw runs two architectures in parallel:
 - **New features:** ❌ Do not add features to v1
 
 ### Reborn (Modern, Active Development)
-- **Location:** `crates/` directory (68+ focused crates)
+- **Location:** `crates/` directory (65 focused crates)
 - **Model:** Modular architecture with clear authority boundaries
 - **Status:** Primary target for new development
 - **When to touch:** All new features go here
@@ -82,126 +88,21 @@ Reborn uses a kernel-userland architecture inspired by operating systems:
 
 ## Crate Organization
 
-IronClaw's 68+ crates are organized into 7 functional groups:
+IronClaw's 65 crates are organized by functional group. **See [Crate Reference](crates.md) for the complete breakdown** with detailed descriptions, dependencies, and guidance on when to modify each crate.
 
-### 1. Core Contracts (5 crates)
-**Purpose:** Shared types, traits, and interfaces used across the system.
-
-| Crate | Purpose |
-|-------|---------|
-| `ironclaw_host_api` | Traits and types for loop-to-kernel communication (HostPort, CapabilityRequest, etc.) |
-| `ironclaw_common` | Shared utilities, types, and enums (Attachment, Event, Identity, etc.) |
-| `ironclaw_prompt_envelope` | Prompt composition, template system, and injection safety |
-| `ironclaw_runtime_policy` | Policy types, profile definitions, and validation |
-| `ironclaw_architecture` | Architecture boundary tests and dependency checks |
-
-### 2. Authority & Gates (9 crates)
-**Purpose:** Policy enforcement, security, and approval gates.
-
-| Crate | Purpose |
-|-------|---------|
-| `ironclaw_authorization` | Who can access what (RBAC, permission checks) |
-| `ironclaw_approvals` | Human approval flows and lease management |
-| `ironclaw_trust` | Trust boundaries and identity verification |
-| `ironclaw_resources` | Resource governor, cost tracking, quotas |
-| `ironclaw_secrets` | Encrypted secret storage and injection |
-| `ironclaw_safety` | Prompt injection, credential detection, sanitization |
-| `ironclaw_network` | Network sandbox, allowlist/denylist, DNS |
-| `ironclaw_filesystem` | File scoping, integrity checks, namespace isolation |
-| `ironclaw_hooks` | Lifecycle hooks, event subscribers, plugins |
-
-### 3. Capability Execution (11 crates)
-**Purpose:** Tool registration, dispatch, and execution in sandboxes.
-
-| Crate | Purpose |
-|-------|---------|
-| `ironclaw_capabilities` | Capability registry, profile conformance, host API |
-| `ironclaw_dispatcher` | Multi-destination dispatch (tools, channels, subscriptions) |
-| `ironclaw_wasm` | WASM sandbox runtime, tool execution |
-| `ironclaw_wasm_sandbox_core` | Low-level WASM sandbox integration |
-| `ironclaw_wasm_limiter` | Resource limits, memory bounds, timeout enforcement |
-| `ironclaw_mcp` | Model Context Protocol server discovery and tunneling |
-| `ironclaw_scripts` | Script execution, inline coding (Python, Bash, etc.) |
-| `ironclaw_extensions` | Extension lifecycle, manifest discovery, activation |
-| `ironclaw_host_runtime` | Host-side effect execution (shell, HTTP, etc.) |
-| `ironclaw_processes` | Process sandbox, stdio capture, subprocess management |
-| `ironclaw_first_party_extensions` | Built-in tools (GitHub, Google Drive, etc.) |
-
-### 4. Durable State & Events (9 crates)
-**Purpose:** Persistence, event sourcing, and state recovery.
-
-| Crate | Purpose |
-|-------|---------|
-| `ironclaw_events` | Immutable event log, JSONL backend, in-memory store |
-| `ironclaw_event_projections` | Snapshot computation, pending gate projection, state cache |
-| `ironclaw_event_streams` | Event subscription, filtering, redaction for delivery |
-| `ironclaw_reborn_event_store` | Event storage abstraction (PostgreSQL/libSQL adapters) |
-| `ironclaw_run_state` | Checkpoint storage, recovery state, progress tracking |
-| `ironclaw_threads` | Thread (conversation) lifecycle and metadata |
-| `ironclaw_conversations` | Conversation store, trusted inbound, state machine |
-| `ironclaw_memory` | Embedding index, semantic search, memory retrieval |
-| `ironclaw_memory_native` | Native (on-disk) memory implementation |
-
-### 5. Products & Loops (27 crates)
-**Purpose:** Agent loops, product surfaces, and workflows.
-
-| Crate | Purpose |
-|-------|---------|
-| `ironclaw_agent_loop` | Core agent executor (planning, tool selection, execution, checkpointing) |
-| `ironclaw_loop_support` | Utilities for loop implementations |
-| `ironclaw_executor` | (v1) Legacy executor; in maintenance mode |
-| `ironclaw_turns` | Turn (interaction) state, message sequencing |
-| `ironclaw_llm` | LLM provider abstraction (OpenAI, Anthropic, Ollama, etc.) |
-| `ironclaw_embeddings` | Embedding provider abstraction (OpenAI, Bedrock, Ollama, etc.) |
-| `ironclaw_engine` | (v1) Legacy orchestration; in maintenance mode |
-| `ironclaw_reborn` | Reborn runtime kernel and composition |
-| `ironclaw_reborn_cli` | Primary CLI/WebUI binary entrypoint |
-| `ironclaw_reborn_config` | Config.toml parsing, defaults, resolution |
-| `ironclaw_reborn_composition` | Dependency injection, app builder, service wiring |
-| `ironclaw_reborn_identity` | User/owner identity, session management |
-| `ironclaw_reborn_traces` | Trace recording, replay, structured spans |
-| `ironclaw_reborn_openai_compat` | OpenAI-compatible API surface (chat completions, embeddings) |
-| `ironclaw_reborn_openai_compat_storage` | PostgreSQL/libSQL adapters for OpenAI API |
-| `ironclaw_reborn_webui_ingress` | WebUI HTTP routing, session cookies, CORS |
-| `ironclaw_gateway` | (v1) HTTP gateway; mostly ported to Reborn |
-| `ironclaw_product_context` | Product-specific request context, user metadata |
-| `ironclaw_product_workflow` | Missions, projects, skills, routines, approvals |
-| `ironclaw_product_adapters` | Product adapter framework (Slack, Telegram, etc.) |
-| `ironclaw_product_adapter_registry` | Discovery and lifecycle of product adapters |
-| `ironclaw_wasm_product_adapters` | WASM-based adapter implementations |
-| `ironclaw_slack_extension` | Slack workspace adapter |
-| `ironclaw_telegram_extension` | Telegram bot adapter |
-| `ironclaw_skill_learning` | Skill extraction, classification, and refinement |
-| `ironclaw_outbound` | Outbound message delivery (replies, notifications) |
-| `ironclaw_triggers` | Trigger system, event subscriptions, automation |
-
-### 6. Storage Backends (8 crates)
-**Purpose:** Backend-agnostic persistence with dual support (PostgreSQL + libSQL).
-
-| Crate | Purpose |
-|-------|---------|
-| `ironclaw_hooks_postgres` | PostgreSQL event hook implementation |
-| `ironclaw_hooks_libsql` | libSQL (Turso) event hook implementation |
-| `ironclaw_hooks_parity` | Feature parity testing across backends |
-| `ironclaw_reborn_event_store` | (Dual-backend) Event store abstraction |
-| `ironclaw_run_state` | (Dual-backend) Run state persistence |
-| `ironclaw_threads` | (Dual-backend) Thread storage |
-| `ironclaw_conversations` | (Dual-backend) Conversation store |
-| Other crates | Implement `Db` trait for PostgreSQL and libSQL |
-
-### 7. Utilities & Observability (7 crates)
-**Purpose:** Cross-cutting concerns like logging, tracing, and integrations.
-
-| Crate | Purpose |
-|-------|---------|
-| `ironclaw_observability` | Tracing, metrics, structured logging |
-| `ironclaw_skills` | Skill system, skill definitions, extraction |
-| `ironclaw_oauth` | OAuth flow management, token refresh |
-| `ironclaw_auth` | Authentication, credential types |
-| `ironclaw_llm` | (Also in Products) LLM provider abstraction |
-| `ironclaw_embeddings` | (Also in Products) Embedding provider abstraction |
-| `ironclaw_extractors` | Data extraction utilities |
-| `ironclaw_tui` | Terminal UI components (if used) |
+**Quick reference by functional area:**
+- **Core Contracts** (3 crates): `host_api`, `common`, `prompt_envelope`
+- **Authority & Gates** (6 crates): `authorization`, `trust`, `safety`, `auth`, `approvals`, `runtime_policy`
+- **Capability Execution** (4 crates): `capabilities`, `dispatcher`, `resources`, `run_state`
+- **Durable State & Events** (6 crates): `events`, `event_projections`, `event_streams`, `reborn_event_store`, `outbound`, `reborn_traces`
+- **Products & Loops** (10 crates): `agent_loop`, `loop_host`, `product`, `reborn_openai_compat`, `reborn_cli`, `webui`, `slack_extension`, `telegram_extension`, `telegram_v2_adapter`, `operator`
+- **Storage & Secrets** (2 crates): `filesystem`, `secrets`
+- **Utilities & Observability** (7 crates): `observability`, `embeddings`, `llm`, `network`, `extractors`, `attachments`, `skills`
+- **Conversation & State** (7 crates): `conversations`, `threads`, `turns`, `triggers`, `memory`, `memory_native`, `memory_mem0`
+- **Extensions & Integrations** (5 crates): `extensions`, `extension_host`, `first_party_extensions`, `first_party_extension_ports`, `mcp`
+- **Runtime & Execution** (7 crates): `wasm`, `wasm_limiter`, `process_sandbox`, `processes`, `hooks`, `runner`, `scripts`
+- **Configuration & Composition** (8 crates): `reborn_config`, `reborn_composition`, `host_runtime`, `host_ingress`, `reborn_identity`, `projects`
+- **Architecture & Special** (2 crates): `architecture`, `silk_decoder`
 
 ## Dependency Flow (Acyclic Upward)
 
@@ -236,20 +137,20 @@ Surfaces (WebUI, channels, API)
 ```
 Is the feature runtime/execution/agent-related?
 ├─ YES: Goes in crates/ironclaw_reborn* or crates/ironclaw_product*
-│  ├─ Agent executor behavior? → ironclaw_agent_loop or ironclaw_executor
+│  ├─ Agent executor behavior? → ironclaw_agent_loop or ironclaw_loop_host
 │  ├─ Config/composition? → ironclaw_reborn_config or ironclaw_reborn_composition
-│  ├─ WebUI/API? → ironclaw_reborn_webui_ingress or ironclaw_gateway
-│  ├─ Workflows/missions? → ironclaw_product_workflow
-│  └─ New channel (Slack, Discord)? → ironclaw_*_adapter
+│  ├─ WebUI/API? → ironclaw_webui or ironclaw_reborn_openai_compat
+│  ├─ Workflows/missions? → ironclaw_product
+│  └─ New channel (Slack, Discord, Telegram)? → ironclaw_slack_extension, ironclaw_telegram_extension, etc.
 │
 └─ NO: Is it a tool, sandbox, or capability?
-   ├─ YES: Goes in ironclaw_capabilities, ironclaw_extensions, ironclaw_wasm, etc.
+   ├─ YES: Goes in ironclaw_capabilities, ironclaw_extensions, ironclaw_wasm, ironclaw_scripts, etc.
    │
    └─ NO: Is it a gate (safety, approval, secrets)?
-      ├─ YES: Goes in ironclaw_safety, ironclaw_approvals, ironclaw_secrets, etc.
+      ├─ YES: Goes in ironclaw_safety, ironclaw_approvals, ironclaw_secrets, ironclaw_authorization, etc.
       │
       └─ NO: Is it a substrate (events, storage, filesystem)?
-         ├─ YES: Goes in ironclaw_events, ironclaw_filesystem, etc.
+         ├─ YES: Goes in ironclaw_events, ironclaw_filesystem, ironclaw_threads, ironclaw_memory, etc.
          │
          └─ LEGACY v1: Very rarely touch src/. Only maintain existing v1 behavior.
 ```
@@ -387,7 +288,7 @@ MemoryStore (Native | Bedrock | Pinecone | ...)
 
 ## See Also
 
-- **[Crate Reference](crates.md)** — Detailed breakdown of all 68+ crates
+- **[Crate Reference](crates.md)** — Detailed breakdown of all 65 crates
 - **[Data Model](data-model.md)** — Events, threads, turns, capabilities
 - **[Security & Safety](security.md)** — Kernel boundary, threat model, approval gates
 - **[AGENTS.md](/AGENTS.md)** — Quick rules and code discovery

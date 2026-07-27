@@ -1,3 +1,9 @@
+---
+type: "Reference"
+title: "IronClaw OpenWiki: Quick Start"
+openwiki_generated: true
+---
+
 # IronClaw OpenWiki: Quick Start
 
 Welcome to the IronClaw repository documentation. This is your entry point to understanding the codebase structure, how to build and test, and where to find help.
@@ -9,7 +15,7 @@ Welcome to the IronClaw repository documentation. This is your entry point to un
 **Key Properties:**
 - **Secure by design:** Secrets encrypted on host, never inline in config; data encrypted at rest
 - **Sandboxed execution:** Tools run in isolated WASM, process, or external sandboxes
-- **Modular architecture:** 68+ crates with clear authority boundaries and composable components
+- **Modular architecture:** 65 focused crates with clear authority boundaries and composable components
 - **Multi-platform:** Runs as CLI, Web UI, or embedded service across Linux, macOS, Windows
 - **Extensible:** Native tools, WASM extensions, MCP servers, and OAuth integrations
 
@@ -18,10 +24,10 @@ Welcome to the IronClaw repository documentation. This is your entry point to un
 ```
 ironclaw/
 ├── src/                   # v1 legacy monolith (maintenance only)
-├── crates/                # Reborn runtime — active development target (68+ crates)
+├── crates/                # Reborn runtime — active development target (65 crates)
 ├── crates/ironclaw_reborn_cli/        # Primary CLI/WebUI entrypoint
 ├── crates/ironclaw_agent_loop/        # Core agent execution engine
-├── crates/ironclaw_product_workflow/  # Product layer (flows, approvals, skills)
+├── crates/ironclaw_product/           # Product layer (flows, approvals, skills)
 ├── docs/                  # User-facing and draft architecture docs
 ├── tests/                 # E2E and integration test suites
 ├── .claude/               # Agent instruction files (rules, commands, skills)
@@ -45,7 +51,7 @@ ironclaw/
 ### 🏗️ Understanding the Code
 
 - **[Architecture Overview](architecture/overview.md)** — High-level system design, four-layer model, crate organization
-- **[Crate Reference](architecture/crates.md)** — Detailed breakdown of 68 crates, their purpose, and key types
+- **[Crate Reference](architecture/crates.md)** — Detailed breakdown of 65 crates, their purpose, and key types
 - **[Data Model](architecture/data-model.md)** — Events, runs, threads, turns, capabilities, and state flows
 - **[Security & Safety](architecture/security.md)** — Kernel/userland boundary, policy enforcement, threat model
 
@@ -79,7 +85,7 @@ IronClaw runs two parallel architectures:
 | Aspect | v1 (src/) | Reborn (crates/) |
 |--------|-----------|------------------|
 | **Status** | Legacy, maintenance only | Modern, active development |
-| **Model** | Monolith (~10k LOC in `src/`) | Modular (68+ focused crates) |
+| **Model** | Monolith (~10k LOC in `src/`) | Modular (65 focused crates) |
 | **Design** | Tightly coupled services | Clear authority boundaries |
 | **New Features** | ❌ Don't add here | ✅ Build here |
 | **When to Touch** | Only existing v1 bugs | New features, product workflows |
@@ -98,7 +104,7 @@ Substrate Layer (Events, Filesystem, Memory, Threads)
 
 **Core Principle:** The loop is NOT the security perimeter. Loops request effects; the kernel decides what's allowed.
 
-### Crate Organization (68 crates in 7 groups)
+### Crate Organization (65 crates in 7 groups)
 
 | Group | Purpose | Key Crates | Count |
 |-------|---------|-----------|-------|
@@ -106,7 +112,7 @@ Substrate Layer (Events, Filesystem, Memory, Threads)
 | **Authority & Gates** | Security, approvals, secrets, policy | `authorization`, `safety`, `secrets`, `filesystem` | 9 |
 | **Capability Execution** | Tool dispatch, WASM, MCP, scripts | `capabilities`, `dispatcher`, `wasm`, `mcp` | 11 |
 | **Durable State** | Events, threads, conversations, memory | `events`, `run_state`, `threads`, `memory` | 9 |
-| **Products & Loops** | Agent, CLI, WebUI, workflows | `agent_loop`, `reborn_cli`, `product_workflow` | 27 |
+| **Products & Loops** | Agent, CLI, WebUI, workflows | `agent_loop`, `reborn_cli`, `product` | 27 |
 | **Storage Backends** | PostgreSQL, libSQL adapters | `hooks_postgres`, `reborn_event_store` | 8 |
 | **Utilities** | Logging, embeddings, observability | `observability`, `embeddings`, `llm` | 7 |
 
@@ -158,7 +164,7 @@ openwiki/
 ├── quickstart.md                    # ← You are here
 ├── architecture/
 │   ├── overview.md                  # System design, four-layer model
-│   ├── crates.md                    # All 68+ crates explained
+│   ├── crates.md                    # All 65 crates explained
 │   ├── data-model.md                # Events, state, persistence
 │   └── security.md                  # Kernel boundary, threats
 ├── development/

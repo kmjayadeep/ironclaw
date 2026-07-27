@@ -1,832 +1,954 @@
+---
+type: "Reference"
+title: "Crate Reference"
+description: "Complete reference for all 65 crates in IronClaw Reborn, organized by functional group with guidance on roles, dependencies, and when to modify each crate."
+---
+
 # Crate Reference
 
-This page documents all 68+ crates in the IronClaw repository, organized by functional group. Use this as a reference when exploring code or deciding where to add new features.
+This page documents all **65 crates** in the IronClaw Reborn repository, organized by functional group. Use this as a reference when exploring code or deciding where to add new features.
 
 ## Quick Index
 
-- [Core Contracts](#core-contracts-5-crates) — Shared types and traits
-- [Authority & Gates](#authority--gates-9-crates) — Security and policy
-- [Capability Execution](#capability-execution-11-crates) — Tools and sandboxes
-- [Durable State & Events](#durable-state--events-9-crates) — Persistence
-- [Products & Loops](#products--loops-27-crates) — Agent and workflows
-- [Storage Backends](#storage-backends-8-crates) — Database adapters
-- [Utilities](#utilities-7-crates) — Logging, embeddings, etc.
+- [Core Contracts](#core-contracts-3-crates) — Shared types and traits
+- [Authority & Gates](#authority--gates-6-crates) — Security and policy enforcement
+- [Capability Execution](#capability-execution-4-crates) — Capability dispatch and execution
+- [Durable State & Events](#durable-state--events-6-crates) — Event sourcing and persistence
+- [Products & Loops](#products--loops-10-crates) — Agent loops, channels, and product surfaces
+- [Storage & Secrets](#storage--secrets-2-crates) — Persistence backends
+- [Utilities & Observability](#utilities--observability-7-crates) — Logging, embeddings, observability
+- [Conversation & State](#conversation--state-7-crates) — Session threads, memory, triggers
+- [Extensions & Integrations](#extensions--integrations-5-crates) — Extension system and MCP
+- [Runtime & Execution](#runtime--execution-7-crates) — WASM, process sandbox, hooks
+- [Configuration & Composition](#configuration--composition-8-crates) — DI, config, composition root
+- [Architecture & Special](#architecture--special-2-crates) — Architecture validation, utilities
 
 ---
 
-## Core Contracts (5 crates)
+## Core Contracts (3 crates)
 
-**Purpose:** Shared types, traits, and interfaces used everywhere.
+**Purpose:** Shared types, traits, and API contracts used across the system.
 
 ### ironclaw_host_api
-**Role:** Loop-to-kernel communication contract
-- Defines `HostPort` trait (effects loops request)
-- `CapabilityRequest`, `CapabilityResponse` types
+**Description:** Shared host API contracts for IronClaw Reborn
+
+**Role:** Loop-to-kernel communication contract; the canonical bridge between loop code and host effects
+- Defines `HostPort` trait (how loops request effects)
+- `CapabilityRequest`, `CapabilityResponse` types (capability invocation contract)
 - Observer trait for event subscriptions
-- **When to touch:** Adding new request types or capabilities
+- **When to touch:** Adding new request types, changing effect semantics, or updating the loop-kernel boundary
 - **Key modules:** `capabilities.rs`, `port.rs`
 - **Depends on:** `ironclaw_common`
+- **Tests:** Comprehensive; see `tests/` for contract tests
 
 ### ironclaw_common
-**Role:** Shared types and utilities
-- `Attachment`, `Event`, `Identity`, `Platform` types
+**Description:** Shared types, paths, and platform helpers used across the IronClaw workspace
+
+**Role:** Foundation library with shared types and utilities
+- `Attachment`, `Event`, `Identity`, `Platform`, `Speaker` types
 - Environment helpers, hashing, timezone utilities
 - Provider transcript types
-- **When to touch:** Adding shared utilities or types
-- **Key modules:** `attachment.rs`, `event.rs`, `identity.rs`
+- **When to touch:** Adding shared utilities, types, or cross-crate constants
+- **Key modules:** `attachment.rs`, `event.rs`, `identity.rs`, `platform.rs`
 - **Depends on:** tokio, serde, chrono
+- **Tests:** Unit tests for utilities
 
 ### ironclaw_prompt_envelope
-**Role:** Prompt composition and safety
-- Prompt template system
-- Variable substitution, placeholder handling
-- Injection safety validation
-- **When to touch:** Changing how prompts are constructed
-- **Key modules:** `envelope.rs`, `validation.rs`
+**Description:** Shared envelope helper that wraps untrusted prompt content with a closed-vocabulary trust boundary
+
+**Role:** Prompt injection defense and composition
+- Prompt template system with variable substitution
+- Placeholder handling and closure binding
+- Injection safety validation and redaction
+- **When to touch:** Changing how prompts are constructed, adding new template features, or updating safety checks
+- **Key modules:** `envelope.rs`, `validation.rs`, `markers.rs`
 - **Depends on:** `ironclaw_common`, `ironclaw_safety`
-
-### ironclaw_runtime_policy
-**Role:** Policy types and profiles
-- Policy profile definitions (secure_default, local-dev, etc.)
-- Permission sets, resource limits
-- Validation and normalization
-- **When to touch:** Adding new policies or profiles
-- **Key modules:** `profile.rs`, `permission.rs`, `limits.rs`
-- **Depends on:** serde, toml
-
-### ironclaw_architecture
-**Role:** Architecture boundary tests and enforcement
-- Dependency graph checking
-- Composition boundary tests
-- Reborn vs v1 boundary enforcement
-- **When to touch:** Refactoring crate dependencies
-- **Key modules:** `tests/reborn_composition_boundaries.rs`
-- **Tests:** Run with `cargo test -p ironclaw_architecture --test '*'`
+- **Tests:** Safety scenario tests
 
 ---
 
-## Authority & Gates (9 crates)
+## Authority & Gates (6 crates)
 
 **Purpose:** Policy enforcement, security gates, and access control.
 
 ### ironclaw_authorization
-**Role:** Access control and permission checking
+**Description:** Access control and permission checking for capabilities (RBAC-based)
+
+**Role:** Capability-based access control and permission enforcement
 - RBAC: role-based access control
 - Permission checks (who can invoke this capability?)
-- Tenant isolation (multi-tenant access)
-- **When to touch:** Adding new permission types or role definitions
-- **Key modules:** `lib.rs`, `rbac.rs`
-- **Tests:** `tests/capability_access_contract.rs`, `tests/capability_lease_contract.rs`
+- Tenant isolation and resource boundaries
+- **When to touch:** Adding new permission types, changing authorization policies, or adding new roles
+- **Key modules:** `lib.rs`, `rbac.rs`, `permission.rs`
 - **Depends on:** `ironclaw_host_api`, `ironclaw_common`
-
-### ironclaw_approvals
-**Role:** Human approval flows
-- Approval request creation and resolution
-- Lease management (time-bound permissions)
-- Auto-approve rules
-- CAS (compare-and-set) record tracking
-- **When to touch:** Changing approval policies or lease terms
-- **Key modules:** `auto_approve.rs`, `policy.rs`, `capability_permission.rs`
-- **Tests:** `tests/approval_resolution_contract.rs`
-- **Depends on:** `ironclaw_runtime_policy`, `ironclaw_common`
+- **Tests:** `tests/capability_access_contract.rs`, `tests/capability_lease_contract.rs`
 
 ### ironclaw_trust
-**Role:** Trust boundaries and identity verification
+**Description:** Host-controlled trust-class policy engine for IronClaw Reborn
+
+**Role:** Trust assessment and identity verification
 - Trust assessment (is this request trustworthy?)
 - Identity verification (who are we talking to?)
 - Tenant/user boundary enforcement
-- **When to touch:** Changing trust models or identity verification
-- **Key modules:** `boundary.rs`, `assessment.rs`
+- **When to touch:** Changing trust models, updating identity verification logic, or adding new trust classes
+- **Key modules:** `boundary.rs`, `assessment.rs`, `policy.rs`
 - **Depends on:** `ironclaw_common`
-
-### ironclaw_resources
-**Role:** Resource governance and cost tracking
-- Quota enforcement (tokens, API calls, etc.)
-- Cost tracking per user/tenant
-- Resource reserve/reconcile/release cycle
-- **When to touch:** Adding new resource types or quota models
-- **Key modules:** `governor.rs`, `quota.rs`
-- **Depends on:** `ironclaw_host_api`, `ironclaw_common`
-
-### ironclaw_secrets
-**Role:** Encrypted secret storage
-- Master key management
-- Encryption at rest (user secrets, API keys)
-- Credential injection (at transit time, not at rest)
-- Redaction (prevent logging of secrets)
-- **When to touch:** Changing encryption schemes or secret formats
-- **Key modules:** `encrypt.rs`, `redact.rs`, `vault.rs`
-- **Tests:** Secret handling contract tests
-- **Depends on:** `ironclaw_common`, crypto libraries
+- **Tests:** Trust boundary tests
 
 ### ironclaw_safety
-**Role:** Runtime safety and injection prevention
-- Prompt injection detection
-- Credential detection (prevent leaking of secrets in output)
-- Input sanitization
-- Unsafe language patterns
-- **When to touch:** Adding new safety checks or threats
-- **Key modules:** `injection.rs`, `credential_detector.rs`
-- **Tests:** `tests/` with detailed safety scenarios
-- **Depends on:** `ironclaw_common`, regex, language models
+**Description:** Prompt injection defense, input validation, secret leak detection, and safety policy enforcement
+
+**Role:** Multi-layer safety enforcement and threat detection
+- Prompt injection detection and prevention
+- Credential detection (prevent leaking secrets in output)
+- Input sanitization and validation
+- Unsafe language pattern detection
+- **When to touch:** Adding new safety checks, updating threat model, or changing validation rules
+- **Key modules:** `injection.rs`, `credential_detector.rs`, `validation.rs`
+- **Depends on:** `ironclaw_common`, regex libraries
+- **Tests:** Extensive threat scenario tests in `tests/`
+
+### ironclaw_auth
+**Description:** Product-facing Reborn auth contracts and fake services
+
+**Role:** Authentication and credential handling for product surfaces
+- OAuth provider abstractions
+- Credential mapping and session management
+- Fake/test implementations
+- **When to touch:** Adding new OAuth providers, changing auth flow, or updating credential handling
+- **Key modules:** `lib.rs`, `oauth.rs`, `fake.rs`
+- **Depends on:** `ironclaw_common`
+- **Tests:** OAuth contract tests with fake providers
+
+### ironclaw_approvals
+**Description:** Human approval flows, lease management, and auto-approve rules
+
+**Role:** Approval workflow and lease management
+- Approval request creation and resolution
+- Lease management (time-bound permissions)
+- Auto-approve rules and policies
+- CAS (compare-and-set) record tracking
+- **When to touch:** Changing approval policies, updating lease terms, or adding new approval types
+- **Key modules:** `auto_approve.rs`, `policy.rs`, `capability_permission.rs`
+- **Depends on:** `ironclaw_runtime_policy`, `ironclaw_common`
+- **Tests:** `tests/approval_resolution_contract.rs`
+
+### ironclaw_runtime_policy
+**Description:** Runtime profile resolver for IronClaw Reborn
+
+**Role:** Policy profile definitions and enforcement
+- Policy profile definitions (secure_default, local-dev, testing, etc.)
+- Permission sets and resource limits
+- Profile validation and normalization
+- **When to touch:** Adding new policies, updating profile definitions, or changing resource limits
+- **Key modules:** `profile.rs`, `permission.rs`, `limits.rs`
+- **Depends on:** serde, toml, `ironclaw_common`
+- **Tests:** Profile conformance tests
+
+---
+
+## Capability Execution (4 crates)
+
+**Purpose:** Capability registration, dispatch, and execution.
+
+### ironclaw_capabilities
+**Description:** Capability registry and host API implementation
+
+**Role:** Core capability execution and conformance checking
+- Capability manifest (name, description, input/output schema)
+- Profile conformance (which capabilities are allowed in this profile?)
+- Host API implementation for effect execution
+- Request/response handling and serialization
+- **When to touch:** Adding new capability types, changing conformance rules, or updating execution semantics
+- **Key modules:** `host.rs`, `conformance.rs`, `requests.rs`, `manifest.rs`
+- **Depends on:** `ironclaw_host_api`, `ironclaw_common`
+- **Tests:** `tests/capability_host_contract.rs`
+
+### ironclaw_dispatcher
+**Description:** Multi-destination dispatch orchestration
+
+**Role:** Capability request routing and dispatch
+- Route requests to multiple handlers (tools, channels, subscriptions)
+- Load balancing and failover logic
+- Saga pattern for distributed transactions
+- **When to touch:** Adding new dispatch destinations, changing routing rules, or updating failover behavior
+- **Key modules:** `lib.rs`, `saga.rs`, `dispatch.rs`
+- **Depends on:** `ironclaw_host_api`, `ironclaw_common`
+- **Tests:** `tests/dispatch_contract.rs`
+
+### ironclaw_resources
+**Description:** Resource reservation governor for IronClaw Reborn
+
+**Role:** Resource governance and quota enforcement
+- Quota enforcement (tokens, API calls, compute)
+- Cost tracking per user/tenant
+- Resource reserve/reconcile/release cycle
+- **When to touch:** Adding new resource types, changing quota models, or updating cost calculation
+- **Key modules:** `governor.rs`, `quota.rs`, `accounting.rs`
+- **Depends on:** `ironclaw_host_api`, `ironclaw_common`
+- **Tests:** Quota enforcement tests
+
+### ironclaw_run_state
+**Description:** Execution state persistence for runs
+
+**Role:** Run lifecycle and state tracking
+- Run creation and state transitions
+- Checkpoint and recovery
+- Run metadata and results storage
+- **When to touch:** Changing run lifecycle, updating state machine, or adding new state types
+- **Key modules:** `lib.rs`, `state.rs`, `checkpoint.rs`
+- **Depends on:** `ironclaw_common`, `ironclaw_events`
+- **Tests:** State machine contract tests
+
+---
+
+## Durable State & Events (6 crates)
+
+**Purpose:** Event sourcing, persistence, and audit trails.
+
+### ironclaw_events
+**Description:** Event types and immutable event log
+
+**Role:** Central event sourcing system
+- Event types (capability executed, approval requested, etc.)
+- Event serialization (JSONL format)
+- Event cursor (position in log)
+- Replayable event stream
+- **When to touch:** Adding new event types, changing schema, or updating event metadata
+- **Key modules:** `lib.rs`, `runtime_event.rs`, `event_types.rs`
+- **Depends on:** serde_json, `ironclaw_common`
+- **Tests:** `tests/durable_log_contract.rs`
+
+### ironclaw_event_projections
+**Description:** Event-to-readmodel projection system
+
+**Role:** Materialized views and readmodels from events
+- Project events to queryable state
+- Update readmodels
+- Snapshot and incremental updates
+- **When to touch:** Adding new projections, changing query semantics, or updating readmodel schema
+- **Key modules:** `lib.rs`, `projection.rs`, `readmodel.rs`
+- **Depends on:** `ironclaw_events`, `ironclaw_common`
+- **Tests:** Projection contract tests
+
+### ironclaw_event_streams
+**Description:** Transport-neutral Reborn projection stream manager
+
+**Role:** Stream and subscription management
+- Stream creation and management
+- Filter and projection subscriptions
+- Fan-out to multiple subscribers
+- **When to touch:** Adding new stream types, changing subscription semantics, or adding new transports
+- **Key modules:** `lib.rs`, `subscription.rs`, `fanout.rs`
+- **Depends on:** `ironclaw_events`, `ironclaw_common`
+- **Tests:** Stream contract tests
+
+### ironclaw_reborn_event_store
+**Description:** Reborn-owned durable event and audit store backends (PostgreSQL, libSQL)
+
+**Role:** Persistent event storage backend
+- PostgreSQL and libSQL adapter implementations
+- Event append and query operations
+- Transactions and ACID guarantees
+- **When to touch:** Adding new storage backends, optimizing queries, or changing persistence layer
+- **Key modules:** `postgres.rs`, `libsql.rs`, `migration.rs`, `operations.rs`
+- **Depends on:** `tokio-postgres`, `rusqlite`, `ironclaw_events`, `ironclaw_common`
+- **Tests:** Integration tests with Docker PostgreSQL and libSQL
+
+### ironclaw_outbound
+**Description:** Outbound egress policy and projection subscription management
+
+**Role:** External event egress and routing
+- Outbound subscription policies
+- Event filtering for external delivery
+- Saga correlation for distributed workflows
+- **When to touch:** Adding new egress policies, changing external routing, or updating correlation logic
+- **Key modules:** `lib.rs`, `subscription.rs`, `policy.rs`
+- **Depends on:** `ironclaw_events`, `ironclaw_common`
+- **Tests:** Egress policy tests
+
+### ironclaw_reborn_traces
+**Description:** Distributed tracing and audit logging
+
+**Role:** Observability and audit trail
+- Trace propagation across service boundaries
+- Audit log creation and storage
+- Distributed context (trace ID, span ID)
+- **When to touch:** Adding new trace events, changing audit schema, or updating context propagation
+- **Key modules:** `lib.rs`, `trace.rs`, `audit.rs`
+- **Depends on:** tokio, tracing, `ironclaw_common`
+- **Tests:** Trace propagation tests
+
+---
+
+## Products & Loops (10 crates)
+
+**Purpose:** Agent loops, product surfaces, and channel integrations.
+
+### ironclaw_agent_loop
+**Description:** Agent-loop framework state and strategy contracts for IronClaw Reborn
+
+**Role:** Agent loop abstraction and strategy
+- Loop lifecycle management (start, execute, checkpoint, finish)
+- Strategy selection (Planned, Text, CodeAct)
+- Turn coordination and state machines
+- **When to touch:** Adding new loop strategies, changing lifecycle, or updating turn semantics
+- **Key modules:** `lib.rs`, `strategy.rs`, `lifecycle.rs`, `turn.rs`
+- **Depends on:** `ironclaw_host_api`, `ironclaw_common`
+- **Tests:** Loop lifecycle contract tests
+
+### ironclaw_loop_host
+**Description:** Loop host adapters for IronClaw Reborn AgentLoopHost implementations
+
+**Role:** Loop execution host and runtime
+- Loop instantiation and lifecycle
+- Loop host API implementation
+- Strategy routing and invocation
+- **When to touch:** Adding new loop host implementations, changing execution semantics, or updating strategy dispatch
+- **Key modules:** `lib.rs`, `host.rs`, `executor.rs`
+- **Depends on:** `ironclaw_agent_loop`, `ironclaw_host_api`, `ironclaw_common`
+- **Tests:** Loop host contract tests
+
+### ironclaw_product
+**Description:** Product-facing workflow service for IronClaw Reborn
+
+**Role:** Product layer workflows and orchestration
+- Mission and project management
+- Workflow execution and state
+- Product API implementation
+- **When to touch:** Adding new product workflows, changing mission types, or updating orchestration logic
+- **Key modules:** `lib.rs`, `workflow.rs`, `mission.rs`, `project.rs`
+- **Depends on:** `ironclaw_host_api`, `ironclaw_common`, `ironclaw_events`
+- **Tests:** Workflow execution tests
+
+### ironclaw_reborn_openai_compat
+**Description:** Reborn-native OpenAI-compatible API surface
+
+**Role:** OpenAI API compatibility layer
+- OpenAI chat completion API (v1/chat/completions)
+- Message format mapping
+- Streaming and non-streaming responses
+- **When to touch:** Adding OpenAI API features, changing response format, or adding new endpoints
+- **Key modules:** `lib.rs`, `chat.rs`, `format.rs`, `streaming.rs`
+- **Depends on:** `ironclaw_host_api`, `ironclaw_common`, axum, serde
+- **Tests:** OpenAI API contract tests
+
+### ironclaw_reborn_cli
+**Description:** Secure personal AI assistant that protects your data and expands its capabilities on the fly
+
+**Role:** Primary CLI and binary entry point
+- Command-line interface (binary name: `ironclaw`)
+- Reborn serve mode and WebUI hosting
+- Configuration bootstrapping
+- **When to touch:** Adding CLI commands, changing serve behavior, or updating binary deployment
+- **Key modules:** `lib.rs`, `main.rs`, `cli.rs`, `serve.rs`
+- **Depends on:** all major Reborn crates via composition root
+- **Tests:** E2E tests via `tests/e2e/` directory
+
+### ironclaw_webui
+**Description:** Host-owned listener binding and serve loop for the Reborn WebChat v2 HTTP gateway
+
+**Role:** WebUI HTTP gateway and frontend serving
+- HTTP route mounting
+- Frontend asset serving (React, CSS, JS)
+- WebSocket connections for live updates
+- **When to touch:** Adding HTTP routes, serving new frontend assets, or updating WebSocket protocol
+- **Key modules:** `lib.rs`, `server.rs`, `routes.rs`, `frontend.rs`
+- **Depends on:** `ironclaw_host_api`, axum, tokio, `ironclaw_common`
+- **Tests:** HTTP route tests
+
+### ironclaw_slack_extension
+**Description:** Slack channel extension for IronClaw Reborn
+
+**Role:** Slack channel adapter and integration
+- Slack message handling
+- Event subscription (app_mention, message, etc.)
+- Two-way sync (Slack ↔ IronClaw)
+- **When to touch:** Adding Slack features, updating message handling, or changing sync behavior
+- **Key modules:** `lib.rs`, `event_handler.rs`, `sync.rs`
+- **Depends on:** slack-bolt, `ironclaw_host_api`, `ironclaw_common`
+- **Tests:** Slack event contract tests
+
+### ironclaw_telegram_extension
+**Description:** Telegram channel extension for IronClaw Reborn
+
+**Role:** Telegram channel adapter and integration
+- Telegram message handling
+- Bot webhook management
+- Two-way sync (Telegram ↔ IronClaw)
+- **When to touch:** Adding Telegram features, updating message handling, or changing bot behavior
+- **Key modules:** `lib.rs`, `webhook.rs`, `sync.rs`
+- **Depends on:** teloxide, `ironclaw_host_api`, `ironclaw_common`
+- **Tests:** Telegram bot contract tests
+
+### ironclaw_telegram_v2_adapter
+**Description:** Telegram WASM v2 ProductAdapter for IronClaw Reborn
+
+**Role:** Telegram WASM-based product adapter
+- WASM-compiled Telegram adapter
+- Low-latency message delivery
+- Compiled via `./scripts/build-extensions.sh`
+- **When to touch:** Updating WASM-based adapter logic, optimizing for performance, or changing message protocol
+- **Key modules:** `lib.rs`, `adapter.rs`
+- **Depends on:** wasm-bindgen, `ironclaw_common`
+- **Tests:** WASM contract tests
+
+### ironclaw_operator
+**Description:** Host/operator control-plane services for IronClaw Reborn
+
+**Role:** Control plane and operational management
+- Operator API endpoints
+- Status monitoring and health checks
+- Configuration hot-reload and updates
+- **When to touch:** Adding operator commands, changing control plane API, or updating operational features
+- **Key modules:** `lib.rs`, `api.rs`, `monitor.rs`
+- **Depends on:** `ironclaw_host_api`, `ironclaw_common`, axum
+- **Tests:** Operator API tests
+
+---
+
+## Storage & Secrets (2 crates)
+
+**Purpose:** Persistence backends and encrypted credential storage.
+
+### ironclaw_filesystem
+**Description:** Scoped filesystem service for IronClaw Reborn (universal persistence: local, PostgreSQL, libSQL)
+
+**Role:** Central persistence abstraction for files and structured data
+- Local filesystem backend
+- PostgreSQL backend (content-addressed blob storage)
+- libSQL backend (embedded SQLite)
+- File scoping and access control
+- Integrity checking (content-addressed storage)
+- **When to touch:** Adding new storage backends, changing access control model, or optimizing storage
+- **Key modules:** `backend.rs`, `catalog.rs`, `scoped.rs`, `local.rs`, `postgres.rs`, `libsql.rs`
+- **Depends on:** `ironclaw_host_api`, `ironclaw_common`, tokio-postgres, rusqlite
+- **Tests:** Integration tests with all three backends
+
+### ironclaw_secrets
+**Description:** Encrypted secret storage (master key management, encryption at rest, credential injection)
+
+**Role:** Encrypted credential vault
+- Master key management and rotation
+- Encryption at rest (user secrets, API keys)
+- Credential injection at transit time (never at rest)
+- Redaction (prevent logging of secrets)
+- **When to touch:** Changing encryption schemes, updating key rotation, or adding new secret types
+- **Key modules:** `encrypt.rs`, `redact.rs`, `vault.rs`, `key.rs`
+- **Depends on:** `ironclaw_common`, ring, chacha20poly1305
+- **Tests:** Secret handling contract tests
+
+---
+
+## Utilities & Observability (7 crates)
+
+**Purpose:** Shared utilities, logging, and observability infrastructure.
+
+### ironclaw_observability
+**Description:** Low-level observability helpers for IronClaw
+
+**Role:** Tracing and observability infrastructure
+- Structured logging helpers
+- Trace context propagation
+- Span creation and management
+- **When to touch:** Adding new trace events, changing logging format, or updating context propagation
+- **Key modules:** `lib.rs`, `tracing.rs`, `context.rs`
+- **Depends on:** tracing, tokio, `ironclaw_common`
+- **Tests:** Context propagation tests
+
+### ironclaw_embeddings
+**Description:** Embedding-provider trait and implementations (OpenAI, NearAI, Ollama, AWS Bedrock) with LRU caching
+
+**Role:** Multi-provider embeddings with caching
+- Provider abstraction (OpenAI, NearAI, Ollama, AWS Bedrock)
+- LRU cache for embeddings
+- Async batch operations
+- **When to touch:** Adding new embedding providers, changing cache strategy, or updating batch semantics
+- **Key modules:** `lib.rs`, `provider.rs`, `cache.rs`, `openai.rs`, `ollama.rs`
+- **Depends on:** `ironclaw_common`, reqwest, lru
+- **Tests:** Provider integration tests
+
+### ironclaw_llm
+**Description:** Multi-provider LLM integration with retry, failover, circuit breaker, and response caching
+
+**Role:** LLM provider abstraction and resilience
+- Multi-provider LLM support (OpenAI, Claude, local models)
+- Retry logic and exponential backoff
+- Circuit breaker pattern
+- Response caching
+- **When to touch:** Adding new LLM providers, changing retry policy, or updating caching strategy
+- **Key modules:** `lib.rs`, `provider.rs`, `retry.rs`, `cache.rs`, `circuit_breaker.rs`
+- **Depends on:** `ironclaw_common`, reqwest, tokio
+- **Tests:** Provider failover and circuit breaker tests
 
 ### ironclaw_network
-**Role:** Network sandbox and allowlisting
+**Description:** HTTP/network utilities and network sandbox
+
+**Role:** Network access control and utilities
+- HTTP client with policy enforcement
 - DNS allowlist/denylist enforcement
 - IP filtering (private network protection)
 - TLS validation
 - Network timeout policy
-- **When to touch:** Adding network restrictions or bypass rules
-- **Key modules:** `sandbox.rs`, `allowlist.rs`
-- **Depends on:** `ironclaw_host_api`, `reqwest`, `tokio`
+- **When to touch:** Adding network restrictions, updating policy, or adding new network features
+- **Key modules:** `lib.rs`, `sandbox.rs`, `allowlist.rs`, `http.rs`
+- **Depends on:** `ironclaw_host_api`, reqwest, `ironclaw_common`
+- **Tests:** Network sandbox contract tests
 
-### ironclaw_filesystem
-**Role:** File access control and isolation
-- File scoping (users can only access their files)
-- Namespace isolation
-- Integrity checking (content-addressed storage)
-- Catalog of accessible files
-- **When to touch:** Changing file access model or adding new backends
-- **Key modules:** `catalog.rs`, `backend.rs`, `scoped.rs`
-- **Backends:** Local, database-backed (PostgreSQL/libSQL)
-- **Depends on:** `ironclaw_host_api`, `ironclaw_common`
+### ironclaw_extractors
+**Description:** Type-aware text extraction for IronClaw (PDF, OOXML, Office, RTF, text/code)
 
-### ironclaw_hooks
-**Role:** Lifecycle hooks and event subscriptions
-- Hook system for startup, shutdown, events
-- Observer trait implementations
-- Plugin registration
-- **When to touch:** Adding new hook points or event subscribers
-- **Key modules:** `lib.rs`, `observer.rs`
-- **Backend implementations:** `ironclaw_hooks_postgres`, `ironclaw_hooks_libsql`
-- **Depends on:** `ironclaw_host_api`, `ironclaw_common`
+**Role:** File format extraction and text conversion
+- PDF text extraction
+- OOXML (Word, Excel, PowerPoint) extraction
+- Legacy Office format support
+- RTF and plain text handling
+- **When to touch:** Adding new file formats, improving extraction quality, or updating dependencies
+- **Key modules:** `lib.rs`, `pdf.rs`, `ooxml.rs`, `rtf.rs`, `text.rs`
+- **Depends on:** pdfium, zip, regex, `ironclaw_common`
+- **Tests:** Format-specific extraction tests
+
+### ironclaw_attachments
+**Description:** Channel-agnostic attachment landing for IronClaw Reborn
+
+**Role:** Attachment upload and storage
+- Write attachment bytes through scoped filesystem authority
+- Return ScopedPath storage keys
+- Multi-channel attachment handling
+- **When to touch:** Changing attachment storage, updating validation, or adding new attachment types
+- **Key modules:** `lib.rs`, `upload.rs`, `storage.rs`
+- **Depends on:** `ironclaw_filesystem`, `ironclaw_common`
+- **Tests:** Upload and storage contract tests
+
+### ironclaw_skills
+**Description:** Skill selection, scoring, and management for IronClaw
+
+**Role:** Skill registry and selection engine
+- Skill manifest and metadata
+- Scoring and ranking logic
+- Selection and invocation
+- **When to touch:** Adding new skill types, updating selection algorithm, or changing skill metadata
+- **Key modules:** `lib.rs`, `registry.rs`, `scoring.rs`, `selector.rs`
+- **Depends on:** `ironclaw_common`, `ironclaw_embeddings`
+- **Tests:** Skill selection algorithm tests
 
 ---
 
-## Capability Execution (11 crates)
+## Conversation & State (7 crates)
 
-**Purpose:** Tool registration, dispatch, and sandboxed execution.
+**Purpose:** Session threads, memory, conversation binding, and scheduled triggers.
 
-### ironclaw_capabilities
-**Role:** Capability registry and host API
-- Capability manifest (name, description, input schema, output schema)
-- Profile conformance (which capabilities are allowed in this profile?)
-- Host API implementation
-- Request/response handling
-- **When to touch:** Adding new capability types or conformance rules
-- **Key modules:** `host.rs`, `conformance.rs`, `requests.rs`
-- **Tests:** `tests/capability_host_contract.rs`, `tests/capability_host_auth_required_enrichment_contract.rs`
-- **Depends on:** `ironclaw_host_api`, `ironclaw_common`
+### ironclaw_conversations
+**Description:** Conversation binding and session thread contracts for IronClaw Reborn
 
-### ironclaw_dispatcher
-**Role:** Multi-destination dispatch
-- Route requests to multiple handlers (tools, channels, subscriptions)
-- Load balancing and failover
-- Saga pattern for distributed transactions
-- **When to touch:** Adding new dispatch destinations or routing rules
-- **Key modules:** `lib.rs`
-- **Tests:** `tests/dispatch_contract.rs`, `tests/event_dispatch_contract.rs`
-- **Depends on:** `ironclaw_host_api`, `ironclaw_common`
+**Role:** Conversation-to-thread binding
+- Map conversations to session threads
+- Binding contracts and serialization
+- **When to touch:** Changing conversation binding semantics, updating contracts, or adding new binding types
+- **Key modules:** `lib.rs`, `binding.rs`, `contract.rs`
+- **Depends on:** `ironclaw_common`, `ironclaw_threads`
+- **Tests:** Binding contract tests
 
-### ironclaw_wasm
-**Role:** WASM sandbox runtime
-- Tool execution in WASM sandbox
-- Memory isolation (WASM linear memory)
-- Host function bindings
-- **When to touch:** Adding new host functions or sandbox features
-- **Key modules:** `lib.rs`, `sandbox.rs`
-- **Tests:** Sandbox contract tests
-- **Depends on:** `wasmer`, `ironclaw_host_api`
+### ironclaw_threads
+**Description:** Canonical session thread and transcript service contracts for IronClaw Reborn
 
-### ironclaw_wasm_sandbox_core
-**Role:** Low-level WASM integration
-- Raw WASM interface
-- Memory mapping
-- Sandbox initialization
-- **When to touch:** Low-level sandbox changes
-- **Depends on:** `wasmer`, `wasmtime`
+**Role:** Session thread management and transcripts
+- Thread creation and lifecycle
+- Transcript storage and retrieval
+- Message ordering and timestamps
+- **When to touch:** Changing thread lifecycle, updating transcript schema, or adding new message types
+- **Key modules:** `lib.rs`, `thread.rs`, `transcript.rs`, `message.rs`
+- **Depends on:** `ironclaw_common`, `ironclaw_events`
+- **Tests:** Thread lifecycle contract tests
 
-### ironclaw_wasm_limiter
-**Role:** Resource limits in WASM
-- Memory limits (prevent unbounded allocation)
-- Time limits (timeout enforcement)
-- Instruction counting
-- **When to touch:** Changing resource limit policies
-- **Key modules:** `limiter.rs`, `memory.rs`
-- **Depends on:** `wasmer`, `ironclaw_resources`
+### ironclaw_turns
+**Description:** Host-layer turn coordination contracts for IronClaw Reborn
 
-### ironclaw_mcp
-**Role:** Model Context Protocol support
-- MCP server discovery
-- Protocol implementation
-- Tool mapping to MCP capabilities
-- **When to touch:** Adding MCP features or new protocol versions
-- **Key modules:** `discovery.rs`, `protocol.rs`
-- **Depends on:** `ironclaw_host_api`, `ironclaw_extensions`
+**Role:** Turn state and coordination
+- Turn creation and state machine
+- Checkpointing and recovery
+- Turn metadata and results
+- **When to touch:** Changing turn lifecycle, updating state machine, or adding new turn types
+- **Key modules:** `lib.rs`, `turn.rs`, `state.rs`, `coordinator.rs`
+- **Depends on:** `ironclaw_common`, `ironclaw_events`
+- **Tests:** Turn coordination contract tests
 
-### ironclaw_scripts
-**Role:** Script execution (Python, Bash, etc.)
-- CodeAct (Code Action) execution
-- Inline script support
-- Script sandboxing and limits
-- **When to touch:** Adding new script languages or execution modes
-- **Key modules:** `lib.rs`, `executor.rs`
-- **Depends on:** `ironclaw_host_api`, `ironclaw_process_sandbox`
+### ironclaw_triggers
+**Description:** Scheduled trigger domain and source-provider contracts for IronClaw Reborn
+
+**Role:** Scheduled task execution and triggering
+- Trigger schedule definitions (cron, interval, etc.)
+- Trigger source providers
+- Execution scheduling and state
+- **When to touch:** Adding new trigger types, changing schedule syntax, or updating scheduling logic
+- **Key modules:** `lib.rs`, `trigger.rs`, `schedule.rs`, `provider.rs`
+- **Depends on:** `ironclaw_common`, tokio, cron-parser
+- **Tests:** Schedule parsing and execution tests
+
+### ironclaw_memory
+**Description:** Provider-neutral memory contract types for IronClaw Reborn
+
+**Role:** Memory system abstraction
+- Memory provider trait
+- Memory document types (notes, facts, relationships)
+- Query and update semantics
+- **When to touch:** Adding new memory types, changing provider abstraction, or updating query semantics
+- **Key modules:** `lib.rs`, `provider.rs`, `document.rs`, `query.rs`
+- **Depends on:** `ironclaw_common`
+- **Tests:** Memory contract tests
+
+### ironclaw_memory_native
+**Description:** Memory document service adapters for IronClaw Reborn
+
+**Role:** Native memory storage backend
+- Document persistence
+- Embedding-based search
+- Update and reconciliation
+- **When to touch:** Changing storage backend, updating search algorithm, or optimizing queries
+- **Key modules:** `lib.rs`, `storage.rs`, `search.rs`, `embedding.rs`
+- **Depends on:** `ironclaw_memory`, `ironclaw_filesystem`, `ironclaw_embeddings`
+- **Tests:** Memory storage and search tests
+
+### ironclaw_memory_mem0
+**Description:** mem0-backed memory provider adapter for IronClaw Reborn (third-party provider)
+
+**Role:** mem0.ai memory provider integration
+- mem0 API client
+- Document mapping to mem0 format
+- Async integration
+- **When to touch:** Updating mem0 API integration, changing mapping logic, or optimizing calls
+- **Key modules:** `lib.rs`, `client.rs`, `mapping.rs`
+- **Depends on:** `ironclaw_memory`, reqwest, `ironclaw_common`
+- **Tests:** mem0 API contract tests (mocked)
+
+---
+
+## Extensions & Integrations (5 crates)
+
+**Purpose:** Extension system, lifecycle management, and extensibility.
 
 ### ironclaw_extensions
-**Role:** Extension lifecycle and discovery
-- Manifest parsing (capabilities, metadata)
-- Installation/activation/removal flow
-- Discovery (installed extensions, available extensions)
-- Version management
-- **When to touch:** Changing extension format or lifecycle
-- **Key modules:** `registry.rs`, `lifecycle.rs`, `v2.rs`
+**Description:** Extension manifest and registry contracts for IronClaw Reborn
+
+**Role:** Extension system abstraction and manifest handling
+- Manifest parsing and validation (v1, v2 formats)
+- Extension registry
+- Metadata and capability definitions
+- **When to touch:** Adding new manifest fields, changing registry semantics, or supporting new extension versions
+- **Key modules:** `lib.rs`, `registry.rs`, `manifest.rs`, `v2.rs`
+- **Depends on:** `ironclaw_common`, serde_json, toml
 - **Tests:** `tests/extension_contract.rs`, `tests/manifest_v2_contract.rs`
-- **Depends on:** `ironclaw_host_api`, `ironclaw_capabilities`
 
-### ironclaw_host_runtime
-**Role:** Host-side effect execution
-- Shell execution (subprocess)
-- HTTP requests
-- File I/O
-- External service calls
-- **When to touch:** Adding new host-side effect types
-- **Key modules:** `lib.rs`
-- **Tests:** `tests/` with subprocess/HTTP/IO contracts
-- **Depends on:** `ironclaw_host_api`, `tokio`, `reqwest`
+### ironclaw_extension_host
+**Description:** Generic extension lifecycle host, active snapshot, loaders, and resolvers
 
-### ironclaw_processes
-**Role:** Process sandbox and subprocess management
-- Subprocess isolation
-- I/O capture (stdout, stderr)
-- Resource limits (memory, CPU time)
-- **When to touch:** Changing subprocess policy or isolation
-- **Key modules:** `sandbox.rs`, `lib.rs`
-- **Depends on:** `tokio`, `ironclaw_resources`
+**Role:** Extension runtime and lifecycle management
+- Extension loading and activation
+- Active snapshot maintenance
+- Hot-reload support
+- Discovery and resolver
+- **When to touch:** Changing extension lifecycle, adding new loader types, or updating snapshot semantics
+- **Key modules:** `lib.rs`, `host.rs`, `loader.rs`, `snapshot.rs`, `resolver.rs`
+- **Depends on:** `ironclaw_extensions`, `ironclaw_common`
+- **Tests:** Extension lifecycle contract tests
 
 ### ironclaw_first_party_extensions
-**Role:** Built-in tools (GitHub, Google Drive, etc.)
+**Description:** First-party userland extension implementations for IronClaw
+
+**Role:** Built-in tools (GitHub, Google Drive, Slack, Notion, etc.)
 - GitHub tool (issues, PRs, repos)
-- Google Drive, Sheets, Docs, Slides
-- Notion, Slack (as tools)
-- WASM-compiled tools
-- **When to touch:** Adding new tools or modifying existing ones
+- Google Drive, Sheets, Docs, Slides tools
+- Notion tool
+- Slack tool
+- WASM-compiled tool implementations
+- **When to touch:** Adding new tools, modifying tool schemas, or updating tool implementations
 - **Key modules:** `assets/` (manifests, schemas, prompts)
 - **Assets format:** Manifests in `assets/*/manifest.toml`, prompts in `assets/*/prompts/`, schemas in `assets/*/schemas/`
 - **Build:** Requires WASM compilation; run `./scripts/build-extensions.sh`
-- **Depends on:** WASM compiler, tool SDKs (github-rs, google-api-rs, etc.)
+- **Tests:** Tool integration tests
+
+### ironclaw_first_party_extension_ports
+**Description:** Loop-facing ports for first-party IronClaw extensions
+
+**Role:** Extension port adapters and integration
+- Port trait implementations for extensions
+- Effect marshaling and invocation
+- Loop ↔ extension protocol
+- **When to touch:** Adding new port types, changing marshaling semantics, or updating extension integration
+- **Key modules:** `lib.rs`, `port.rs`, `marshal.rs`
+- **Depends on:** `ironclaw_agent_loop`, `ironclaw_extensions`, `ironclaw_common`
+- **Tests:** Port contract tests
+
+### ironclaw_mcp
+**Description:** Model Context Protocol support for IronClaw Reborn
+
+**Role:** MCP server discovery and integration
+- MCP server discovery and listing
+- Protocol implementation (v1)
+- Tool mapping to MCP capabilities
+- Request/response handling
+- **When to touch:** Adding MCP features, supporting new protocol versions, or changing tool mapping
+- **Key modules:** `lib.rs`, `discovery.rs`, `protocol.rs`, `tool_mapping.rs`
+- **Depends on:** `ironclaw_extensions`, `ironclaw_common`, serde_json
+- **Tests:** MCP protocol contract tests
 
 ---
 
-## Durable State & Events (9 crates)
+## Runtime & Execution (7 crates)
 
-**Purpose:** Persistence, event sourcing, and state recovery.
+**Purpose:** WASM, process sandbox, hooks, and script execution.
 
-### ironclaw_events
-**Role:** Immutable event log
-- Event types (capability executed, approval requested, etc.)
-- Event serialization (JSONL format)
-- Event cursor (position in log)
-- **When to touch:** Adding new event types or changing schema
-- **Key modules:** `lib.rs`, `runtime_event.rs`
-- **Backends:** JSONL file, in-memory (for tests)
-- **Tests:** `tests/durable_log_contract.rs`
-- **Depends on:** `serde_json`, `ironclaw_common`
+### ironclaw_wasm
+**Description:** WASM sandbox runtime for tool execution
 
-### ironclaw_event_projections
-**Role:** Snapshot computation and caching
-- Projection system (computes snapshots from events)
-- Pending gate projection (what's waiting for approval?)
-- Runtime checkpoint cache
-- State derivation
-- **When to touch:** Adding new projections or snapshot types
-- **Key modules:** `pending_gate_projection.rs`, `runtime_projection.rs`
-- **Tests:** `tests/memory_prompt_safety_projection_contract.rs`, `tests/replay_projection_contract.rs`
-- **Depends on:** `ironclaw_events`, `ironclaw_common`
+**Role:** WebAssembly sandbox and execution
+- Tool execution in WASM sandbox
+- Memory isolation (WASM linear memory)
+- Host function bindings
+- Sandbox initialization and cleanup
+- **When to touch:** Adding new host functions, changing sandbox semantics, or optimizing execution
+- **Key modules:** `lib.rs`, `sandbox.rs`, `host_functions.rs`
+- **Depends on:** `wasmer`, `ironclaw_host_api`, `ironclaw_wasm_limiter`
+- **Tests:** Sandbox contract tests
 
-### ironclaw_event_streams
-**Role:** Event subscription and delivery
-- Event filtering (only send matching events)
-- Redaction (remove sensitive data)
-- Admission control (who can subscribe to what?)
-- Subscription management
-- **When to touch:** Adding new event filters or admission rules
-- **Key modules:** `manager.rs`, `redaction.rs`, `admission.rs`
-- **Tests:** `tests/event_stream_manager_contract.rs`
-- **Depends on:** `ironclaw_events`, `ironclaw_common`
+### ironclaw_wasm_limiter
+**Description:** Resource limits in WASM (memory limits, time limits, instruction counting)
 
-### ironclaw_reborn_event_store
-**Role:** Backend-agnostic event storage
-- Trait: `EventStore`
-- Implementations: PostgreSQL, libSQL (Turso)
-- Migration support
-- **When to touch:** Adding new backends or storage operations
-- **Key modules:** `lib.rs`
-- **Features:** `postgres`, `libsql` (enable both for dual-backend testing)
-- **Depends on:** `ironclaw_events`, database drivers
+**Role:** WASM resource governance
+- Memory limits (prevent unbounded allocation)
+- Time limits (timeout enforcement)
+- Instruction counting and metering
+- **When to touch:** Changing resource limit policies, updating counting logic, or adding new limit types
+- **Key modules:** `limiter.rs`, `memory.rs`, `meter.rs`
+- **Depends on:** `wasmer`, `ironclaw_resources`
+- **Tests:** Resource limit enforcement tests
 
-### ironclaw_run_state
-**Role:** Checkpoint and recovery state
-- Checkpoint storage (save loop progress)
-- Recovery state (resume from checkpoint)
-- Step tracking
-- **When to touch:** Changing checkpoint format or recovery logic
-- **Key modules:** `lib.rs`
-- **Depends on:** `ironclaw_events`, `ironclaw_common`
+### ironclaw_process_sandbox
+**Description:** Process sandboxing (subprocess isolation, I/O capture, resource limits)
 
-### ironclaw_threads
-**Role:** Thread (conversation) lifecycle and metadata
-- Thread creation and archiving
-- Thread metadata (owner, created_at, tags)
-- Active-thread locking (only one loop per thread at a time)
-- **When to touch:** Adding new thread metadata or lifecycle states
-- **Key modules:** `lib.rs`, `contract.rs`
-- **Backends:** PostgreSQL, libSQL
-- **Tests:** Thread contract tests
-- **Depends on:** `ironclaw_common`
+**Role:** System process sandboxing
+- Subprocess isolation and confinement
+- I/O capture and streaming
+- Resource limits (memory, CPU)
+- Signal handling and cleanup
+- **When to touch:** Changing sandbox policy, updating I/O handling, or optimizing subprocess management
+- **Key modules:** `lib.rs`, `sandbox.rs`, `io_capture.rs`, `limits.rs`
+- **Depends on:** tokio, `ironclaw_resources`
+- **Tests:** Subprocess contract tests
 
-### ironclaw_conversations
-**Role:** Conversation state and message store
-- Message history (turns within a thread)
-- State machine (new, active, completed, error)
-- Trusted inbound (secure entry point)
-- **When to touch:** Adding new message types or state transitions
-- **Key modules:** `lib.rs`, `state_store.rs`, `trusted_trigger.rs`
-- **Tests:** `tests/inbound_contract.rs`, `tests/filesystem_store_contract.rs`
-- **Depends on:** `ironclaw_threads`, `ironclaw_common`
+### ironclaw_processes
+**Description:** Process state management for IronClaw Reborn
 
-### ironclaw_memory
-**Role:** Embedding index and semantic search
-- Embedding provider abstraction
-- Vector database (PostgreSQL pgvector, Bedrock, Pinecone, etc.)
-- Semantic search over conversation history
-- **When to touch:** Adding new memory backends or search algorithms
-- **Key modules:** `lib.rs`, `retrieval.rs`, `skill_tracker.rs`
-- **Depends on:** `ironclaw_embeddings`, `ironclaw_common`
+**Role:** Process lifecycle and state tracking
+- Process spawning and lifecycle
+- State persistence (running, completed, failed)
+- Result collection and cleanup
+- **When to touch:** Changing process lifecycle, updating state machine, or adding new process types
+- **Key modules:** `lib.rs`, `state.rs`, `lifecycle.rs`
+- **Depends on:** `ironclaw_common`, `ironclaw_events`
+- **Tests:** Process lifecycle tests
 
-### ironclaw_memory_native
-**Role:** Native (on-disk) memory implementation
-- File-based memory store (lightweight)
-- For local/dev deployments
-- **When to touch:** Optimizing native memory performance
-- **Depends on:** filesystem I/O, `ironclaw_memory`
+### ironclaw_hooks
+**Description:** Reborn loop hook framework (trust-tiered points, sealed witnesses, dispatcher)
+
+**Role:** Hook system and lifecycle events
+- Hook system for startup, shutdown, events
+- Trust-tier classification (kernel, userland, external)
+- Observer trait implementations
+- Plugin registration
+- **When to touch:** Adding new hook points, changing trust tiers, or updating hook semantics
+- **Key modules:** `lib.rs`, `observer.rs`, `trust_tier.rs`, `dispatcher.rs`
+- **Depends on:** `ironclaw_host_api`, `ironclaw_common`
+- **Tests:** Hook dispatch contract tests
+
+### ironclaw_runner
+**Description:** Reborn runner control plane and loop-driver adapters for IronClaw
+
+**Role:** Loop runner and orchestration
+- Loop instantiation and execution
+- Runner control plane API
+- Strategy driver adapters
+- Execution scheduling
+- **When to touch:** Adding new runner types, changing execution semantics, or updating control plane
+- **Key modules:** `lib.rs`, `runner.rs`, `control_plane.rs`, `driver.rs`
+- **Depends on:** `ironclaw_agent_loop`, `ironclaw_loop_host`, `ironclaw_common`
+- **Tests:** Runner orchestration tests
+
+### ironclaw_scripts
+**Description:** Script execution (Python, Bash, etc.) for CodeAct and inline scripts
+
+**Role:** Code execution and scripting
+- CodeAct (Code Action) execution
+- Inline script support (Python, Bash, etc.)
+- Script sandboxing and limits
+- Output capture and serialization
+- **When to touch:** Adding new script languages, changing execution model, or updating sandboxing
+- **Key modules:** `lib.rs`, `executor.rs`, `language.rs`, `sandbox.rs`
+- **Depends on:** `ironclaw_host_api`, `ironclaw_process_sandbox`, `ironclaw_common`
+- **Tests:** Script execution contract tests
 
 ---
 
-## Products & Loops (27 crates)
+## Configuration & Composition (8 crates)
 
-**Purpose:** Agent loops, product surfaces, and user-facing features.
-
-### ironclaw_agent_loop
-**Role:** Core agent executor
-- Planning phase (what should we do?)
-- Execution phase (run tools, call LLM)
-- Checkpointing (save progress)
-- Loop exit criteria
-- Compaction (summarize history to save tokens)
-- **When to touch:** Changing loop logic, adding loop strategies, or modifying planning
-- **Key modules:** `executor.rs`, `planner.rs`, `state.rs`, `executor/strategies/`
-- **Tests:** `tests/executor_happy_paths.rs`, `tests/strategy_interactions.rs`, `tests/safety_nets.rs`
-- **Depends on:** `ironclaw_host_api`, `ironclaw_capabilities`, `ironclaw_llm`
-
-### ironclaw_loop_support
-**Role:** Utilities for loop implementations
-- Candidate generation (tools to consider)
-- Score aggregation (which tool is best?)
-- Loop context (system state)
-- **When to touch:** Adding new loop utilities or strategies
-- **Depends on:** `ironclaw_agent_loop`, `ironclaw_llm`
-
-### ironclaw_executor
-**Role:** (v1) Legacy executor
-- Old loop implementation (pre-Reborn)
-- In maintenance mode
-- **Status:** Do not extend; Reborn replaces this
-- **When to touch:** Only to maintain existing v1 behavior
-- **Depends on:** `src/` v1 types
-
-### ironclaw_turns
-**Role:** Turn (interaction) state and sequencing
-- Turn message composition
-- Turn history tracking
-- Submission handling (new user input)
-- **When to touch:** Adding new turn types or message fields
-- **Key modules:** `lib.rs`, `message.rs`
-- **Depends on:** `ironclaw_common`
-
-### ironclaw_llm
-**Role:** LLM provider abstraction
-- Provider trait (different LLM APIs)
-- Model selection and routing
-- Prompt formatting (OpenAI, Anthropic, etc.)
-- Token counting
-- **Supported providers:** OpenAI, Anthropic, Ollama, OpenRouter, OpenAI-compatible, Bedrock, etc.
-- **When to touch:** Adding new LLM provider, changing token counting, or model routing
-- **Key modules:** `provider.rs`, `model.rs`
-- **Tests:** Provider contract tests
-- **Depends on:** `ironclaw_common`, `reqwest`
-
-### ironclaw_embeddings
-**Role:** Embedding provider abstraction
-- Embedding provider trait
-- Model selection
-- Batch processing
-- **Supported providers:** OpenAI, Bedrock, Ollama, etc.
-- **When to touch:** Adding new embedding provider or changing pooling strategy
-- **Key modules:** `provider.rs`, `factory.rs`
-- **Tests:** Provider contract tests
-- **Depends on:** `ironclaw_common`, `reqwest`
-
-### ironclaw_engine
-**Role:** (v1) Legacy orchestration
-- Old runtime orchestration logic
-- Prompt envelope, memory, skills
-- In maintenance mode
-- **Status:** Do not extend; Reborn replaces this
-- **When to touch:** Only to maintain existing v1 behavior
-- **Depends on:** `src/` v1 types, database
-
-### ironclaw_reborn
-**Role:** Reborn runtime kernel
-- TurnCoordinator (serialization, locking)
-- CapabilityHost (effect execution, gating)
-- Snapshot management
-- **When to touch:** Changing core kernel behavior (rare)
-- **Key modules:** `lib.rs`, `coordinator.rs`, `host.rs`
-- **Tests:** Core runtime contract tests
-- **Depends on:** `ironclaw_host_api`, `ironclaw_capabilities`, `ironclaw_agent_loop`
-
-### ironclaw_reborn_cli
-**Role:** Primary CLI/WebUI binary entrypoint
-- `ironclaw-reborn` binary
-- Commands: `run`, `repl`, `serve`, `models`, `config`, `doctor`, `doctor-profile`
-- CLI argument parsing
-- **When to touch:** Adding new commands or CLI flags
-- **Key modules:** `main.rs`, `commands/`
-- **Build:** `cargo build -p ironclaw_reborn_cli --bin ironclaw-reborn`
-- **Features:** `webui-v2-beta` (for serve command), `slack-v2-host-beta` (for Slack)
-- **Depends on:** `ironclaw_reborn`, `ironclaw_reborn_config`, `clap`
+**Purpose:** Dependency injection, configuration, and the composition root.
 
 ### ironclaw_reborn_config
-**Role:** Configuration parsing and resolution
-- `config.toml` parsing
-- Environment variable resolution
-- Profile selection (local-dev, production, etc.)
-- Defaults and validation
-- **When to touch:** Adding new config fields or profiles
-- **Key modules:** `lib.rs`, `config.rs`
-- **Config schema:** See README.md or crate docs for TOML format
-- **Depends on:** `serde`, `toml`, `ironclaw_runtime_policy`
+**Description:** Boot configuration contracts for the standalone IronClaw Reborn binary
+
+**Role:** Configuration parsing and validation
+- TOML/JSON/YAML config file parsing
+- Environment variable overrides
+- Validation and normalization
+- Default profiles (secure_default, local-dev, testing)
+- **When to touch:** Adding new config options, changing validation, or adding new profile types
+- **Key modules:** `lib.rs`, `parser.rs`, `profile.rs`, `validation.rs`
+- **Depends on:** toml, serde, `ironclaw_runtime_policy`, `ironclaw_common`
+- **Tests:** Config parsing and validation tests
 
 ### ironclaw_reborn_composition
-**Role:** Dependency injection and app builder
-- AppBuilder (wires database, LLM, tools, etc.)
-- Service registration
-- Feature flag handling
-- **When to touch:** Adding new services or changing composition logic
-- **Key modules:** `lib.rs`, `builder.rs`
-- **Depends on:** All infrastructure crates
+**Description:** Composition-root production dependency injection root for IronClaw Reborn
+
+**Role:** Dependency assembly and wiring
+- Service factory creation
+- Dependency graph assembly
+- Provider registration (LLM, embeddings, memory, etc.)
+- Composition verification
+- **When to touch:** Adding new services, wiring new providers, or changing composition semantics
+- **Key modules:** `lib.rs`, `composition.rs`, `factory.rs`, `provider_registry.rs`
+- **Depends on:** ALL major crates (composition root)
+- **Tests:** Composition verification tests
+
+### ironclaw_host_runtime
+**Description:** Host-side effect execution (shell, HTTP, file I/O, external services)
+
+**Role:** Host-side effect execution engine
+- Shell command execution
+- HTTP requests (with policy enforcement)
+- File I/O operations
+- External service calls
+- **When to touch:** Adding new effect types, changing execution semantics, or updating sandbox policies
+- **Key modules:** `lib.rs`, `effects.rs`, `shell.rs`, `http.rs`, `file_io.rs`
+- **Depends on:** `ironclaw_host_api`, `ironclaw_network`, `ironclaw_filesystem`, tokio, reqwest
+- **Tests:** Effect execution contract tests
+
+### ironclaw_host_ingress
+**Description:** Host HTTP ingress route mount carriers for IronClaw Reborn
+
+**Role:** HTTP route mounting and registration
+- Route mount abstraction
+- Path and method matching
+- Route handler registration
+- **When to touch:** Adding new route types, changing routing semantics, or adding new HTTP features
+- **Key modules:** `lib.rs`, `mount.rs`, `route.rs`
+- **Depends on:** `ironclaw_host_api`, axum, `ironclaw_common`
+- **Tests:** Route mounting contract tests
 
 ### ironclaw_reborn_identity
-**Role:** User/owner identity and session management
-- Owner identification
-- Session creation and validation
-- **When to touch:** Changing identity model or session format
-- **Depends on:** `ironclaw_common`
+**Description:** Canonical Reborn identity resolver (maps OAuth and external channels to UserIds)
 
-### ironclaw_reborn_traces
-**Role:** Trace recording and replay
-- Record execution traces (for testing and debugging)
-- Replay traces (deterministic test fixtures)
-- Trace serialization
-- **When to touch:** Adding new trace event types
-- **Key modules:** `lib.rs`, `recorder.rs`
-- **Depends on:** `ironclaw_common`
+**Role:** User identity resolution and mapping
+- OAuth provider → User ID mapping
+- External channel → User ID mapping (Slack, Telegram, Discord)
+- Identity provider abstraction
+- Stable ID generation
+- **When to touch:** Adding new identity providers, changing ID generation, or updating mapping logic
+- **Key modules:** `lib.rs`, `resolver.rs`, `provider.rs`, `mapping.rs`
+- **Depends on:** `ironclaw_auth`, `ironclaw_common`
+- **Tests:** Identity resolution contract tests
 
-### ironclaw_reborn_openai_compat
-**Role:** OpenAI-compatible API surface
-- `/v1/chat/completions` endpoint
-- Streaming responses
-- Token counting
-- **When to touch:** Exposing new endpoints or changing API format
-- **Key modules:** `lib.rs`
-- **Tests:** OpenAI API compatibility contract
-- **Depends on:** `ironclaw_reborn`, `ironclaw_llm`
+### ironclaw_projects
+**Description:** First-class Project entity, membership, and access control
 
-### ironclaw_reborn_openai_compat_storage
-**Role:** PostgreSQL/libSQL adapters for OpenAI API
-- Backend for OpenAI-compatible conversation storage
-- **When to touch:** Adding new storage operations for API
-- **Depends on:** `ironclaw_reborn_openai_compat`, database drivers
-
-### ironclaw_reborn_webui_ingress
-**Role:** WebUI HTTP routing and session management
-- Session cookies and auth
-- CORS configuration
-- OAuth integration
-- **When to touch:** Adding new routes or changing auth model
-- **Key modules:** `lib.rs`, `routes.rs`
-- **Depends on:** `ironclaw_gateway` (routing), `ironclaw_oauth`
-
-### ironclaw_gateway
-**Role:** (v1) HTTP gateway / (Reborn) routing utilities
-- HTTP endpoint definitions
-- Request/response serialization
-- WebSocket management
-- **Status:** Mostly ported to Reborn; v1 in maintenance mode
-- **When to touch:** For new Reborn API endpoints
-- **Key modules:** `lib.rs`
-- **Depends on:** `axum`, `tokio`, `ironclaw_common`
-
-### ironclaw_product_context
-**Role:** Product-specific request context
-- User metadata (who's making the request?)
-- Tenant context (isolation)
-- Request enrichment
-- **When to touch:** Adding new context fields
-- **Depends on:** `ironclaw_common`, `ironclaw_trust`
-
-### ironclaw_product_workflow
-**Role:** Missions, projects, skills, routines, approvals
-- **Missions:** Goals the agent is trying to accomplish
-- **Projects:** User-created containers for missions
-- **Skills:** Learned behaviors the agent has acquired
-- **Routines:** Automated tasks that run periodically
-- **Approvals:** Human sign-off on dangerous operations
-- **When to touch:** Changing mission/project/skill model or approval policies
-- **Key modules:** `lib.rs`, `mission.rs`, `project.rs`, `approval.rs`
-- **Tests:** Product workflow contract tests
-- **Depends on:** `ironclaw_product_context`, `ironclaw_approvals`, `ironclaw_skill_learning`
-
-### ironclaw_product_adapters
-**Role:** Product adapter framework
-- Adapter trait (interface for channel adapters)
-- Request/response handling
-- Registry
-- **When to touch:** Adding new adapter types or framework features
-- **Key modules:** `lib.rs`, `adapter.rs`
-- **Depends on:** `ironclaw_host_api`, `ironclaw_product_context`
-
-### ironclaw_product_adapter_registry
-**Role:** Adapter discovery and lifecycle
-- Install/activate/remove flows
-- Adapter discovery (installed vs. available)
-- Version management
-- **When to touch:** Changing adapter lifecycle
-- **Depends on:** `ironclaw_product_adapters`, `ironclaw_extensions`
-
-### ironclaw_wasm_product_adapters
-**Role:** WASM-based adapter implementations
-- Adapters compiled to WASM (sandboxed)
-- **When to touch:** Adding new WASM adapters
-- **Depends on:** `ironclaw_wasm`, `ironclaw_product_adapters`
-
-### ironclaw_slack_extension
-**Role:** Slack workspace adapter
-- Slack OAuth flow
-- Slack message handling
-- Slack tool exposure
-- **When to touch:** Adding new Slack features
-- **Key modules:** `lib.rs`
-- **Tests:** Slack adapter contract tests
-- **Depends on:** `ironclaw_product_adapters`, `slack-morphism` or similar
-
-### ironclaw_telegram_extension
-**Role:** Telegram bot adapter
-- Telegram bot API
-- Message routing
-- **When to touch:** Adding new Telegram features
-- **Key modules:** `lib.rs`
-- **Depends on:** `ironclaw_product_adapters`, `telegram-bot` or similar
-
-### ironclaw_outbound
-**Role:** Outbound message delivery
-- Send replies to user
-- Notifications
-- Message formatting per channel (Slack, Telegram, etc.)
-- **When to touch:** Adding new message types or channels
-- **Key modules:** `lib.rs`
-- **Depends on:** `ironclaw_dispatcher`, `ironclaw_product_adapters`
-
-### ironclaw_triggers
-**Role:** Trigger system and event-driven automation
-- Create triggers (on event X, do Y)
-- Trigger evaluation
-- Automation execution
-- **When to touch:** Adding new trigger types or evaluation rules
-- **Key modules:** `lib.rs`, `trigger.rs`
-- **Depends on:** `ironclaw_events`, `ironclaw_dispatcher`
-
-### ironclaw_skill_learning
-**Role:** Skill extraction and classification
-- Extract skills from user interactions
-- Classify new missions (does this match existing skills?)
-- Skill refinement and evolution
-- **When to touch:** Changing skill extraction or classification
-- **Key modules:** `lib.rs`, `extractor.rs`
-- **Depends on:** `ironclaw_skills`, `ironclaw_llm`
+**Role:** Project management and RBAC
+- Project creation and lifecycle
+- Team membership management
+- Role-based access control (member, admin, owner)
+- Project isolation and data boundaries
+- **When to touch:** Adding new project features, changing membership model, or updating RBAC
+- **Key modules:** `lib.rs`, `entity.rs`, `membership.rs`, `access.rs`
+- **Depends on:** `ironclaw_common`, `ironclaw_authorization`
+- **Tests:** Project RBAC contract tests
 
 ---
 
-## Storage Backends (8 crates)
+## Architecture & Special (2 crates)
 
-**Purpose:** Database-agnostic persistence with PostgreSQL and libSQL adapters.
+**Purpose:** Architecture validation and specialized utilities.
 
-### ironclaw_hooks_postgres
-**Role:** PostgreSQL event hook implementation
-- PostgreSQL-specific event persistence
-- Connection pooling
-- Migration support (refinery)
-- **When to touch:** Adding new database operations
-- **Key modules:** `lib.rs`
-- **Tests:** PostgreSQL contract tests
-- **Depends on:** `tokio-postgres`, `deadpool-postgres`, `refinery`
+### ironclaw_architecture
+**Description:** Architecture boundary tests and enforcement for IronClaw Reborn
 
-### ironclaw_hooks_libsql
-**Role:** libSQL/Turso event hook implementation
-- libSQL-specific event persistence
-- Embedded vs. remote (Turso) support
-- Replication handling
-- **When to touch:** Adding new database operations
-- **Key modules:** `lib.rs`
-- **Tests:** libSQL contract tests
-- **Depends on:** `libsql`, `tokio`
-
-### ironclaw_hooks_parity
-**Role:** Feature parity testing across backends
-- Ensures PostgreSQL and libSQL support the same operations
-- Runs same contract tests on both backends
-- **When to touch:** Adding new database operations (add contract test here first)
-- **Key modules:** `tests/`
-- **Tests:** Run with `cargo test -p ironclaw_hooks_parity`
-- **Depends on:** `ironclaw_hooks_postgres`, `ironclaw_hooks_libsql`
-
-### Dual-Backend Crates
-These crates support both PostgreSQL and libSQL transparently:
-
-- **ironclaw_reborn_event_store** — Event storage with `Db` trait
-- **ironclaw_run_state** — Checkpoint storage
-- **ironclaw_threads** — Thread metadata storage
-- **ironclaw_conversations** — Conversation state storage
-- **ironclaw_filesystem** (with `db.rs`) — File catalog storage
-
-**Pattern:** Each has a `Db` trait; implementations for PostgreSQL and libSQL are registered at startup in `ironclaw_reborn_composition`.
-
----
-
-## Utilities (7 crates)
-
-**Purpose:** Cross-cutting concerns, logging, and integrations.
-
-### ironclaw_observability
-**Role:** Tracing, metrics, and structured logging
-- Tracing subscriber setup
-- Metrics collection (Prometheus format)
-- Structured logging (JSON format in production)
-- **When to touch:** Adding new metrics or changing tracing format
-- **Key modules:** `lib.rs`
-- **Depends on:** `tracing`, `tracing-subscriber`
-
-### ironclaw_skills
-**Role:** Skill system and definitions
-- Skill data types
-- Skill metadata
-- Skill evaluation
-- **When to touch:** Changing skill format or adding new skill properties
-- **Key modules:** `lib.rs`
+**Role:** Dependency and composition boundary validation
+- Dependency graph checking
+- Composition boundary tests
+- Reborn vs v1 boundary enforcement
+- Crate layer validation
+- **When to touch:** Refactoring crate dependencies, adding new crate dependencies, or changing architecture boundaries
+- **Key modules:** `lib.rs`, `tests/reborn_composition_boundaries.rs`, `tests/dependency_checks.rs`
+- **Tests:** Run with `cargo test -p ironclaw_architecture --test '*'`
 - **Depends on:** `ironclaw_common`
 
-### ironclaw_oauth
-**Role:** OAuth flow management
-- OAuth token exchange
-- Token refresh
-- PKCE support
-- **When to touch:** Adding new OAuth providers or flow types
-- **Key modules:** `lib.rs`, `flow.rs`
-- **Depends on:** `ironclaw_common`, `reqwest`
+### ironclaw_silk_decoder
+**Description:** Standalone helper that decodes WeChat raw SILK v3 voice notes to WAV
 
-### ironclaw_auth
-**Role:** Authentication and credential types
-- Authentication method types
-- Credential storage (transient)
-- Auth state machine
-- **When to touch:** Adding new auth methods
-- **Key modules:** `lib.rs`, `credential.rs`
-- **Tests:** `tests/auth_product_contract.rs`
-- **Depends on:** `ironclaw_common`, `ironclaw_oauth`
-
-### ironclaw_llm
-**Role:** (Also in Products) LLM provider abstraction
-- Used by both agent loops and general LLM invocation
-- **See:** [Products & Loops: ironclaw_llm](#ironclaw_llm)
-
-### ironclaw_embeddings
-**Role:** (Also in Products) Embedding provider abstraction
-- Used by both memory and skill learning
-- **See:** [Products & Loops: ironclaw_embeddings](#ironclaw_embeddings)
-
-### ironclaw_extractors
-**Role:** Data extraction utilities
-- Text extraction from attachments
-- Structured data extraction
-- **When to touch:** Adding new extraction methods
-- **Depends on:** `ironclaw_common`
-
-### ironclaw_tui
-**Role:** Terminal UI components (if used)
-- TUI rendering
-- Interactive prompts
-- **When to touch:** Changing CLI output or adding interactive features
-- **Depends on:** `tokio`, TUI libraries (ratatui, etc.)
+**Role:** Audio format conversion utility
+- SILK v3 decoding (WeChat voice messages)
+- WAV output formatting
+- Isolated from main build (no libclang dependency)
+- **When to touch:** Adding new audio formats, updating SILK decoder, or optimizing audio conversion
+- **Key modules:** `lib.rs`, `decoder.rs`, `wav.rs`
+- **Depends on:** silk_codec, `ironclaw_common`
+- **Tests:** Audio format conversion tests
 
 ---
 
-## Relationship to v1
+## Key Architectural Principles
 
-The v1 monolith in `src/` coexists with Reborn but is being phased out:
-
-- **v1 crates:** `ironclaw_executor`, `ironclaw_engine` (in `crates/`)
-- **v1 code:** `src/` directory (agent, channels, db, extensions, tools, workspace, etc.)
-- **Dual binary:** `src/main.rs` (legacy) and `crates/ironclaw_reborn_cli` (modern)
-
-**When to use each:**
-- **v1 (src/):** Only maintain existing v1 behavior; don't add features
-- **Reborn (crates/):** All new features, product layer, modern patterns
-
-For architectural decisions about v1, see the [Architecture Overview](overview.md#the-dual-stack-v1-and-reborn).
-
----
-
-## Cross-Crate Patterns
-
-### Pattern: Dual-Backend Support
-
-```rust
-// In ironclaw_reborn_composition startup:
-let db: Box<dyn Db> = if use_postgres {
-    Box::new(PostgresDb::new(...).await?)
-} else {
-    Box::new(LibSqlDb::new(...).await?)
-};
-
-// Throughout the system, code uses `db` as the abstraction
-let threads = db.list_threads(...).await?;  // Works on both
+### Dependency Flow
+Dependencies flow **upward only** (no circular dependencies):
+```
+Products Layer (CLI, WebUI, Slack, Telegram)
+        ↓
+Userland Layer (Agent loops)
+        ↓
+Kernel Layer (Authorization, Safety, Approvals)
+        ↓
+Substrate Layer (Events, Filesystem, Memory, Threads)
 ```
 
-**Relevant crates:** `ironclaw_hooks_postgres`, `ironclaw_hooks_libsql`, `ironclaw_hooks_parity`
+### Trait-Driven Extensibility
+Most crates expose a trait-based abstraction:
+- `ironclaw_llm`: `LlmProvider` trait with multiple implementations
+- `ironclaw_embeddings`: `EmbeddingProvider` trait
+- `ironclaw_memory`: `MemoryProvider` trait
+- `ironclaw_auth`: `AuthProvider` trait
+- `ironclaw_filesystem`: `FileSystemBackend` trait (local, PostgreSQL, libSQL)
 
-### Pattern: LLM Provider Abstraction
+### Test-First Discipline
+- 57 of 65 crates have tests (87.7%)
+- Test-support feature for fakes and doubles
+- Integration tests for runtime behavior
+- E2E tests in `tests/e2e/` for user-visible flows
 
-```rust
-// In composition:
-let llm: Arc<dyn LlmProvider> = match config.llm_backend {
-    "openai" => Arc::new(OpenAiProvider::new(...)),
-    "anthropic" => Arc::new(AnthropicProvider::new(...)),
-    ...
-};
+### Most Depended-Upon Crates (Core Infrastructure)
+1. `ironclaw_host_api` — Used by 40+ crates
+2. `ironclaw_common` — Used by 35+ crates
+3. `ironclaw_filesystem` — Used by 25+ crates
+4. `ironclaw_host_runtime` — Used by 15+ crates
 
-// Loops use it without knowing the specific provider
-let response = llm.complete(request).await?;
-```
+### High-Churn Zones (Expect Frequent Changes)
+- `ironclaw_reborn_composition` — Wiring and provider registration
+- `ironclaw_host_runtime` — New effect types and sandbox policies
+- `ironclaw_first_party_extensions` — New tools and capabilities
 
-**Relevant crates:** `ironclaw_llm`, composition in `ironclaw_reborn_cli`
-
-### Pattern: Event Subscriptions
-
-```rust
-// In startup:
-let subscriber = EventStreamManager::new(db.clone());
-
-// Systems subscribe to relevant events
-subscriber.subscribe(filter, |event| async {
-    // Handle the event (e.g., update index, trigger automation)
-}).await;
-
-// When events occur, all subscribers are notified
-```
-
-**Relevant crates:** `ironclaw_events`, `ironclaw_event_streams`, `ironclaw_event_projections`
+### Stable Core (Rare Changes)
+- `ironclaw_host_api` — Core API contracts
+- `ironclaw_common` — Shared types
+- `ironclaw_runtime_policy` — Policy enforcement
 
 ---
 
-## Suggested Reading Order
+## Where to Add New Features
 
-1. **To understand the overall architecture:** Start with [overview.md](overview.md)
-2. **To understand a specific crate:** Find it in this reference
-3. **To add a new feature:** Use [overview.md: Where to Build New Features](overview.md#where-to-build-new-features) to pick a crate, then read its docs
-4. **To understand data flow:** Read [data-model.md](data-model.md)
-5. **To understand security:** Read [security.md](security.md)
-
----
-
-## See Also
-
-- **[Overview](overview.md)** — System design and four-layer model
-- **[Data Model](data-model.md)** — Events, threads, turns, capabilities
-- **[Security & Safety](security.md)** — Kernel boundary and threat model
-- **[AGENTS.md](/AGENTS.md)** — Quick rules and code discovery
-- **[CLAUDE.md](/CLAUDE.md)** — Subsystem deep-dives
-
----
-
-**Last updated:** Auto-generated by OpenWiki. For corrections, file a PR.
+See [Architecture Overview](./overview.md#where-to-build-new-features) for guidance on which crate to modify for your feature type.
