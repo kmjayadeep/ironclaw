@@ -2083,23 +2083,14 @@ impl LlmProvider for GeminiOauthProvider {
 ///
 /// A reason we do not recognize is `Unknown` — never `Stop`. Callers combine
 /// this with the response shape via [`crate::provider::resolve_finish_reason`].
+///
+/// The token table itself is [`crate::provider::map_provider_finish_token`],
+/// shared with the rig adapter — which fronts Gemini by API key and so speaks
+/// the same `SCREAMING_SNAKE_CASE` vocabulary (it matches case-insensitively).
+/// Keeping a second Gemini-only table here is how a token Google adds later
+/// ends up classified one way by OAuth and another way by API key.
 fn map_gemini_finish_reason(reason: &str) -> Option<FinishReason> {
-    let normalized = reason.trim();
-    if normalized.is_empty() {
-        return None;
-    }
-    Some(match normalized {
-        "STOP" => FinishReason::Stop,
-        "MAX_TOKENS" => FinishReason::Length,
-        // Blocked by Gemini's content policy.
-        "SAFETY" | "RECITATION" | "PROHIBITED_CONTENT" | "BLOCKLIST" | "SPII" | "IMAGE_SAFETY"
-        | "LANGUAGE" => FinishReason::ContentFilter,
-        // Recognized failures that are neither a clean stop nor a policy
-        // block, plus anything Google adds later:
-        // MALFORMED_FUNCTION_CALL, UNEXPECTED_TOOL_CALL, OTHER,
-        // FINISH_REASON_UNSPECIFIED.
-        _ => FinishReason::Unknown,
-    })
+    crate::provider::map_provider_finish_token(reason)
 }
 
 #[cfg(test)]

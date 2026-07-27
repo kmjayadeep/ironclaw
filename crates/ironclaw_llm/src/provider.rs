@@ -400,6 +400,42 @@ pub enum FinishReason {
     Unknown,
 }
 
+/// Translate one provider finish-reason token into IronClaw's vocabulary.
+///
+/// One table serves every provider and every adapter: the tokens do not
+/// collide across providers, and matching is case-insensitive so Gemini's
+/// `SCREAMING_SNAKE_CASE` lands on the same rows as everyone else's
+/// `snake_case`. An empty token means "the provider said nothing" (`None`);
+/// a non-empty token we do not recognize is [`FinishReason::Unknown`] — never
+/// [`FinishReason::Stop`], because guessing "success" is the bug this fixes.
+///
+/// This lives here, beside [`resolve_finish_reason`], rather than in any one
+/// adapter: a second table for the same vocabulary is exactly how a newly
+/// added provider token ends up classified two different ways.
+pub(crate) fn map_provider_finish_token(token: &str) -> Option<FinishReason> {
+    let normalized = token.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    Some(match normalized.as_str() {
+        // Clean stop. `stop` = OpenAI-shaped + Ollama + Gemini `STOP`.
+        "stop" | "end_turn" | "stop_sequence" => FinishReason::Stop,
+        // Truncated by a token budget.
+        "length" | "max_tokens" | "max_output_tokens" | "model_length" => FinishReason::Length,
+        // The model asked for tools.
+        "tool_calls" | "function_call" | "tool_use" => FinishReason::ToolUse,
+        // Blocked by the provider's content policy.
+        "content_filter" | "refusal" | "safety" | "recitation" | "blocklist"
+        | "prohibited_content" | "spii" | "image_safety" | "language" => {
+            FinishReason::ContentFilter
+        }
+        // Recognized, but not a clean stop and not classifiable:
+        // Gemini `OTHER` / `FINISH_REASON_UNSPECIFIED` / `MALFORMED_FUNCTION_CALL`,
+        // Anthropic `pause_turn`, Ollama `load`/`unload`, and anything new.
+        _ => FinishReason::Unknown,
+    })
+}
+
 /// Combine what the provider reported with what the response body looks like.
 ///
 /// The provider's own word wins. `Length` and `ContentFilter` win even when

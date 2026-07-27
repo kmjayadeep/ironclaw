@@ -32,7 +32,7 @@ use crate::provider::{
     ChatMessage, CompletionRequest, CompletionResponse, CompletionStreamSink, FinishReason,
     LlmProvider, ReasoningDetail as IronReasoningDetail, ReasoningDetails as IronReasoningDetails,
     ToolCall as IronToolCall, ToolCompletionRequest, ToolCompletionResponse,
-    ToolDefinition as IronToolDefinition, resolve_finish_reason,
+    ToolDefinition as IronToolDefinition, map_provider_finish_token, resolve_finish_reason,
     strip_unsupported_completion_params, strip_unsupported_tool_params,
 };
 use crate::tool_schema::{ToolSchemaPolicy, shape_tool_schema};
@@ -961,38 +961,6 @@ fn provider_finish_token(value: &serde_json::Value) -> Option<&str> {
         .and_then(|candidates| candidates.first())
         .and_then(|candidate| candidate.get("finishReason"))
         .and_then(|reason| reason.as_str())
-}
-
-/// Translate one provider finish-reason token into IronClaw's vocabulary.
-///
-/// One table serves every provider: the tokens do not collide across
-/// providers, and matching is case-insensitive so Gemini's
-/// `SCREAMING_SNAKE_CASE` lands on the same rows as everyone else's
-/// `snake_case`. An empty token means "the provider said nothing" (`None`);
-/// a non-empty token we do not recognize is [`FinishReason::Unknown`] — never
-/// [`FinishReason::Stop`], because guessing "success" is the bug this fixes.
-fn map_provider_finish_token(token: &str) -> Option<FinishReason> {
-    let normalized = token.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return None;
-    }
-    Some(match normalized.as_str() {
-        // Clean stop. `stop` = OpenAI-shaped + Ollama + Gemini `STOP`.
-        "stop" | "end_turn" | "stop_sequence" => FinishReason::Stop,
-        // Truncated by a token budget.
-        "length" | "max_tokens" | "max_output_tokens" | "model_length" => FinishReason::Length,
-        // The model asked for tools.
-        "tool_calls" | "function_call" | "tool_use" => FinishReason::ToolUse,
-        // Blocked by the provider's content policy.
-        "content_filter" | "refusal" | "safety" | "recitation" | "blocklist"
-        | "prohibited_content" | "spii" | "image_safety" | "language" => {
-            FinishReason::ContentFilter
-        }
-        // Recognized, but not a clean stop and not classifiable:
-        // Gemini `OTHER` / `FINISH_REASON_UNSPECIFIED` / `MALFORMED_FUNCTION_CALL`,
-        // Anthropic `pause_turn`, Ollama `load`/`unload`, and anything new.
-        _ => FinishReason::Unknown,
-    })
 }
 
 /// Merge default additional parameters into the rig-core request.
