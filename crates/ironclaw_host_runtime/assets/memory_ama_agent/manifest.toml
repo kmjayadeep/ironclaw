@@ -1,0 +1,18 @@
+schema_version = "reborn.extension_manifest.v3"
+id = "ama-agent.local.memory"
+name = "AMA-Agent Memory"
+version = "0.1.0"
+description = "Causality-graph memory backend for the always-on memory adapter, ported from the reference implementation of AMA-Bench (arXiv:2602.22769). A compose-time [memory] binding can select this provider in place of the native filesystem backend; the ironclaw.memory.* tools and the host-managed retrieve-before / record-after lifecycle are unchanged and route here. This manifest declares the provider identity only — it carries no tools of its own (the memory tool surface is the adapter's). Construction LLM-abstracts each recorded interaction into environment/task-state nodes plus causal and association edges; retrieval embeds the query, takes the top-K nearest nodes, then asks the model whether that evidence suffices before expanding through the graph or running a structured aggregation. Off by default and compiled only under the `memory-ama-agent` feature; it requires an LLM provider and an embedding endpoint supplied through the `[memory]` config, and fails closed otherwise."
+trust = "first_party_requested"
+
+[runtime]
+kind = "first_party"
+service = "ama_agent_memory_provider"
+
+# The [memory] surface marks this extension a backend for the host memory
+# adapter. This provider backs context_retrieval and interaction_log; it does NOT
+# declare document_store, because a causality graph has no addressable-document
+# model (see the mapping-fidelity table in ironclaw_memory_ama_agent's crate
+# docs, where write/read/tree are `none`).
+[memory]
+operations = ["context_retrieval", "interaction_log"]

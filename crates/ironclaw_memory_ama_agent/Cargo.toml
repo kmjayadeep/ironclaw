@@ -34,6 +34,7 @@ ironclaw_memory = { path = "../ironclaw_memory", version = "0.1.0" }
 # `ironclaw_*` workspace edges).
 async-trait = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
+rust_decimal = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -41,8 +42,6 @@ tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"
 
 [dev-dependencies]
-# The test-only LlmProvider stub must satisfy `cost_per_token`.
-rust_decimal = "1"
 # Self dev-dependency enables `test-support` for this crate's own integration
 # tests in `tests/`, which import the stubs.
 ironclaw_memory_ama_agent = { path = ".", features = ["test-support"] }

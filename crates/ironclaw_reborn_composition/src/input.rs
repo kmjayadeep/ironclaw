@@ -216,6 +216,11 @@ pub struct RebornHostBindings {
     /// host-bundled native provider. The CLI resolves this from the `[memory]`
     /// config section + deployment profile (fail-closed) before building.
     pub(crate) memory_binding_policy: Option<MemoryBindingPolicy>,
+    /// Connection + behavior settings for the AMA-Agent causality-graph memory
+    /// provider. `None` unless a binding selects it (the arm then fails closed if
+    /// its endpoints are unset). Mirrors `memory_provider_connection`'s role for
+    /// mem0.
+    pub(crate) ama_agent_memory_connection: Option<crate::AmaAgentConnectionConfig>,
     /// Connection settings for the configured third-party memory provider
     /// (issue #5264). Empty unless `memory_binding_policy` binds a third-party
     /// provider (e.g. mem0); carries that provider's base URL + API key so the
@@ -377,6 +382,16 @@ impl RebornHostBindings {
     /// failing closed before composition is built. The factory reads the
     /// resolved policy via the `memory_binding_policy` field when destructuring
     /// the build input.
+    /// Attach AMA-Agent memory settings. Only consulted when the binding policy
+    /// selects that provider; inert otherwise.
+    pub fn with_ama_agent_memory_connection(
+        mut self,
+        connection: crate::AmaAgentConnectionConfig,
+    ) -> Self {
+        self.ama_agent_memory_connection = Some(connection);
+        self
+    }
+
     pub fn with_memory_binding_policy(mut self, policy: MemoryBindingPolicy) -> Self {
         self.memory_binding_policy = Some(policy);
         self
@@ -908,6 +923,7 @@ impl RebornHostBindings {
             first_party_registrars: Vec::new(),
             credential_account_visibility_policy: None,
             memory_binding_policy: None,
+            ama_agent_memory_connection: None,
             memory_provider_connection: Mem0ConnectionConfig::default(),
         }
     }

@@ -777,6 +777,41 @@ impl RebornAuthContinuationDispatcher for AuthContinuationFromProduct {
     }
 }
 
+/// Build a small dedicated filesystem for the AMA-Agent provider's causality
+/// graph, mounted at `/memory` over `<local-dev root>/ama-agent-memory`.
+///
+/// Exists because that provider is constructed at startup (before the composed
+/// root filesystem is assembled) yet still needs durable per-scope storage. Kept
+/// deliberately narrow: one mount, one purpose, no sharing with the agent's
+/// workspace. Returns `None` on any setup failure so the arm fails closed with a
+/// logged reason rather than silently losing memory.
+fn build_ama_agent_graph_filesystem(root: &std::path::Path) -> Option<Arc<dyn RootFilesystem>> {
+    use ironclaw_filesystem::DiskFilesystem;
+    use ironclaw_host_api::{HostPath, VirtualPath};
+
+    let host_root = root.join("ama-agent-memory");
+    if let Err(error) = std::fs::create_dir_all(&host_root) {
+        tracing::warn!(
+            target: "ironclaw_reborn::memory",
+            %error,
+            "could not create the ama-agent graph directory; failing the binding closed"
+        );
+        return None;
+    }
+    let virtual_root = VirtualPath::new("/memory").ok()?;
+    let host_path = HostPath::from_path_buf(host_root);
+    let mut filesystem = DiskFilesystem::new();
+    if let Err(error) = filesystem.mount_local(virtual_root, host_path) {
+        tracing::warn!(
+            target: "ironclaw_reborn::memory",
+            %error,
+            "could not mount the ama-agent graph directory; failing the binding closed"
+        );
+        return None;
+    }
+    Some(Arc::new(filesystem) as Arc<dyn RootFilesystem>)
+}
+
 /// Output of [`build_local_runtime_root_filesystem`]: the composed local-dev
 /// root filesystem and, when libSQL is the substrate, a clone of the raw
 /// libSQL handle. The handle backs both the local-dev trigger repository
@@ -3213,6 +3248,7 @@ async fn build_production_shaped(
         trust_fixture_extensions_for_test,
         memory_binding_policy,
         memory_provider_connection,
+        ama_agent_memory_connection,
         ..
     } = input;
     // The declarative DATA now lives on the deployment (Phase A). Clone the
@@ -3244,10 +3280,25 @@ async fn build_production_shaped(
             root.hash(&mut hasher);
             memory_provider_connection.app_id = Some(format!("ws-{:016x}", hasher.finish()));
         }
-        crate::build_memory_service_resolver(
-            memory_binding_policy,
-            &crate::MemoryProviderDeps::for_third_party(memory_provider_connection),
-        )
+        // The AMA-Agent provider persists its causality graph, but the composed
+        // root filesystem does not exist yet at this point in the build (it is
+        // assembled further down), and a third-party provider is constructed once
+        // here rather than per-invocation. So give it a small dedicated local mount
+        // under the local-dev root instead of waiting for the composed filesystem.
+        // Non-local-dev storage yields `None`, which fails the arm closed.
+        let ama_agent_filesystem: Option<Arc<dyn RootFilesystem>> =
+            match (&storage, &ama_agent_memory_connection) {
+                (crate::input::RebornStorageInput::LocalDev { root, .. }, Some(_)) => {
+                    build_ama_agent_graph_filesystem(root)
+                }
+                _ => None,
+            };
+        let deps = crate::MemoryProviderDeps::for_third_party(memory_provider_connection)
+            .with_ama_agent(
+                ama_agent_memory_connection.unwrap_or_default(),
+                ama_agent_filesystem,
+            );
+        crate::build_memory_service_resolver(memory_binding_policy, &deps)
     };
     // Label for logging/errors; behaviour reads `deployment`'s axes.
     let profile = deployment.profile();

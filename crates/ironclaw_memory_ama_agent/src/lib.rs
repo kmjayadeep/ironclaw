@@ -60,6 +60,7 @@
 //! Unsupported ops are left on the trait's own fail-closed defaults rather than
 //! stubbed, so a caller gets `unavailable` instead of silently wrong data.
 
+pub mod chat;
 pub mod config;
 pub mod embedding;
 pub mod error;
@@ -74,6 +75,7 @@ mod url_check;
 /// `[memory].provider` in reborn config and by the composition factory arm.
 pub const AMA_AGENT_MEMORY_EXTENSION_ID: &str = "ama-agent.local.memory";
 
+pub use chat::OpenAiCompatChat;
 pub use config::AmaAgentConfig;
 pub use embedding::{AmaEmbeddingProvider, OpenAiCompatEmbedder};
 pub use error::AmaAgentError;

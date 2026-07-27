@@ -136,6 +136,46 @@ pub struct MemorySection {
     /// third-party binding needs it.
     #[serde(default)]
     pub mem0_base_url: Option<String>,
+    /// Settings for the AMA-Agent causality-graph provider, used only when a
+    /// binding selects it. Inert otherwise. Like mem0's base URL there is no
+    /// default embedding endpoint: a bound-but-unconfigured provider fails closed
+    /// rather than silently retrieving nothing. The embedding API key is supplied
+    /// via `MEMORY_AMA_AGENT_EMBEDDING_API_KEY` (a secret — never the config
+    /// file).
+    #[serde(default)]
+    pub ama_agent: Option<AmaAgentMemorySection>,
+}
+
+/// `[memory.ama_agent]` — behavior knobs for the causality-graph provider.
+///
+/// Defaults live in `ironclaw_memory_ama_agent::AmaAgentConfig` (which tracks the
+/// reference implementation's own `configs/ama_agent.yaml`); every field here is
+/// optional so an operator overrides only what they mean to.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AmaAgentMemorySection {
+    /// OpenAI-compatible `/v1/embeddings` base URL (e.g.
+    /// `https://openrouter.ai/api/v1`). Required when this provider is bound.
+    #[serde(default)]
+    pub embedding_base_url: Option<String>,
+    /// Embedding model id served by that endpoint.
+    #[serde(default)]
+    pub embedding_model: Option<String>,
+    /// Embedding vector width; used only for sanity checks.
+    #[serde(default)]
+    pub embedding_dimension: Option<usize>,
+    /// Stage-1 similarity retrieval width (upstream default: 5).
+    #[serde(default)]
+    pub top_k: Option<usize>,
+    /// Which strategy answers a `NEED_GRAPH` verdict: `edge_traversal` (what the
+    /// paper describes — walk causal/association edges) or `turn_window` (what
+    /// the reference implementation actually does — return neighbouring turns by
+    /// index). Selectable so the two can be measured against each other.
+    #[serde(default)]
+    pub graph_retrieval_mode: Option<String>,
+    /// Hops to expand in `edge_traversal` mode.
+    #[serde(default)]
+    pub graph_depth: Option<usize>,
 }
 
 /// One admin override authorizing a production memory binding, scoped to

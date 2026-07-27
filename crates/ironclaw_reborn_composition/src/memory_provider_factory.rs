@@ -25,12 +25,17 @@ use ironclaw_filesystem::RootFilesystem;
 use ironclaw_host_runtime::memory_binding::{MemoryBindingPolicy, MemoryProviderBinding};
 use ironclaw_host_runtime::memory_provider::MemoryServiceResolver;
 use ironclaw_memory::{MemoryService, PromptWriteSafetyEventSink};
+#[cfg(feature = "memory-ama-agent")]
+use ironclaw_memory_ama_agent::{
+    AMA_AGENT_MEMORY_EXTENSION_ID, AmaAgentConfig, AmaAgentMemoryService, AmaEmbeddingProvider,
+    GraphRetrievalMode, OpenAiCompatChat, OpenAiCompatEmbedder, llm::AmaLlm, store::GraphStore,
+};
 #[cfg(feature = "memory-mem0")]
 use ironclaw_memory_mem0::{
     MEM0_MEMORY_EXTENSION_ID, Mem0Config, Mem0HttpTransport, Mem0MemoryService, Mem0Transport,
 };
 use ironclaw_memory_native::NativeMemoryService;
-#[cfg(feature = "memory-mem0")]
+#[cfg(any(feature = "memory-mem0", feature = "memory-ama-agent"))]
 use secrecy::ExposeSecret;
 use secrecy::SecretString;
 
@@ -94,6 +99,75 @@ pub struct MemoryProviderDeps {
     /// mem0 transport type to hold when `memory-mem0` is not compiled in.
     #[cfg(feature = "memory-mem0")]
     pub mem0_transport_override: Option<Arc<dyn Mem0Transport>>,
+    /// AMA-Agent connection + behavior settings for the ama-agent arm.
+    pub ama_agent: AmaAgentConnectionConfig,
+    /// Filesystem the AMA-Agent arm persists its causality graph through.
+    ///
+    /// Separate from `filesystem` (the native arm's) because the two arms are
+    /// built at different times: native is resolved per-invocation with the
+    /// request's filesystem, whereas a third-party provider is built once at
+    /// startup — before the composed root filesystem exists. Composition supplies
+    /// a small dedicated mount for this instead. `None` fails the arm closed.
+    pub ama_agent_filesystem: Option<Arc<dyn RootFilesystem>>,
+}
+
+/// Connection + behavior settings for the AMA-Agent causality-graph provider.
+///
+/// Same shape as [`Mem0ConnectionConfig`]: endpoints from `[memory.ama_agent]`
+/// config, secrets as [`SecretString`] from env. There are NO defaults for the
+/// endpoints — a bound-but-unconfigured provider fails closed rather than
+/// silently retrieving nothing, which in a benchmark would be indistinguishable
+/// from genuinely poor recall.
+#[derive(Clone, Default)]
+pub struct AmaAgentConnectionConfig {
+    /// OpenAI-compatible `/v1/embeddings` base URL. Required when bound.
+    pub embedding_base_url: Option<String>,
+    /// Embedding model id served by that endpoint. Required when bound.
+    pub embedding_model: Option<String>,
+    /// Embedding width; only a sanity check, so a wrong value degrades scoring
+    /// rather than breaking retrieval.
+    pub embedding_dimension: Option<usize>,
+    /// Embedding API key, from `MEMORY_AMA_AGENT_EMBEDDING_API_KEY`. `None` for an
+    /// unauthenticated local endpoint.
+    pub embedding_api_key: Option<SecretString>,
+    /// OpenAI-compatible `/v1/chat/completions` base URL for extraction and the
+    /// sufficiency judgment. Required when bound.
+    pub llm_base_url: Option<String>,
+    /// Chat model id. Required when bound.
+    pub llm_model: Option<String>,
+    /// Chat API key, from `MEMORY_AMA_AGENT_LLM_API_KEY`.
+    pub llm_api_key: Option<SecretString>,
+    /// Stage-1 similarity width; `None` uses the crate default (upstream's 5).
+    pub top_k: Option<usize>,
+    /// `edge_traversal` (the paper's design) or `turn_window` (what the reference
+    /// implementation actually does). `None` uses the crate default.
+    pub graph_retrieval_mode: Option<String>,
+    /// Hops to expand in `edge_traversal` mode; `None` uses the crate default.
+    pub graph_depth: Option<usize>,
+}
+
+impl std::fmt::Debug for AmaAgentConnectionConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AmaAgentConnectionConfig")
+            .field("embedding_base_url", &self.embedding_base_url)
+            .field("embedding_model", &self.embedding_model)
+            .field("embedding_dimension", &self.embedding_dimension)
+            .field(
+                "embedding_api_key",
+                &self.embedding_api_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("llm_base_url", &self.llm_base_url)
+            .field("llm_model", &self.llm_model)
+            .field(
+                "llm_api_key",
+                &self.llm_api_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("top_k", &self.top_k)
+            .field("graph_retrieval_mode", &self.graph_retrieval_mode)
+            .field("graph_depth", &self.graph_depth)
+            .finish()
+    }
 }
 
 impl MemoryProviderDeps {
@@ -106,7 +180,21 @@ impl MemoryProviderDeps {
             mem0,
             #[cfg(feature = "memory-mem0")]
             mem0_transport_override: None,
+            ama_agent: AmaAgentConnectionConfig::default(),
+            ama_agent_filesystem: None,
         }
+    }
+
+    /// Attach AMA-Agent settings + its graph filesystem to third-party deps.
+    /// Separate builder so the mem0-only call sites stay unchanged.
+    pub fn with_ama_agent(
+        mut self,
+        config: AmaAgentConnectionConfig,
+        filesystem: Option<Arc<dyn RootFilesystem>>,
+    ) -> Self {
+        self.ama_agent = config;
+        self.ama_agent_filesystem = filesystem;
+        self
     }
 }
 
@@ -146,6 +234,10 @@ fn create_third_party_provider(
     #[cfg(feature = "memory-mem0")]
     if extension_id == MEM0_MEMORY_EXTENSION_ID {
         return create_mem0_provider(deps);
+    }
+    #[cfg(feature = "memory-ama-agent")]
+    if extension_id == AMA_AGENT_MEMORY_EXTENSION_ID {
+        return create_ama_agent_provider(deps);
     }
     // No provider is registered for this third-party id — or the `memory-mem0`
     // feature is not compiled in — so the document-store binding fails closed.
@@ -199,6 +291,120 @@ fn create_mem0_provider(deps: &MemoryProviderDeps) -> Option<Arc<dyn MemoryServi
             None
         }
     }
+}
+
+/// Build the AMA-Agent causality-graph provider, or `None` (fail-closed).
+///
+/// Fails closed — with a specific reason logged — when any of the four things it
+/// cannot work without is absent: a graph filesystem, an embedding endpoint, a
+/// chat endpoint, or a model id for either. Silently returning a provider that
+/// retrieves nothing would look exactly like genuinely poor recall in a
+/// benchmark, which is the failure mode this must not have.
+#[cfg(feature = "memory-ama-agent")]
+fn create_ama_agent_provider(deps: &MemoryProviderDeps) -> Option<Arc<dyn MemoryService>> {
+    let cfg = &deps.ama_agent;
+
+    let Some(filesystem) = deps.ama_agent_filesystem.clone() else {
+        tracing::warn!(
+            target: LOG_TARGET,
+            "ama-agent memory binding selected but no graph filesystem was supplied; failing closed"
+        );
+        return None;
+    };
+    let (Some(embed_url), Some(embed_model)) = (
+        cfg.embedding_base_url.as_deref(),
+        cfg.embedding_model.as_deref(),
+    ) else {
+        tracing::warn!(
+            target: LOG_TARGET,
+            "ama-agent memory binding selected but the embedding endpoint/model is unset ([memory.ama_agent].embedding_base_url / .embedding_model); failing closed"
+        );
+        return None;
+    };
+    let (Some(llm_url), Some(llm_model)) = (cfg.llm_base_url.as_deref(), cfg.llm_model.as_deref())
+    else {
+        tracing::warn!(
+            target: LOG_TARGET,
+            "ama-agent memory binding selected but the chat endpoint/model is unset ([memory.ama_agent].llm_base_url / .llm_model); failing closed"
+        );
+        return None;
+    };
+
+    let embedder = match OpenAiCompatEmbedder::new(
+        embed_url,
+        cfg.embedding_api_key
+            .as_ref()
+            .map(|k| k.expose_secret().to_string()),
+        embed_model,
+        cfg.embedding_dimension.unwrap_or(1536),
+    ) {
+        Ok(e) => Arc::new(e) as Arc<dyn AmaEmbeddingProvider>,
+        Err(error) => {
+            tracing::warn!(
+                target: LOG_TARGET,
+                %error,
+                "failed to build the ama-agent embedding client (rejected base URL); failing closed"
+            );
+            return None;
+        }
+    };
+
+    let chat = match OpenAiCompatChat::new(
+        llm_url,
+        cfg.llm_api_key
+            .as_ref()
+            .map(|k| k.expose_secret().to_string()),
+        llm_model,
+    ) {
+        Ok(c) => Arc::new(c) as Arc<dyn ironclaw_llm::LlmProvider>,
+        Err(error) => {
+            tracing::warn!(
+                target: LOG_TARGET,
+                %error,
+                "failed to build the ama-agent chat client (rejected base URL); failing closed"
+            );
+            return None;
+        }
+    };
+
+    // An unrecognized mode is rejected rather than silently defaulted: the two
+    // modes are the thing being compared, so quietly running the wrong one would
+    // publish a mislabelled result.
+    let graph_retrieval_mode = match cfg.graph_retrieval_mode.as_deref() {
+        None => AmaAgentConfig::default().graph_retrieval_mode,
+        Some("edge_traversal") => GraphRetrievalMode::EdgeTraversal,
+        Some("turn_window") => GraphRetrievalMode::TurnWindow,
+        Some(other) => {
+            tracing::warn!(
+                target: LOG_TARGET,
+                mode = other,
+                "unknown [memory.ama_agent].graph_retrieval_mode (expected edge_traversal|turn_window); failing closed"
+            );
+            return None;
+        }
+    };
+
+    let defaults = AmaAgentConfig::default();
+    let config = AmaAgentConfig {
+        top_k: cfg.top_k.unwrap_or(defaults.top_k),
+        graph_retrieval_mode,
+        graph_depth: cfg.graph_depth.unwrap_or(defaults.graph_depth),
+        ..defaults
+    };
+
+    tracing::info!(
+        target: LOG_TARGET,
+        top_k = config.top_k,
+        graph_depth = config.graph_depth,
+        mode = ?config.graph_retrieval_mode,
+        "built the ama-agent causality-graph memory provider"
+    );
+    Some(Arc::new(AmaAgentMemoryService::new(
+        GraphStore::new(filesystem),
+        embedder,
+        AmaLlm::new(chat),
+        config,
+    )) as Arc<dyn MemoryService>)
 }
 
 /// Build the memory resolver from the (optional) binding policy and register the

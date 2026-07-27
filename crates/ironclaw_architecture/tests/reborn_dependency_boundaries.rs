@@ -301,7 +301,7 @@ fn reborn_crate_dependency_boundaries_hold() {
 }
 
 #[test]
-fn host_runtime_stays_memory_provider_neutral_and_only_composition_names_mem0() {
+fn host_runtime_stays_memory_provider_neutral_and_only_composition_names_providers() {
     // The `ironclaw_memory_mem0` boundary rule's comment states that
     // `ironclaw_host_runtime` must stay provider-agnostic and must NOT name the
     // concrete mem0 provider crate; only the composition layer may depend on it
@@ -310,7 +310,11 @@ fn host_runtime_stays_memory_provider_neutral_and_only_composition_names_mem0() 
     // stores). That comment was previously unenforced. This test fails loudly if a
     // future edit adds `ironclaw_memory_mem0` to `host_runtime/Cargo.toml` — or to
     // any crate other than composition.
-    const MEM0: &str = "ironclaw_memory_mem0";
+    // Table-driven over EVERY concrete third-party memory provider crate. The
+    // rule is per-provider, so a new provider added without an entry here would
+    // otherwise be silently unenforced — which is exactly what happened when this
+    // test hardcoded mem0 and `ironclaw_memory_ama_agent` was added.
+    const PROVIDER_CRATES: [&str; 2] = ["ironclaw_memory_mem0", "ironclaw_memory_ama_agent"];
 
     let metadata = cargo_metadata();
     let packages = metadata["packages"]
@@ -321,26 +325,29 @@ fn host_runtime_stays_memory_provider_neutral_and_only_composition_names_mem0() 
         .filter_map(package_dependencies)
         .collect::<HashMap<_, _>>();
 
-    // host_runtime must not name the concrete mem0 provider.
-    assert_no_normal_workspace_deps(&dependencies, "ironclaw_host_runtime", [MEM0]);
+    for provider in PROVIDER_CRATES {
+        // host_runtime must not name any concrete provider.
+        assert_no_normal_workspace_deps(&dependencies, "ironclaw_host_runtime", [provider]);
 
-    // Only the composition layer (the mem0 crate itself aside) may take a normal
-    // dependency on the concrete mem0 provider.
-    let mut dependents = dependencies
-        .iter()
-        .filter(|(crate_name, deps)| {
-            crate_name.as_str() != MEM0 && deps.iter().any(|dependency| dependency == MEM0)
-        })
-        .map(|(crate_name, _)| crate_name.as_str())
-        .collect::<Vec<_>>();
-    dependents.sort_unstable();
-    assert_eq!(
-        dependents,
-        vec!["ironclaw_reborn_composition"],
-        "only ironclaw_reborn_composition may take a normal dependency on {MEM0}; \
-         ironclaw_host_runtime and every other crate must resolve memory through the \
-         provider-neutral MemoryServiceResolver"
-    );
+        // Only the composition layer (the provider crate itself aside) may take a
+        // normal dependency on a concrete provider.
+        let mut dependents = dependencies
+            .iter()
+            .filter(|(crate_name, deps)| {
+                crate_name.as_str() != provider
+                    && deps.iter().any(|dependency| dependency == provider)
+            })
+            .map(|(crate_name, _)| crate_name.as_str())
+            .collect::<Vec<_>>();
+        dependents.sort_unstable();
+        assert_eq!(
+            dependents,
+            vec!["ironclaw_reborn_composition"],
+            "only ironclaw_reborn_composition may take a normal dependency on {provider}; \
+             ironclaw_host_runtime and every other crate must resolve memory through the \
+             provider-neutral MemoryServiceResolver"
+        );
+    }
 }
 
 #[test]

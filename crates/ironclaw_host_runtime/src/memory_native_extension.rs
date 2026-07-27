@@ -61,6 +61,22 @@ pub const MEM0_MEMORY_PROVIDER_SERVICE: &str = "mem0_memory_provider";
 /// from `[memory]` config in composition, gated by the `memory-mem0` feature.
 pub const MEM0_MEMORY_MANIFEST_TOML: &str = include_str!("../assets/memory_mem0/manifest.toml");
 
+/// Reserved (host-bundled) extension id for the AMA-Agent causality-graph memory
+/// backend. Mirrors `ironclaw_memory_ama_agent::AMA_AGENT_MEMORY_EXTENSION_ID`;
+/// the `[memory]` binding selects it by this id.
+pub const AMA_AGENT_MEMORY_EXTENSION_ID: &str = "ama-agent.local.memory";
+
+/// Host service identity declared by the AMA-Agent backend manifest's
+/// `first_party` runtime.
+pub const AMA_AGENT_MEMORY_PROVIDER_SERVICE: &str = "ama_agent_memory_provider";
+
+/// Raw bundled manifest TOML for the AMA-Agent memory backend. Declarative
+/// provider identity only (no tools of its own); the `MemoryService` is
+/// constructed from `[memory]` config in composition, gated by the
+/// `memory-ama-agent` feature.
+pub const AMA_AGENT_MEMORY_MANIFEST_TOML: &str =
+    include_str!("../assets/memory_ama_agent/manifest.toml");
+
 /// Parse the bundled `ironclaw.memory` manifest into the internal manifest
 /// model. Fail-closed: the reserved id, `first_party` runtime, `[memory]`
 /// surface, schema refs, and provider-prefixed tool ids are validated by the
