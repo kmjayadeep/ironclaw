@@ -15,7 +15,7 @@ use crate::config::GeminiOauthConfig;
 use crate::error::LlmError;
 use crate::provider::{
     ChatMessage, CompletionRequest, CompletionResponse, ContentPart, FinishReason, LlmProvider,
-    ModelMetadata, Role, ToolCall, ToolDefinition,
+    ModelMetadata, Role, ToolCall, ToolDefinition, map_provider_finish_token,
 };
 
 // Official Gemini CLI OAuth credentials (public, from google/gemini-cli).
@@ -189,11 +189,6 @@ pub(crate) struct GeminiCredits {
     pub(crate) credit_amount: String,
 }
 
-/// Extended response metadata parsed from Gemini API responses.
-// Fields are unread now that the only consumer (`last_response_meta`) is
-// unused after `gemini_oauth` was made `pub(crate)`. Kept to preserve the
-// move's no-behavior-change guarantee; delete in a follow-up if no caller
-// emerges.
 /// What one Cloud Code SSE stream amounted to.
 struct CloudCodeSseAggregate {
     /// The Gemini-shaped body to parse, or `None` when the stream carried
@@ -202,6 +197,12 @@ struct CloudCodeSseAggregate {
     /// Per-response metadata collected in the same pass.
     meta: GeminiResponseMeta,
 }
+
+/// Extended response metadata parsed from Gemini API responses.
+// Fields are unread now that the only consumer (`last_response_meta`) is
+// unused after `gemini_oauth` was made `pub(crate)`. Kept to preserve the
+// move's no-behavior-change guarantee; delete in a follow-up if no caller
+// emerges.
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
@@ -1828,7 +1829,7 @@ impl GeminiOauthProvider {
         // successful answer would hide it.
         let terminal_failure = finish_reason
             .as_deref()
-            .and_then(map_gemini_finish_reason)
+            .and_then(map_provider_finish_token)
             .is_some_and(|reason| reason != FinishReason::Stop);
 
         let response =
@@ -1917,7 +1918,7 @@ impl GeminiOauthProvider {
                 CompletionResponse {
                     content: String::new(),
                     finish_reason: crate::provider::resolve_finish_reason(
-                        map_gemini_finish_reason(reason),
+                        map_provider_finish_token(reason),
                         false,
                     ),
                     input_tokens,
@@ -2011,8 +2012,14 @@ impl GeminiOauthProvider {
             );
         }
 
+        // The token table is shared with the rig adapter, which fronts Gemini
+        // by API key and so speaks the same `SCREAMING_SNAKE_CASE` vocabulary
+        // (it matches case-insensitively). A second Gemini-only table here is
+        // how a token Google adds later ends up classified one way by OAuth
+        // and another way by API key. A reason we do not recognize is
+        // `Unknown` — never `Stop`.
         let stop_reason = crate::provider::resolve_finish_reason(
-            finish_reason.and_then(map_gemini_finish_reason),
+            finish_reason.and_then(map_provider_finish_token),
             !tool_calls.is_empty(),
         );
 
@@ -2157,27 +2164,6 @@ impl LlmProvider for GeminiOauthProvider {
             reasoning_details: None,
         })
     }
-}
-
-/// Translate Gemini's `finishReason` into IronClaw's vocabulary.
-///
-/// Before this, only `STOP` and `MAX_TOKENS` were recognized: every
-/// content-blocking reason (`SAFETY`, `RECITATION`, `PROHIBITED_CONTENT`,
-/// `BLOCKLIST`, …) fell into the catch-all arm and was reported as `Stop`, and
-/// `MALFORMED_FUNCTION_CALL` / `UNEXPECTED_TOOL_CALL` were mapped to `Stop`
-/// explicitly. A blocked or malformed response was therefore indistinguishable
-/// from a clean answer.
-///
-/// A reason we do not recognize is `Unknown` — never `Stop`. Callers combine
-/// this with the response shape via [`crate::provider::resolve_finish_reason`].
-///
-/// The token table itself is [`crate::provider::map_provider_finish_token`],
-/// shared with the rig adapter — which fronts Gemini by API key and so speaks
-/// the same `SCREAMING_SNAKE_CASE` vocabulary (it matches case-insensitively).
-/// Keeping a second Gemini-only table here is how a token Google adds later
-/// ends up classified one way by OAuth and another way by API key.
-fn map_gemini_finish_reason(reason: &str) -> Option<FinishReason> {
-    crate::provider::map_provider_finish_token(reason)
 }
 
 #[cfg(test)]
