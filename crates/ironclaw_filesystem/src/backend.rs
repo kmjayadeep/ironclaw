@@ -9,10 +9,10 @@
 //! What lives here:
 //! - [`StorageTxn`] — the multi-key transactional handle that backends with
 //!   `TxnCapability::MultiKey` expose via
-//!   [`RootFilesystem::begin`](crate::RootFilesystem::begin). Stores must
-//!   continue to work using only CAS (`put` + `CasExpectation::Version`);
-//!   `StorageTxn` is a strictly stronger primitive offered as an optimisation
-//!   to backends that have it natively.
+//!   [`RootFilesystem::begin`](crate::RootFilesystem::begin). Most stores
+//!   should continue to work using only CAS (`put` +
+//!   `CasExpectation::Version`); stores whose invariants span multiple keyed
+//!   records may explicitly require `MultiKey`.
 //! - [`EventRecord`] — one entry emitted by the append/tail plane.
 
 use async_trait::async_trait;

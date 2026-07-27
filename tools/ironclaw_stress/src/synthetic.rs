@@ -16,6 +16,7 @@ pub(crate) struct SyntheticIds {
 pub(crate) struct UserTurnContext {
     pub(crate) user_id: UserId,
     pub(crate) thread_owner_user_id: UserId,
+    pub(crate) thread_owner_user_index: usize,
     pub(crate) thread_id: ThreadId,
     pub(crate) thread_scope: ThreadScope,
     pub(crate) turn_scope: TurnScope,
@@ -179,6 +180,7 @@ impl SyntheticIds {
         Ok(UserTurnContext {
             user_id,
             thread_owner_user_id,
+            thread_owner_user_index: thread_user_index,
             thread_id,
             thread_scope,
             turn_scope,

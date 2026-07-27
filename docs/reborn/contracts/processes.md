@@ -159,15 +159,41 @@ contracts over those ports. Its `ProcessJournalStoreTurnAdapter` translates
 errors at the crate boundary but owns no state and contains no reverse
 turn-transition engine.
 
-The durable journal is an append-only `RootFilesystem` event log at
-`/processes/journal/records`. Each submitted journal command is one physical
-event row in libSQL/PostgreSQL. Backend sequence order is the atomic authority
-for exclusive submission, claims, leases, controls, checkpoints, and process
-tree accounting. Current snapshots, lifecycle pages, gates, and lookup results
-are deterministic projections of those rows; they are not separately writable
-authorities. The former `/processes/journal/state.json` CAS document is
-read-only migration input: when present before the first row, it is imported
-once as the first journal command and subsequent mutations are row-native.
+The durable lifecycle journal is an append-only set of immutable
+`RootFilesystem` records under `/processes/materialized/journal`; every
+`ProcessJournalEntry` is one physical row keyed by its zero-padded cursor.
+Queryable state is stored as typed records alongside it under
+`/processes/materialized/{process,input,tree,dependency,checkpoint,...}`.
+Commands atomically update the participating materialized rows and insert their
+lifecycle rows through a `StorageTxn`. Row versions provide optimistic
+conflict detection across store handles and processes. Reads address one keyed
+row or one row family and never rebuild state by replaying the journal.
+
+Backends used for process persistence must advertise
+`TxnCapability::MultiKey`; the store fails closed on CAS-only mounts because
+process/tree/dependency invariants span records and journal appends. The former
+`/processes/journal/records` command log and
+`/processes/journal/state.json` snapshot are read-only migration inputs. They
+are never inspected by normal startup or request handling. Operators must call
+`ProcessJournalStore::migrate_legacy_journal` before any new-store request to
+replay them into materialized rows and individual lifecycle rows. Once
+row-native metadata exists, legacy import fails closed. Ordered projections
+introduced after row-native records were written are rebuilt separately with
+the explicit offline `migrate_row_native_indexes` operation.
+
+Every request-time collection read names an ordered projection and binds its
+leading scope/owner/kind/state partition before a bounded keyset traversal.
+Index declaration is O(1) and never backfills existing records. Lifecycle
+indexes are sparse: queue keys exist only for queued processes, quota keys only
+for running processes, expiry keys only for leased recoverable processes, and
+gate keys only for suspended processes. Startup exact-probes metadata and may
+run bounded queue/expiry queries; it never replays or enumerates the journal.
+
+This is a forward storage migration once a new writer commits. An older binary
+cannot observe commands written only as materialized rows. Rollback therefore
+requires stopping writers and restoring the pre-migration database backup (or
+deploying a compatibility reader); binary rollback against an already-written
+database is not supported.
 
 `spawn_json` creates a `Running` process record. `BackgroundProcessManager` then drives `Running -> Completed` or `Running -> Failed` from the attached `ProcessExecutor`. `ProcessHost::kill` drives `Running -> Killed` and, when configured with a shared `ProcessCancellationRegistry`, also signals the running executor's cooperative cancellation token. Terminal states are protected: `Completed`, `Failed`, and `Killed` cannot be overwritten by a late background completion.
 

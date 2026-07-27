@@ -141,12 +141,12 @@ not bypass domain invariants by mutating primitive storage rows directly.
 | `/secrets` | typed encrypted secret repository | secret APIs only; optional redacted projection | no | No generic listing of secret material/source records. |
 | `/events` | durable event/audit append log + projections | event/projection APIs; optional export | no | Events are append/projection records, not mutable files. |
 | `/engine/openai_compat/refs` | `ironclaw_reborn_openai_compat::refs_storage` implementing `OpenAiCompatRefStore` over `RootFilesystem` behind the `storage` feature | OpenAI-compatible ref/idempotency API only | no | Source of truth for opaque `chatcmpl-*` / `resp_*` public refs, actor-scoped idempotency, and internal ProductSurface/projection refs. The adapter stores per-public-id mapping records plus actor-scoped idempotency index records; PostgreSQL/libSQL parity comes from the selected `RootFilesystem` backend. |
-| `/processes` | typed process-lifecycle repository routed through `ironclaw_filesystem` (append-only journal command rows plus bounded checkpoint payloads and capability process results/outputs) | process APIs | no | Consumer mount alias for `ironclaw_processes`; alias-relative under the per-invocation `MountView`. `/processes/journal/records` is the process-kernel authority; snapshots, lifecycle streams, dependencies, and checkpoints are projections over it. |
+| `/processes` | typed process-lifecycle repository routed through `ironclaw_filesystem` (immutable cursor-keyed journal rows plus queryable process/input/dependency/checkpoint rows and capability process results/outputs) | process APIs | no | Consumer mount alias for `ironclaw_processes`; alias-relative under the per-invocation `MountView`. Rows under `/processes/materialized` are committed atomically; keyed projections serve reads without replaying journal history. |
 | `/authorization` | typed capability-lease repository routed through `ironclaw_filesystem` | lease APIs | no | Consumer mount alias for `ironclaw_authorization`; alias-relative under the per-invocation `MountView`. |
 | `/outbound` | typed outbound-delivery repository routed through `ironclaw_filesystem` (policies, subscriptions, attempts) | outbound APIs | indexed scope projection | Consumer mount alias for `ironclaw_outbound`; alias-relative under the per-invocation `MountView`. |
 | `/run-state` | typed invocation-lifecycle repository routed through `ironclaw_filesystem` (run records) | run-state APIs | no | Consumer mount alias for `ironclaw_run_state`; alias-relative under the per-invocation `MountView`. |
 | `/approvals` | typed approval-request repository routed through `ironclaw_filesystem` (approval records) | run-state APIs | no | Sibling consumer mount alias for `ironclaw_run_state`; alias-relative under the per-invocation `MountView`. |
-| `/threads` | typed session-thread and transcript repository routed through `ironclaw_filesystem` (thread records, message records, summary artifacts, inbound idempotency) | thread/transcript APIs | no | Consumer mount alias for `ironclaw_threads`; alias-relative under the per-invocation `MountView`. |
+| `/threads` | typed session-thread and transcript repository routed through `ironclaw_filesystem` (thread records, message records, summary artifacts, inbound idempotency, thread-list projection rows) | thread/transcript APIs | indexed scope/activity/thread-id projection | Consumer mount alias for `ironclaw_threads`; alias-relative under the per-invocation `MountView`. Thread lists use a bounded keyset query over the projection. Legacy projection repair is an explicit migration and never runs during a request or normal startup. |
 | `/conversations` | typed conversation binding / session-thread state routed through `ironclaw_filesystem` (singleton state record) | conversation services APIs | no | Consumer mount alias for `ironclaw_conversations`; alias-relative under the per-invocation `MountView`. |
 | `/turns` | typed turn-coordination persistence routed through `ironclaw_filesystem` (CAS snapshot of turns, runs, checkpoints, idempotency, events, reservations, plus per-run runner lease sidecars) | turn coordinator APIs | no | Consumer mount alias for `ironclaw_turns`; alias-relative under the per-invocation `MountView`. Runner heartbeat writes must stay isolated from lower-churn snapshot rewrites. |
 | `/resources` | typed resource-governor snapshot repository routed through `ironclaw_filesystem` (reservation/usage snapshots) | resource governor APIs | no | Consumer mount alias for `ironclaw_resources`; alias-relative under the per-invocation `MountView`. |
@@ -209,6 +209,12 @@ event/audit records
 Rules:
 
 - source of truth is a typed repository owned by the domain;
+- request-time lists and lookups use bounded keyset or exact-key index access;
+- ordered indexes lead with every equality key that identifies the requested
+  tenant/domain partition; filtering a global ordered walk by path is not
+  sufficient;
+- full projection rebuilds and historical backfills are explicit migrations,
+  not startup reconciliation or request fallbacks;
 - optional file-shaped projections may exist for diagnostics, import/export, or admin editing;
 - projections must not become the hidden source of truth unless the contract explicitly says so;
 - projection writes, if allowed, validate schema and then call the typed repository.

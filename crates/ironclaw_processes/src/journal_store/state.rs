@@ -7,13 +7,13 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ProcessControlAction, ProcessJournalStoreError, StoredCommandOutcome, StoredProcessCommand,
-    StoredProcessJournalRecord, ensure_lease, ensure_transition, process_claim_within_limits,
-    process_scope_visible, same_lineage_scope, validate_tree_root,
+    ensure_lease, ensure_transition, process_claim_within_limits, process_scope_visible,
+    same_lineage_scope, validate_tree_root,
 };
 use crate::{
     ClaimedProcess, JournaledProcessSnapshot, ProcessCheckpointId, ProcessCheckpointRecord,
     ProcessControlResult, ProcessInputRecord, ProcessJournalCursor, ProcessJournalEntry,
-    ProcessJournalKind, ProcessJournalPage, ProcessKind, ProcessLeaseSnapshot, ProcessLeaseToken,
+    ProcessJournalKind, ProcessKind, ProcessLeaseSnapshot, ProcessLeaseToken,
     ProcessLifecycleStatus, ProcessTreeReservation, RecoverExpiredProcessLeasesResponse,
     types::same_scope_owner,
 };
@@ -28,11 +28,11 @@ pub(super) struct ProcessJournalMaterializedState {
     #[serde(default)]
     pub(super) control_idempotency: HashMap<String, ProcessControlResult>,
     #[serde(default)]
-    control_idempotency_order: VecDeque<String>,
+    pub(super) control_idempotency_order: VecDeque<String>,
     #[serde(default)]
     pub(super) submission_idempotency: HashMap<String, JournaledProcessSnapshot>,
     #[serde(default)]
-    submission_idempotency_order: VecDeque<String>,
+    pub(super) submission_idempotency_order: VecDeque<String>,
     #[serde(default)]
     pub(super) tree_reservations: HashMap<ProcessId, ProcessTreeReservation>,
     #[serde(default)]
@@ -42,7 +42,7 @@ pub(super) struct ProcessJournalMaterializedState {
     #[serde(default)]
     pub(super) inputs: HashMap<ProcessId, ProcessInputRecord>,
     #[serde(default)]
-    legacy_imported: bool,
+    pub(super) legacy_imported: bool,
 }
 
 impl Default for ProcessJournalMaterializedState {
@@ -65,16 +65,7 @@ impl Default for ProcessJournalMaterializedState {
 }
 
 impl ProcessJournalMaterializedState {
-    pub(super) fn apply_record(
-        &mut self,
-        record: StoredProcessJournalRecord,
-    ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
-        match record {
-            StoredProcessJournalRecord::V1(command) => self.apply_command(command),
-        }
-    }
-
-    fn apply_command(
+    pub(super) fn apply_command(
         &mut self,
         command: StoredProcessCommand,
     ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
@@ -138,20 +129,7 @@ impl ProcessJournalMaterializedState {
         &mut self,
         request: crate::SubmitProcessRequest,
     ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
-        let replay_key = request
-            .operation_id
-            .as_ref()
-            .map(|operation_id| {
-                serde_json::to_string(&request.scope).map(|scope| {
-                    format!(
-                        "submit:{scope}:{:?}:{}",
-                        request.process_kind,
-                        operation_id.as_str()
-                    )
-                })
-            })
-            .transpose()
-            .map_err(|error| ProcessJournalStoreError::Serialization(error.to_string()))?;
+        let replay_key = super::command::submission_replay_key(&request)?;
         if let Some(snapshot) = replay_key
             .as_ref()
             .and_then(|key| self.submission_idempotency.get(key))
@@ -457,14 +435,7 @@ impl ProcessJournalMaterializedState {
         &mut self,
         mutation: super::ProcessControlMutation,
     ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
-        let replay_key = mutation.operation_id.as_ref().map(|id| {
-            format!(
-                "{}:{}:{}",
-                mutation.action.as_str(),
-                mutation.process_id,
-                id.as_str()
-            )
-        });
+        let replay_key = super::command::control_replay_key(&mutation);
         if let Some(result) = replay_key
             .as_ref()
             .and_then(|key| self.control_idempotency.get(key))
@@ -831,7 +802,7 @@ impl ProcessJournalMaterializedState {
             *existing = result;
             return;
         }
-        while self.control_idempotency.len() >= MAX_IDEMPOTENCY_RECORDS {
+        while self.control_idempotency_order.len() >= MAX_IDEMPOTENCY_RECORDS {
             let Some(oldest) = self.control_idempotency_order.pop_front() else {
                 self.control_idempotency.clear();
                 break;
@@ -854,7 +825,7 @@ impl ProcessJournalMaterializedState {
             *existing = snapshot;
             return;
         }
-        while self.submission_idempotency.len() >= MAX_IDEMPOTENCY_RECORDS {
+        while self.submission_idempotency_order.len() >= MAX_IDEMPOTENCY_RECORDS {
             let Some(oldest) = self.submission_idempotency_order.pop_front() else {
                 self.submission_idempotency.clear();
                 break;
@@ -899,20 +870,6 @@ impl ProcessJournalMaterializedState {
         ids.into_iter().map(|(_, process_id)| process_id).collect()
     }
 
-    pub(super) fn snapshots_for_scope(
-        &self,
-        scope: &ResourceScope,
-    ) -> Vec<JournaledProcessSnapshot> {
-        let mut snapshots = self
-            .processes
-            .values()
-            .filter(|snapshot| process_scope_visible(&snapshot.scope, scope))
-            .cloned()
-            .collect::<Vec<_>>();
-        snapshots.sort_by_key(|snapshot| snapshot.process_id.as_uuid());
-        snapshots
-    }
-
     pub(super) fn expired_process_ids(
         &self,
         scope_filter: Option<&ResourceScope>,
@@ -942,36 +899,5 @@ impl ProcessJournalMaterializedState {
             })
             .map(|snapshot| snapshot.process_id)
             .collect()
-    }
-
-    pub(super) fn page_after(
-        &self,
-        after: Option<ProcessJournalCursor>,
-        limit: usize,
-        include: impl Fn(&ProcessJournalEntry) -> bool,
-    ) -> ProcessJournalPage {
-        let after = after.map(|cursor| cursor.0).unwrap_or(0);
-        let mut entries = self
-            .journal
-            .iter()
-            .filter(|entry| entry.cursor.0 > after)
-            .filter(|entry| include(entry))
-            .take(limit.saturating_add(1))
-            .cloned()
-            .collect::<Vec<_>>();
-        let truncated = entries.len() > limit;
-        if truncated {
-            entries.truncate(limit);
-        }
-        let next_cursor = entries
-            .last()
-            .map(|entry| entry.cursor)
-            .unwrap_or(ProcessJournalCursor(after));
-        ProcessJournalPage {
-            entries,
-            next_cursor,
-            truncated,
-            rebase_required: None,
-        }
     }
 }

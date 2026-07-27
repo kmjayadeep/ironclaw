@@ -104,6 +104,7 @@ pub(crate) fn parent_summary_value(
         "active_thread_count": args.active_thread_count,
         "process_journal_backend": args.process_journal_backend,
         "thread_list_threads": args.thread_list_threads,
+        "thread_list_users": args.thread_list_users,
         "thread_list_page_size": args.thread_list_page_size,
         "prefill_threads": args.prefill_threads,
         "prefill_turns_per_thread": args.prefill_turns_per_thread,

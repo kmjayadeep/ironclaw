@@ -416,9 +416,13 @@ pub(crate) struct Args {
     #[arg(long, default_value_t = 20)]
     pub(crate) context_max_messages: usize,
 
-    /// Threads to seed under one scope for the thread-list read workload.
+    /// Total threads to seed for the thread-list read workload.
     #[arg(long, default_value_t = 1000)]
     pub(crate) thread_list_threads: usize,
+
+    /// Owners across which thread-list seed rows are distributed.
+    #[arg(long, default_value_t = 1)]
+    pub(crate) thread_list_users: usize,
 
     /// Page size used while walking the thread-list workload.
     #[arg(long, default_value_t = 50)]
@@ -802,6 +806,7 @@ struct RunSummary {
     assistant_message_bytes: usize,
     context_max_messages: usize,
     thread_list_threads: usize,
+    thread_list_users: usize,
     thread_list_page_size: usize,
     context_growth_turns_per_operation: usize,
     tool_calls_per_turn: usize,
@@ -1285,6 +1290,9 @@ fn validate_args(args: &Args) -> Result<(), String> {
     if args.thread_list_threads == 0 {
         return Err("--thread-list-threads must be greater than 0".to_string());
     }
+    if args.thread_list_users == 0 || args.thread_list_users > args.users {
+        return Err("--thread-list-users must be between 1 and --users".to_string());
+    }
     if args.thread_list_page_size == 0 || args.thread_list_page_size > 200 {
         return Err("--thread-list-page-size must be between 1 and 200".to_string());
     }
@@ -1465,6 +1473,8 @@ fn run_child_processes(args: &Args, run_id: &str) -> Result<Vec<RunSummary>, Str
             .arg(args.context_max_messages.to_string())
             .arg("--thread-list-threads")
             .arg(args.thread_list_threads.to_string())
+            .arg("--thread-list-users")
+            .arg(args.thread_list_users.to_string())
             .arg("--thread-list-page-size")
             .arg(args.thread_list_page_size.to_string())
             .arg("--context-growth-turns-per-operation")
@@ -2169,6 +2179,7 @@ fn summarize(args: &Args, run_id: &str, input: SummaryInput) -> RunSummary {
         assistant_message_bytes: args.assistant_message_bytes,
         context_max_messages: args.context_max_messages,
         thread_list_threads: args.thread_list_threads,
+        thread_list_users: args.thread_list_users,
         thread_list_page_size: args.thread_list_page_size,
         context_growth_turns_per_operation: args.context_growth_turns_per_operation,
         tool_calls_per_turn: args.tool_calls_per_turn,

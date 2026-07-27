@@ -1,9 +1,10 @@
+// arch-exempt: large_file, backend parity contracts stay in one shared behavioral suite, plan #5274
 use ironclaw_filesystem::PostgresRootFilesystem;
 use ironclaw_filesystem::RootFilesystem;
 use ironclaw_filesystem::{
     Capability, CasExpectation, Entry, FileType, FilesystemError, FilesystemOperation, Filter,
     IndexKey, IndexKind, IndexName, IndexSpec, IndexValue, LibSqlRootFilesystem, Page, RecordKind,
-    SeqNo,
+    SeqNo, SortDirection,
 };
 use ironclaw_host_api::VirtualPath;
 #[tokio::test]
@@ -824,6 +825,149 @@ async fn libsql_vector_index_round_trips_and_ranks_by_cosine() {
         Some(&IndexValue::Bytes(blob(&[1.0, 0.0, 0.0])))
     );
 }
+#[tokio::test]
+async fn libsql_ordered_query_uses_composite_index_and_keyset_cursor() {
+    let filesystem = libsql_root().await;
+    let prefix = VirtualPath::new("/threads/index").unwrap();
+    let activity = IndexKey::new("activity").unwrap();
+    let thread_id = IndexKey::new("thread_id").unwrap();
+    filesystem
+        .ensure_index(
+            &prefix,
+            &IndexSpec::new(
+                IndexName::new("thread_activity").unwrap(),
+                vec![activity.clone(), thread_id.clone()],
+                IndexKind::Exact,
+            ),
+        )
+        .await
+        .unwrap();
+    let kind = RecordKind::new("thread_index").unwrap();
+    for (id, rank) in [("b", "001"), ("a", "001"), ("c", "002")] {
+        let entry = Entry::record(kind.clone(), &serde_json::json!({}))
+            .unwrap()
+            .with_indexed(activity.clone(), IndexValue::Text(rank.into()))
+            .with_indexed(thread_id.clone(), IndexValue::Text(id.into()));
+        filesystem
+            .put(
+                &VirtualPath::new(format!("/threads/index/{id}")).unwrap(),
+                entry,
+                CasExpectation::Absent,
+            )
+            .await
+            .unwrap();
+    }
+    let first = filesystem
+        .query_ordered(
+            &prefix,
+            &Filter::All,
+            &ironclaw_filesystem::OrderedPage::new(
+                IndexName::new("thread_activity").unwrap(),
+                activity.clone(),
+                thread_id.clone(),
+                SortDirection::Ascending,
+                2,
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        first
+            .iter()
+            .map(|row| row.entry.indexed[&thread_id].clone())
+            .collect::<Vec<_>>(),
+        vec![IndexValue::Text("a".into()), IndexValue::Text("b".into())]
+    );
+    let second = filesystem
+        .query_ordered(
+            &prefix,
+            &Filter::All,
+            &ironclaw_filesystem::OrderedPage::new(
+                IndexName::new("thread_activity").unwrap(),
+                activity,
+                thread_id.clone(),
+                SortDirection::Ascending,
+                2,
+            )
+            .after(ironclaw_filesystem::OrderedQueryCursor {
+                value: IndexValue::Text("001".into()),
+                tie_breaker: IndexValue::Text("b".into()),
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.len(), 1);
+    assert_eq!(
+        second[0].entry.indexed[&thread_id],
+        IndexValue::Text("c".into())
+    );
+}
+
+#[tokio::test]
+async fn libsql_ordered_index_declaration_never_backfills_existing_rows() {
+    let filesystem = libsql_root().await;
+    let prefix = VirtualPath::new("/processes/materialized/process").unwrap();
+    let status = IndexKey::new("status").unwrap();
+    let process_id = IndexKey::new("process_id").unwrap();
+    let kind = RecordKind::new("process").unwrap();
+    let old = Entry::record(kind.clone(), &serde_json::json!({}))
+        .unwrap()
+        .with_indexed(status.clone(), IndexValue::Text("queued".into()))
+        .with_indexed(process_id.clone(), IndexValue::Text("old".into()));
+    filesystem
+        .put(
+            &VirtualPath::new("/processes/materialized/process/old").unwrap(),
+            old,
+            CasExpectation::Absent,
+        )
+        .await
+        .unwrap();
+
+    let spec = IndexSpec::new(
+        IndexName::new("process_queue_declaration_contract").unwrap(),
+        vec![status.clone(), process_id.clone()],
+        IndexKind::Exact,
+    );
+    filesystem.ensure_index(&prefix, &spec).await.unwrap();
+    let page = ironclaw_filesystem::OrderedPage::new(
+        spec.name.clone(),
+        status.clone(),
+        process_id.clone(),
+        SortDirection::Ascending,
+        10,
+    );
+    assert!(
+        filesystem
+            .query_ordered(&prefix, &Filter::All, &page)
+            .await
+            .unwrap()
+            .is_empty(),
+        "declaration must not hide a request-time table scan as automatic backfill"
+    );
+
+    let new = Entry::record(kind, &serde_json::json!({}))
+        .unwrap()
+        .with_indexed(status, IndexValue::Text("queued".into()))
+        .with_indexed(process_id.clone(), IndexValue::Text("new".into()));
+    filesystem
+        .put(
+            &VirtualPath::new("/processes/materialized/process/new").unwrap(),
+            new,
+            CasExpectation::Absent,
+        )
+        .await
+        .unwrap();
+    let rows = filesystem
+        .query_ordered(&prefix, &Filter::All, &page)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].entry.indexed[&process_id],
+        IndexValue::Text("new".into())
+    );
+}
+
 #[tokio::test]
 async fn libsql_query_filters_on_indexed_projection() {
     let filesystem = libsql_root().await;
@@ -2148,6 +2292,38 @@ mod postgres_tests {
     }
 
     #[tokio::test]
+    async fn postgres_concurrent_ordered_index_declaration_is_idempotent() {
+        let Some((fs, prefix)) = postgres_root().await else {
+            return;
+        };
+        let fs = std::sync::Arc::new(fs);
+        let prefix = std::sync::Arc::new(VirtualPath::new(prefix).unwrap());
+        let spec = std::sync::Arc::new(IndexSpec::new(
+            IndexName::new("concurrent_ordered_projection_v1").unwrap(),
+            vec![
+                IndexKey::new("scope").unwrap(),
+                IndexKey::new("sequence").unwrap(),
+            ],
+            IndexKind::Exact,
+        ));
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(16));
+        let mut tasks = Vec::new();
+        for _ in 0..16 {
+            let fs = std::sync::Arc::clone(&fs);
+            let prefix = std::sync::Arc::clone(&prefix);
+            let spec = std::sync::Arc::clone(&spec);
+            let barrier = std::sync::Arc::clone(&barrier);
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                fs.ensure_index(prefix.as_ref(), spec.as_ref()).await
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn postgres_query_filters_on_indexed_projection() {
         let Some((fs, prefix)) = postgres_root().await else {
             return;
@@ -2190,6 +2366,116 @@ mod postgres_tests {
             .await
             .unwrap();
         assert_eq!(results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn postgres_ordered_query_uses_keyset_cursor() {
+        let Some((fs, prefix)) = postgres_root().await else {
+            return;
+        };
+        let prefix_path = VirtualPath::new(&prefix).unwrap();
+        let activity = IndexKey::new("activity").unwrap();
+        let thread_id = IndexKey::new("thread_id").unwrap();
+        fs.ensure_index(
+            &prefix_path,
+            &IndexSpec::new(
+                IndexName::new("thread_activity").unwrap(),
+                vec![activity.clone(), thread_id.clone()],
+                IndexKind::Exact,
+            ),
+        )
+        .await
+        .unwrap();
+        let kind = RecordKind::new("thread_index").unwrap();
+        for (id, rank) in [("b", "001"), ("a", "001"), ("c", "002")] {
+            let entry = Entry::record(kind.clone(), &serde_json::json!({}))
+                .unwrap()
+                .with_indexed(activity.clone(), IndexValue::Text(rank.into()))
+                .with_indexed(thread_id.clone(), IndexValue::Text(id.into()));
+            fs.put(&vpath(&prefix, id), entry, CasExpectation::Absent)
+                .await
+                .unwrap();
+        }
+        let rows = fs
+            .query_ordered(
+                &prefix_path,
+                &Filter::All,
+                &ironclaw_filesystem::OrderedPage::new(
+                    IndexName::new("thread_activity").unwrap(),
+                    activity,
+                    thread_id.clone(),
+                    SortDirection::Ascending,
+                    2,
+                )
+                .after(ironclaw_filesystem::OrderedQueryCursor {
+                    value: IndexValue::Text("001".into()),
+                    tie_breaker: IndexValue::Text("b".into()),
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].entry.indexed[&thread_id],
+            IndexValue::Text("c".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn postgres_ordered_index_declaration_never_backfills_existing_rows() {
+        let Some((fs, prefix)) = postgres_root().await else {
+            return;
+        };
+        let prefix_path = VirtualPath::new(&prefix).unwrap();
+        let status = IndexKey::new("status").unwrap();
+        let process_id = IndexKey::new("process_id").unwrap();
+        let kind = RecordKind::new("process").unwrap();
+        let old = Entry::record(kind.clone(), &serde_json::json!({}))
+            .unwrap()
+            .with_indexed(status.clone(), IndexValue::Text("queued".into()))
+            .with_indexed(process_id.clone(), IndexValue::Text("old".into()));
+        fs.put(&vpath(&prefix, "old"), old, CasExpectation::Absent)
+            .await
+            .unwrap();
+
+        let unique = prefix.rsplit('_').next().unwrap();
+        let spec = IndexSpec::new(
+            IndexName::new(format!("no_backfill_{unique}")).unwrap(),
+            vec![status.clone(), process_id.clone()],
+            IndexKind::Exact,
+        );
+        fs.ensure_index(&prefix_path, &spec).await.unwrap();
+        let page = ironclaw_filesystem::OrderedPage::new(
+            spec.name.clone(),
+            status.clone(),
+            process_id.clone(),
+            SortDirection::Ascending,
+            10,
+        );
+        assert!(
+            fs.query_ordered(&prefix_path, &Filter::All, &page)
+                .await
+                .unwrap()
+                .is_empty(),
+            "declaration must not hide a request-time table scan as automatic backfill"
+        );
+
+        let new = Entry::record(kind, &serde_json::json!({}))
+            .unwrap()
+            .with_indexed(status, IndexValue::Text("queued".into()))
+            .with_indexed(process_id.clone(), IndexValue::Text("new".into()));
+        fs.put(&vpath(&prefix, "new"), new, CasExpectation::Absent)
+            .await
+            .unwrap();
+        let rows = fs
+            .query_ordered(&prefix_path, &Filter::All, &page)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].entry.indexed[&process_id],
+            IndexValue::Text("new".into())
+        );
     }
 
     #[tokio::test]

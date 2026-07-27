@@ -95,6 +95,7 @@ pub(crate) fn render_run_summary(summary: &RunSummary) -> String {
                 "thread_list_threads",
                 summary.thread_list_threads.to_string(),
             ),
+            ("thread_list_users", summary.thread_list_users.to_string()),
             (
                 "thread_list_page_size",
                 summary.thread_list_page_size.to_string(),
@@ -240,6 +241,7 @@ pub(crate) fn render_parent_summary(args: &Args, run_id: &str, summaries: &[RunS
                 args.context_max_messages.to_string(),
             ),
             ("thread_list_threads", args.thread_list_threads.to_string()),
+            ("thread_list_users", args.thread_list_users.to_string()),
             (
                 "thread_list_page_size",
                 args.thread_list_page_size.to_string(),

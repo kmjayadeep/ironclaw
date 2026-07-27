@@ -186,7 +186,7 @@ async fn describe_path_uses_composite_mount_backend_capabilities() {
         )
         .unwrap();
     let placement = root.describe_path(&virtual_path).await.unwrap();
-    assert_eq!(placement.capabilities.txn(), TxnCapability::Cas);
+    assert_eq!(placement.capabilities.txn(), TxnCapability::MultiKey);
     assert_eq!(
         placement.path,
         VirtualPath::new("/engine/tenants/t1/users/u1/turns/state.json").unwrap()
@@ -546,23 +546,13 @@ async fn begin_denies_when_write_missing() {
 }
 
 #[tokio::test]
-async fn begin_with_write_propagates_backend_unsupported() {
+async fn begin_with_write_returns_in_memory_multi_key_transaction() {
     let scoped = scoped_in_memory(no_op(false, true, false, false));
-    let err = expect_err(
-        scoped
-            .begin(&test_scope(), &ScopedPath::new("/workspace").unwrap())
-            .await,
-    );
-    assert!(
-        matches!(
-            err,
-            FilesystemError::Unsupported {
-                operation: FilesystemOperation::BeginTxn,
-                ..
-            }
-        ),
-        "expected Unsupported (gate let it through), got {err:?}"
-    );
+    let txn = scoped
+        .begin(&test_scope(), &ScopedPath::new("/workspace").unwrap())
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
 }
 
 #[tokio::test]

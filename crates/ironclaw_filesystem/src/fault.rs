@@ -320,6 +320,16 @@ where
         self.inner.query(path, filter, page).await
     }
 
+    async fn query_ordered(
+        &self,
+        path: &VirtualPath,
+        filter: &Filter,
+        page: &crate::OrderedPage,
+    ) -> Result<Vec<VersionedEntry>, FilesystemError> {
+        self.gate(FilesystemOperation::Query, path)?;
+        self.inner.query_ordered(path, filter, page).await
+    }
+
     async fn ensure_index(
         &self,
         path: &VirtualPath,

@@ -10,20 +10,25 @@ conflicts and serialization cost.
 
 ## Slice 0: row-native process persistence
 
-Implemented on `process-journal-kernel-transition` as an append-authoritative
-command journal:
+Implemented on `process-journal-kernel-transition` as transactional,
+row-materialized process persistence:
 
-- every process mutation is one immutable row under
-  `/processes/journal/records`;
-- the backend sequence is the total order used to resolve exclusivity, claims,
-  leases, tree capacity, checkpoints, and idempotency;
-- process snapshots, gates, parent/child views, and lifecycle entries are
-  deterministic projections over that log;
-- the old `state.json` is accepted only as one-time migration input.
+- every lifecycle entry is one immutable cursor-keyed row under
+  `/processes/materialized/journal`;
+- process snapshots, inputs, tree reservations, dependencies, checkpoints, and
+  idempotency records are independently addressable rows under
+  `/processes/materialized`;
+- libSQL, PostgreSQL, and the in-memory reference backend expose a multi-key
+  transaction that commits changed rows and lifecycle appends together;
+- optimistic row versions resolve concurrent commands without a process-local
+  authority;
+- the old command log and `state.json` are accepted only by an explicit
+  pre-start migration operation.
 
-This uses one authority instead of dual-writing mutable process rows and a
-transition log. In particular, libSQL does not expose the multi-key transaction
-needed to make that dual-write design safe across crashes.
+The prior append-command design still required an unbounded in-memory replay
+projection and made a restart proportional to total history. The transactional
+design keeps the event journal as history and the database rows as the
+queryable projection without creating two independently writable authorities.
 
 Acceptance:
 
@@ -36,9 +41,30 @@ Acceptance:
 
 The first two gates are complete. The 2026-07-26 rerun through c100 has no
 process-journal unavailable/storage failures; remaining failures are expected
-exclusive-thread admission. Bounded compaction and durable indexed projection
-checkpoints remain follow-up work before treating unbounded terminal-history
-soaks as complete.
+exclusive-thread admission. Durable row projections now remove replay and
+unbounded in-memory history from steady-state operation.
+
+The scan-free storage pass makes normal initialization an exact metadata probe;
+legacy replay and row projection rebuilds are explicit offline methods.
+Write-maintained ordered projections never backfill during declaration and bind
+their full leading partition on requests. A 2026-07-27 libSQL run prefilled
+1,000,000 threads across 1,000 owners with zero failures at 4,226 inserts/sec.
+The query plan used `(index_name, scope_key)` rather than a root-table walk.
+At 1,000 simultaneous complete owner walks, peak RSS was 2.47 GiB and p95 was
+28.17s, identifying concurrent response materialization as the remaining list
+pressure rather than a database scan. Sparse process lifecycle projections on
+a fresh database completed 5,587 operations with zero failures at 242.5
+ops/sec, p95 4.19s, and about 36 KiB of database growth per lifecycle
+operation.
+
+PostgreSQL projection declaration is serialized across processes with a
+transaction-scoped advisory lock and cached after successful declaration in
+each backend instance. A 100-worker, 1,000-user lifecycle run exposed and then
+regressed the prior concurrent catalog-update race: after the fix, 3,631 of
+3,631 operations succeeded at 234.8 ops/sec with p95 570 ms and 132 MiB peak
+runtime RSS. A mechanical architecture gate confines generic collection
+enumeration and legacy log tailing in process/thread production code to the
+named explicit offline migration methods.
 
 ## Slice 1: retire the second process lifecycle
 
@@ -149,8 +175,9 @@ indexed edge queries and atomic edge/tree mutations.
 
 Status on `process-journal-kernel-transition`: implemented. A process
 checkpoint command now carries a bounded, debug-redacted opaque payload beside
-its ref and schema metadata, and the command is one physical journal row.
-Agent-loop checkpoint records are projections over that row.
+its ref and schema metadata, and commits one keyed checkpoint row in the same
+transaction as the process mutation. Agent-loop checkpoint records read that
+row directly.
 
 The host stages bytes only in memory until `checkpoint`, which commits payload
 and metadata atomically. Resume and loop-exit evidence read the payload from
@@ -180,8 +207,9 @@ Do not embed unbounded or secret-bearing payloads directly in journal entries.
 Status on `process-journal-kernel-transition`: implemented. Process submission
 now accepts a bounded, debug-redacted immutable input payload and exposes only
 its opaque schema ref in process snapshots and lifecycle events. The payload is
-committed in the same physical journal row as child identity, tree reservation,
-and dependency creation, then read through the scope-bound `ProcessInputPort`.
+committed as a keyed input row in the same transaction as child identity, tree
+reservation, dependency creation, and lifecycle history, then read through the
+scope-bound `ProcessInputPort`.
 
 Subagent spawning serializes the agent-owned `SubagentGoalRecord` as
 `subagent-goal:v1` process input. Prompt material projects it from the process

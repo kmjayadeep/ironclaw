@@ -8,7 +8,8 @@ use ironclaw_observability::live_latency_started_at;
 use crate::backend::{EventRecord, StorageTxn};
 use crate::{
     CasExpectation, DirEntry, Entry, FileStat, FilesystemError, FilesystemOperation, Filter,
-    IndexSpec, Page, RecordVersion, RootFilesystem, SeqNo, VersionedEntry, path_prefix_matches,
+    IndexSpec, OrderedPage, Page, RecordVersion, RootFilesystem, SeqNo, VersionedEntry,
+    path_prefix_matches,
 };
 
 /// Resolver from a per-invocation [`ResourceScope`] to the [`MountView`] that
@@ -310,6 +311,22 @@ where
             self.resolve_with_permission(scope, prefix, FilesystemOperation::Query)?;
         let result = self.root.query(&virtual_path, filter, page).await;
         trace_fs_latency("query", prefix, started_at, &result, None);
+        result
+    }
+
+    /// Ordered keyset query over one declared indexed projection.
+    pub async fn query_ordered(
+        &self,
+        scope: &ResourceScope,
+        prefix: &ScopedPath,
+        filter: &Filter,
+        page: &OrderedPage,
+    ) -> Result<Vec<VersionedEntry>, FilesystemError> {
+        let started_at = live_latency_started_at();
+        let virtual_path =
+            self.resolve_with_permission(scope, prefix, FilesystemOperation::Query)?;
+        let result = self.root.query_ordered(&virtual_path, filter, page).await;
+        trace_fs_latency("query_ordered", prefix, started_at, &result, None);
         result
     }
 

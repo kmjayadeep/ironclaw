@@ -41,8 +41,8 @@ use ironclaw_turns::{
     TurnErrorCategory, claimed_turn_run_from_process_claim, runner::ClaimedTurnRun,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::Semaphore;
 use tokio::time::sleep;
+use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::{
     Args, Backend, LatencySummary, ModelLatencyProfile, ModelLatencySource, OperationTarget,
@@ -528,50 +528,35 @@ pub(crate) async fn prefill_thread_list(
     );
 
     let started = Instant::now();
-    let semaphore = Arc::new(Semaphore::new(args.prefill_concurrency));
-    let mut handles = Vec::with_capacity(args.thread_list_threads);
+    let concurrency = args.prefill_concurrency.max(1);
+    let mut handles = JoinSet::new();
+    let mut accumulator = PrefillAccumulator::with_capacity(args.thread_list_threads);
     for thread_index in 0..args.thread_list_threads {
-        let permit = Arc::clone(&semaphore)
-            .acquire_owned()
-            .await
-            .map_err(|_| "thread-list prefill semaphore closed".to_string())?;
         let workload = Arc::clone(&workload);
         let identities = Arc::clone(&identities);
         let args = args.clone();
-        handles.push((
-            thread_index,
-            tokio::spawn(async move {
-                let _permit = permit;
+        handles.spawn(async move {
+            (
+                thread_index,
                 workload
                     .prefill_thread_list_thread(&args, &identities, thread_index)
-                    .await
-            }),
-        ));
-    }
-
-    let mut samples = Vec::with_capacity(args.thread_list_threads);
-    let mut first_error = None;
-    for (thread_index, handle) in handles {
-        match handle.await {
-            Ok(sample) => samples.push(sample),
-            Err(error) => {
-                first_error.get_or_insert_with(|| {
-                    if error.is_panic() {
-                        eprintln!("thread-list prefill thread {thread_index} panicked: {error:?}");
-                        format!("thread-list prefill thread {thread_index} panicked")
-                    } else {
-                        eprintln!("thread-list prefill thread {thread_index} cancelled: {error:?}");
-                        format!("thread-list prefill thread {thread_index} cancelled")
-                    }
-                });
-            }
+                    .await,
+            )
+        });
+        if handles.len() >= concurrency {
+            let joined = handles
+                .join_next()
+                .await
+                .ok_or_else(|| "thread-list prefill task set closed".to_string())?;
+            record_thread_list_prefill(joined, &mut accumulator)?;
         }
     }
-    if let Some(error) = first_error {
-        return Err(error);
+
+    while let Some(joined) = handles.join_next().await {
+        record_thread_list_prefill(joined, &mut accumulator)?;
     }
 
-    let summary = summarize_thread_list_prefill(args, started.elapsed(), &samples);
+    let summary = accumulator.summarize(args, started.elapsed(), args.thread_list_threads, 0);
     eprintln!(
         "{} thread-list prefill finished attempted={} succeeded={} failed={} duration_ms={} throughput_ops_sec={:.1}",
         crate::log_prefix(args),
@@ -591,6 +576,26 @@ pub(crate) async fn prefill_thread_list(
     }
 
     Ok(Some(summary))
+}
+
+fn record_thread_list_prefill(
+    joined: Result<(usize, Sample), tokio::task::JoinError>,
+    accumulator: &mut PrefillAccumulator,
+) -> Result<(), String> {
+    match joined {
+        Ok((_thread_index, sample)) => {
+            accumulator.record(sample);
+            Ok(())
+        }
+        Err(error) if error.is_panic() => {
+            eprintln!("thread-list prefill task panicked: {error:?}");
+            Err("thread-list prefill task panicked".to_string())
+        }
+        Err(error) => {
+            eprintln!("thread-list prefill task cancelled: {error:?}");
+            Err("thread-list prefill task cancelled".to_string())
+        }
+    }
 }
 
 fn should_run_operation(
@@ -638,15 +643,52 @@ fn summarize_prefill(args: &Args, elapsed: Duration, samples: &[Sample]) -> Pref
     }
 }
 
-fn summarize_thread_list_prefill(
-    args: &Args,
-    elapsed: Duration,
-    samples: &[Sample],
-) -> PrefillSummary {
-    let mut summary = summarize_prefill(args, elapsed, samples);
-    summary.threads = args.thread_list_threads;
-    summary.turns_per_thread = 0;
-    summary
+struct PrefillAccumulator {
+    latencies: Vec<u128>,
+    errors: BTreeMap<String, u64>,
+    attempted: u64,
+}
+
+impl PrefillAccumulator {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            latencies: Vec::with_capacity(capacity),
+            errors: BTreeMap::new(),
+            attempted: 0,
+        }
+    }
+
+    fn record(&mut self, sample: Sample) {
+        self.attempted = self.attempted.saturating_add(1);
+        self.latencies.push(sample.latency.as_micros());
+        if let Some(error) = sample.error {
+            *self.errors.entry(error).or_insert(0) += 1;
+        }
+    }
+
+    fn summarize(
+        mut self,
+        args: &Args,
+        elapsed: Duration,
+        threads: usize,
+        turns_per_thread: usize,
+    ) -> PrefillSummary {
+        self.latencies.sort_unstable();
+        let failed = self.errors.values().sum();
+        let elapsed_secs = elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+        PrefillSummary {
+            threads,
+            turns_per_thread,
+            concurrency: args.prefill_concurrency,
+            attempted: self.attempted,
+            succeeded: self.attempted.saturating_sub(failed),
+            failed,
+            duration_ms: elapsed.as_millis(),
+            throughput_ops_sec: self.attempted as f64 / elapsed_secs,
+            latency: latency_summary(&self.latencies),
+            errors: self.errors,
+        }
+    }
 }
 
 fn format_prefill_errors(errors: &BTreeMap<String, u64>) -> String {
@@ -908,13 +950,14 @@ where
 
     async fn prefill_thread_list_thread_inner(
         &self,
-        _args: &Args,
+        args: &Args,
         identities: &SyntheticIds,
         thread_index: usize,
         stages: &mut UserTurnStageDurations,
     ) -> Result<(), OperationFailure> {
+        let owner_index = thread_index % args.thread_list_users;
         let context = identities
-            .user_turn_context_for_user_index(0)
+            .user_turn_context_for_user_index(owner_index)
             .map_err(|error| OperationFailure::invalid_request("thread_list_context", error))?;
         let thread_id = thread_list_thread_id(thread_index)?;
         time_stage(
@@ -978,9 +1021,7 @@ where
             .map_err(|error| OperationFailure::invalid_request("build_context", error))?;
 
         if matches!(args.scenario, Scenario::ThreadList) {
-            return self
-                .run_thread_list_operation(args, identities, stages)
-                .await;
+            return self.run_thread_list_operation(args, &context, stages).await;
         }
 
         let turn_store = self.turn_store_for_context(&context)?;
@@ -1389,28 +1430,27 @@ where
     async fn run_thread_list_operation(
         &self,
         args: &Args,
-        identities: &SyntheticIds,
+        context: &crate::synthetic::UserTurnContext,
         stages: &mut UserTurnStageDurations,
     ) -> Result<(), OperationFailure> {
-        let context = identities
-            .user_turn_context_for_user_index(0)
-            .map_err(|error| OperationFailure::invalid_request("thread_list_context", error))?;
         self.thread_service
             .clear_thread_index_cache_for_scope(&context.thread_scope);
+        let expected = thread_list_threads_for_owner(
+            args.thread_list_threads,
+            args.thread_list_users,
+            context.thread_owner_user_index,
+        );
 
         let cold_count = time_stage(
             &mut stages.list_threads_cold,
             self.list_thread_pages(&context.thread_scope, args.thread_list_page_size),
         )
         .await?;
-        if cold_count != args.thread_list_threads {
+        if cold_count != expected {
             return Err(OperationFailure::new(
                 "thread_list_count_mismatch",
                 "list_threads_cold",
-                format!(
-                    "expected {} seeded threads, listed {cold_count}",
-                    args.thread_list_threads
-                ),
+                format!("expected {expected} seeded threads, listed {cold_count}"),
             ));
         }
 
@@ -1419,14 +1459,11 @@ where
             self.list_thread_pages(&context.thread_scope, args.thread_list_page_size),
         )
         .await?;
-        if warm_count != args.thread_list_threads {
+        if warm_count != expected {
             return Err(OperationFailure::new(
                 "thread_list_count_mismatch",
                 "list_threads_warm",
-                format!(
-                    "expected {} seeded threads, listed {warm_count}",
-                    args.thread_list_threads
-                ),
+                format!("expected {expected} seeded threads, listed {warm_count}"),
             ));
         }
 
@@ -2357,6 +2394,11 @@ fn try_claim_span_budget(span_budget: &AtomicUsize) -> bool {
 
 fn span_sample_limit(limit: usize) -> usize {
     if limit == 0 { usize::MAX } else { limit }
+}
+
+fn thread_list_threads_for_owner(total: usize, owners: usize, owner_index: usize) -> usize {
+    let base = total / owners;
+    base + usize::from(owner_index < total % owners)
 }
 
 #[derive(Debug)]

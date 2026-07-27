@@ -1,5 +1,4 @@
 use std::{
-    collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex as StdMutex,
         atomic::{AtomicBool, Ordering},
@@ -10,7 +9,7 @@ use std::{
 use async_trait::async_trait;
 use chrono::Utc;
 use ironclaw_filesystem::{
-    FilesystemError, FilesystemOperation, RootFilesystem, ScopedFilesystem, SeqNo,
+    CasExpectation, FilesystemError, Filter, Page, RootFilesystem, ScopedFilesystem, SeqNo,
 };
 use ironclaw_host_api::{ProcessId, ResourceScope, ScopedPath};
 use serde::{Deserialize, Serialize};
@@ -39,15 +38,17 @@ use crate::journal::{
 };
 use crate::types::{invalid_path, same_scope_owner};
 
+mod command;
+mod rows;
 mod state;
+use command::StoredProcessCommand;
 use state::ProcessJournalMaterializedState;
 
-const JOURNAL_LOG_PATH: &str = "/processes/journal/records";
+const LEGACY_COMMAND_LOG_PATH: &str = "/processes/journal/records";
 const LEGACY_JOURNAL_STATE_PATH: &str = "/processes/journal/state.json";
 const DEFAULT_LEASE_DURATION: Duration = Duration::from_secs(90);
 const JOURNAL_READ_BATCH: usize = 1024;
-const MAX_RECENT_OUTCOMES: usize = 4096;
-const MAX_APPEND_BUSY_RETRIES: usize = 64;
+const MAX_TRANSACTION_RETRIES: usize = 64;
 
 #[derive(Debug, Error)]
 pub enum ProcessJournalStoreError {
@@ -103,39 +104,6 @@ enum StoredProcessJournalRecord {
     V1(StoredProcessCommand),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum StoredProcessCommand {
-    ImportLegacyState(Box<ProcessJournalMaterializedState>),
-    Submit(Box<SubmitProcessRequest>),
-    Claim {
-        request: ClaimProcessesRequest,
-        now: ironclaw_host_api::Timestamp,
-        lease_duration_millis: u64,
-        lease_nonce: ProcessId,
-        limits: ProcessConcurrencyLimits,
-    },
-    Heartbeat {
-        request: ProcessLeaseRequest,
-        now: ironclaw_host_api::Timestamp,
-        lease_duration_millis: u64,
-    },
-    RecoverExpired(RecoverExpiredProcessLeasesRequest),
-    LeasedTransition {
-        request: ProcessLeaseRequest,
-        mutation: ProcessTransitionMutation,
-    },
-    Control(ProcessControlMutation),
-    ReserveTree(ReserveProcessTreeRequest),
-    ReleaseTree(ReleaseProcessTreeRequest),
-    PruneTree(PruneReleasedProcessRequest),
-    OpenDependency(OpenProcessDependencyRequest),
-    SettleDependency(SettleProcessDependencyRequest),
-    ConsumeDependency(CloseProcessDependencyRequest),
-    AbandonDependency(CloseProcessDependencyRequest),
-    RecordCheckpoint(RecordProcessCheckpointRequest),
-}
-
 #[derive(Debug)]
 enum StoredCommandOutcome {
     Imported,
@@ -163,54 +131,17 @@ where
         &self,
         request: crate::GetProcessInputRequest,
     ) -> Result<Option<crate::ProcessInputRecord>, Self::Error> {
-        let state = self.load_state().await?;
-        Ok(state
-            .inputs
-            .get(&request.process_id)
-            .filter(|record| process_scope_visible(&record.scope, &request.scope))
-            .cloned())
-    }
-}
-
-struct CachedProjection {
-    state: ProcessJournalMaterializedState,
-    applied_seq: SeqNo,
-    outcomes: HashMap<u64, Result<StoredCommandOutcome, ProcessJournalStoreError>>,
-    outcome_order: VecDeque<u64>,
-}
-
-impl Default for CachedProjection {
-    fn default() -> Self {
-        Self {
-            state: ProcessJournalMaterializedState::default(),
-            applied_seq: SeqNo::ZERO,
-            outcomes: HashMap::new(),
-            outcome_order: VecDeque::new(),
-        }
-    }
-}
-
-impl CachedProjection {
-    fn remember_outcome(
-        &mut self,
-        seq: SeqNo,
-        outcome: Result<StoredCommandOutcome, ProcessJournalStoreError>,
-    ) {
-        let key = seq.get();
-        self.outcomes.insert(key, outcome);
-        self.outcome_order.push_back(key);
-        while self.outcome_order.len() > MAX_RECENT_OUTCOMES {
-            if let Some(oldest) = self.outcome_order.pop_front() {
-                self.outcomes.remove(&oldest);
-            }
-        }
-    }
-
-    fn outcome(
-        &mut self,
-        seq: SeqNo,
-    ) -> Option<Result<StoredCommandOutcome, ProcessJournalStoreError>> {
-        self.outcomes.remove(&seq.get())
+        self.ensure_materialized().await?;
+        let path = rows::input_scoped_path(request.process_id)?;
+        let record = self
+            .filesystem
+            .get(&ResourceScope::system(), &path)
+            .await?
+            .as_ref()
+            .map(rows::decode_input)
+            .transpose()?
+            .flatten();
+        Ok(record.filter(|record| process_scope_visible(&record.scope, &request.scope)))
     }
 }
 
@@ -219,8 +150,8 @@ where
     F: RootFilesystem,
 {
     filesystem: Arc<ScopedFilesystem<F>>,
-    projection: Arc<Mutex<CachedProjection>>,
-    legacy_checked: Arc<AtomicBool>,
+    migration: Arc<Mutex<()>>,
+    materialized_ready: Arc<AtomicBool>,
     observers: Arc<StdMutex<Vec<Arc<dyn ProcessJournalCommitObserver>>>>,
     lease_duration: Duration,
     concurrency_limits: ProcessConcurrencyLimits,
@@ -233,8 +164,8 @@ where
     fn clone(&self) -> Self {
         Self {
             filesystem: Arc::clone(&self.filesystem),
-            projection: Arc::clone(&self.projection),
-            legacy_checked: Arc::clone(&self.legacy_checked),
+            migration: Arc::clone(&self.migration),
+            materialized_ready: Arc::clone(&self.materialized_ready),
             observers: Arc::clone(&self.observers),
             lease_duration: self.lease_duration,
             concurrency_limits: self.concurrency_limits.clone(),
@@ -249,8 +180,8 @@ where
     pub fn new(filesystem: Arc<ScopedFilesystem<F>>) -> Self {
         Self {
             filesystem,
-            projection: Arc::new(Mutex::new(CachedProjection::default())),
-            legacy_checked: Arc::new(AtomicBool::new(false)),
+            migration: Arc::new(Mutex::new(())),
+            materialized_ready: Arc::new(AtomicBool::new(false)),
             observers: Arc::new(StdMutex::new(Vec::new())),
             lease_duration: DEFAULT_LEASE_DURATION,
             concurrency_limits: ProcessConcurrencyLimits::default(),
@@ -313,138 +244,284 @@ where
         &self,
         command: StoredProcessCommand,
     ) -> Result<StoredCommandOutcome, ProcessJournalStoreError> {
-        self.ensure_legacy_state_imported().await?;
-        let payload = serde_json::to_vec(&StoredProcessJournalRecord::V1(command))
-            .map_err(|error| ProcessJournalStoreError::Serialization(error.to_string()))?;
-        let seq = self.append_with_busy_retry(payload).await?;
-        let mut projection = self.projection.lock().await;
-        self.refresh_projection_through(&mut projection, Some(seq))
-            .await?;
-        projection.outcome(seq).ok_or_else(|| {
-            ProcessJournalStoreError::Deserialization(format!(
-                "process journal record {} produced no command outcome",
-                seq.get()
-            ))
-        })?
-    }
-
-    async fn load_state(
-        &self,
-    ) -> Result<ProcessJournalMaterializedState, ProcessJournalStoreError> {
-        self.ensure_legacy_state_imported().await?;
-        let path = journal_log_path()?;
-        let head = self
-            .filesystem
-            .head_seq(&ResourceScope::system(), &path, SeqNo::ZERO)
-            .await?;
-        let mut projection = self.projection.lock().await;
-        self.refresh_projection_through(&mut projection, head)
-            .await?;
-        Ok(projection.state.clone())
-    }
-
-    async fn ensure_legacy_state_imported(&self) -> Result<(), ProcessJournalStoreError> {
-        if self.legacy_checked.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        let log_path = journal_log_path()?;
-        if self
-            .filesystem
-            .head_seq(&ResourceScope::system(), &log_path, SeqNo::ZERO)
-            .await?
-            .is_some()
-        {
-            self.legacy_checked.store(true, Ordering::Release);
-            return Ok(());
-        }
-        let legacy_path = legacy_journal_state_path()?;
-        let Some(versioned) = self
-            .filesystem
-            .get(&ResourceScope::system(), &legacy_path)
-            .await?
-        else {
-            self.legacy_checked.store(true, Ordering::Release);
-            return Ok(());
-        };
-        let state = serde_json::from_slice(&versioned.entry.body)
-            .map_err(|error| ProcessJournalStoreError::Deserialization(error.to_string()))?;
-        let payload = serde_json::to_vec(&StoredProcessJournalRecord::V1(
-            StoredProcessCommand::ImportLegacyState(Box::new(state)),
-        ))
-        .map_err(|error| ProcessJournalStoreError::Serialization(error.to_string()))?;
-        self.append_with_busy_retry(payload).await?;
-        self.legacy_checked.store(true, Ordering::Release);
-        Ok(())
-    }
-
-    async fn append_with_busy_retry(
-        &self,
-        payload: Vec<u8>,
-    ) -> Result<SeqNo, ProcessJournalStoreError> {
-        let path = journal_log_path()?;
-        for attempt in 0..MAX_APPEND_BUSY_RETRIES {
-            match self
+        self.ensure_materialized().await?;
+        let references = command.load_references()?;
+        for attempt in 0..MAX_TRANSACTION_RETRIES {
+            let mut loaded = rows::load(self.filesystem.as_ref(), &references).await?;
+            let mut state = std::mem::take(&mut loaded.state);
+            let outcome = state.apply_command(command.clone())?;
+            let entries = std::mem::take(&mut state.journal);
+            let prefix = processes_prefix()?;
+            let mut txn = self
                 .filesystem
-                .append(&ResourceScope::system(), &path, payload.clone())
-                .await
-            {
-                Ok(seq) => return Ok(seq),
-                Err(FilesystemError::BackendBusy { .. })
-                    if attempt + 1 < MAX_APPEND_BUSY_RETRIES =>
+                .begin(&ResourceScope::system(), &prefix)
+                .await?;
+            let result = async {
+                rows::persist(self.filesystem.as_ref(), txn.as_mut(), &loaded, &state).await?;
+                rows::persist_journal(self.filesystem.as_ref(), txn.as_mut(), entries.as_slice())
+                    .await?;
+                Ok::<(), ProcessJournalStoreError>(())
+            }
+            .await;
+            match result {
+                Ok(()) => match txn.commit().await {
+                    Ok(()) => return Ok(outcome),
+                    Err(error) if rows::retryable_transaction_error(&error) => {
+                        rows::retry_transaction(attempt).await;
+                    }
+                    Err(error) => return Err(error.into()),
+                },
+                Err(ProcessJournalStoreError::Filesystem(error))
+                    if rows::retryable_transaction_error(&error) =>
                 {
-                    let millis = 1_u64 << attempt.min(6);
-                    tokio::time::sleep(Duration::from_millis(millis)).await;
+                    txn.rollback().await;
+                    rows::retry_transaction(attempt).await;
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    txn.rollback().await;
+                    return Err(error);
+                }
             }
         }
         Err(ProcessJournalStoreError::Filesystem(
             FilesystemError::BackendBusy {
-                path: self.filesystem.resolve(&ResourceScope::system(), &path)?,
-                operation: FilesystemOperation::Append,
+                path: self
+                    .filesystem
+                    .resolve(&ResourceScope::system(), &processes_prefix()?)?,
+                operation: ironclaw_filesystem::FilesystemOperation::BeginTxn,
             },
         ))
     }
 
-    async fn refresh_projection_through(
+    async fn load_process(
         &self,
-        projection: &mut CachedProjection,
-        target: Option<SeqNo>,
-    ) -> Result<(), ProcessJournalStoreError> {
-        let Some(target) = target else {
+        process_id: ProcessId,
+    ) -> Result<Option<JournaledProcessSnapshot>, ProcessJournalStoreError> {
+        self.ensure_materialized().await?;
+        let path = rows::process_scoped_path(process_id)?;
+        self.filesystem
+            .get(&ResourceScope::system(), &path)
+            .await?
+            .as_ref()
+            .map(rows::decode_process)
+            .transpose()
+            .map(Option::flatten)
+    }
+
+    async fn read_journal_page(
+        &self,
+        scope: Option<&ResourceScope>,
+        owner_user_id: Option<&ironclaw_host_api::UserId>,
+        after: Option<ProcessJournalCursor>,
+        limit: usize,
+    ) -> Result<ProcessJournalPage, ProcessJournalStoreError> {
+        self.ensure_materialized().await?;
+        if limit >= ironclaw_filesystem::Page::MAX_LIMIT as usize {
+            return Err(ProcessJournalStoreError::InvalidRequest(format!(
+                "process journal page limit must be below {}",
+                ironclaw_filesystem::Page::MAX_LIMIT
+            )));
+        }
+        let after_cursor = after.map(|cursor| cursor.0).unwrap_or(0);
+        let mut entries = rows::journal_page(
+            self.filesystem.as_ref(),
+            scope,
+            owner_user_id,
+            after_cursor,
+            limit.saturating_add(1),
+        )
+        .await?;
+        let truncated = entries.len() > limit;
+        if truncated {
+            entries.truncate(limit);
+        }
+        let next_cursor = entries
+            .last()
+            .map(|entry| entry.cursor)
+            .unwrap_or(ProcessJournalCursor(after_cursor));
+        Ok(ProcessJournalPage {
+            entries,
+            next_cursor,
+            truncated,
+            rebase_required: None,
+        })
+    }
+
+    async fn ensure_materialized(&self) -> Result<(), ProcessJournalStoreError> {
+        if self.materialized_ready.load(Ordering::Acquire) {
             return Ok(());
-        };
-        let path = journal_log_path()?;
-        while projection.applied_seq < target {
-            let records = self
-                .filesystem
-                .tail_bounded(
-                    &ResourceScope::system(),
-                    &path,
-                    projection.applied_seq,
-                    JOURNAL_READ_BATCH,
-                )
-                .await?;
-            if records.is_empty() {
-                return Err(ProcessJournalStoreError::Deserialization(format!(
-                    "process journal ended before committed sequence {}",
-                    target.get()
-                )));
-            }
-            for record in records {
-                if record.seq > target {
+        }
+        let _guard = self.migration.lock().await;
+        if self.materialized_ready.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        rows::ensure_indexes(self.filesystem.as_ref()).await?;
+        if rows::is_initialized(self.filesystem.as_ref()).await? {
+            self.materialized_ready.store(true, Ordering::Release);
+            return Ok(());
+        }
+        self.initialize_materialized(false).await?;
+        self.materialized_ready.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Explicit offline migration for the legacy command log/blob.
+    ///
+    /// Normal construction and request handling never invoke this method. It
+    /// must run before any request initializes the row-native journal.
+    pub async fn migrate_legacy_journal(&self) -> Result<usize, ProcessJournalStoreError> {
+        let _guard = self.migration.lock().await;
+        rows::ensure_indexes(self.filesystem.as_ref()).await?;
+        if rows::is_initialized(self.filesystem.as_ref()).await? {
+            return Err(ProcessJournalStoreError::InvalidRequest(
+                "legacy process journal migration must run before row-native initialization"
+                    .to_string(),
+            ));
+        }
+        let imported = self.initialize_materialized(true).await?;
+        self.materialized_ready.store(true, Ordering::Release);
+        Ok(imported)
+    }
+
+    /// Explicit offline rebuild for row-native ordered projections.
+    ///
+    /// This is the only path allowed to enumerate materialized collections.
+    /// It rewrites each row under CAS so backend projection triggers populate
+    /// indexes introduced after those rows were stored.
+    pub async fn migrate_row_native_indexes(&self) -> Result<usize, ProcessJournalStoreError> {
+        let _guard = self.migration.lock().await;
+        rows::ensure_indexes(self.filesystem.as_ref()).await?;
+        let mut migrated = 0usize;
+        for collection in ["journal", "process", "dependency"] {
+            let prefix = ScopedPath::new(format!("/processes/materialized/{collection}"))
+                .map_err(|error| ProcessJournalStoreError::InvalidPath(error.to_string()))?;
+            let mut offset = 0u64;
+            loop {
+                let batch = self
+                    .filesystem
+                    .query(
+                        &ResourceScope::system(),
+                        &prefix,
+                        &Filter::All,
+                        Page::new(offset, Page::MAX_LIMIT),
+                    )
+                    .await?;
+                if batch.is_empty() {
                     break;
                 }
-                let stored: StoredProcessJournalRecord = serde_json::from_slice(&record.payload)
-                    .map_err(|error| {
-                        ProcessJournalStoreError::Deserialization(error.to_string())
-                    })?;
-                let outcome = projection.state.apply_record(stored);
-                projection.remember_outcome(record.seq, outcome);
-                projection.applied_seq = record.seq;
+                let received = batch.len();
+                let mut txn = self
+                    .filesystem
+                    .begin(&ResourceScope::system(), &prefix)
+                    .await?;
+                for row in batch {
+                    let entry = rows::encode(&row.path, &rows::decode(&row)?)?;
+                    txn.put(&row.path, entry, CasExpectation::Version(row.version))
+                        .await?;
+                }
+                txn.commit().await?;
+                migrated = migrated.saturating_add(received);
+                if received < Page::MAX_LIMIT as usize {
+                    break;
+                }
+                offset = offset.saturating_add(received as u64);
             }
         }
-        Ok(())
+        Ok(migrated)
+    }
+
+    async fn initialize_materialized(
+        &self,
+        import_legacy: bool,
+    ) -> Result<usize, ProcessJournalStoreError> {
+        for attempt in 0..MAX_TRANSACTION_RETRIES {
+            let mut loaded =
+                rows::load(self.filesystem.as_ref(), &rows::LoadReferences::default()).await?;
+            if loaded.initialized {
+                return Ok(0);
+            }
+            let mut state = std::mem::take(&mut loaded.state);
+            if import_legacy {
+                let legacy_log = legacy_command_log_path()?;
+                let mut applied = SeqNo::ZERO;
+                loop {
+                    let records = self
+                        .filesystem
+                        .tail_bounded(
+                            &ResourceScope::system(),
+                            &legacy_log,
+                            applied,
+                            JOURNAL_READ_BATCH,
+                        )
+                        .await?;
+                    if records.is_empty() {
+                        break;
+                    }
+                    for record in records {
+                        applied = record.seq;
+                        let stored: StoredProcessJournalRecord =
+                            serde_json::from_slice(&record.payload).map_err(|error| {
+                                ProcessJournalStoreError::Deserialization(error.to_string())
+                            })?;
+                        let StoredProcessJournalRecord::V1(command) = stored;
+                        state.apply_command(command)?;
+                    }
+                }
+                if applied == SeqNo::ZERO {
+                    let legacy_path = legacy_journal_state_path()?;
+                    if let Some(versioned) = self
+                        .filesystem
+                        .get(&ResourceScope::system(), &legacy_path)
+                        .await?
+                    {
+                        state = serde_json::from_slice(&versioned.entry.body).map_err(|error| {
+                            ProcessJournalStoreError::Deserialization(error.to_string())
+                        })?;
+                    }
+                }
+            }
+            let entries = std::mem::take(&mut state.journal);
+            let imported = entries.len();
+            let prefix = processes_prefix()?;
+            let mut txn = self
+                .filesystem
+                .begin(&ResourceScope::system(), &prefix)
+                .await?;
+            let result = async {
+                rows::persist(self.filesystem.as_ref(), txn.as_mut(), &loaded, &state).await?;
+                rows::persist_journal(self.filesystem.as_ref(), txn.as_mut(), entries.as_slice())
+                    .await?;
+                Ok::<(), ProcessJournalStoreError>(())
+            }
+            .await;
+            match result {
+                Ok(()) => match txn.commit().await {
+                    Ok(()) => return Ok(imported),
+                    Err(error) if rows::retryable_transaction_error(&error) => {
+                        rows::retry_transaction(attempt).await;
+                    }
+                    Err(error) => return Err(error.into()),
+                },
+                Err(ProcessJournalStoreError::Filesystem(error))
+                    if rows::retryable_transaction_error(&error) =>
+                {
+                    txn.rollback().await;
+                    rows::retry_transaction(attempt).await;
+                }
+                Err(error) => {
+                    txn.rollback().await;
+                    return Err(error);
+                }
+            }
+        }
+        Err(ProcessJournalStoreError::Filesystem(
+            FilesystemError::BackendBusy {
+                path: self
+                    .filesystem
+                    .resolve(&ResourceScope::system(), &processes_prefix()?)?,
+                operation: ironclaw_filesystem::FilesystemOperation::BeginTxn,
+            },
+        ))
     }
 }
 
@@ -479,8 +556,16 @@ where
         &self,
         scope: &ResourceScope,
     ) -> Result<Vec<JournaledProcessSnapshot>, Self::Error> {
-        let projection = self.load_state().await?;
-        Ok(projection.snapshots_for_scope(scope))
+        self.ensure_materialized().await?;
+        if *scope == ResourceScope::system() {
+            return Err(ProcessJournalStoreError::InvalidRequest(
+                "system-wide process snapshot reads are unbounded; use paged process journal reads"
+                    .to_string(),
+            ));
+        }
+        let mut snapshots = rows::processes_for_scope(self.filesystem.as_ref(), scope).await?;
+        snapshots.sort_by_key(|snapshot| snapshot.process_id.as_uuid());
+        Ok(snapshots)
     }
 }
 
@@ -809,19 +894,16 @@ where
         scope: &ResourceScope,
         parent_process_id: ProcessId,
     ) -> Result<Vec<JournaledProcessSnapshot>, Self::Error> {
-        let state = self.load_state().await?;
-        let Some(parent) = state.processes.get(&parent_process_id) else {
+        let Some(parent) = self.load_process(parent_process_id).await? else {
             return Ok(Vec::new());
         };
         if !same_scope_owner(&parent.scope, scope) {
             return Ok(Vec::new());
         }
-        let mut children = state
-            .processes
-            .values()
-            .filter(|snapshot| snapshot.parent_process_id == Some(parent_process_id))
+        let mut children = rows::child_processes(self.filesystem.as_ref(), parent_process_id)
+            .await?
+            .into_iter()
             .filter(|snapshot| same_lineage_scope(&snapshot.scope, scope))
-            .cloned()
             .collect::<Vec<_>>();
         children.sort_by_key(|snapshot| snapshot.created_at);
         Ok(children)
@@ -935,32 +1017,29 @@ where
         &self,
         request: ProcessDependencyQuery,
     ) -> Result<Vec<ProcessDependencyRecord>, Self::Error> {
-        let state = self.load_state().await?;
-        let mut records = state
-            .dependencies
-            .values()
-            .filter(|record| same_lineage_scope(&record.scope, &request.scope))
-            .filter(|record| {
-                request
-                    .dependent_process_id
-                    .is_none_or(|process_id| record.dependent_process_id == process_id)
-            })
-            .filter(|record| {
-                request
-                    .group_ref
-                    .as_ref()
-                    .is_none_or(|group_ref| record.group_ref.as_ref() == Some(group_ref))
-            })
-            .filter(|record| {
-                request.include_closed
-                    || !matches!(
-                        record.state,
-                        crate::ProcessDependencyState::Consumed
-                            | crate::ProcessDependencyState::Abandoned
-                    )
-            })
-            .cloned()
-            .collect::<Vec<_>>();
+        self.ensure_materialized().await?;
+        let mut records = rows::dependencies_for_scope(
+            self.filesystem.as_ref(),
+            &request.scope,
+            request.dependent_process_id,
+        )
+        .await?
+        .into_iter()
+        .filter(|record| {
+            request
+                .group_ref
+                .as_ref()
+                .is_none_or(|group_ref| record.group_ref.as_ref() == Some(group_ref))
+        })
+        .filter(|record| {
+            request.include_closed
+                || !matches!(
+                    record.state,
+                    crate::ProcessDependencyState::Consumed
+                        | crate::ProcessDependencyState::Abandoned
+                )
+        })
+        .collect::<Vec<_>>();
         records.sort_by_key(|record| {
             (
                 record.dependent_process_id.as_uuid(),
@@ -973,10 +1052,10 @@ where
     async fn unresolved_process_dependencies(
         &self,
     ) -> Result<Vec<ProcessDependencyRecord>, Self::Error> {
-        let state = self.load_state().await?;
-        let mut records = state
-            .dependencies
-            .values()
+        self.ensure_materialized().await?;
+        let mut records = rows::unresolved_dependencies(self.filesystem.as_ref())
+            .await?
+            .into_iter()
             .filter(|record| {
                 !matches!(
                     record.state,
@@ -984,7 +1063,6 @@ where
                         | crate::ProcessDependencyState::Abandoned
                 )
             })
-            .cloned()
             .collect::<Vec<_>>();
         records.sort_by_key(|record| {
             (
@@ -1021,15 +1099,20 @@ where
         &self,
         request: GetProcessCheckpointRequest,
     ) -> Result<Option<ProcessCheckpointRecord>, Self::Error> {
-        let state = self.load_state().await?;
-        Ok(state
-            .checkpoints
-            .get(&request.checkpoint_id)
-            .filter(|record| {
-                record.process_id == request.process_id
-                    && process_scope_visible(&record.scope, &request.scope)
-            })
-            .cloned())
+        self.ensure_materialized().await?;
+        let path = rows::checkpoint_scoped_path(&request.checkpoint_id)?;
+        let record = self
+            .filesystem
+            .get(&ResourceScope::system(), &path)
+            .await?
+            .as_ref()
+            .map(rows::decode_checkpoint)
+            .transpose()?
+            .flatten();
+        Ok(record.filter(|record| {
+            record.process_id == request.process_id
+                && process_scope_visible(&record.scope, &request.scope)
+        }))
     }
 }
 
@@ -1099,12 +1182,10 @@ where
         &self,
         request: GetProcessSnapshotRequest,
     ) -> Result<JournaledProcessSnapshot, Self::Error> {
-        let state = self.load_state().await?;
-        let snapshot = state
-            .processes
-            .get(&request.process_id)
+        let snapshot = self
+            .load_process(request.process_id)
+            .await?
             .filter(|snapshot| process_scope_visible(&snapshot.scope, &request.scope))
-            .cloned()
             .ok_or(ProcessJournalStoreError::UnknownProcess {
                 process_id: request.process_id,
             })?;
@@ -1118,11 +1199,8 @@ where
         after: Option<ProcessJournalCursor>,
         limit: usize,
     ) -> Result<ProcessJournalPage, Self::Error> {
-        let state = self.load_state().await?;
-        Ok(state.page_after(after, limit, |entry| {
-            same_scope_owner(&entry.scope, scope)
-                && owner_user_id.is_none_or(|owner| entry.owner_user_id.as_ref() == Some(owner))
-        }))
+        self.read_journal_page(Some(scope), owner_user_id, after, limit)
+            .await
     }
 
     async fn read_process_journal_log_after(
@@ -1130,8 +1208,7 @@ where
         after: Option<ProcessJournalCursor>,
         limit: usize,
     ) -> Result<ProcessJournalPage, Self::Error> {
-        let state = self.load_state().await?;
-        Ok(state.page_after(after, limit, |_| true))
+        self.read_journal_page(None, None, after, limit).await
     }
 }
 
@@ -1146,33 +1223,19 @@ where
         &self,
         request: ProcessLifecycleLookupBatchRequest,
     ) -> Vec<Result<ProcessLifecycleLookupResult, Self::Error>> {
-        let state = match self.load_state().await {
-            Ok(state) => state,
-            Err(error) => {
-                let message = error.to_string();
-                return request
-                    .processes
-                    .into_iter()
-                    .map(|_| Err(ProcessJournalStoreError::Deserialization(message.clone())))
-                    .collect();
-            }
-        };
-        request
-            .processes
-            .into_iter()
-            .map(|lookup| {
-                let result = state
-                    .processes
-                    .get(&lookup.process_id)
-                    .filter(|snapshot| snapshot.scope.tenant_id == lookup.tenant_id)
-                    .map(|snapshot| ProcessLifecycleLookupResult::Found {
-                        status: snapshot.status,
-                        suspension: snapshot.suspension.clone(),
-                    })
-                    .unwrap_or(ProcessLifecycleLookupResult::Missing);
-                Ok(result)
-            })
-            .collect()
+        futures::future::join_all(request.processes.into_iter().map(|lookup| async move {
+            let result = self
+                .load_process(lookup.process_id)
+                .await?
+                .filter(|snapshot| snapshot.scope.tenant_id == lookup.tenant_id)
+                .map(|snapshot| ProcessLifecycleLookupResult::Found {
+                    status: snapshot.status,
+                    suspension: snapshot.suspension,
+                })
+                .unwrap_or(ProcessLifecycleLookupResult::Missing);
+            Ok(result)
+        }))
+        .await
     }
 }
 
@@ -1187,31 +1250,38 @@ where
         &self,
         request: ProcessGateQuery,
     ) -> Result<Vec<ProcessGateRecord>, Self::Error> {
-        let state = self.load_state().await?;
-        let mut records = state
-            .processes
-            .values()
-            .filter(|snapshot| process_gate_snapshot_matches(snapshot, &request))
-            .filter_map(|snapshot| {
-                Some(ProcessGateRecord {
-                    process_id: snapshot.process_id,
-                    scope: snapshot.scope.clone(),
-                    owner_user_id: snapshot.owner_user_id.clone(),
-                    suspension: snapshot.suspension.clone()?,
-                    resume_source_ref: snapshot
-                        .metadata
-                        .pointer("/agent_turn/source_binding_ref")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                    reply_target_ref: snapshot
-                        .metadata
-                        .pointer("/agent_turn/reply_target_binding_ref")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                    historical: false,
+        self.ensure_materialized().await?;
+        let owner_scope = matches!(
+            request
+                .scope_match
+                .unwrap_or(crate::ProcessGateScopeMatch::Exact),
+            crate::ProcessGateScopeMatch::Owner
+        );
+        let mut records =
+            rows::gate_processes(self.filesystem.as_ref(), &request.scope, owner_scope)
+                .await?
+                .into_iter()
+                .filter(|snapshot| process_gate_snapshot_matches(snapshot, &request))
+                .filter_map(|snapshot| {
+                    Some(ProcessGateRecord {
+                        process_id: snapshot.process_id,
+                        scope: snapshot.scope.clone(),
+                        owner_user_id: snapshot.owner_user_id.clone(),
+                        suspension: snapshot.suspension.clone()?,
+                        resume_source_ref: snapshot
+                            .metadata
+                            .pointer("/agent_turn/source_binding_ref")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        reply_target_ref: snapshot
+                            .metadata
+                            .pointer("/agent_turn/reply_target_binding_ref")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        historical: false,
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
+                .collect::<Vec<_>>();
         records.sort_by_key(|record| record.process_id.as_uuid());
         Ok(records)
     }
@@ -1404,8 +1474,13 @@ fn validate_tree_root(
     Ok(())
 }
 
-fn journal_log_path() -> Result<ScopedPath, ProcessJournalStoreError> {
-    ScopedPath::new(JOURNAL_LOG_PATH)
+fn legacy_command_log_path() -> Result<ScopedPath, ProcessJournalStoreError> {
+    ScopedPath::new(LEGACY_COMMAND_LOG_PATH)
+        .map_err(|error| ProcessJournalStoreError::InvalidPath(invalid_path(error).to_string()))
+}
+
+fn processes_prefix() -> Result<ScopedPath, ProcessJournalStoreError> {
+    ScopedPath::new("/processes")
         .map_err(|error| ProcessJournalStoreError::InvalidPath(invalid_path(error).to_string()))
 }
 

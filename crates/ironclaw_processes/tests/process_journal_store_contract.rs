@@ -1,8 +1,9 @@
+// arch-exempt: large_file, process journal persistence invariants stay in one caller-level contract suite, plan #5274
 use async_trait::async_trait;
 use chrono::Utc;
 use ironclaw_filesystem::{
-    CasExpectation, DiskFilesystem, Entry, FilesystemError, InMemoryBackend, LibSqlRootFilesystem,
-    ScopedFilesystem, SeqNo,
+    CasExpectation, DiskFilesystem, Entry, FilesystemError, Filter, InMemoryBackend, IndexKey,
+    LibSqlRootFilesystem, Page, ScopedFilesystem,
 };
 use ironclaw_host_api::{
     AgentId, HostPath, InvocationId, MountAlias, MountGrant, MountPermissions, MountView,
@@ -20,8 +21,8 @@ use ironclaw_processes::{
     ProcessInputPayload, ProcessInputPort, ProcessInputRef, ProcessInputSubmission,
     ProcessJournalCommit, ProcessJournalCommitObserver, ProcessJournalCursor, ProcessJournalEntry,
     ProcessJournalError, ProcessJournalKind, ProcessJournalObserverRegistry, ProcessJournalSource,
-    ProcessJournalStore, ProcessKind, ProcessLeaseRequest, ProcessLeaseToken,
-    ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupRequest,
+    ProcessJournalStore, ProcessJournalStoreError, ProcessKind, ProcessLeaseRequest,
+    ProcessLeaseToken, ProcessLifecycleLookupBatchRequest, ProcessLifecycleLookupRequest,
     ProcessLifecycleLookupResult, ProcessLifecycleLookupSource, ProcessLifecycleStatus,
     ProcessOperationId, ProcessStateTransitionRequest, ProcessSubmissionPort, ProcessSuspension,
     ProcessSuspensionKind, ProcessTerminalEvidence, ProcessTransitionPort, ProcessTreePort,
@@ -52,7 +53,7 @@ impl ProcessJournalCommitObserver for RecordingProcessObserver {
 }
 
 #[tokio::test]
-async fn process_journal_fails_closed_when_backend_lacks_event_rows() {
+async fn process_journal_fails_closed_when_backend_lacks_multi_key_records() {
     let storage = tempfile::tempdir().expect("temporary process journal directory");
     let mut backend = DiskFilesystem::new();
     backend
@@ -92,7 +93,7 @@ async fn process_journal_fails_closed_when_backend_lacks_event_rows() {
             metadata: serde_json::Value::Null,
         })
         .await
-        .expect_err("journal must require an append-capable backend");
+        .expect_err("journal must require queryable multi-key records");
     assert!(matches!(
         error,
         ironclaw_processes::ProcessJournalStoreError::Filesystem(
@@ -166,7 +167,7 @@ async fn process_journal_rows_serialize_concurrent_store_handles() {
 }
 
 #[tokio::test]
-async fn each_process_journal_command_is_an_individual_libsql_row() {
+async fn each_process_lifecycle_event_is_an_individual_libsql_row() {
     let storage = tempfile::tempdir().expect("temporary process journal database");
     let database_path = storage.path().join("process-journal.db");
     let database = Arc::new(
@@ -224,26 +225,27 @@ async fn each_process_journal_command_is_an_individual_libsql_row() {
     );
 
     let records = filesystem
-        .tail(
+        .query(
             &ResourceScope::system(),
-            &ScopedPath::new("/processes/journal/records").expect("journal path"),
-            SeqNo::ZERO,
+            &ScopedPath::new("/processes/materialized/journal").expect("journal path"),
+            &Filter::All,
+            Page::default(),
         )
         .await
-        .expect("tail journal records");
-    assert_eq!(records.len(), 33);
+        .expect("query journal records");
+    assert_eq!(records.len(), 32);
 
     for record in records {
         let parsed: serde_json::Value =
-            serde_json::from_slice(&record.payload).expect("journal row is JSON");
-        assert_eq!(parsed["schema"], "v1");
+            serde_json::from_slice(&record.entry.body).expect("journal row is JSON");
+        assert_eq!(parsed["row_type"], "journal");
     }
 
     let connection = database.connect().expect("connect to libsql");
     let mut rows = connection
         .query(
-            "SELECT COUNT(*) FROM root_filesystem_events WHERE path = ?1",
-            libsql::params!["/engine/processes/journal/records"],
+            "SELECT COUNT(*) FROM root_filesystem_entries WHERE path LIKE ?1",
+            libsql::params!["/engine/processes/materialized/journal/%"],
         )
         .await
         .expect("count journal rows");
@@ -253,11 +255,31 @@ async fn each_process_journal_command_is_an_individual_libsql_row() {
         .expect("read count row")
         .expect("count row exists");
     let count: i64 = row.get(0).expect("read count");
-    assert_eq!(count, 33);
+    assert_eq!(count, 32);
 }
 
 #[tokio::test]
-async fn legacy_materialized_state_imports_once_before_row_native_commands() {
+async fn process_journal_pages_database_rows_beyond_backend_page_limit() {
+    let filesystem = in_memory_backed_processes_filesystem();
+    let store = ProcessJournalStore::new(filesystem);
+    let scope = scope();
+    for _ in 0..1_030 {
+        submit_internal_process(&store, &scope, ProcessId::new()).await;
+    }
+
+    let page = store
+        .read_process_journal_log_after(Some(ProcessJournalCursor(1_020)), 5)
+        .await
+        .expect("read bounded journal page");
+
+    assert_eq!(page.entries.len(), 5);
+    assert_eq!(page.entries[0].cursor, ProcessJournalCursor(1_021));
+    assert_eq!(page.next_cursor, ProcessJournalCursor(1_025));
+    assert!(page.truncated);
+}
+
+#[tokio::test]
+async fn explicit_legacy_materialized_state_imports_before_row_native_commands() {
     let filesystem = in_memory_backed_processes_filesystem();
     let scope = scope();
     let process_id = ProcessId::new();
@@ -311,6 +333,13 @@ async fn legacy_materialized_state_imports_once_before_row_native_commands() {
         .expect("seed legacy state");
 
     let store = ProcessJournalStore::new(Arc::clone(&filesystem));
+    assert_eq!(
+        store
+            .migrate_legacy_journal()
+            .await
+            .expect("explicit legacy migration"),
+        1
+    );
     let imported = store
         .get_process_snapshot(GetProcessSnapshotRequest {
             scope: scope.clone(),
@@ -322,15 +351,95 @@ async fn legacy_materialized_state_imports_once_before_row_native_commands() {
     let next = submit_internal_process(&store, &scope, ProcessId::new()).await;
     assert_eq!(next.journal_cursor, ProcessJournalCursor(2));
 
-    let records = filesystem
-        .tail(
+    let records = store
+        .read_process_journal_log_after(None, 10)
+        .await
+        .expect("read imported journal");
+    assert_eq!(records.entries.len(), 2);
+}
+
+#[tokio::test]
+async fn normal_process_request_never_reads_or_replays_legacy_state() {
+    let filesystem = in_memory_backed_processes_filesystem();
+    filesystem
+        .put(
             &ResourceScope::system(),
-            &ScopedPath::new("/processes/journal/records").expect("journal path"),
-            SeqNo::ZERO,
+            &ScopedPath::new("/processes/journal/state.json").expect("legacy path"),
+            Entry::bytes(b"not valid legacy json".to_vec()),
+            CasExpectation::Absent,
         )
         .await
-        .expect("tail imported journal");
-    assert_eq!(records.len(), 2);
+        .expect("seed malformed legacy state");
+
+    let store = ProcessJournalStore::new(filesystem);
+    let scope = scope();
+    let submitted = submit_internal_process(&store, &scope, ProcessId::new()).await;
+    assert_eq!(submitted.journal_cursor, ProcessJournalCursor(1));
+
+    let error = store
+        .migrate_legacy_journal()
+        .await
+        .expect_err("migration after initialization must fail closed");
+    assert!(matches!(error, ProcessJournalStoreError::InvalidRequest(_)));
+}
+
+#[tokio::test]
+async fn explicit_row_native_migration_rebuilds_sparse_process_indexes() {
+    let filesystem = in_memory_backed_processes_filesystem();
+    let store = ProcessJournalStore::new(Arc::clone(&filesystem));
+    let scope = scope();
+    let process_id = ProcessId::new();
+    submit_internal_process(&store, &scope, process_id).await;
+    let path = ScopedPath::new(format!(
+        "/processes/materialized/process/{}",
+        process_id.as_uuid()
+    ))
+    .expect("process row path");
+    let mut row = filesystem
+        .get(&ResourceScope::system(), &path)
+        .await
+        .expect("read process row")
+        .expect("process row exists");
+    row.entry
+        .indexed
+        .remove(&IndexKey::new("queue_status").expect("queue status key"));
+    filesystem
+        .put(
+            &ResourceScope::system(),
+            &path,
+            row.entry,
+            CasExpectation::Version(row.version),
+        )
+        .await
+        .expect("damage queue projection");
+    let request = ClaimProcessesRequest {
+        worker_id: ProcessWorkerId::from_trusted("migration-worker"),
+        scope_filter: None,
+        process_id_filter: None,
+        process_kind_filter: None,
+        max_processes: 1,
+    };
+    assert!(
+        store
+            .claim_next_processes(request.clone())
+            .await
+            .expect("query damaged queue")
+            .is_empty()
+    );
+
+    assert_eq!(
+        store
+            .migrate_row_native_indexes()
+            .await
+            .expect("rebuild row-native indexes"),
+        2
+    );
+    let claimed = store
+        .claim_next_processes(request)
+        .await
+        .expect("claim rebuilt queue");
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].state.process_id, process_id);
 }
 
 #[tokio::test]
