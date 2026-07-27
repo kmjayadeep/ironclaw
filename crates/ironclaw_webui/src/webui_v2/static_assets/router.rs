@@ -455,7 +455,7 @@ fn cache_control_for_asset(path: &str) -> &'static str {
         return "no-store";
     }
     if is_vite_fingerprinted_script_or_style(path) {
-        return "public, max-age=31536000, immutable";
+        return "public, max-age=86400, immutable";
     }
     "public, max-age=0, must-revalidate"
 }
@@ -646,7 +646,7 @@ mod tests {
             headers
                 .get(header::CACHE_CONTROL)
                 .and_then(|value| value.to_str().ok()),
-            Some("public, max-age=31536000, immutable"),
+            Some("public, max-age=86400, immutable"),
         );
         assert!(
             headers
@@ -1308,7 +1308,7 @@ mod tests {
         assert_eq!(cache_control_for_asset("wallet-connect.html"), "no-store");
         assert_eq!(
             cache_control_for_asset("assets/app-deadbeef.css"),
-            "public, max-age=31536000, immutable"
+            "public, max-age=86400, immutable"
         );
         assert_eq!(
             cache_control_for_asset("assets/site.webmanifest"),
