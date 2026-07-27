@@ -34,11 +34,27 @@ mod container_identity;
 mod mounts;
 mod scope_key;
 
+// `attribution`, `registry`, and `user_key` belong to the persistent
+// per-user sandbox container model landing incrementally (see this PR's
+// description). None has a production caller in this PR — the consumer (the
+// exec-based transport's per-user container reuse, and the egress proxy's
+// connection attribution) lands separately, on top of `exec_transport`,
+// which is not part of this PR. `user_key` is `pub`/re-exported because a
+// sibling crate-tier test in this PR (`registry`'s own tests) and future
+// cross-crate composition wiring construct it directly; `registry` and
+// `attribution` stay crate-private and carry per-item
+// `#[allow(dead_code)]` comments naming their future consumer where needed.
+mod attribution;
+mod registry;
+mod user_key;
+
 use mounts::RebornSandboxMountSources;
 
 pub use broker::{RebornSandboxNetworkBroker, RebornSandboxSecretBroker};
 pub use container_identity::{RebornSandboxContainerIdentity, RebornSandboxWorkspaceMode};
+pub use registry::SandboxActivityRegistry;
 pub use scope_key::RebornSandboxScopeKey;
+pub use user_key::RebornSandboxUserKey;
 
 const DEFAULT_IMAGE: &str = "ironclaw-worker:latest";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
