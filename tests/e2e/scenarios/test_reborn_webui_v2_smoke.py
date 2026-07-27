@@ -32,6 +32,7 @@ from urllib.parse import parse_qs, urlparse
 
 import aiohttp
 import httpx
+import pytest
 from playwright.async_api import expect
 from helpers import REBORN_V2_AUTH_TOKEN, SEL_V2
 from reborn_webui_harness import (
@@ -102,6 +103,47 @@ async def _assert_readable(locator, label: str) -> dict[str, list[float]]:
     ratio = _contrast_ratio(colors["foreground"], colors["background"])
     assert ratio >= 4.5, f"{label} contrast was {ratio:.2f}:1 with colors {colors}"
     return colors
+
+
+async def _typography_metrics(locator) -> dict:
+    return await locator.evaluate(
+        """element => {
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return {
+            className: element.className,
+            clientHeight: element.clientHeight,
+            clientWidth: element.clientWidth,
+            fontFamily: style.fontFamily,
+            fontSize: style.fontSize,
+            height: rect.height,
+            scrollHeight: element.scrollHeight,
+            scrollWidth: element.scrollWidth,
+            semanticSize: style.getPropertyValue("--text-ui"),
+          };
+        }"""
+    )
+
+
+def _assert_control_typography(
+    metrics: dict,
+    label: str,
+    *,
+    expected_height: float | None = None,
+) -> None:
+    assert metrics["fontSize"] == "13px", (
+        f"{label} font size was {metrics['fontSize']}: {metrics}"
+    )
+    assert metrics["scrollWidth"] <= metrics["clientWidth"] + 1, (
+        f"{label} clipped horizontally: {metrics}"
+    )
+    assert metrics["scrollHeight"] <= metrics["clientHeight"] + 1, (
+        f"{label} clipped vertically: {metrics}"
+    )
+    if expected_height is not None:
+        assert abs(metrics["height"] - expected_height) <= 1, (
+            f"{label} height was {metrics['height']}px, expected {expected_height}px"
+        )
 
 
 async def _wait_for_automation_named(
@@ -208,6 +250,132 @@ async def test_reborn_v2_serves_shell_and_gates_auth(reborn_v2_server, reborn_v2
         assert urlparse(anon_page.url).path == "/login"
     finally:
         await anon_ctx.close()
+
+
+@pytest.mark.parametrize(
+    ("locale", "expected_lang", "connect_label"),
+    [
+        pytest.param("en-US", "en", "Connect", id="english"),
+        pytest.param("zh-CN", "zh-CN", "连接", id="simplified-chinese"),
+    ],
+)
+@pytest.mark.parametrize("width", [375, 768, 1024, 1440])
+async def test_reborn_v2_shared_control_typography_is_stable(
+    reborn_v2_server,
+    reborn_v2_browser,
+    locale,
+    expected_lang,
+    connect_label,
+    width,
+):
+    """Shared controls keep one size without viewport or locale clipping."""
+    context = await reborn_v2_browser.new_context(
+        locale=locale,
+        viewport={"width": width, "height": 900},
+    )
+    page = await context.new_page()
+
+    async def handle_tools(route) -> None:
+        await route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "entries": [
+                        {
+                            "key": "agent.auto_approve_tools",
+                            "value": False,
+                            "mutable": True,
+                            "source": "default",
+                        },
+                        {
+                            "key": "tool.typography_check",
+                            "value": {
+                                "name": "typography_check",
+                                "description": "Shared control typography.",
+                                "state": "ask_each_time",
+                                "default_state": "ask_each_time",
+                                "locked": False,
+                                "effective_source": "default",
+                            },
+                            "mutable": True,
+                            "source": "default",
+                        },
+                    ]
+                }
+            ),
+        )
+
+    await page.route("**/api/webchat/v2/settings/tools", handle_tools)
+    try:
+        await page.goto(f"{reborn_v2_server}/")
+        token_input = page.locator(SEL_V2["login_token"])
+        connect_button = page.locator("form button[type='submit']")
+        token_label = page.locator("label[for='v2-token']")
+        await expect(token_input).to_be_visible(timeout=15000)
+        await expect(connect_button).to_have_text(connect_label, timeout=15000)
+        await expect(page.locator("html")).to_have_attribute(
+            "lang", expected_lang
+        )
+
+        expected_height = 44 if width < 768 else 50
+        _assert_control_typography(
+            await _typography_metrics(token_input),
+            f"{locale} token input at {width}px",
+            expected_height=expected_height,
+        )
+        _assert_control_typography(
+            await _typography_metrics(connect_button),
+            f"{locale} connect button at {width}px",
+            expected_height=expected_height,
+        )
+        _assert_control_typography(
+            await _typography_metrics(token_label),
+            f"{locale} token label at {width}px",
+        )
+        assert await page.locator("html").evaluate(
+            "element => getComputedStyle(element).fontSize"
+        ) == "16px"
+
+        await page.goto(
+            f"{reborn_v2_server}/settings/tools"
+            f"?token={REBORN_V2_AUTH_TOKEN}"
+        )
+        permission = page.locator(
+            SEL_V2["settings_tool_row_for"].format(name="typography_check")
+        ).locator(SEL_V2["settings_tool_permission"])
+        await expect(permission).to_be_visible(timeout=15000)
+        permission_metrics = await _typography_metrics(permission)
+        _assert_control_typography(
+            permission_metrics,
+            f"{locale} SelectMenu at {width}px",
+        )
+        assert "Mono" not in permission_metrics["fontFamily"], (
+            f"SelectMenu defaulted to monospace: {permission_metrics['fontFamily']}"
+        )
+
+        await page.goto(
+            f"{reborn_v2_server}/settings/skills"
+            f"?token={REBORN_V2_AUTH_TOKEN}"
+        )
+        skill_content = page.locator("textarea").first
+        await expect(skill_content).to_be_visible(timeout=15000)
+        _assert_control_typography(
+            await _typography_metrics(skill_content),
+            f"{locale} textarea at {width}px",
+        )
+
+        viewport_metrics = await page.evaluate(
+            """() => ({
+              documentWidth: document.documentElement.scrollWidth,
+              viewportWidth: window.innerWidth,
+            })"""
+        )
+        assert viewport_metrics["documentWidth"] <= viewport_metrics["viewportWidth"], (
+            f"{locale} layout overflowed at {width}px: {viewport_metrics}"
+        )
+    finally:
+        await context.close()
 
 
 async def test_reborn_v2_lazy_routes_preserve_direct_navigation(
