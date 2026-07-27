@@ -355,8 +355,26 @@ impl<M: CompletionModel> RigAdapter<M> {
             .as_ref()
             .map(extract_cache_creation)
             .unwrap_or(0);
-        let (text, tool_calls, finish, reasoning, reasoning_details) =
-            extract_response(&stream.choice, &usage, None);
+        // rig-core sets `stream.response` only when the provider yields its
+        // terminal frame. Its absence means the stream simply stopped
+        // producing items — a dropped connection or an aborted generation —
+        // which must never be reported as a clean stop.
+        let terminal_frame = stream.response.as_ref();
+        let provider_finish = terminal_frame.and_then(extract_finish_reason);
+        let (text, tool_calls, shape_finish, reasoning, reasoning_details) =
+            extract_response(&stream.choice, &usage, provider_finish);
+        // Note: in rig-core 0.33 only Ollama's terminal frame still carries a
+        // finish reason (`done_reason`). OpenAI, Anthropic, Gemini, OpenRouter
+        // and DeepSeek define `StreamingResponse` as usage-only, so their
+        // per-chunk `finish_reason`/`stop_reason` is dropped before it reaches
+        // this adapter and `provider_finish` is `None` for them. A terminal
+        // frame did arrive in that case, so shape inference remains the
+        // documented fallback rather than a blanket `Unknown`.
+        let finish = if terminal_frame.is_some() {
+            shape_finish
+        } else {
+            FinishReason::Unknown
+        };
         let (streamed_reasoning, streamed_reasoning_details) = streamed_reasoning.finish();
 
         Ok(DrainedStreamingResponse {
@@ -1958,6 +1976,188 @@ mod tests {
         assert_eq!(response.reasoning.as_deref(), Some("thinking"));
         assert_eq!(response.input_tokens, 3);
         assert_eq!(response.output_tokens, 4);
+    }
+
+    /// A terminal frame shaped like Ollama's — the one provider whose rig-core
+    /// `StreamingResponse` still carries the finish reason.
+    #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+    struct OllamaShapedStreamingResponse {
+        done_reason: Option<String>,
+    }
+
+    impl GetTokenUsage for OllamaShapedStreamingResponse {
+        fn token_usage(&self) -> Option<RigUsage> {
+            Some(RigUsage::new())
+        }
+    }
+
+    /// A streaming model whose script the test controls: whether a tool call
+    /// is emitted, and whether the provider ever sends a terminal frame.
+    #[derive(Clone)]
+    struct ScriptedStreamingModel {
+        emit_tool_call: bool,
+        terminal_frame: Option<OllamaShapedStreamingResponse>,
+    }
+
+    impl CompletionModel for ScriptedStreamingModel {
+        type Response = serde_json::Value;
+        type StreamingResponse = OllamaShapedStreamingResponse;
+        type Client = ();
+
+        fn make(_client: &Self::Client, _model: impl Into<String>) -> Self {
+            unimplemented!("constructed directly in tests")
+        }
+
+        async fn completion(
+            &self,
+            _request: RigRequest,
+        ) -> Result<rig::completion::CompletionResponse<Self::Response>, CompletionError> {
+            Err(CompletionError::ProviderError(
+                "non-streaming path must not be used".to_string(),
+            ))
+        }
+
+        async fn stream(
+            &self,
+            _request: RigRequest,
+        ) -> Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError> {
+            let mut frames = vec![Ok(RawStreamingChoice::Message("partial".to_string()))];
+            if self.emit_tool_call {
+                frames.push(Ok(RawStreamingChoice::ToolCall(RawStreamingToolCall::new(
+                    "call-1".to_string(),
+                    "search".to_string(),
+                    serde_json::json!({"query": "iron"}),
+                ))));
+            }
+            if let Some(frame) = self.terminal_frame.clone() {
+                frames.push(Ok(RawStreamingChoice::FinalResponse(frame)));
+            }
+            Ok(StreamingCompletionResponse::stream(Box::pin(
+                futures::stream::iter(frames),
+            )))
+        }
+    }
+
+    fn search_tool_request() -> ToolCompletionRequest {
+        ToolCompletionRequest::new(
+            vec![ChatMessage::user("search")],
+            vec![IronToolDefinition {
+                name: "search".to_string(),
+                description: "Search the index".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+        )
+    }
+
+    fn discarding_sink() -> Arc<dyn CompletionStreamSink> {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        Arc::new(RecordingCompletionStreamSink { sender: tx })
+    }
+
+    /// #6284 item 8, streaming half: `drain_streaming_response`'s only exit was
+    /// `stream.next() == None`. A provider that dropped the connection
+    /// mid-answer produced the same `Stop` as a provider that finished, so a
+    /// truncated run was reported as a clean success.
+    ///
+    /// rig-core only marks `stream.response` when the provider yields its
+    /// terminal frame, so its absence is the signal that the stream just
+    /// stopped. That must surface as `Unknown`, not `Stop`.
+    #[tokio::test]
+    async fn streaming_without_terminal_frame_is_not_reported_as_a_clean_stop() {
+        let adapter = RigAdapter::new(
+            ScriptedStreamingModel {
+                emit_tool_call: false,
+                terminal_frame: None,
+            },
+            "streaming-truncated",
+        );
+
+        let response = adapter
+            .complete_streaming(
+                CompletionRequest::new(vec![ChatMessage::user("hello")]),
+                discarding_sink(),
+            )
+            .await
+            .expect("streaming completion returns the partial answer");
+
+        assert_eq!(
+            response.finish_reason,
+            FinishReason::Unknown,
+            "a stream that ended without the provider's terminal frame is not a clean stop",
+        );
+    }
+
+    /// The same seam on the tool-capable path. A half-streamed tool call must
+    /// not be laundered into `ToolUse` — the arguments may be cut off, and
+    /// `ironclaw_runner`'s model gateway executes provider tool calls only when
+    /// the finish reason is `ToolUse`/`Stop`.
+    #[tokio::test]
+    async fn streaming_tool_call_without_terminal_frame_is_not_reported_as_tool_use() {
+        let adapter = RigAdapter::new(
+            ScriptedStreamingModel {
+                emit_tool_call: true,
+                terminal_frame: None,
+            },
+            "streaming-truncated",
+        );
+
+        let response = adapter
+            .complete_with_tools_streaming(search_tool_request(), discarding_sink())
+            .await
+            .expect("streaming completion returns the partial answer");
+
+        assert_eq!(
+            response.finish_reason,
+            FinishReason::Unknown,
+            "a tool call from a stream that never terminated must not read as ToolUse",
+        );
+    }
+
+    /// When the provider *does* carry a finish reason on its terminal frame
+    /// (rig-core 0.33: Ollama only), the adapter reports it — including over
+    /// the tool-call shape.
+    #[tokio::test]
+    async fn streaming_reads_the_terminal_frames_finish_reason() {
+        let adapter = RigAdapter::new(
+            ScriptedStreamingModel {
+                emit_tool_call: true,
+                terminal_frame: Some(OllamaShapedStreamingResponse {
+                    done_reason: Some("length".to_string()),
+                }),
+            },
+            "streaming-ollama",
+        );
+
+        let response = adapter
+            .complete_with_tools_streaming(search_tool_request(), discarding_sink())
+            .await
+            .expect("streaming completion succeeds");
+
+        assert_eq!(response.finish_reason, FinishReason::Length);
+    }
+
+    /// A terminal frame that carries no finish reason at all is the common
+    /// case: rig-core 0.33 drops it for OpenAI, Anthropic, Gemini, OpenRouter
+    /// and DeepSeek, whose `StreamingResponse` types hold usage only. The
+    /// provider did close the stream, so shape inference stays the documented
+    /// fallback there — reporting `Unknown` for every streamed OpenAI turn
+    /// would fail runs that actually succeeded.
+    #[tokio::test]
+    async fn streaming_terminal_frame_without_a_finish_reason_falls_back_to_shape() {
+        let adapter = RigAdapter::new(
+            ScriptedStreamingModel {
+                emit_tool_call: true,
+                terminal_frame: Some(OllamaShapedStreamingResponse { done_reason: None }),
+            },
+            "streaming-openai-like",
+        );
+
+        let response = adapter
+            .complete_with_tools_streaming(search_tool_request(), discarding_sink())
+            .await
+            .expect("streaming completion succeeds");
+
+        assert_eq!(response.finish_reason, FinishReason::ToolUse);
     }
 
     #[test]
