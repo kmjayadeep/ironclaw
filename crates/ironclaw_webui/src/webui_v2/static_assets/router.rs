@@ -419,6 +419,7 @@ fn render_index_with_nonce() -> Response {
     response
 }
 
+// arch-exempt: large_file, static route security and cache behavior remain co-located pending extraction, plan #6630
 fn asset_response(
     path: &str,
     asset: &'static Asset,
@@ -445,39 +446,48 @@ fn asset_response(
         .insert(header::ETAG, HeaderValue::from_static(asset.etag));
     response.headers_mut().insert(
         header::CACHE_CONTROL,
-        HeaderValue::from_static(cache_control_for_asset(path)),
+        HeaderValue::from_static(cache_policy_for_asset(path).header_value()),
     );
+    if asset_varies_by_accept_encoding(asset) {
+        // Compression chooses the wire representation from Accept-Encoding.
+        // Setting this before the CompressionLayer preserves the same Vary
+        // contract on a body-less 304 response.
+        response
+            .headers_mut()
+            .insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+    }
     response
 }
 
-fn cache_control_for_asset(path: &str) -> &'static str {
-    if path.ends_with(".html") {
-        return "no-store";
-    }
-    if is_vite_fingerprinted_script_or_style(path) {
-        return "public, max-age=86400, immutable";
-    }
-    "public, max-age=0, must-revalidate"
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaticAssetCachePolicy {
+    NoStore,
+    Revalidate,
 }
 
-fn is_vite_fingerprinted_script_or_style(path: &str) -> bool {
-    let Some((stem, extension)) = path.rsplit_once('.') else {
-        return false;
-    };
-    if !matches!(extension, "js" | "css") {
-        return false;
+impl StaticAssetCachePolicy {
+    fn header_value(self) -> &'static str {
+        match self {
+            Self::NoStore => "no-store",
+            // Deployment rollback and emergency rebuilds can reuse a URL.
+            // Never serve an embedded asset without first validating its
+            // SHA-256 ETag with the currently running server.
+            Self::Revalidate => "no-cache, must-revalidate",
+        }
     }
-    let Some((_, hash)) = stem.rsplit_once('-') else {
-        return false;
-    };
-    // `assets::lookup` accepts only exact rows generated from Vite's build
-    // output, never an arbitrary request path. Vite's content-addressed
-    // JS/CSS names use this `[name]-[hash]` form; if that output convention
-    // changes, update this predicate and its route-contract coverage.
-    hash.len() >= 8
-        && hash
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn cache_policy_for_asset(path: &str) -> StaticAssetCachePolicy {
+    if path.ends_with(".html") {
+        return StaticAssetCachePolicy::NoStore;
+    }
+    StaticAssetCachePolicy::Revalidate
+}
+
+fn asset_varies_by_accept_encoding(asset: &Asset) -> bool {
+    // Matches tower-http's default predicate for static media types: images
+    // are skipped except SVG, while other asset types can be compressed.
+    !asset.content_type.starts_with("image/") || asset.content_type == "image/svg+xml"
 }
 
 fn weak_etag_matches(candidate: &HeaderValue, current: &str) -> bool {
@@ -646,19 +656,23 @@ mod tests {
             headers
                 .get(header::CACHE_CONTROL)
                 .and_then(|value| value.to_str().ok()),
-            Some("public, max-age=86400, immutable"),
+            Some("no-cache, must-revalidate"),
+        );
+        assert_eq!(
+            headers.get(header::VARY),
+            Some(&HeaderValue::from_static("Accept-Encoding")),
         );
         assert!(
             headers
                 .get(header::ETAG)
                 .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value.starts_with("W/\"")),
-            "fingerprinted asset must carry a weak ETag",
+                .is_some_and(|value| value.starts_with("W/\"sha256-")),
+            "static asset must carry a SHA-256 weak ETag",
         );
     }
 
     #[tokio::test]
-    async fn nonfingerprinted_assets_revalidate_with_etag() {
+    async fn static_assets_revalidate_with_etag() {
         let app = static_router();
         let first = app
             .clone()
@@ -677,15 +691,16 @@ mod tests {
                 .headers()
                 .get(header::CACHE_CONTROL)
                 .and_then(|value| value.to_str().ok()),
-            Some("public, max-age=0, must-revalidate"),
+            Some("no-cache, must-revalidate"),
         );
         let etag = first
             .headers()
             .get(header::ETAG)
-            .expect("ETag on nonfingerprinted asset")
+            .expect("ETag on static asset")
             .clone();
 
         let not_modified = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
@@ -699,17 +714,46 @@ mod tests {
         assert_eq!(not_modified.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(not_modified.headers().get(header::ETAG), Some(&etag));
         assert_eq!(
+            not_modified.headers().get(header::VARY),
+            Some(&HeaderValue::from_static("Accept-Encoding")),
+        );
+        assert!(
+            not_modified.headers().get(header::CONTENT_TYPE).is_none(),
+            "304 must reuse cached representation metadata rather than resend Content-Type",
+        );
+        assert_eq!(
             not_modified
                 .headers()
                 .get(header::CACHE_CONTROL)
                 .and_then(|value| value.to_str().ok()),
-            Some("public, max-age=0, must-revalidate"),
+            Some("no-cache, must-revalidate"),
         );
         assert!(
             to_bytes(not_modified.into_body(), 1)
                 .await
                 .expect("304 body")
                 .is_empty(),
+        );
+
+        let changed = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/assets/site.webmanifest")
+                    .header(header::IF_NONE_MATCH, "W/\"sha256-outdated\"")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(changed.status(), StatusCode::OK);
+        assert_eq!(changed.headers().get(header::ETAG), Some(&etag));
+        assert!(
+            !to_bytes(changed.into_body(), 512 * 1024)
+                .await
+                .expect("changed response body")
+                .is_empty(),
+            "a stale validator must receive the current representation",
         );
     }
 
@@ -1305,14 +1349,21 @@ mod tests {
 
     #[test]
     fn cache_policy_is_selected_at_response_time() {
-        assert_eq!(cache_control_for_asset("wallet-connect.html"), "no-store");
         assert_eq!(
-            cache_control_for_asset("assets/app-deadbeef.css"),
-            "public, max-age=86400, immutable"
+            cache_policy_for_asset("wallet-connect.html"),
+            StaticAssetCachePolicy::NoStore,
         );
         assert_eq!(
-            cache_control_for_asset("assets/site.webmanifest"),
-            "public, max-age=0, must-revalidate"
+            cache_policy_for_asset("assets/app-deadbeef.css"),
+            StaticAssetCachePolicy::Revalidate,
+        );
+        assert_eq!(
+            cache_policy_for_asset("assets/site.webmanifest"),
+            StaticAssetCachePolicy::Revalidate,
+        );
+        assert_eq!(
+            StaticAssetCachePolicy::Revalidate.header_value(),
+            "no-cache, must-revalidate",
         );
     }
 

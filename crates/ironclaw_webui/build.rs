@@ -3,7 +3,8 @@
 //! Builds the Vite frontend into Cargo's `OUT_DIR` (unless `SKIP_FRONTEND_BUILD`
 //! is set), then emits Rust source that declares one `ASSETS` slice keyed by
 //! URL path (relative to the gateway root). Each entry pairs an
-//! `include_bytes!` reference with content type, cache policy, and a weak ETag.
+//! `include_bytes!` reference with content type and a weak ETag. The static
+//! router owns response cache policy because it is request-contextual.
 //!
 //! The generated source is included from `src/assets.rs`.
 
@@ -12,6 +13,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use sha2::{Digest, Sha256};
 
 const PINNED_PNPM_PACKAGE: &str = "pnpm@11.7.0";
 
@@ -270,16 +273,17 @@ fn content_type_for(path: &Path) -> &'static str {
 }
 
 fn weak_etag(bytes: &[u8]) -> String {
-    // FNV-1a gives the embedded bytes a stable, lightweight build-time
-    // validator without adding a build dependency. The tag is deliberately
-    // weak because response compression changes the transferred
-    // representation while preserving the asset's semantics.
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    // Use a content digest, not the Vite filename, so a reused output path
+    // still receives a new validator. It remains weak because compression
+    // changes the transferred representation while preserving semantics.
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest.as_slice() {
+        hex.push(HEX_DIGITS[(byte >> 4) as usize] as char);
+        hex.push(HEX_DIGITS[(byte & 0x0f) as usize] as char);
     }
-    format!("W/\"{hash:016x}\"")
+    format!("W/\"sha256-{hex}\"")
 }
 
 fn escape_url(s: &str) -> String {

@@ -73,6 +73,9 @@ urlencoding = "2"
 # `uuid` is consumed by the signed session token store and library tests.
 uuid = { version = "1", features = ["v4"] }
 
+[build-dependencies]
+sha2 = "0.11"
+
 [dev-dependencies]
 axum = { version = "0.8", features = ["macros"] }
 http = "1"
