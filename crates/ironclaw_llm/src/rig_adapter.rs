@@ -345,36 +345,46 @@ impl<M: CompletionModel> RigAdapter<M> {
             }
         }
 
-        let usage = stream
-            .response
-            .as_ref()
-            .and_then(GetTokenUsage::token_usage)
-            .unwrap_or_default();
-        let cache_creation_input_tokens = stream
-            .response
-            .as_ref()
-            .map(extract_cache_creation)
-            .unwrap_or(0);
         // rig-core sets `stream.response` only when the provider yields its
         // terminal frame. Its absence means the stream simply stopped
         // producing items — a dropped connection or an aborted generation —
-        // which must never be reported as a clean stop.
-        let terminal_frame = stream.response.as_ref();
-        let provider_finish = terminal_frame.and_then(extract_finish_reason);
-        let (text, tool_calls, shape_finish, reasoning, reasoning_details) =
-            extract_response(&stream.choice, &usage, provider_finish);
-        // Note: in rig-core 0.33 only Ollama's terminal frame still carries a
-        // finish reason (`done_reason`). OpenAI, Anthropic, Gemini, OpenRouter
-        // and DeepSeek define `StreamingResponse` as usage-only, so their
-        // per-chunk `finish_reason`/`stop_reason` is dropped before it reaches
-        // this adapter and `provider_finish` is `None` for them. A terminal
-        // frame did arrive in that case, so shape inference remains the
-        // documented fallback rather than a blanket `Unknown`.
-        let finish = if terminal_frame.is_some() {
-            shape_finish
-        } else {
-            FinishReason::Unknown
+        // which is the crate's established incomplete-stream condition, not a
+        // completed call. Raising it here, before a response object exists,
+        // is what lets retry and failover see a failure instead of a success.
+        //
+        // What this actually detects, in rig-core 0.33: **Ollama only**. Its
+        // stream yields `FinalResponse` solely inside `if response.done`
+        // (`providers/ollama.rs:706`), so a stream that stops early genuinely
+        // leaves `stream.response` unset. OpenAI
+        // (`providers/openai/completion/streaming.rs:330`), Anthropic
+        // (`providers/anthropic/streaming.rs:333`), Gemini
+        // (`providers/gemini/streaming.rs:233`), OpenRouter
+        // (`providers/openrouter/streaming.rs:323`) and DeepSeek
+        // (`providers/deepseek.rs:862`) all yield a usage-only `FinalResponse`
+        // unconditionally after the SSE loop — including after the plain
+        // `Err(StreamEnded) => break` arm — so on those five a server that
+        // closes mid-answer still sets `stream.response` and this check does
+        // not fire. Catching that needs a terminal-observed signal rig-core
+        // does not carry; it is a known limitation of this adapter, not a
+        // claim it makes.
+        let Some(terminal_frame) = stream.response.as_ref() else {
+            return Err(LlmError::InvalidResponse {
+                provider: self.model_name.clone(),
+                reason: "stream ended before the provider's terminal frame".to_string(),
+            });
         };
+        let usage = terminal_frame.token_usage().unwrap_or_default();
+        let raw_terminal_frame = serialize_raw_response(terminal_frame);
+        let cache_creation_input_tokens = extract_cache_creation(raw_terminal_frame.as_ref());
+        let provider_finish = extract_finish_reason(raw_terminal_frame.as_ref());
+        // Note: in rig-core 0.33 only Ollama's terminal frame still carries a
+        // finish reason (`done_reason`). The other five define
+        // `StreamingResponse` as usage-only, so their per-chunk
+        // `finish_reason`/`stop_reason` is dropped before it reaches this
+        // adapter and `provider_finish` is `None` — shape inference is the
+        // documented fallback there.
+        let (text, tool_calls, finish, reasoning, reasoning_details) =
+            extract_response(&stream.choice, &usage, provider_finish);
         let (streamed_reasoning, streamed_reasoning_details) = streamed_reasoning.finish();
 
         Ok(DrainedStreamingResponse {
@@ -901,48 +911,56 @@ fn supports_prompt_cache(name: &str) -> bool {
         || model.starts_with("claude-haiku")
 }
 
-/// Extract `cache_creation_input_tokens` from the raw provider response.
+/// Serialize the raw provider response to JSON **once** per completion.
+///
+/// rig-core's unified types drop fields we need (`cache_creation_input_tokens`,
+/// the provider's own finish reason), so both are read back out of the raw
+/// body. Serializing the whole response — generated text, tool payloads and
+/// all — is response-sized work, so every call site does it once and lends the
+/// resulting `Value` to each extractor rather than each extractor serializing
+/// for itself.
+///
+/// silent-ok: serializing a body rig already deserialized from the provider
+/// cannot fail in practice. If it ever does, the extractors fall back to their
+/// documented defaults rather than failing an otherwise-good response — but the
+/// branch is logged, because it silently re-enables the guess this machinery
+/// removes: a truncated response would then report `Stop`.
+fn serialize_raw_response<T: Serialize>(raw: &T) -> Option<serde_json::Value> {
+    match serde_json::to_value(raw) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            tracing::debug!(
+                %error,
+                "raw provider response would not serialize; falling back to \
+                 response-shape inference and zero cache-creation tokens"
+            );
+            None
+        }
+    }
+}
+
+/// Extract `cache_creation_input_tokens` from the serialized provider response.
 ///
 /// Rig-core's unified `Usage` does not surface this field, but Anthropic's raw
-/// response includes it at `usage.cache_creation_input_tokens`. We serialize the
-/// raw response to JSON and attempt to read the value.
-fn extract_cache_creation<T: Serialize>(raw: &T) -> u32 {
-    serde_json::to_value(raw)
-        .ok()
-        .and_then(|v| v.get("usage")?.get("cache_creation_input_tokens")?.as_u64())
+/// response includes it at `usage.cache_creation_input_tokens`.
+fn extract_cache_creation(raw: Option<&serde_json::Value>) -> u32 {
+    raw.and_then(|v| v.get("usage")?.get("cache_creation_input_tokens")?.as_u64())
         .map(|n| n.min(u32::MAX as u64) as u32)
         .unwrap_or(0)
 }
 
-/// Extract the provider's own finish/stop reason from the raw provider response.
+/// Extract the provider's own finish/stop reason from the serialized response.
 ///
 /// rig-core's unified `AssistantContent` says nothing about *why* generation
 /// stopped, so a `max_tokens` truncation and a content-filter refusal used to
 /// be indistinguishable from a clean answer. Every provider states it in its
-/// raw body, so — same technique as [`extract_cache_creation`] — serialize the
-/// raw response and read the field the provider actually emits.
+/// raw body, so read the field the provider actually emits.
 ///
 /// Returns `None` when the response carries no finish-reason field at all
 /// (unknown or older provider shape); callers then fall back to inferring it
 /// from the response shape. See [`resolve_finish_reason`].
-fn extract_finish_reason<T: Serialize>(raw: &T) -> Option<FinishReason> {
-    // silent-ok: serializing `raw` — a body rig already deserialized from the
-    // provider — cannot fail in practice. If it ever does, shape inference is
-    // the documented fallback rather than failing an otherwise-good response,
-    // but the branch is logged because it silently re-enables the guess this
-    // function removes: a truncated response would then report `Stop`.
-    let value = match serde_json::to_value(raw) {
-        Ok(value) => value,
-        Err(error) => {
-            tracing::debug!(
-                %error,
-                "provider finish reason unavailable (raw response would not serialize); \
-                 falling back to response-shape inference"
-            );
-            return None;
-        }
-    };
-    let token = provider_finish_token(&value)?;
+fn extract_finish_reason(raw: Option<&serde_json::Value>) -> Option<FinishReason> {
+    let token = provider_finish_token(raw?)?;
     map_provider_finish_token(token)
 }
 
@@ -1175,7 +1193,8 @@ where
             .await
             .map_err(|e| map_rig_error(&self.model_name, e))?;
 
-        let provider_finish = extract_finish_reason(&response.raw_response);
+        let raw_response = serialize_raw_response(&response.raw_response);
+        let provider_finish = extract_finish_reason(raw_response.as_ref());
         let (text, _tool_calls, finish, _reasoning, _reasoning_details) =
             extract_response(&response.choice, &response.usage, provider_finish);
 
@@ -1186,7 +1205,7 @@ where
             finish_reason: finish,
             reasoning: None,
             cache_read_input_tokens: saturate_u32(response.usage.cached_input_tokens),
-            cache_creation_input_tokens: extract_cache_creation(&response.raw_response),
+            cache_creation_input_tokens: extract_cache_creation(raw_response.as_ref()),
         };
 
         if resp.cache_read_input_tokens > 0 {
@@ -1294,7 +1313,8 @@ where
             .await
             .map_err(|e| map_rig_error(&self.model_name, e))?;
 
-        let provider_finish = extract_finish_reason(&response.raw_response);
+        let raw_response = serialize_raw_response(&response.raw_response);
+        let provider_finish = extract_finish_reason(raw_response.as_ref());
         let (text, mut tool_calls, finish, reasoning, reasoning_details) =
             extract_response(&response.choice, &response.usage, provider_finish);
 
@@ -1328,7 +1348,7 @@ where
             output_tokens: saturate_u32(response.usage.output_tokens),
             finish_reason: finish,
             cache_read_input_tokens: saturate_u32(response.usage.cached_input_tokens),
-            cache_creation_input_tokens: extract_cache_creation(&response.raw_response),
+            cache_creation_input_tokens: extract_cache_creation(raw_response.as_ref()),
             reasoning,
             reasoning_details,
         };
@@ -2037,15 +2057,26 @@ mod tests {
     }
 
     /// #6284 item 8, streaming half: `drain_streaming_response`'s only exit was
-    /// `stream.next() == None`. A provider that dropped the connection
-    /// mid-answer produced the same `Stop` as a provider that finished, so a
-    /// truncated run was reported as a clean success.
+    /// `stream.next() == None`. A stream that ran dry without the provider ever
+    /// yielding its terminal frame produced the same `Stop` as a provider that
+    /// finished, so a truncated run was reported as a clean success.
     ///
-    /// rig-core only marks `stream.response` when the provider yields its
-    /// terminal frame, so its absence is the signal that the stream just
-    /// stopped. That must surface as `Unknown`, not `Stop`.
+    /// A missing terminal frame is the crate's existing incomplete-stream
+    /// condition (`codex_chatgpt`'s "stream ended before response.completed"),
+    /// so it surfaces the same way: a retryable `LlmError::InvalidResponse`,
+    /// raised *before* a response object is constructed, so retry and failover
+    /// see a failure rather than a completed call.
+    ///
+    /// **Scope, honestly:** in rig-core 0.33 only Ollama can reach this. Its
+    /// stream yields `FinalResponse` solely inside `if response.done`. OpenAI,
+    /// Anthropic, Gemini, OpenRouter and DeepSeek yield their usage-only
+    /// `FinalResponse` unconditionally after the SSE loop — including after a
+    /// plain `Err(StreamEnded)` break — so for those five a server that closes
+    /// mid-answer still sets `stream.response` and this condition never fires.
+    /// Detecting that needs a terminal-observed signal rig-core does not carry;
+    /// see the PR's "Known limitation".
     #[tokio::test]
-    async fn streaming_without_terminal_frame_is_not_reported_as_a_clean_stop() {
+    async fn streaming_without_terminal_frame_is_a_retryable_incomplete_stream() {
         let adapter = RigAdapter::new(
             ScriptedStreamingModel {
                 emit_tool_call: false,
@@ -2054,27 +2085,27 @@ mod tests {
             "streaming-truncated",
         );
 
-        let response = adapter
+        let error = adapter
             .complete_streaming(
                 CompletionRequest::new(vec![ChatMessage::user("hello")]),
                 discarding_sink(),
             )
             .await
-            .expect("streaming completion returns the partial answer");
+            .expect_err("a stream that never terminated is not a completed call");
 
-        assert_eq!(
-            response.finish_reason,
-            FinishReason::Unknown,
-            "a stream that ended without the provider's terminal frame is not a clean stop",
-        );
+        match error {
+            LlmError::InvalidResponse { reason, .. } => assert!(
+                reason.contains("terminal frame"),
+                "reason must name the missing terminal frame, got: {reason}"
+            ),
+            other => panic!("expected a retryable InvalidResponse, got {other:?}"),
+        }
     }
 
     /// The same seam on the tool-capable path. A half-streamed tool call must
-    /// not be laundered into `ToolUse` — the arguments may be cut off, and
-    /// `ironclaw_runner`'s model gateway executes provider tool calls only when
-    /// the finish reason is `ToolUse`/`Stop`.
+    /// never reach a caller at all — the arguments may be cut off.
     #[tokio::test]
-    async fn streaming_tool_call_without_terminal_frame_is_not_reported_as_tool_use() {
+    async fn streaming_tool_call_without_terminal_frame_is_a_retryable_incomplete_stream() {
         let adapter = RigAdapter::new(
             ScriptedStreamingModel {
                 emit_tool_call: true,
@@ -2083,15 +2114,14 @@ mod tests {
             "streaming-truncated",
         );
 
-        let response = adapter
+        let error = adapter
             .complete_with_tools_streaming(search_tool_request(), discarding_sink())
             .await
-            .expect("streaming completion returns the partial answer");
+            .expect_err("a half-streamed tool call is not a completed call");
 
-        assert_eq!(
-            response.finish_reason,
-            FinishReason::Unknown,
-            "a tool call from a stream that never terminated must not read as ToolUse",
+        assert!(
+            matches!(error, LlmError::InvalidResponse { .. }),
+            "expected a retryable InvalidResponse, got {error:?}"
         );
     }
 
@@ -2120,10 +2150,12 @@ mod tests {
 
     /// A terminal frame that carries no finish reason at all is the common
     /// case: rig-core 0.33 drops it for OpenAI, Anthropic, Gemini, OpenRouter
-    /// and DeepSeek, whose `StreamingResponse` types hold usage only. The
-    /// provider did close the stream, so shape inference stays the documented
-    /// fallback there — reporting `Unknown` for every streamed OpenAI turn
-    /// would fail runs that actually succeeded.
+    /// and DeepSeek, whose `StreamingResponse` types hold usage only. Those
+    /// five also yield that frame unconditionally, so its presence proves
+    /// nothing about whether the server actually finished — shape inference
+    /// stays the documented fallback there, and a mid-answer disconnect on
+    /// those providers is *not* detected by this adapter. Reporting `Unknown`
+    /// for every streamed OpenAI turn would fail runs that actually succeeded.
     #[tokio::test]
     async fn streaming_terminal_frame_without_a_finish_reason_falls_back_to_shape() {
         let adapter = RigAdapter::new(
@@ -3364,7 +3396,7 @@ mod tests {
 
         for (label, raw, expected) in cases {
             assert_eq!(
-                extract_finish_reason(&raw),
+                extract_finish_reason(Some(&raw)),
                 expected,
                 "{label}: adapter must report the provider's own finish reason",
             );
@@ -3396,7 +3428,7 @@ mod tests {
             }))
             .expect("openai fixture must parse into rig's CompletionResponse");
         assert_eq!(
-            extract_finish_reason(&openai),
+            extract_finish_reason(serialize_raw_response(&openai).as_ref()),
             Some(FinishReason::Length),
             "rig's OpenAI response must still expose choices[0].finish_reason",
         );
@@ -3413,7 +3445,7 @@ mod tests {
             }))
             .expect("anthropic fixture must parse into rig's CompletionResponse");
         assert_eq!(
-            extract_finish_reason(&anthropic),
+            extract_finish_reason(serialize_raw_response(&anthropic).as_ref()),
             Some(FinishReason::Length),
             "rig's Anthropic response must still expose stop_reason",
         );
@@ -3428,7 +3460,7 @@ mod tests {
             }))
             .expect("ollama fixture must parse into rig's CompletionResponse");
         assert_eq!(
-            extract_finish_reason(&ollama),
+            extract_finish_reason(serialize_raw_response(&ollama).as_ref()),
             Some(FinishReason::Length),
             "rig's Ollama response must still expose done_reason",
         );
@@ -3440,7 +3472,7 @@ mod tests {
             }))
             .expect("gemini fixture must parse into rig's GenerateContentResponse");
         assert_eq!(
-            extract_finish_reason(&gemini),
+            extract_finish_reason(serialize_raw_response(&gemini).as_ref()),
             Some(FinishReason::ContentFilter),
             "rig's Gemini response must still expose candidates[].finishReason",
         );
@@ -3460,7 +3492,7 @@ mod tests {
             }))
             .expect("gemini prompt-block fixture must parse into rig's GenerateContentResponse");
         assert_eq!(
-            extract_finish_reason(&gemini_blocked),
+            extract_finish_reason(serialize_raw_response(&gemini_blocked).as_ref()),
             Some(FinishReason::ContentFilter),
             "rig's Gemini response must still expose promptFeedback.blockReason",
         );
