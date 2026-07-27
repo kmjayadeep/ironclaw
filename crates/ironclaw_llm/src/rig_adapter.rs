@@ -356,7 +356,7 @@ impl<M: CompletionModel> RigAdapter<M> {
             .map(extract_cache_creation)
             .unwrap_or(0);
         let (text, tool_calls, finish, reasoning, reasoning_details) =
-            extract_response(&stream.choice, &usage);
+            extract_response(&stream.choice, &usage, None);
         let (streamed_reasoning, streamed_reasoning_details) = streamed_reasoning.finish();
 
         Ok(DrainedStreamingResponse {
@@ -730,6 +730,7 @@ fn rig_reasoning_to_iron(reasoning: &rig::message::Reasoning) -> Option<IronReas
 fn extract_response(
     choice: &OneOrMany<AssistantContent>,
     _usage: &RigUsage,
+    provider_finish: Option<FinishReason>,
 ) -> (
     Option<String>,
     Vec<IronToolCall>,
@@ -799,11 +800,7 @@ fn extract_response(
         })
     };
 
-    let finish = if !tool_calls.is_empty() {
-        FinishReason::ToolUse
-    } else {
-        FinishReason::Stop
-    };
+    let finish = resolve_finish_reason(provider_finish, !tool_calls.is_empty());
 
     (text, tool_calls, finish, reasoning, typed_reasoning)
 }
@@ -897,6 +894,111 @@ fn extract_cache_creation<T: Serialize>(raw: &T) -> u32 {
         .and_then(|v| v.get("usage")?.get("cache_creation_input_tokens")?.as_u64())
         .map(|n| n.min(u32::MAX as u64) as u32)
         .unwrap_or(0)
+}
+
+/// Extract the provider's own finish/stop reason from the raw provider response.
+///
+/// rig-core's unified `AssistantContent` says nothing about *why* generation
+/// stopped, so a `max_tokens` truncation and a content-filter refusal used to
+/// be indistinguishable from a clean answer. Every provider states it in its
+/// raw body, so — same technique as [`extract_cache_creation`] — serialize the
+/// raw response and read the field the provider actually emits.
+///
+/// Returns `None` when the response carries no finish-reason field at all
+/// (unknown or older provider shape); callers then fall back to inferring it
+/// from the response shape. See [`resolve_finish_reason`].
+fn extract_finish_reason<T: Serialize>(raw: &T) -> Option<FinishReason> {
+    let value = serde_json::to_value(raw).ok()?;
+    let token = provider_finish_token(&value)?;
+    map_provider_finish_token(token)
+}
+
+/// Locate the provider's finish-reason field across the response shapes rig fronts.
+///
+/// Paths verified against rig-core 0.33:
+/// - OpenAI-shaped (`openai`, `openai_compatible`, `tinfoil`, `azure`,
+///   `deepseek`, `openrouter`): `choices[0].finish_reason`
+/// - Anthropic-by-key: `stop_reason`
+/// - Ollama: `done_reason`
+/// - Gemini by API key: `candidates[0].finishReason`
+fn provider_finish_token(value: &serde_json::Value) -> Option<&str> {
+    let openai = value
+        .get("choices")
+        .and_then(|choices| choices.as_array())
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("finish_reason"))
+        .and_then(|reason| reason.as_str());
+    if openai.is_some() {
+        return openai;
+    }
+    if let Some(anthropic) = value.get("stop_reason").and_then(|r| r.as_str()) {
+        return Some(anthropic);
+    }
+    if let Some(ollama) = value.get("done_reason").and_then(|r| r.as_str()) {
+        return Some(ollama);
+    }
+    value
+        .get("candidates")
+        .and_then(|candidates| candidates.as_array())
+        .and_then(|candidates| candidates.first())
+        .and_then(|candidate| candidate.get("finishReason"))
+        .and_then(|reason| reason.as_str())
+}
+
+/// Translate one provider finish-reason token into IronClaw's vocabulary.
+///
+/// One table serves every provider: the tokens do not collide across
+/// providers, and matching is case-insensitive so Gemini's
+/// `SCREAMING_SNAKE_CASE` lands on the same rows as everyone else's
+/// `snake_case`. An empty token means "the provider said nothing" (`None`);
+/// a non-empty token we do not recognize is [`FinishReason::Unknown`] — never
+/// [`FinishReason::Stop`], because guessing "success" is the bug this fixes.
+fn map_provider_finish_token(token: &str) -> Option<FinishReason> {
+    let normalized = token.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    Some(match normalized.as_str() {
+        // Clean stop. `stop` = OpenAI-shaped + Ollama + Gemini `STOP`.
+        "stop" | "end_turn" | "stop_sequence" => FinishReason::Stop,
+        // Truncated by a token budget.
+        "length" | "max_tokens" | "max_output_tokens" | "model_length" => FinishReason::Length,
+        // The model asked for tools.
+        "tool_calls" | "function_call" | "tool_use" => FinishReason::ToolUse,
+        // Blocked by the provider's content policy.
+        "content_filter" | "refusal" | "safety" | "recitation" | "blocklist"
+        | "prohibited_content" | "spii" | "image_safety" | "language" => {
+            FinishReason::ContentFilter
+        }
+        // Recognized, but not a clean stop and not classifiable:
+        // Gemini `OTHER` / `FINISH_REASON_UNSPECIFIED` / `MALFORMED_FUNCTION_CALL`,
+        // Anthropic `pause_turn`, Ollama `load`/`unload`, and anything new.
+        _ => FinishReason::Unknown,
+    })
+}
+
+/// Combine what the provider reported with what the response body looks like.
+///
+/// The provider's own word wins. `Length` and `ContentFilter` win even when
+/// tool calls were parsed — truncated tool arguments must not be executed, and
+/// `ironclaw_runner`'s model gateway only forwards provider tool calls when the
+/// finish reason is `ToolUse` or `Stop`, so reporting the truth here is what
+/// turns a silently-truncated run into a surfaced failure.
+///
+/// Shape inference survives only in two places: as the documented fallback
+/// when the provider stated nothing (`None`), and to refine `Stop`/`Unknown`
+/// into `ToolUse` when structurally complete tool calls are present.
+fn resolve_finish_reason(provider: Option<FinishReason>, has_tool_calls: bool) -> FinishReason {
+    match provider {
+        Some(FinishReason::ToolUse) => FinishReason::ToolUse,
+        Some(FinishReason::Length) => FinishReason::Length,
+        Some(FinishReason::ContentFilter) => FinishReason::ContentFilter,
+        Some(FinishReason::Stop) | Some(FinishReason::Unknown) | None if has_tool_calls => {
+            FinishReason::ToolUse
+        }
+        Some(other) => other,
+        None => FinishReason::Stop,
+    }
 }
 
 /// Merge default additional parameters into the rig-core request.
@@ -1073,8 +1175,9 @@ where
             .await
             .map_err(|e| map_rig_error(&self.model_name, e))?;
 
+        let provider_finish = extract_finish_reason(&response.raw_response);
         let (text, _tool_calls, finish, _reasoning, _reasoning_details) =
-            extract_response(&response.choice, &response.usage);
+            extract_response(&response.choice, &response.usage, provider_finish);
 
         let resp = CompletionResponse {
             content: text.unwrap_or_default(),
@@ -1191,8 +1294,9 @@ where
             .await
             .map_err(|e| map_rig_error(&self.model_name, e))?;
 
+        let provider_finish = extract_finish_reason(&response.raw_response);
         let (text, mut tool_calls, finish, reasoning, reasoning_details) =
-            extract_response(&response.choice, &response.usage);
+            extract_response(&response.choice, &response.usage, provider_finish);
 
         // Normalize tool call names: some proxies prepend "proxy_" prefixes.
         for tc in &mut tool_calls {
@@ -1614,6 +1718,119 @@ mod tests {
                 "stream unsupported".to_string(),
             ))
         }
+    }
+
+    /// A rig model that replays a caller-supplied raw provider body alongside
+    /// a fixed assistant choice, so the adapter's public entry points can be
+    /// driven against a real provider payload.
+    #[derive(Clone)]
+    struct ReplayingCompletionModel {
+        choice: OneOrMany<AssistantContent>,
+        raw_response: serde_json::Value,
+    }
+
+    impl CompletionModel for ReplayingCompletionModel {
+        type Response = serde_json::Value;
+        type StreamingResponse = StubStreamingResponse;
+        type Client = ();
+
+        fn make(_client: &Self::Client, _model: impl Into<String>) -> Self {
+            unimplemented!("constructed directly in tests")
+        }
+
+        async fn completion(
+            &self,
+            _request: RigRequest,
+        ) -> Result<rig::completion::CompletionResponse<Self::Response>, CompletionError> {
+            Ok(rig::completion::CompletionResponse {
+                choice: self.choice.clone(),
+                usage: RigUsage::new(),
+                raw_response: self.raw_response.clone(),
+                message_id: None,
+            })
+        }
+
+        async fn stream(
+            &self,
+            _request: RigRequest,
+        ) -> Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError> {
+            Err(CompletionError::ProviderError(
+                "streaming path must not be used".to_string(),
+            ))
+        }
+    }
+
+    /// Test through the caller, not just the helper: a `max_tokens` truncation
+    /// that still emitted a (possibly cut-off) tool call must reach
+    /// `complete_with_tools`' return value as `Length`. Before #6284 item 8 the
+    /// adapter reported `ToolUse` and the loop executed the truncated call.
+    #[tokio::test]
+    async fn complete_with_tools_reports_provider_truncation_not_tool_use() {
+        let adapter = RigAdapter::new(
+            ReplayingCompletionModel {
+                choice: OneOrMany::one(AssistantContent::tool_call(
+                    "call_1",
+                    "search",
+                    serde_json::json!({"q": "tru"}),
+                )),
+                raw_response: serde_json::json!({
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": null},
+                        "finish_reason": "length",
+                    }],
+                }),
+            },
+            "gpt-4o",
+        );
+        let request = ToolCompletionRequest::new(
+            vec![ChatMessage::user("search for something")],
+            vec![IronToolDefinition {
+                name: "search".to_string(),
+                description: "Search".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+        );
+
+        let response = adapter
+            .complete_with_tools(request)
+            .await
+            .expect("adapter returns the provider response");
+
+        assert_eq!(
+            response.finish_reason,
+            FinishReason::Length,
+            "a max_tokens truncation must not be laundered into ToolUse",
+        );
+    }
+
+    /// The same seam for a content-policy block on the plain `complete` path.
+    #[tokio::test]
+    async fn complete_reports_provider_content_filter() {
+        let adapter = RigAdapter::new(
+            ReplayingCompletionModel {
+                choice: OneOrMany::one(AssistantContent::text("I can't help with that.")),
+                raw_response: serde_json::json!({
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "I can't help with that."},
+                        "finish_reason": "content_filter",
+                    }],
+                }),
+            },
+            "gpt-4o",
+        );
+
+        let response = adapter
+            .complete(CompletionRequest::new(vec![ChatMessage::user("hi")]))
+            .await
+            .expect("adapter returns the provider response");
+
+        assert_eq!(
+            response.finish_reason,
+            FinishReason::ContentFilter,
+            "a provider refusal must not be reported as a clean stop",
+        );
     }
 
     #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -2667,7 +2884,7 @@ mod tests {
         let content = OneOrMany::one(AssistantContent::text("Hello world"));
         let usage = RigUsage::new();
         let (text, calls, finish, _reasoning, _reasoning_details) =
-            extract_response(&content, &usage);
+            extract_response(&content, &usage, None);
         assert_eq!(text, Some("Hello world".to_string()));
         assert!(calls.is_empty());
         assert_eq!(finish, FinishReason::Stop);
@@ -2679,11 +2896,364 @@ mod tests {
         let content = OneOrMany::one(tc);
         let usage = RigUsage::new();
         let (text, calls, finish, _reasoning, _reasoning_details) =
-            extract_response(&content, &usage);
+            extract_response(&content, &usage, None);
         assert!(text.is_none());
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "search");
         assert_eq!(finish, FinishReason::ToolUse);
+    }
+
+    /// Conformance matrix for the rig bridge (#6284 item 8, contract clause
+    /// (e): "no non-success may be reported as success").
+    ///
+    /// Every provider rig fronts states *its own* reason for stopping in its
+    /// own vocabulary. Before this pin, `extract_response` guessed from the
+    /// response shape — tool calls present meant `ToolUse`, everything else
+    /// meant `Stop` — so a `max_tokens` truncation and a content-filter refusal
+    /// were indistinguishable from a clean answer, and `FinishReason::Length`
+    /// and `FinishReason::ContentFilter` were unreachable for every rig-backed
+    /// provider.
+    ///
+    /// Each row is one provider token in the provider's own spelling, taken
+    /// from the raw response JSON path that provider actually emits.
+    #[test]
+    fn provider_finish_reason_conformance_matrix() {
+        fn openai_shaped(finish: serde_json::Value) -> serde_json::Value {
+            serde_json::json!({
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "gpt-4o",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "hi"},
+                    "logprobs": null,
+                    "finish_reason": finish,
+                }],
+            })
+        }
+        fn anthropic_shaped(stop: serde_json::Value) -> serde_json::Value {
+            serde_json::json!({
+                "id": "msg_1",
+                "model": "claude-sonnet-4",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "hi"}],
+                "stop_reason": stop,
+                "stop_sequence": null,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            })
+        }
+        fn ollama_shaped(done: serde_json::Value) -> serde_json::Value {
+            serde_json::json!({
+                "model": "llama3.2",
+                "created_at": "2026-01-01T00:00:00Z",
+                "message": {"role": "assistant", "content": "hi"},
+                "done": true,
+                "done_reason": done,
+            })
+        }
+        fn gemini_shaped(finish: serde_json::Value) -> serde_json::Value {
+            serde_json::json!({
+                "responseId": "resp_1",
+                "candidates": [{"content": null, "finishReason": finish}],
+            })
+        }
+
+        // (adapter family, provider's own token, expected FinishReason)
+        let cases: Vec<(&str, serde_json::Value, Option<FinishReason>)> = vec![
+            // -- OpenAI-shaped: openai, openai_compatible, tinfoil, azure,
+            //    deepseek, openrouter. Path: choices[0].finish_reason.
+            (
+                "openai/stop",
+                openai_shaped("stop".into()),
+                Some(FinishReason::Stop),
+            ),
+            (
+                "openai/length",
+                openai_shaped("length".into()),
+                Some(FinishReason::Length),
+            ),
+            (
+                "openai/tool_calls",
+                openai_shaped("tool_calls".into()),
+                Some(FinishReason::ToolUse),
+            ),
+            (
+                "openai/function_call",
+                openai_shaped("function_call".into()),
+                Some(FinishReason::ToolUse),
+            ),
+            (
+                "openai/content_filter",
+                openai_shaped("content_filter".into()),
+                Some(FinishReason::ContentFilter),
+            ),
+            (
+                "openai/unknown-token",
+                openai_shaped("teapot".into()),
+                Some(FinishReason::Unknown),
+            ),
+            (
+                "openai/absent-null",
+                openai_shaped(serde_json::Value::Null),
+                None,
+            ),
+            ("openai/absent-empty", openai_shaped("".into()), None),
+            // -- Anthropic-by-key. Path: stop_reason.
+            (
+                "anthropic/end_turn",
+                anthropic_shaped("end_turn".into()),
+                Some(FinishReason::Stop),
+            ),
+            (
+                "anthropic/stop_sequence",
+                anthropic_shaped("stop_sequence".into()),
+                Some(FinishReason::Stop),
+            ),
+            (
+                "anthropic/max_tokens",
+                anthropic_shaped("max_tokens".into()),
+                Some(FinishReason::Length),
+            ),
+            (
+                "anthropic/tool_use",
+                anthropic_shaped("tool_use".into()),
+                Some(FinishReason::ToolUse),
+            ),
+            (
+                "anthropic/refusal",
+                anthropic_shaped("refusal".into()),
+                Some(FinishReason::ContentFilter),
+            ),
+            (
+                "anthropic/unknown-token",
+                anthropic_shaped("pause_turn".into()),
+                Some(FinishReason::Unknown),
+            ),
+            (
+                "anthropic/absent",
+                anthropic_shaped(serde_json::Value::Null),
+                None,
+            ),
+            // -- Ollama. Path: done_reason.
+            (
+                "ollama/stop",
+                ollama_shaped("stop".into()),
+                Some(FinishReason::Stop),
+            ),
+            (
+                "ollama/length",
+                ollama_shaped("length".into()),
+                Some(FinishReason::Length),
+            ),
+            (
+                "ollama/unknown-token",
+                ollama_shaped("unload".into()),
+                Some(FinishReason::Unknown),
+            ),
+            (
+                "ollama/absent",
+                ollama_shaped(serde_json::Value::Null),
+                None,
+            ),
+            // -- Gemini by API key. Path: candidates[0].finishReason.
+            (
+                "gemini/STOP",
+                gemini_shaped("STOP".into()),
+                Some(FinishReason::Stop),
+            ),
+            (
+                "gemini/MAX_TOKENS",
+                gemini_shaped("MAX_TOKENS".into()),
+                Some(FinishReason::Length),
+            ),
+            (
+                "gemini/SAFETY",
+                gemini_shaped("SAFETY".into()),
+                Some(FinishReason::ContentFilter),
+            ),
+            (
+                "gemini/RECITATION",
+                gemini_shaped("RECITATION".into()),
+                Some(FinishReason::ContentFilter),
+            ),
+            (
+                "gemini/PROHIBITED_CONTENT",
+                gemini_shaped("PROHIBITED_CONTENT".into()),
+                Some(FinishReason::ContentFilter),
+            ),
+            (
+                "gemini/BLOCKLIST",
+                gemini_shaped("BLOCKLIST".into()),
+                Some(FinishReason::ContentFilter),
+            ),
+            (
+                "gemini/SPII",
+                gemini_shaped("SPII".into()),
+                Some(FinishReason::ContentFilter),
+            ),
+            (
+                "gemini/MALFORMED_FUNCTION_CALL",
+                gemini_shaped("MALFORMED_FUNCTION_CALL".into()),
+                Some(FinishReason::Unknown),
+            ),
+            (
+                "gemini/OTHER",
+                gemini_shaped("OTHER".into()),
+                Some(FinishReason::Unknown),
+            ),
+            (
+                "gemini/absent",
+                gemini_shaped(serde_json::Value::Null),
+                None,
+            ),
+            // -- A provider shape we do not recognize at all.
+            (
+                "unrecognized-shape",
+                serde_json::json!({"output": "hi"}),
+                None,
+            ),
+        ];
+
+        for (label, raw, expected) in cases {
+            assert_eq!(
+                extract_finish_reason(&raw),
+                expected,
+                "{label}: adapter must report the provider's own finish reason",
+            );
+        }
+    }
+
+    /// The matrix above feeds `extract_finish_reason` hand-written JSON. This
+    /// pins that the JSON paths are the ones rig-core's own serde derives
+    /// actually produce: each fixture is parsed into the concrete rig response
+    /// type the adapter receives, then handed to the extractor exactly as
+    /// `complete`/`complete_with_tools` do. If rig renames or moves a field,
+    /// this fails instead of silently falling back to shape inference.
+    #[test]
+    fn finish_reason_paths_match_real_rig_response_types() {
+        let openai: rig::providers::openai::completion::CompletionResponse =
+            serde_json::from_value(serde_json::json!({
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "gpt-4o",
+                "system_fingerprint": null,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "partial"},
+                    "logprobs": null,
+                    "finish_reason": "length",
+                }],
+                "usage": null,
+            }))
+            .expect("openai fixture must parse into rig's CompletionResponse");
+        assert_eq!(
+            extract_finish_reason(&openai),
+            Some(FinishReason::Length),
+            "rig's OpenAI response must still expose choices[0].finish_reason",
+        );
+
+        let anthropic: rig::providers::anthropic::completion::CompletionResponse =
+            serde_json::from_value(serde_json::json!({
+                "id": "msg_1",
+                "model": "claude-sonnet-4",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "partial"}],
+                "stop_reason": "max_tokens",
+                "stop_sequence": null,
+                "usage": {"input_tokens": 1, "output_tokens": 2},
+            }))
+            .expect("anthropic fixture must parse into rig's CompletionResponse");
+        assert_eq!(
+            extract_finish_reason(&anthropic),
+            Some(FinishReason::Length),
+            "rig's Anthropic response must still expose stop_reason",
+        );
+
+        let ollama: rig::providers::ollama::CompletionResponse =
+            serde_json::from_value(serde_json::json!({
+                "model": "llama3.2",
+                "created_at": "2026-01-01T00:00:00Z",
+                "message": {"role": "assistant", "content": "partial"},
+                "done": true,
+                "done_reason": "length",
+            }))
+            .expect("ollama fixture must parse into rig's CompletionResponse");
+        assert_eq!(
+            extract_finish_reason(&ollama),
+            Some(FinishReason::Length),
+            "rig's Ollama response must still expose done_reason",
+        );
+
+        let gemini: rig::providers::gemini::completion::gemini_api_types::GenerateContentResponse =
+            serde_json::from_value(serde_json::json!({
+                "responseId": "resp_1",
+                "candidates": [{"content": null, "finishReason": "SAFETY"}],
+            }))
+            .expect("gemini fixture must parse into rig's GenerateContentResponse");
+        assert_eq!(
+            extract_finish_reason(&gemini),
+            Some(FinishReason::ContentFilter),
+            "rig's Gemini response must still expose candidates[].finishReason",
+        );
+    }
+
+    /// Precedence at the caller: what the provider reported outranks what the
+    /// body looks like. A truncated or filtered response that *also* carried
+    /// tool calls must not be laundered into `ToolUse` — the tool arguments
+    /// may be cut off mid-JSON, and `ironclaw_runner`'s model gateway only
+    /// accepts provider tool calls when the finish reason is `ToolUse`/`Stop`.
+    #[test]
+    fn provider_finish_reason_outranks_response_shape() {
+        let with_tool_call = OneOrMany::one(AssistantContent::tool_call(
+            "call_1",
+            "search",
+            serde_json::json!({"q": "test"}),
+        ));
+        let text_only = OneOrMany::one(AssistantContent::text("hello"));
+        let usage = RigUsage::new();
+
+        let finish_of = |choice: &OneOrMany<AssistantContent>, provider| {
+            let (_t, _c, finish, _r, _rd) = extract_response(choice, &usage, provider);
+            finish
+        };
+
+        // Truncation and filtering win over the tool-call shape.
+        assert_eq!(
+            finish_of(&with_tool_call, Some(FinishReason::Length)),
+            FinishReason::Length,
+        );
+        assert_eq!(
+            finish_of(&with_tool_call, Some(FinishReason::ContentFilter)),
+            FinishReason::ContentFilter,
+        );
+        // A provider that says "tool calls" is believed even without any.
+        assert_eq!(
+            finish_of(&text_only, Some(FinishReason::ToolUse)),
+            FinishReason::ToolUse,
+        );
+        // `stop` alongside tool calls is refined to ToolUse: some proxies
+        // report `stop` on tool-call turns, and the tool arguments are intact.
+        assert_eq!(
+            finish_of(&with_tool_call, Some(FinishReason::Stop)),
+            FinishReason::ToolUse,
+        );
+        // Same for a token we could not classify — the parsed tool calls are
+        // structurally complete, so the gateway must still see them.
+        assert_eq!(
+            finish_of(&with_tool_call, Some(FinishReason::Unknown)),
+            FinishReason::ToolUse,
+        );
+        // An unclassifiable token with no tool calls stays honest.
+        assert_eq!(
+            finish_of(&text_only, Some(FinishReason::Unknown)),
+            FinishReason::Unknown,
+        );
+        // Documented fallback when the provider states nothing at all: today's
+        // shape inference, and only then.
+        assert_eq!(finish_of(&text_only, None), FinishReason::Stop);
+        assert_eq!(finish_of(&with_tool_call, None), FinishReason::ToolUse);
     }
 
     #[test]
@@ -3534,7 +4104,7 @@ mod tests {
         .unwrap();
         let usage = RigUsage::new();
         let (text, tool_calls, finish, reasoning, reasoning_details) =
-            extract_response(&rig_response, &usage);
+            extract_response(&rig_response, &usage, None);
 
         assert_eq!(finish, FinishReason::ToolUse);
         assert_eq!(text, None);
@@ -3642,7 +4212,7 @@ mod tests {
 
         let usage = RigUsage::new();
         let (text, tool_calls, _finish, reasoning, reasoning_details) =
-            extract_response(&rig_response, &usage);
+            extract_response(&rig_response, &usage, None);
 
         assert_eq!(text, None);
         assert_eq!(reasoning.as_deref(), Some("safe summary"));
