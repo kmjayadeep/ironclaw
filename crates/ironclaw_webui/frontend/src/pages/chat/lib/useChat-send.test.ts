@@ -199,7 +199,7 @@ function createReactStub({
   return react;
 }
 
-test("useChat: reconnecting SSE rewrites an active driver_unavailable error", () => {
+test("useChat: reconnecting SSE preserves an active run without adding an error", () => {
   const threadId = "thread-1";
   const setCalls = [];
   let renderedMessages = [
@@ -269,15 +269,9 @@ test("useChat: reconnecting SSE rewrites an active driver_unavailable error", ()
 
   assert.equal(chat.sseStatus, CONNECTION_STATUS.RECONNECTING);
   assert.equal(renderedMessages.length, 1);
-  assert.equal(renderedMessages[0].content, CONNECTION_LOST_RUN_FAILURE_MESSAGE);
-  assert.equal(
-    stateUpdatesFor(setCalls, STATE_SLOT.isProcessing).at(-1)?.value,
-    false,
-  );
-  assert.equal(
-    stateUpdatesFor(setCalls, STATE_SLOT.activeRun).at(-1)?.value,
-    null,
-  );
+  assert.notEqual(renderedMessages[0].content, CONNECTION_LOST_RUN_FAILURE_MESSAGE);
+  assert.equal(stateUpdatesFor(setCalls, STATE_SLOT.isProcessing).length, 0);
+  assert.equal(stateUpdatesFor(setCalls, STATE_SLOT.activeRun).length, 0);
 });
 
 test("useChat: disconnected SSE surfaces connection error before run id is known", () => {
@@ -523,6 +517,8 @@ test("useChat.send: accepted ref reconciles pending message on timeline reload",
 function createSendCaptureContext({
   ReactStub = createReactStub(),
   sseStatus = CONNECTION_STATUS.IDLE,
+  sendResponse = null,
+  sendError = null,
 } = {}) {
   let sentBody = null;
   let renderedMessages = [];
@@ -557,6 +553,8 @@ function createSendCaptureContext({
     resolveGateRequest: async () => {},
     sendMessage: async (body) => {
       sentBody = body;
+      if (sendError) throw sendError;
+      if (sendResponse) return sendResponse;
       return {
         accepted_message_ref: "msg:message-1",
         run_id: "run-1",
@@ -614,6 +612,81 @@ test("useChat.send: reconnecting stream releases stale run admission before send
 
   assert.equal(sentBody()?.content, "send despite stale stream state");
   assert.equal(sentBody()?.threadId, threadId);
+});
+
+test("useChat.send: reconnecting busy rejection preserves the active run", async () => {
+  const threadId = "thread-1";
+  const stateSlots = new Map();
+  const setCalls = [];
+  const ReactStub = createReactStub({
+    initialByIndex: new Map([
+      [STATE_SLOT.activeRun, { runId: "active-run", threadId, status: "running" }],
+      [STATE_SLOT.isProcessing, true],
+    ]),
+    stateSlots,
+    setCalls,
+    runEffects: true,
+  });
+  const { context, sentBody, renderedMessages } = createSendCaptureContext({
+    ReactStub,
+    sseStatus: CONNECTION_STATUS.RECONNECTING,
+    sendResponse: {
+      outcome: "rejected_busy",
+      notice: "Thread is still running.",
+    },
+  });
+
+  runUseChatSource(context);
+  const renderChat = () => {
+    ReactStub.__beginRender();
+    return context.globalThis.__testExports.useChat(threadId);
+  };
+
+  renderChat();
+  await renderChat().send("check whether the prior run finished");
+
+  assert.equal(sentBody()?.content, "check whether the prior run finished");
+  assert.equal(stateSlots.get(STATE_SLOT.isProcessing)?.value, true);
+  assert.equal(stateSlots.get(STATE_SLOT.activeRun)?.value.runId, "active-run");
+  assert.equal(
+    renderedMessages().some(
+      (message) => message.content === CONNECTION_LOST_RUN_FAILURE_MESSAGE,
+    ),
+    false,
+  );
+});
+
+test("useChat.send: reconnecting request failure preserves the active run", async () => {
+  const threadId = "thread-1";
+  const stateSlots = new Map();
+  const ReactStub = createReactStub({
+    initialByIndex: new Map([
+      [STATE_SLOT.activeRun, { runId: "active-run", threadId, status: "running" }],
+      [STATE_SLOT.isProcessing, true],
+    ]),
+    stateSlots,
+    runEffects: true,
+  });
+  const { context } = createSendCaptureContext({
+    ReactStub,
+    sseStatus: CONNECTION_STATUS.RECONNECTING,
+    sendError: new Error("network unavailable"),
+  });
+
+  runUseChatSource(context);
+  const renderChat = () => {
+    ReactStub.__beginRender();
+    return context.globalThis.__testExports.useChat(threadId);
+  };
+
+  renderChat();
+  await assert.rejects(
+    renderChat().send("check whether the prior run finished"),
+    /network unavailable/,
+  );
+
+  assert.equal(stateSlots.get(STATE_SLOT.isProcessing)?.value, true);
+  assert.equal(stateSlots.get(STATE_SLOT.activeRun)?.value.runId, "active-run");
 });
 
 test("useChat.send: forwards staged attachments to sendMessage in wire shape", async () => {

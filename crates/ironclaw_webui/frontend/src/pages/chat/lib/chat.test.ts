@@ -5,6 +5,7 @@ import { test } from "vitest";
 import vm from "node:vm";
 
 import { channelConnectionDisplayName } from "../../../lib/channel-connection-events";
+import { CONNECTION_STATUS } from "./connection-status";
 
 function chatSourceForTest() {
   const source = readFileSync(new URL("../chat.tsx", import.meta.url), "utf8");
@@ -127,6 +128,7 @@ function renderChat({
       ],
     },
     NEW_DRAFT_KEY: "new",
+    CONNECTION_STATUS,
     THREAD_STATE: { NEEDS_ATTENTION: "needs_attention", RUNNING: "running" },
     buildRuntimeContext: () => ({}),
     buildScopedLogsPath: ({ threadId }) => `/logs?thread_id=${threadId}`,
@@ -220,6 +222,42 @@ test("Chat leaves the composer editable while a run is processing", () => {
   const props = componentProps(chatInput, components.ChatInput);
   assert.equal(props.disabled, false);
   assert.equal(props.sendDisabled, true);
+});
+
+test("Chat allows a server-validated send while the active run stream reconnects", async () => {
+  let sentContent = null;
+  const { tree, components } = renderChat({
+    hookState: {
+      messages: [{ id: "message-1" }],
+      isProcessing: true,
+      pendingGate: null,
+      suggestions: [],
+      sseStatus: CONNECTION_STATUS.RECONNECTING,
+      historyLoading: false,
+      hasMore: false,
+      cooldownSeconds: 0,
+      recoveryNotice: null,
+      activeRun: { runId: "run-1", threadId: "thread-1", status: "running" },
+      send: async (content) => {
+        sentContent = content;
+        return { outcome: "rejected_busy" };
+      },
+      cancelRun: async () => {},
+      retryMessage: () => {},
+      approve: () => {},
+      recoverHistory: () => {},
+      loadMore: () => {},
+      setSuggestions: () => {},
+      submitAuthToken: async () => {},
+    },
+  });
+
+  const chatInput = findComponent(tree, components.ChatInput);
+  const props = componentProps(chatInput, components.ChatInput);
+  assert.equal(props.sendDisabled, false);
+  assert.equal(props.canCancel, false);
+  await props.onSend("check whether the prior run finished");
+  assert.equal(sentContent, "check whether the prior run finished");
 });
 
 test("Chat shows typing indicator before assistant text streams", () => {

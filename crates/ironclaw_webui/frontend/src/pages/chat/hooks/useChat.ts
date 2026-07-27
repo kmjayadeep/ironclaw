@@ -541,11 +541,13 @@ export function useChat(threadId) {
       const localRunBlocksSend =
         Boolean(sendTargetThreadId) &&
         localRunAdmissionRef.current?.threadId === sendTargetThreadId;
+      const recoveryProbeSend =
+        connectionStatusRef.current === CONNECTION_STATUS.RECONNECTING &&
+        (processingBlocksSend || activeRunBlocksSend || localRunBlocksSend);
       if (
         submitBusyRef.current ||
-        processingBlocksSend ||
-        activeRunBlocksSend ||
-        localRunBlocksSend
+        (!recoveryProbeSend &&
+          (processingBlocksSend || activeRunBlocksSend || localRunBlocksSend))
       ) {
         return null;
       }
@@ -608,7 +610,7 @@ export function useChat(threadId) {
       // Only the rendered thread has an SSE settle path in this hook. Background
       // target sends are left to the server's rejected_busy response instead.
       const shouldTrackLocalRun = shouldRenderInCurrentThread;
-      if (shouldTrackLocalRun) {
+      if (shouldTrackLocalRun && !recoveryProbeSend) {
         streamErrorClosedAdmissionThreadIdsRef.current.delete(sendThreadId);
         localRunAdmissionRef.current = {
           threadId: sendThreadId,
@@ -714,7 +716,7 @@ export function useChat(threadId) {
         // server's notice (if present) as a system message so the user
         // knows to resend.
         if (response?.outcome === "rejected_busy") {
-          if (shouldTrackLocalRun) {
+          if (shouldTrackLocalRun && !recoveryProbeSend) {
             localRunAdmissionRef.current = null;
           }
           const markRejected = (prev) =>
@@ -759,7 +761,9 @@ export function useChat(threadId) {
               appendSystemNotice(false);
             }
           }
-          updateCurrentRunState(() => setIsProcessing(false));
+          if (!recoveryProbeSend) {
+            updateCurrentRunState(() => setIsProcessing(false));
+          }
           submitBusyRef.current = false;
         } else if (!response?.run_id) {
           if (shouldTrackLocalRun) {
@@ -769,7 +773,7 @@ export function useChat(threadId) {
         }
         return response;
       } catch (err) {
-        if (shouldTrackLocalRun) {
+        if (shouldTrackLocalRun && !recoveryProbeSend) {
           streamErrorClosedAdmissionThreadIdsRef.current.delete(sendThreadId);
           localRunAdmissionRef.current = null;
         }
@@ -799,7 +803,9 @@ export function useChat(threadId) {
         ];
         updateCurrentThread(appendFailure);
         updateSeededTarget(appendFailure);
-        updateCurrentRunState(() => setIsProcessing(false));
+        if (!recoveryProbeSend) {
+          updateCurrentRunState(() => setIsProcessing(false));
+        }
         submitBusyRef.current = false;
         throw err;
       } finally {

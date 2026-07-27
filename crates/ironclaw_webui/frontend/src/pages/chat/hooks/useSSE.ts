@@ -33,21 +33,52 @@ const V2_EVENT_NAMES = [
 const EVENT_SOURCE_OPEN = 1;
 const SSE_CONNECTION_STORAGE_KEY = "ironclaw:v2-sse-connection";
 
-function newConnectionState() {
+type SseConnectionState = {
+  connectionId: string;
+  generation: number;
+};
+
+function newConnectionState(): SseConnectionState {
   return { connectionId: clientActionId(), generation: 0 };
 }
 
-function loadConnectionState() {
+function isDocumentReload(): boolean {
+  try {
+    const navigation =
+      globalThis.performance?.getEntriesByType?.("navigation")[0];
+    return Boolean(
+      navigation &&
+        "type" in navigation &&
+        navigation.type === "reload",
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+function loadConnectionState(): SseConnectionState {
+  // sessionStorage can be copied into a newly opened or duplicated tab. Only
+  // an actual reload may reuse the predecessor document's stream identity;
+  // every fresh top-level navigation must get an independent server slot.
+  if (!isDocumentReload()) return newConnectionState();
   try {
     const raw = globalThis.sessionStorage?.getItem(SSE_CONNECTION_STORAGE_KEY);
     if (!raw) return newConnectionState();
-    const parsed = JSON.parse(raw);
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return newConnectionState();
+    const candidate = parsed as Record<string, unknown>;
+    const connectionId = candidate.connectionId;
+    const generation = candidate.generation;
     const validConnectionId =
-      typeof parsed?.connectionId === "string" &&
-      /^[A-Za-z0-9_-]{1,64}$/.test(parsed.connectionId);
+      typeof connectionId === "string" &&
+      /^[A-Za-z0-9_-]{1,64}$/.test(connectionId);
     const validGeneration =
-      Number.isSafeInteger(parsed?.generation) && parsed.generation >= 0;
-    if (validConnectionId && validGeneration) return parsed;
+      typeof generation === "number" &&
+      Number.isSafeInteger(generation) &&
+      generation >= 0;
+    if (validConnectionId && validGeneration) {
+      return { connectionId, generation };
+    }
   } catch (_) {
     // Storage may be unavailable or contain stale data. A fresh identity still
     // gives this document a usable stream; the server's max lifetime bounds
@@ -56,16 +87,17 @@ function loadConnectionState() {
   return newConnectionState();
 }
 
-// sessionStorage survives a reload but is scoped to the browser tab. Persisting
-// both values lets a reloaded document supersede the proxy-held stream from its
-// predecessor without allowing an older generation to cancel the replacement.
+// Persisting both values lets a reloaded document supersede the proxy-held
+// stream from its predecessor without allowing an older generation to cancel
+// the replacement. Fresh documents intentionally ignore copied storage above.
 const sseConnectionState = loadConnectionState();
 
-function connectionGeneration() {
-  sseConnectionState.generation = Math.min(
-    Number.MAX_SAFE_INTEGER,
-    sseConnectionState.generation + 1,
-  );
+function nextConnectionState(): SseConnectionState {
+  if (sseConnectionState.generation >= Number.MAX_SAFE_INTEGER) {
+    sseConnectionState.connectionId = clientActionId();
+    sseConnectionState.generation = 0;
+  }
+  sseConnectionState.generation += 1;
   try {
     globalThis.sessionStorage?.setItem(
       SSE_CONNECTION_STORAGE_KEY,
@@ -74,7 +106,7 @@ function connectionGeneration() {
   } catch (_) {
     // Best effort. The in-memory identity still covers SPA route switches.
   }
-  return sseConnectionState.generation;
+  return { ...sseConnectionState };
 }
 
 function eventSourceReadyStateConstant(staticValue: unknown, fallback: number) {
@@ -176,11 +208,12 @@ export function useSSE({ threadId, onEvent, enabled }) {
           : CONNECTION_STATUS.CONNECTING,
       );
 
+      const connectionState = nextConnectionState();
       es = openEventStream({
         threadId,
         afterCursor: lastEventId || undefined,
-        connectionId: sseConnectionState.connectionId,
-        connectionGeneration: connectionGeneration(),
+        connectionId: connectionState.connectionId,
+        connectionGeneration: connectionState.generation,
       });
       const source = es;
 
@@ -209,10 +242,10 @@ export function useSSE({ threadId, onEvent, enabled }) {
         }
         const rawType = frame.type || fallbackType;
         const type = rawType === "stream_error" ? "error" : rawType;
-        // Some browsers resume an interrupted EventSource by delivering the
-        // next frame without a second `open` callback. A normal frame proves
-        // the transport recovered and must clear a stale reconnecting badge.
-        // Classified stream errors keep their own terminal/retry state below.
+        // Any valid non-error application frame proves the active replacement
+        // transport is live and must clear a stale reconnecting badge, even if
+        // its `open` callback was delayed. Classified stream errors keep their
+        // own terminal/retry state below.
         if (type !== "error") markConnected(source);
         onEventRef.current?.({
           // The frame's own `type` field is the canonical source;

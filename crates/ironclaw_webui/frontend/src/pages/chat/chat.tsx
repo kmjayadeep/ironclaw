@@ -24,6 +24,7 @@ import { NEW_DRAFT_KEY } from "./lib/draft-store";
 import { buildRuntimeContext } from "./lib/runtime-context";
 import { buildScopedLogsPath } from "../logs/lib/logs-data";
 import { useInterfacePreferences } from "../../lib/interface-preferences";
+import { CONNECTION_STATUS } from "./lib/connection-status";
 
 /* Grace window before an active thread's sidebar state is cleared to idle.
  * Long enough for SSE to rehydrate a gate/run after a thread switch (so a
@@ -143,6 +144,8 @@ export function Chat({
   const activeThreadHasOnboarding =
     Boolean(activeThreadId) && Boolean(pendingOnboarding);
   const activeThreadIsProcessing = Boolean(activeThreadId) && isProcessing;
+  const isRecoveringConnection =
+    sseStatus === CONNECTION_STATUS.RECONNECTING;
   const activeRunId = activeRun?.runId || null;
   const streamingAssistantTextVisible = hasVisibleStreamingAssistantText(
     messages,
@@ -174,6 +177,7 @@ export function Chat({
     activeThreadHasGate ||
     activeThreadHasOnboarding ||
     (activeThreadIsProcessing &&
+      !isRecoveringConnection &&
       !activeThreadHasGate &&
       !activeThreadHasOnboarding) ||
     cooldownSeconds > 0;
@@ -209,6 +213,7 @@ export function Chat({
       activeRun?.runId &&
       activeRun.threadId === activeThreadId &&
       activeThreadIsProcessing &&
+      !isRecoveringConnection &&
       !activeThreadHasGate &&
       !activeThreadHasOnboarding
   );

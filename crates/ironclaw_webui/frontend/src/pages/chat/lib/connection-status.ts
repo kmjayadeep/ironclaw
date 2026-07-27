@@ -12,7 +12,6 @@ export type ConnectionStatus =
 
 const CONNECTION_LOST_STATUSES: ReadonlySet<string> = new Set([
   CONNECTION_STATUS.DISCONNECTED,
-  CONNECTION_STATUS.RECONNECTING,
 ]);
 
 function normalizeConnectionStatus(status: unknown): string {

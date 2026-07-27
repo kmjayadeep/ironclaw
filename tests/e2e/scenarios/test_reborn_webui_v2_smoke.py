@@ -136,6 +136,7 @@ async def _install_fake_v2_event_source(page) -> None:
         """
         (() => {
           let activeStream = null;
+          window.__v2SseUrls = [];
           const currentStream = () => {
             if (!activeStream || activeStream.readyState === 2) {
               throw new Error("no EventSource stream is open");
@@ -146,6 +147,7 @@ async def _install_fake_v2_event_source(page) -> None:
             constructor(url) {
               super();
               this.url = url;
+              window.__v2SseUrls.push(String(url));
               this.readyState = 0;
               if (activeStream && activeStream.readyState !== 2) {
                 activeStream.close();
@@ -884,11 +886,12 @@ async def test_reborn_v2_composer_accepts_draft_while_run_is_processing(reborn_v
     await expect(reborn_v2_page.locator(SEL_V2["msg_user"])).to_have_count(1, timeout=1000)
 
 
-async def test_reborn_v2_disconnected_run_shows_status_and_stops_typing(
+async def test_reborn_v2_transient_reconnect_preserves_run_and_allows_send(
     reborn_v2_server, reborn_v2_browser
 ) -> None:
-    """A disconnected active run shows transport status and stops spinning."""
+    """A recoverable transport error preserves the run and defers send admission."""
     thread_id = "thread-disconnected-run"
+    send_requests: list[dict] = []
     context = await reborn_v2_browser.new_context(viewport={"width": 1280, "height": 720})
     page = await context.new_page()
     await _install_fake_v2_event_source(page)
@@ -937,14 +940,24 @@ async def test_reborn_v2_disconnected_run_shows_status_and_stops_typing(
         await fulfill_json(route, {"messages": [], "next_cursor": None})
 
     async def handle_send(route) -> None:
+        send_requests.append(route.request.post_data_json)
+        if len(send_requests) == 1:
+            await fulfill_json(
+                route,
+                {
+                    "thread_id": thread_id,
+                    "run_id": "run-disconnected",
+                    "status": "running",
+                },
+                status=202,
+            )
+            return
         await fulfill_json(
             route,
             {
-                "thread_id": thread_id,
-                "run_id": "run-disconnected",
-                "status": "running",
+                "outcome": "rejected_busy",
+                "notice": "Thread is still running.",
             },
-            status=202,
         )
 
     await page.route("**/api/webchat/v2/session", handle_session)
@@ -996,14 +1009,62 @@ async def test_reborn_v2_disconnected_run_shows_status_and_stops_typing(
 
         await page.evaluate("() => window.__failLatestV2Sse(0)")
         await expect(connection_status).to_have_text("Reconnecting...", timeout=5000)
+        await expect(page.locator(SEL_V2["typing_indicator"])).to_be_visible()
+        await expect(page.locator(SEL_V2["msg_error"])).to_have_count(0)
 
-        await page.evaluate("() => window.__failLatestV2Sse(2)")
-        await expect(connection_status).to_have_text("Disconnected", timeout=5000)
+        await composer.fill("check whether the prior run finished")
+        await composer.press("Enter")
+        await expect(page.locator(SEL_V2["msg_user"])).to_have_count(2, timeout=5000)
+        assert [request["content"] for request in send_requests] == [
+            "summarize 3 X/Twitter posts",
+            "check whether the prior run finished",
+        ]
+        await expect(page.get_by_text("Thread is still running.")).to_be_visible()
+        await expect(page.locator(SEL_V2["typing_indicator"])).to_be_visible()
+        await expect(page.locator(SEL_V2["msg_error"])).to_have_count(0)
 
-        await expect(page.locator(SEL_V2["typing_indicator"])).to_have_count(0, timeout=5000)
-        await expect(page.locator(SEL_V2["msg_error"]).last).to_contain_text(
-            "Connection to the server was lost. Please reconnect and try again.",
+        # The app-owned replacement opens after bounded backoff and clears the
+        # badge without requiring a tab switch.
+        await expect(connection_status).to_have_count(0, timeout=5000)
+        await page.evaluate(
+            """
+            () => window.__emitV2Sse("projection_update", {
+              state: {
+                items: [
+                  {
+                    run_status: {
+                      run_id: "run-disconnected",
+                      status: "completed"
+                    }
+                  }
+                ]
+              }
+            }, "cursor-terminal")
+            """
+        )
+        await expect(page.locator(SEL_V2["typing_indicator"])).to_have_count(
+            0,
             timeout=5000,
+        )
+
+        # A real document reload reuses the tab identity with a newer
+        # generation so it supersedes a proxy-held predecessor.
+        before_reload_url = await page.evaluate(
+            "() => window.__v2SseUrls.at(-1)"
+        )
+        await page.reload()
+        await expect(page.locator(SEL_V2["chat_composer"])).to_be_visible(
+            timeout=15000
+        )
+        await page.wait_for_function("window.__v2SseUrls.length > 0")
+        after_reload_url = await page.evaluate(
+            "() => window.__v2SseUrls.at(-1)"
+        )
+        before_query = parse_qs(urlparse(before_reload_url).query)
+        after_query = parse_qs(urlparse(after_reload_url).query)
+        assert after_query["connection_id"] == before_query["connection_id"]
+        assert int(after_query["connection_generation"][0]) > int(
+            before_query["connection_generation"][0]
         )
     finally:
         await context.close()

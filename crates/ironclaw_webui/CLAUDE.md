@@ -124,10 +124,12 @@ route (tenant/user-scoped tool-approval settings), not an operator route.
   (default 3 concurrent; override via `WebUiV2State::with_sse_concurrency_limit`)
   — a caller cannot bypass the cap by mixing SSE and WS. Exhaustion returns
   `429` with `retryable: true`.
-- The SPA also sends a bounded, random `connection_id` that is persisted in
-  per-tab `sessionStorage` together with a monotonically increasing
-  `connection_generation`. A same-caller, same-id stream supersedes its prior
-  generation without consuming another slot; a delayed older generation
+- The SPA also sends a bounded, random `connection_id` together with a
+  monotonically increasing `connection_generation`. The pair is persisted in
+  `sessionStorage` but restored only for a Navigation Timing `reload`; fresh
+  top-level navigations ignore copied storage so duplicated/opener-created tabs
+  receive distinct identities. A same-caller, same-id stream supersedes its
+  prior generation without consuming another slot; a delayed older generation
   receives `204` and cannot cancel the current stream. This prevents
   proxy-reordered closes/opens during thread navigation or full-page reload
   from stranding the replacement stream behind the cap; distinct tabs still

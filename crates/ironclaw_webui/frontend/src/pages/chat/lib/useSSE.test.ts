@@ -30,6 +30,7 @@ function createHarness({
   onEvent = () => {},
   sessionStorage = createSessionStorage(),
   connectionId = "browser-tab-connection",
+  navigationType = "navigate",
 } = {}) {
   const statuses = [];
   const streams = [];
@@ -54,6 +55,10 @@ function createHarness({
     Math,
     globalThis: {
       crypto: { randomUUID: () => connectionId },
+      performance: {
+        getEntriesByType: (type) =>
+          type === "navigation" ? [{ type: navigationType }] : [],
+      },
       sessionStorage,
     },
     openEventStream: (args) => {
@@ -442,6 +447,7 @@ test("useSSE preserves connection identity and generation across a document relo
   const reloadedDocument = createHarness({
     sessionStorage,
     connectionId: "new-id-must-not-be-used",
+    navigationType: "reload",
   });
 
   assert.equal(
@@ -455,6 +461,134 @@ test("useSSE preserves connection identity and generation across a document relo
     "a reload must supersede rather than be rejected as a stale generation",
   );
   reloadedDocument.cleanup();
+});
+
+test("useSSE gives a duplicated tab a fresh connection identity", () => {
+  const copiedSessionStorage = createSessionStorage({
+    "ironclaw:v2-sse-connection": JSON.stringify({
+      connectionId: "original-tab-id",
+      generation: 7,
+    }),
+  });
+
+  const duplicatedTab = createHarness({
+    sessionStorage: copiedSessionStorage,
+    connectionId: "duplicated-tab-id",
+    navigationType: "navigate",
+  });
+
+  assert.equal(duplicatedTab.streams[0].args.connectionId, "duplicated-tab-id");
+  assert.equal(duplicatedTab.streams[0].args.connectionGeneration, 1);
+  duplicatedTab.cleanup();
+});
+
+test("useSSE rejects malformed or unavailable persisted connection state", () => {
+  const invalidValues = [
+    "{not-json",
+    JSON.stringify({ connectionId: "x".repeat(65), generation: 3 }),
+    JSON.stringify({ connectionId: "invalid/id", generation: 3 }),
+    JSON.stringify({ connectionId: "stored-id", generation: -1 }),
+    JSON.stringify({
+      connectionId: "stored-id",
+      generation: Number.MAX_SAFE_INTEGER + 1,
+    }),
+  ];
+
+  invalidValues.forEach((value, index) => {
+    const sessionStorage = createSessionStorage({
+      "ironclaw:v2-sse-connection": value,
+    });
+    const harness = createHarness({
+      sessionStorage,
+      connectionId: `fallback-id-${index}`,
+      navigationType: "reload",
+    });
+    assert.equal(harness.streams[0].args.connectionId, `fallback-id-${index}`);
+    assert.equal(harness.streams[0].args.connectionGeneration, 1);
+    harness.cleanup();
+  });
+
+  const unavailableStorage = {
+    getItem() {
+      throw new Error("storage unavailable");
+    },
+    setItem() {},
+  };
+  const harness = createHarness({
+    sessionStorage: unavailableStorage,
+    connectionId: "fallback-after-read-error",
+    navigationType: "reload",
+  });
+  assert.equal(
+    harness.streams[0].args.connectionId,
+    "fallback-after-read-error",
+  );
+  assert.equal(harness.streams[0].args.connectionGeneration, 1);
+  harness.cleanup();
+});
+
+test("useSSE normalizes valid persisted connection state", () => {
+  const sessionStorage = createSessionStorage({
+    "ironclaw:v2-sse-connection": JSON.stringify({
+      connectionId: "stored-id",
+      generation: 4,
+      ignored: "copied external data",
+    }),
+  });
+  const harness = createHarness({
+    sessionStorage,
+    connectionId: "unused-id",
+    navigationType: "reload",
+  });
+
+  assert.deepEqual(
+    JSON.parse(sessionStorage.getItem("ironclaw:v2-sse-connection")),
+    { connectionId: "stored-id", generation: 5 },
+  );
+  harness.cleanup();
+});
+
+test("useSSE keeps reconnect generations in memory when storage writes fail", () => {
+  const sessionStorage = {
+    getItem: () =>
+      JSON.stringify({ connectionId: "stored-id", generation: 4 }),
+    setItem() {
+      throw new Error("storage unavailable");
+    },
+  };
+  const harness = createHarness({
+    sessionStorage,
+    connectionId: "unused-id",
+    navigationType: "reload",
+  });
+
+  assert.equal(harness.streams[0].args.connectionId, "stored-id");
+  assert.equal(harness.streams[0].args.connectionGeneration, 5);
+  harness.render("thread-2");
+  assert.equal(harness.streams[1].args.connectionId, "stored-id");
+  assert.equal(harness.streams[1].args.connectionGeneration, 6);
+  harness.cleanup();
+});
+
+test("useSSE rotates identity before the generation counter would saturate", () => {
+  const sessionStorage = createSessionStorage({
+    "ironclaw:v2-sse-connection": JSON.stringify({
+      connectionId: "saturated-id",
+      generation: Number.MAX_SAFE_INTEGER,
+    }),
+  });
+  const harness = createHarness({
+    sessionStorage,
+    connectionId: "rotated-id",
+    navigationType: "reload",
+  });
+
+  assert.equal(harness.streams[0].args.connectionId, "rotated-id");
+  assert.equal(harness.streams[0].args.connectionGeneration, 1);
+  harness.render("thread-2");
+  assert.equal(harness.streams[1].args.connectionId, "rotated-id");
+  assert.equal(harness.streams[1].args.connectionGeneration, 2);
+  harness.cleanup();
 });
 
 test("useSSE ignores callbacks from a stream disposed by a thread switch", () => {
