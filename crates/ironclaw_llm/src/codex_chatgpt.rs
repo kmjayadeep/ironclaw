@@ -1053,13 +1053,23 @@ impl CodexChatGptProvider {
         }
     }
 
+    /// Does this output message carry a policy refusal?
+    ///
+    /// Two shapes count: a part whose `type` is literally `"refusal"`, and a
+    /// part carrying a non-empty `refusal` string (the structured-outputs
+    /// shape). The key's mere *presence* does not: OpenAI sets `refusal` to
+    /// `null` on every non-refused structured-output part, so treating that as
+    /// a refusal would report a successful answer as content-filtered.
     fn output_message_has_refusal(item: &Value) -> bool {
         item.get("content")
             .and_then(|value| value.as_array())
             .is_some_and(|content| {
                 content.iter().any(|part| {
                     part.get("type").and_then(|value| value.as_str()) == Some("refusal")
-                        || part.get("refusal").is_some()
+                        || part
+                            .get("refusal")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|refusal| !refusal.trim().is_empty())
                 })
             })
     }
@@ -2049,6 +2059,34 @@ data: {"type":"response.incomplete","response":{"status":"incomplete","incomplet
             .await,
             FinishReason::ContentFilter,
             "a Responses API refusal part is a content block, not a clean stop",
+        );
+
+        // `refusal: null` is the *non*-refused shape: OpenAI sets the key on
+        // every structured-output part and leaves it null when nothing was
+        // refused. Treating the key's mere presence as a refusal fails runs
+        // that actually succeeded.
+        assert_eq!(
+            finish_reason_for(
+                r#"data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"here you go","refusal":null}]}],"usage":{"input_tokens":1,"output_tokens":1}}}
+
+"#
+            )
+            .await,
+            FinishReason::Stop,
+            "refusal: null alongside real content is a clean stop, not a content block",
+        );
+
+        // A refusal string on a part whose `type` is not literally "refusal"
+        // (the structured-outputs shape) is still a policy block.
+        assert_eq!(
+            finish_reason_for(
+                r#"data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","refusal":"I'm sorry, I can't help with that."}]}],"usage":{"input_tokens":1,"output_tokens":1}}}
+
+"#
+            )
+            .await,
+            FinishReason::ContentFilter,
+            "a non-null refusal string is a content block whatever the part type says",
         );
 
         // status = incomplete with a reason we do not recognize → Unknown,
