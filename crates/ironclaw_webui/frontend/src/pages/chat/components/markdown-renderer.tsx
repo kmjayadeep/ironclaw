@@ -4,6 +4,7 @@ import { toast } from "../../../lib/toast";
 import { useT } from "../../../lib/i18n";
 
 const COLLAPSE_PX = 360;
+const STREAMING_RENDER_INTERVAL_MS = 150;
 
 /* Enhance rendered <pre> code blocks in place: syntax highlight, a hover
    toolbar (copy + soft-wrap toggle), and collapse for very tall blocks.
@@ -140,44 +141,92 @@ function MarkdownRendererImpl({ content, className = "", streaming = false }) {
   const ref = React.useRef(null);
   const normalizedContent = typeof content === "string" ? content : "";
   const [rendered, setRendered] = React.useState(null);
+  const latestContentRef = React.useRef(normalizedContent);
+  const latestStreamingRef = React.useRef(streaming);
+  const mountedRef = React.useRef(true);
+  const renderInFlightRef = React.useRef(false);
+  const lastRenderAtRef = React.useRef(0);
+  const renderTimerRef = React.useRef(null);
+  const requestRenderRef = React.useRef(() => false);
+  const scheduleStreamingRenderRef = React.useRef(() => {});
+
+  latestContentRef.current = normalizedContent;
+  latestStreamingRef.current = streaming;
   const renderedHtml =
-    !streaming && rendered?.source === normalizedContent
+    normalizedContent && rendered &&
+    (streaming || rendered.source === normalizedContent)
       ? rendered.html
       : null;
 
-  // Streaming projections update for every chunk. Keep that hot path as
-  // escaped React text and defer the full marked + DOMPurify pipeline until
-  // the reply stabilizes. The loading fallback is also text, so markdown can
-  // never reach innerHTML before sanitization completes.
-  React.useEffect(() => {
-    let active = true;
-    if (streaming || !normalizedContent) {
-      setRendered(null);
-      return () => {
-        active = false;
-      };
-    }
-
-    setRendered(null);
+  requestRenderRef.current = () => {
+    if (!latestContentRef.current || renderInFlightRef.current) return false;
+    renderInFlightRef.current = true;
     import("../../../lib/markdown")
       .then(({ renderMarkdown }) => {
-        if (active) {
-          setRendered({
-            source: normalizedContent,
-            html: renderMarkdown(normalizedContent),
-          });
-        }
+        const currentContent = latestContentRef.current;
+        if (!mountedRef.current || !currentContent) return;
+        lastRenderAtRef.current = Date.now();
+        setRendered({
+          source: currentContent,
+          html: renderMarkdown(currentContent),
+        });
       })
       .catch(() => {
-        if (active) setRendered(null);
+        if (mountedRef.current) setRendered(null);
+      })
+      .finally(() => {
+        renderInFlightRef.current = false;
+        if (mountedRef.current && latestStreamingRef.current) {
+          scheduleStreamingRenderRef.current();
+        }
       });
-    return () => {
-      active = false;
-    };
+    return true;
+  };
+
+  scheduleStreamingRenderRef.current = () => {
+    if (
+      renderTimerRef.current !== null ||
+      renderInFlightRef.current ||
+      !latestContentRef.current
+    ) {
+      return;
+    }
+    const elapsed = Date.now() - lastRenderAtRef.current;
+    const delay = Math.max(0, STREAMING_RENDER_INTERVAL_MS - elapsed);
+    renderTimerRef.current = setTimeout(() => {
+      renderTimerRef.current = null;
+      requestRenderRef.current();
+    }, delay);
+  };
+
+  // Streaming projections update for every chunk. Render a sanitized snapshot
+  // at a bounded cadence so Markdown remains legible while avoiding the full
+  // marked + DOMPurify pipeline for every projection. The first snapshot
+  // safely falls back to escaped React text while the lazy module loads.
+  React.useEffect(() => {
+    if (!normalizedContent) {
+      if (renderTimerRef.current !== null) {
+        clearTimeout(renderTimerRef.current);
+        renderTimerRef.current = null;
+      }
+      setRendered(null);
+      return;
+    }
+
+    if (streaming) {
+      scheduleStreamingRenderRef.current();
+      return;
+    }
+
+    if (renderTimerRef.current !== null) {
+      clearTimeout(renderTimerRef.current);
+      renderTimerRef.current = null;
+    }
+    requestRenderRef.current();
   }, [normalizedContent, streaming]);
 
   React.useEffect(() => {
-    if (renderedHtml === null) return undefined;
+    if (streaming || renderedHtml === null) return undefined;
     enhanceCodeBlocks(ref.current, t);
     const root = ref.current;
     if (!root?.querySelector("pre code")) return undefined;
@@ -193,7 +242,15 @@ function MarkdownRendererImpl({ content, className = "", streaming = false }) {
     return () => {
       active = false;
     };
-  }, [renderedHtml, t]);
+  }, [renderedHtml, streaming, t]);
+
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (renderTimerRef.current !== null) clearTimeout(renderTimerRef.current);
+    };
+  }, []);
 
   if (renderedHtml === null) {
     return (

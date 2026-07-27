@@ -196,11 +196,26 @@ test("markdown and syntax highlighting stay out of the synchronous chat chunk", 
   }
 });
 
-test("streaming markdown stays on the escaped text path until completion", () => {
+test("streaming markdown renders sanitized snapshots at a bounded cadence", () => {
   assert.match(
     rendererSource,
-    /if \(streaming \|\| !normalizedContent\) \{[\s\S]*setRendered\(null\)/,
-    "streaming updates should not invoke marked or DOMPurify",
+    /const STREAMING_RENDER_INTERVAL_MS = 150/,
+    "streaming rendering should have an explicit cadence budget",
+  );
+  assert.match(
+    rendererSource,
+    /const delay = Math\.max\(0, STREAMING_RENDER_INTERVAL_MS[\s\S]*setTimeout/,
+    "streaming updates should batch rendering instead of parsing every projection",
+  );
+  assert.match(
+    rendererSource,
+    /html: renderMarkdown\(currentContent\)/,
+    "every streamed snapshot must still pass through the markdown sanitizer",
+  );
+  assert.match(
+    rendererSource,
+    /if \(streaming \|\| renderedHtml === null\) return undefined/,
+    "syntax highlighting and code controls should wait for the completed reply",
   );
   assert.match(
     rendererSource,
