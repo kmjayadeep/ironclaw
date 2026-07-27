@@ -5,7 +5,7 @@ import { summarizeActivity } from "../lib/activity-summary";
 import { MarkdownRenderer } from "./markdown-renderer";
 import { ToolActivity } from "./tool-activity";
 
-export function ActivityRun({ activity, activeRunId }) {
+export function ActivityRun({ activity, activeRunId = null }) {
   const t = useT();
   const summary = React.useMemo(() => summarizeActivity(activity, t), [activity, t]);
   const shouldAutoExpand = shouldExpandActivityRun(activity);
@@ -55,10 +55,13 @@ export function ActivityRun({ activity, activeRunId }) {
 
 function ActivityItem({ item, activeRunId }) {
   if (item.role === "thinking") {
+    const isStreaming =
+      typeof activeRunId === "string" &&
+      item.turnRunId === activeRunId;
     return (
       <ReasoningItem
         content={item.content}
-        streaming={item.turnRunId === activeRunId}
+        streaming={isStreaming}
       />
     );
   }

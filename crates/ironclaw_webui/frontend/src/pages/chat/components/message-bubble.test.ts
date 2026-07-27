@@ -159,6 +159,23 @@ test("active reasoning in an activity run defers Markdown", async () => {
   assert.match(render(null), /data-streaming="false"/);
 });
 
+test("untagged reasoning in an activity run renders Markdown", async () => {
+  const { ActivityRun } = await import("./activity-run");
+  const markup = renderToStaticMarkup(
+    React.createElement(ActivityRun, {
+      activity: [
+        {
+          id: "thinking-history",
+          role: CHAT_MESSAGE_ROLES.THINKING,
+          content: "Completed **reasoning**.",
+        },
+      ],
+    }),
+  );
+
+  assert.match(markup, /data-streaming="false"/);
+});
+
 test("only final assistant replies expose the run artifact download", async () => {
   const { MessageBubble } = await import("./message-bubble");
   const render = (isFinalReply: boolean) =>
