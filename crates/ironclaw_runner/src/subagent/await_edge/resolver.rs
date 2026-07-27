@@ -256,7 +256,13 @@ where
                 ),
             })
     }
+}
 
+#[cfg(test)]
+impl<S> AwaitEdgeResolver<S>
+where
+    S: SessionThreadService + ?Sized,
+{
     /// Rebuild a lost/never-written edge purely from the child's run record +
     /// thread metadata — a pure data transformation, zero `agent_turn_runtime`
     /// calls for the parent. The live parent-record lookup this used to do
@@ -276,7 +282,6 @@ where
     /// placeholder, and `resume_parent`'s `resume_turn` keys on `(scope,
     /// run_id)` against a live run record; both fail closed rather than
     /// silently acting on the wrong thread.
-    #[cfg(test)]
     async fn reconstruct_edge(
         &self,
         child_record: &TurnRunRecord,
@@ -382,7 +387,12 @@ where
             settled_at: None,
         }))
     }
+}
 
+impl<S> AwaitEdgeResolver<S>
+where
+    S: SessionThreadService + ?Sized,
+{
     /// Returns the parent's `LoopRunContext` straight off the edge —
     /// captured once at open/reconstruct time (see `AwaitEdge::parent_run_context`'s
     /// doc comment). Deliberately does **not** re-query `agent_turn_runtime`
