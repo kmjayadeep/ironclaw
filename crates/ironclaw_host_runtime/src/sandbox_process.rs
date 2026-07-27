@@ -34,16 +34,14 @@ mod container_identity;
 mod mounts;
 mod scope_key;
 
-// `attribution`, `registry`, and `user_key` belong to the persistent
-// per-user sandbox container model landing incrementally (see this PR's
-// description). None has a production caller in this PR — the consumer (the
-// exec-based transport's per-user container reuse, and the egress proxy's
-// connection attribution) lands separately, on top of `exec_transport`,
-// which is not part of this PR. `user_key` is `pub`/re-exported because a
-// sibling crate-tier test in this PR (`registry`'s own tests) and future
-// cross-crate composition wiring construct it directly; `registry` and
-// `attribution` stay crate-private and carry per-item
-// `#[allow(dead_code)]` comments naming their future consumer where needed.
+// `attribution`, `registry`, and `user_key` are the persistent per-user
+// sandbox container model's identity/registry primitives: container naming,
+// label-based identity, and Docker-network connection attribution. Their
+// consumers are the exec-based transport's per-user container reuse and the
+// egress proxy's credential-injection path. `user_key` is `pub`/re-exported
+// for cross-crate composition wiring to construct directly; `registry` and
+// `attribution` stay crate-private, with per-item `#[allow(dead_code)]`
+// comments naming the future consumer where one isn't wired yet.
 mod attribution;
 mod registry;
 mod user_key;

@@ -19,7 +19,7 @@ use bollard::models::ContainerSummary;
 use chrono::{DateTime, Utc};
 use ironclaw_host_api::{TenantId, UserId};
 
-use super::user_key::RebornSandboxUserKey;
+use crate::sandbox_process::user_key::RebornSandboxUserKey;
 
 pub(crate) fn label_tenant(prefix: &str) -> String {
     format!("{prefix}.tenant")
@@ -263,6 +263,101 @@ mod tests {
     }
 
     #[test]
+    fn candidate_parsing_rejects_a_missing_container_id() {
+        let tenant = TenantId::new("tenant-a").unwrap();
+        let user = UserId::new("user-a").unwrap();
+        let labels = build_user_container_labels("ironclaw", &tenant, &user, "stamp-abc");
+        let container = ContainerSummary {
+            id: None,
+            labels: Some(labels),
+            ..Default::default()
+        };
+
+        assert!(UserContainerCandidate::from_summary(&container, "ironclaw").is_none());
+    }
+
+    #[test]
+    fn candidate_parsing_rejects_a_malformed_created_at_label() {
+        let mut labels = HashMap::new();
+        labels.insert(label_created_at("ironclaw"), "not-a-timestamp".to_string());
+        let container = ContainerSummary {
+            id: Some("abc123".to_string()),
+            labels: Some(labels),
+            ..Default::default()
+        };
+
+        assert!(UserContainerCandidate::from_summary(&container, "ironclaw").is_none());
+    }
+
+    fn test_key(tenant: &str, user: &str) -> RebornSandboxUserKey {
+        let scope = ironclaw_host_api::ResourceScope {
+            tenant_id: TenantId::new(tenant).unwrap(),
+            user_id: UserId::new(user).unwrap(),
+            agent_id: None,
+            project_id: None,
+            mission_id: None,
+            thread_id: None,
+            invocation_id: ironclaw_host_api::InvocationId::new(),
+        };
+        RebornSandboxUserKey::from_scope(&scope)
+    }
+
+    #[test]
+    fn background_job_registry_records_and_returns_jobs_for_a_user() {
+        let registry = BackgroundJobRegistry::new();
+        let key = test_key("t", "u");
+
+        assert!(registry.jobs_for(&key).is_empty());
+
+        registry.record(&key, 111, "sleep 60".to_string());
+        registry.record(&key, 222, "tail -f log".to_string());
+
+        let jobs = registry.jobs_for(&key);
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs[0].pid, 111);
+        assert_eq!(jobs[0].command_preview, "sleep 60");
+        assert_eq!(jobs[1].pid, 222);
+    }
+
+    #[test]
+    fn background_job_registry_isolates_jobs_by_user_key() {
+        let registry = BackgroundJobRegistry::new();
+        let a = test_key("t", "user-a");
+        let b = test_key("t", "user-b");
+
+        registry.record(&a, 111, "sleep 60".to_string());
+
+        assert_eq!(registry.jobs_for(&a).len(), 1);
+        assert!(registry.jobs_for(&b).is_empty());
+    }
+
+    #[test]
+    fn background_job_registry_drop_dead_retains_only_alive_pids() {
+        let registry = BackgroundJobRegistry::new();
+        let key = test_key("t", "u");
+        registry.record(&key, 111, "sleep 60".to_string());
+        registry.record(&key, 222, "tail -f log".to_string());
+        registry.record(&key, 333, "sleep 10".to_string());
+
+        registry.drop_dead(&key, &[222]);
+
+        let jobs = registry.jobs_for(&key);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].pid, 222);
+    }
+
+    #[test]
+    fn background_job_registry_drop_dead_on_unknown_key_is_a_no_op() {
+        let registry = BackgroundJobRegistry::new();
+        let key = test_key("t", "u");
+
+        // Must not panic when the key was never recorded.
+        registry.drop_dead(&key, &[111]);
+
+        assert!(registry.jobs_for(&key).is_empty());
+    }
+
+    #[test]
     fn activity_registry_touch_then_idle_for_reports_elapsed_duration() {
         let registry = SandboxActivityRegistry::new();
         let tenant = TenantId::new("t").unwrap();
@@ -302,5 +397,57 @@ mod tests {
         registry.forget(&key);
 
         assert!(registry.last_activity(&key).is_none());
+    }
+
+    #[test]
+    fn activity_registry_survives_concurrent_touch_read_and_forget() {
+        // `SandboxActivityRegistry` is a shared `Mutex` meant to be hit
+        // concurrently by exec transport (touch after every command) and the
+        // reaper (idle_for/forget) from separate tasks — every prior test
+        // here is strictly sequential. This drives real concurrent access
+        // from multiple OS threads: the assertion is simply that it
+        // completes without panicking/deadlocking (a poisoned or
+        // deadlocked mutex would hang or panic this test) and that state
+        // from a still-touching thread is observable afterwards.
+        use std::sync::Arc;
+        use std::thread;
+
+        let registry = Arc::new(SandboxActivityRegistry::new());
+        let keys: Vec<RebornSandboxUserKey> = (0..8)
+            .map(|index| test_key("t", &format!("user-{index}")))
+            .collect();
+
+        let mut handles = Vec::new();
+        for key in keys.clone() {
+            let registry = Arc::clone(&registry);
+            handles.push(thread::spawn(move || {
+                for _ in 0..200 {
+                    registry.touch(&key);
+                    let _ = registry.last_activity(&key);
+                    let _ = registry.idle_for(&key, Instant::now());
+                }
+            }));
+        }
+        // A concurrent forget on a disjoint key set, so touch/read on one
+        // key and forget on another race on the same underlying map.
+        let forget_registry = Arc::clone(&registry);
+        let forget_key = test_key("t", "user-forget-target");
+        forget_registry.touch(&forget_key);
+        handles.push(thread::spawn(move || {
+            for _ in 0..200 {
+                forget_registry.touch(&forget_key);
+                forget_registry.forget(&forget_key);
+            }
+        }));
+
+        for handle in handles {
+            handle
+                .join()
+                .expect("registry access thread must not panic");
+        }
+
+        for key in &keys {
+            assert!(registry.last_activity(key).is_some());
+        }
     }
 }

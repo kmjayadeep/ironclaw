@@ -14,7 +14,7 @@ use std::process::Command;
 /// exact gap that let sandbox security bugs ship unnoticed — docker-gated
 /// tests only ran on one developer's laptop). Unset locally, so dev machines
 /// keep today's skip-and-pass behavior.
-fn docker_tests_required() -> bool {
+pub(crate) fn docker_tests_required() -> bool {
     std::env::var("IRONCLAW_REQUIRE_DOCKER_TESTS").as_deref() == Ok("1")
 }
 

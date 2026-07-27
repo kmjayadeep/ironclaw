@@ -59,7 +59,7 @@ use ironclaw_host_api::{TenantId, UserId};
 
 use crate::RuntimeProcessError;
 
-use super::registry::{label_tenant, label_user};
+use crate::sandbox_process::registry::{label_tenant, label_user};
 
 /// Outcome of resolving a peer IP to an owning `{tenant, user}`. See the
 /// module doc's "Fail closed" section for exactly which conditions collapse
@@ -189,7 +189,15 @@ impl<L: NetworkContainerLookup> ConnectionAttributionResolver<L> {
             return cached;
         }
         let attribution = self.query(peer_ip).await;
-        self.lock_cache().insert(
+        let mut cache = self.lock_cache();
+        // A miss is the one guaranteed opportunity to sweep everyone else's
+        // expired entries too — without this, an entry past its TTL is never
+        // removed (only ever skipped by `cached`'s elapsed check), so a
+        // long-running proxy seeing a stream of distinct, never-repeating
+        // peer IPs would grow this map without bound.
+        let cache_ttl = self.cache_ttl;
+        cache.retain(|_, entry| entry.inserted_at.elapsed() <= cache_ttl);
+        cache.insert(
             peer_ip,
             CacheEntry {
                 attribution: attribution.clone(),
@@ -222,6 +230,11 @@ impl<L: NetworkContainerLookup> ConnectionAttributionResolver<L> {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
+    #[cfg(test)]
+    fn cache_len(&self) -> usize {
+        self.lock_cache().len()
+    }
+
     async fn query(&self, peer_ip: IpAddr) -> ConnectionAttribution {
         let containers = match self.lookup.containers_on_network(&self.network).await {
             Ok(containers) => containers,
@@ -249,7 +262,13 @@ impl<L: NetworkContainerLookup> ConnectionAttributionResolver<L> {
 
         match parse_attribution_labels(first, &self.label_prefix) {
             Some((tenant_id, user_id)) => ConnectionAttribution::Attributed { tenant_id, user_id },
-            None => ConnectionAttribution::Unattributed,
+            None => {
+                tracing::debug!(
+                    %peer_ip,
+                    "attribution: matched container missing or has malformed tenant/user labels"
+                );
+                ConnectionAttribution::Unattributed
+            }
         }
     }
 }
@@ -554,6 +573,103 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn container_with_no_network_settings_is_unattributed() {
+        let container = ContainerSummary {
+            id: Some("c1".to_string()),
+            labels: Some(labels("tenant-a", "user-a")),
+            network_settings: None,
+            ..Default::default()
+        };
+        let lookup = FakeLookup::new(vec![container]);
+        let resolver = ConnectionAttributionResolver::with_lookup(lookup, NETWORK, PREFIX);
+
+        let outcome = resolver.resolve("10.200.0.5".parse().unwrap()).await;
+
+        assert_eq!(outcome, ConnectionAttribution::Unattributed);
+    }
+
+    #[tokio::test]
+    async fn container_on_a_different_network_is_unattributed() {
+        let networks = HashMap::from([(
+            "some-other-network".to_string(),
+            EndpointSettings {
+                ip_address: Some("10.200.0.5".to_string()),
+                ..Default::default()
+            },
+        )]);
+        let container = ContainerSummary {
+            id: Some("c1".to_string()),
+            labels: Some(labels("tenant-a", "user-a")),
+            network_settings: Some(ContainerSummaryNetworkSettings {
+                networks: Some(networks),
+            }),
+            ..Default::default()
+        };
+        let lookup = FakeLookup::new(vec![container]);
+        let resolver = ConnectionAttributionResolver::with_lookup(lookup, NETWORK, PREFIX);
+
+        let outcome = resolver.resolve("10.200.0.5".parse().unwrap()).await;
+
+        assert_eq!(outcome, ConnectionAttribution::Unattributed);
+    }
+
+    #[tokio::test]
+    async fn container_with_empty_ip_string_is_unattributed() {
+        let lookup = FakeLookup::new(vec![container_with(
+            "c1",
+            Some(""),
+            Some(labels("tenant-a", "user-a")),
+        )]);
+        let resolver = ConnectionAttributionResolver::with_lookup(lookup, NETWORK, PREFIX);
+
+        let outcome = resolver.resolve("10.200.0.5".parse().unwrap()).await;
+
+        assert_eq!(outcome, ConnectionAttribution::Unattributed);
+    }
+
+    #[tokio::test]
+    async fn container_with_unparseable_ip_is_unattributed() {
+        let lookup = FakeLookup::new(vec![container_with(
+            "c1",
+            Some("not-an-ip"),
+            Some(labels("tenant-a", "user-a")),
+        )]);
+        let resolver = ConnectionAttributionResolver::with_lookup(lookup, NETWORK, PREFIX);
+
+        let outcome = resolver.resolve("10.200.0.5".parse().unwrap()).await;
+
+        assert_eq!(outcome, ConnectionAttribution::Unattributed);
+    }
+
+    #[tokio::test]
+    async fn expired_entries_are_evicted_not_just_skipped() {
+        // A regression for unbounded growth: the TTL alone only ever causes
+        // a *miss* on lookup (see `cached`) — nothing previously removed an
+        // expired entry from the map, so a resolver that keeps seeing new,
+        // never-repeating peer IPs would retain one `CacheEntry` per IP
+        // forever. Resolving a distinct IP after the first entry expires
+        // must shrink the cache back down instead of growing it.
+        let lookup = FakeLookup::new(vec![
+            container_with("c1", Some("10.200.0.5"), Some(labels("tenant-a", "user-a"))),
+            container_with("c2", Some("10.200.0.6"), Some(labels("tenant-b", "user-b"))),
+        ]);
+        let resolver = ConnectionAttributionResolver::with_lookup(lookup, NETWORK, PREFIX)
+            .with_cache_ttl(Duration::from_millis(1));
+
+        resolver.resolve("10.200.0.5".parse().unwrap()).await;
+        assert_eq!(resolver.cache_len(), 1);
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        resolver.resolve("10.200.0.6".parse().unwrap()).await;
+
+        assert_eq!(
+            resolver.cache_len(),
+            1,
+            "expired entry for 10.200.0.5 should have been swept, leaving only the fresh 10.200.0.6 entry"
+        );
+    }
+
+    #[tokio::test]
     async fn explicit_invalidate_forces_a_requery() {
         let lookup = FakeLookup::new(vec![container_with(
             "c1",
@@ -604,6 +720,24 @@ mod tests {
         let docker = match super::super::connect_docker().await {
             Ok(docker) => docker,
             Err(error) => {
+                // `docker_available()` reached a daemon through the `docker`
+                // CLI's context resolution, but `connect_docker()`'s
+                // narrower local-defaults + known-socket fallback could
+                // not — e.g. a `DOCKER_HOST` context the CLI understands but
+                // this fallback list doesn't cover. Under
+                // `IRONCLAW_REQUIRE_DOCKER_TESTS=1` that gap must not
+                // silently pass this required security test without ever
+                // exercising attribution, so panic here exactly like
+                // `docker_gate::docker_available()` does for its own
+                // required-but-unreachable case; only the optional local
+                // path gets the visible skip-and-return.
+                if docker_gate::docker_tests_required() {
+                    panic!(
+                        "IRONCLAW_REQUIRE_DOCKER_TESTS=1 but connect_docker() could not reach \
+                         the daemon docker_available() found via the `docker` CLI ({error}) — \
+                         docker-gated tests must not silently skip in CI"
+                    );
+                }
                 eprintln!(
                     "SKIP: docker_available() reported a reachable daemon via the `docker` CLI \
                      (context-aware), but connect_docker()'s local-defaults + known-socket \
@@ -617,6 +751,28 @@ mod tests {
         let network_name = format!("ironclaw-test-attribution-{}", uuid::Uuid::new_v4());
         let tenant = TenantId::new("attribution-tenant").unwrap();
         let user = UserId::new("attribution-user").unwrap();
+
+        // The CI Docker runner has a working daemon but not necessarily this
+        // image cached — pull it explicitly rather than relying on whatever
+        // happens to already be present (a bare `create_container` below
+        // would otherwise pass only on a machine that already has the image,
+        // which is exactly the gap that let this test fail in CI while
+        // passing on a developer's laptop). Draining the stream to
+        // completion waits for the pull to finish before we try to use the
+        // image.
+        use futures_util::StreamExt as _;
+        let mut pull_stream = docker.create_image(
+            Some(bollard::image::CreateImageOptions {
+                from_image: "busybox",
+                tag: "1.36",
+                ..Default::default()
+            }),
+            None,
+            None,
+        );
+        while let Some(progress) = pull_stream.next().await {
+            progress.expect("busybox:1.36 image pull succeeds");
+        }
 
         docker
             .create_network(bollard::network::CreateNetworkOptions {
