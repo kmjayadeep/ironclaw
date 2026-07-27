@@ -1272,7 +1272,10 @@ impl GeminiOauthProvider {
             let mut success = false;
             if self.uses_cloud_code_api() {
                 let mut combined_text = String::new();
-                let mut finish_reason = "STOP".to_string();
+                // Only what a candidate actually reported. Defaulting to
+                // "STOP" made a stream that never declared a finish reason
+                // look like a clean completion.
+                let mut finish_reason: Option<String> = None;
                 let mut prompt_tokens: i64 = 0;
                 let mut candidates_tokens: i64 = 0;
                 let mut tool_calls_parts = Vec::<serde_json::Value>::new();
@@ -1345,7 +1348,7 @@ impl GeminiOauthProvider {
                             }
                         }
                         if let Some(fr) = first.get("finishReason").and_then(|fr| fr.as_str()) {
-                            finish_reason = fr.to_string();
+                            finish_reason = Some(fr.to_string());
                         }
                         // Per-candidate metadata
                         if grounding_metadata.is_none()
@@ -1425,13 +1428,16 @@ impl GeminiOauthProvider {
                     }
                     response_parts.extend(tool_calls_parts);
 
+                    let mut candidate = serde_json::json!({
+                        "content": { "parts": response_parts }
+                    });
+                    // Absent stays absent: `from_gemini_response` falls back to
+                    // shape inference only when the provider said nothing.
+                    if let Some(finish_reason) = finish_reason {
+                        candidate["finishReason"] = serde_json::Value::String(finish_reason);
+                    }
                     final_response = serde_json::json!({
-                        "candidates": [{
-                            "content": {
-                                "parts": response_parts
-                            },
-                            "finishReason": finish_reason
-                        }],
+                        "candidates": [candidate],
                         "usageMetadata": {
                             "promptTokenCount": prompt_tokens,
                             "candidatesTokenCount": candidates_tokens
@@ -1857,25 +1863,26 @@ impl GeminiOauthProvider {
             }
         }
 
-        let finish_reason = candidate
-            .get("finishReason")
-            .and_then(|r| r.as_str())
-            .unwrap_or("STOP");
+        // What Gemini itself said. `None` means the field was absent, which is
+        // NOT the same as "STOP" — the old default reported a response that
+        // never declared a finish reason as a clean success.
+        let finish_reason = candidate.get("finishReason").and_then(|r| r.as_str());
+        let reported = finish_reason.unwrap_or("<absent>");
 
         // Invalid content detection (mirrors Gemini CLI InvalidStreamError types).
         // Log warnings for known problematic finish reasons.
         match finish_reason {
-            "MALFORMED_FUNCTION_CALL" => {
+            Some("MALFORMED_FUNCTION_CALL") => {
                 warn!(
-                    finish_reason = finish_reason,
+                    finish_reason = reported,
                     "Gemini returned MALFORMED_FUNCTION_CALL — {} (type: {})",
                     "model stream ended with malformed function call",
                     InvalidStreamType::MalformedFunctionCall
                 );
             }
-            "UNEXPECTED_TOOL_CALL" => {
+            Some("UNEXPECTED_TOOL_CALL") => {
                 warn!(
-                    finish_reason = finish_reason,
+                    finish_reason = reported,
                     "Gemini returned UNEXPECTED_TOOL_CALL — {} (type: {})",
                     "model stream ended with unexpected tool call",
                     InvalidStreamType::UnexpectedToolCall
@@ -1885,34 +1892,17 @@ impl GeminiOauthProvider {
         }
 
         // Check for no response text when no tool calls (NO_RESPONSE_TEXT detection)
-        if tool_calls.is_empty() && text_content.is_empty() && finish_reason == "STOP" {
+        if tool_calls.is_empty() && text_content.is_empty() && finish_reason == Some("STOP") {
             debug!(
                 "Gemini response has no text and no tool calls (type: {})",
                 InvalidStreamType::NoResponseText
             );
         }
 
-        let stop_reason = match finish_reason {
-            "STOP" => {
-                if !tool_calls.is_empty() {
-                    FinishReason::ToolUse
-                } else {
-                    FinishReason::Stop
-                }
-            }
-            "MAX_TOKENS" => FinishReason::Length,
-            "MALFORMED_FUNCTION_CALL" | "UNEXPECTED_TOOL_CALL" => {
-                // Treat as Stop — the caller's retry layer will handle retries
-                FinishReason::Stop
-            }
-            _ => {
-                if !tool_calls.is_empty() {
-                    FinishReason::ToolUse
-                } else {
-                    FinishReason::Stop
-                }
-            }
-        };
+        let stop_reason = crate::provider::resolve_finish_reason(
+            finish_reason.and_then(map_gemini_finish_reason),
+            !tool_calls.is_empty(),
+        );
 
         let usage = body.get("usageMetadata");
         let input_tokens = usage
@@ -2080,6 +2070,36 @@ impl LlmProvider for GeminiOauthProvider {
             reasoning_details: None,
         })
     }
+}
+
+/// Translate Gemini's `finishReason` into IronClaw's vocabulary.
+///
+/// Before this, only `STOP` and `MAX_TOKENS` were recognized: every
+/// content-blocking reason (`SAFETY`, `RECITATION`, `PROHIBITED_CONTENT`,
+/// `BLOCKLIST`, …) fell into the catch-all arm and was reported as `Stop`, and
+/// `MALFORMED_FUNCTION_CALL` / `UNEXPECTED_TOOL_CALL` were mapped to `Stop`
+/// explicitly. A blocked or malformed response was therefore indistinguishable
+/// from a clean answer.
+///
+/// A reason we do not recognize is `Unknown` — never `Stop`. Callers combine
+/// this with the response shape via [`crate::provider::resolve_finish_reason`].
+fn map_gemini_finish_reason(reason: &str) -> Option<FinishReason> {
+    let normalized = reason.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    Some(match normalized {
+        "STOP" => FinishReason::Stop,
+        "MAX_TOKENS" => FinishReason::Length,
+        // Blocked by Gemini's content policy.
+        "SAFETY" | "RECITATION" | "PROHIBITED_CONTENT" | "BLOCKLIST" | "SPII" | "IMAGE_SAFETY"
+        | "LANGUAGE" => FinishReason::ContentFilter,
+        // Recognized failures that are neither a clean stop nor a policy
+        // block, plus anything Google adds later:
+        // MALFORMED_FUNCTION_CALL, UNEXPECTED_TOOL_CALL, OTHER,
+        // FINISH_REASON_UNSPECIFIED.
+        _ => FinishReason::Unknown,
+    })
 }
 
 #[cfg(test)]
@@ -2292,6 +2312,86 @@ mod tests {
         assert_eq!(resp.input_tokens, 10);
         assert_eq!(resp.output_tokens, 5);
         assert!(tool_calls.is_empty());
+    }
+
+    /// Conformance matrix for the Gemini OAuth adapter — #6284 item 8,
+    /// contract clause (e).
+    ///
+    /// `SAFETY`, `RECITATION`, `PROHIBITED_CONTENT`, `BLOCKLIST` and
+    /// `MALFORMED_FUNCTION_CALL` all landed in the `_ =>` arm and were
+    /// reported as `Stop`, so a blocked response was indistinguishable from a
+    /// clean answer and `FinishReason::ContentFilter` was unreachable here.
+    /// An absent `finishReason` defaulted to the literal `"STOP"`.
+    ///
+    /// Each row is Gemini's own token, driven through the response parser.
+    #[test]
+    fn gemini_finish_reason_conformance_matrix() {
+        fn finish_for(finish_reason: serde_json::Value, with_tool_call: bool) -> FinishReason {
+            let part = if with_tool_call {
+                serde_json::json!({"functionCall": {"name": "read_file", "args": {}}})
+            } else {
+                serde_json::json!({"text": "some text"})
+            };
+            let mut candidate = serde_json::json!({"content": {"parts": [part]}});
+            if !finish_reason.is_null() {
+                candidate["finishReason"] = finish_reason;
+            }
+            let body = serde_json::json!({"candidates": [candidate]});
+            let (resp, _calls, _sigs) = GeminiOauthProvider::from_gemini_response(body)
+                .expect("parser accepts a well-formed candidate");
+            resp.finish_reason
+        }
+
+        // Clean stop, and the tool-call refinement of it.
+        assert_eq!(finish_for("STOP".into(), false), FinishReason::Stop);
+        assert_eq!(finish_for("STOP".into(), true), FinishReason::ToolUse);
+        // Truncated by the output token budget.
+        assert_eq!(finish_for("MAX_TOKENS".into(), false), FinishReason::Length);
+        assert_eq!(
+            finish_for("MAX_TOKENS".into(), true),
+            FinishReason::Length,
+            "a truncated tool call must not be laundered into ToolUse",
+        );
+        // Blocked by Gemini's content policy.
+        for blocked in [
+            "SAFETY",
+            "RECITATION",
+            "PROHIBITED_CONTENT",
+            "BLOCKLIST",
+            "SPII",
+            "IMAGE_SAFETY",
+            "LANGUAGE",
+        ] {
+            assert_eq!(
+                finish_for(blocked.into(), false),
+                FinishReason::ContentFilter,
+                "{blocked} is a content block, not a clean stop",
+            );
+        }
+        // Recognized failures that are neither a clean stop nor a policy block.
+        for unclear in [
+            "MALFORMED_FUNCTION_CALL",
+            "UNEXPECTED_TOOL_CALL",
+            "OTHER",
+            "FINISH_REASON_UNSPECIFIED",
+            "SOMETHING_NEW",
+        ] {
+            assert_eq!(
+                finish_for(unclear.into(), false),
+                FinishReason::Unknown,
+                "{unclear} must not be reported as a clean stop",
+            );
+        }
+        // Absent: the documented fallback is shape inference, not a
+        // hardcoded "STOP".
+        assert_eq!(
+            finish_for(serde_json::Value::Null, false),
+            FinishReason::Stop
+        );
+        assert_eq!(
+            finish_for(serde_json::Value::Null, true),
+            FinishReason::ToolUse
+        );
     }
 
     #[test]
